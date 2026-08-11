@@ -1,0 +1,382 @@
+from app.database import Base, SessionLocal, engine
+from app.models import Category, SubCategory
+
+categories_data = [
+    {
+        "name": "Electronics",
+        "icon": "💻",
+        "ads_count": "1.9K listings",
+        "subcategories": [
+            {"name": "Laptop", "icon": "💻", "ads_count": "245 ads"},
+            {"name": "Desktop Computer", "icon": "🖥️", "ads_count": "84 ads"},
+            {"name": "Monitor", "icon": "📺", "ads_count": "56 ads"},
+            {"name": "Keyboard", "icon": "⌨️", "ads_count": "112 ads"},
+            {"name": "Mouse", "icon": "🖱️", "ads_count": "95 ads"},
+            {"name": "Webcam", "icon": "📷", "ads_count": "32 ads"},
+            {"name": "Printer", "icon": "🖨️", "ads_count": "47 ads"},
+            {"name": "Calculator", "icon": "🧮", "ads_count": "180 ads"},
+            {"name": "USB Flash Drive", "icon": "💾", "ads_count": "310 ads"},
+            {"name": "External Hard Drive", "icon": "💾", "ads_count": "88 ads"},
+            {"name": "SSD", "icon": "💾", "ads_count": "142 ads"},
+            {"name": "Power Bank", "icon": "🔋", "ads_count": "220 ads"},
+            {"name": "Phone Charger", "icon": "🔌", "ads_count": "340 ads"},
+            {"name": "Laptop Charger", "icon": "🔌", "ads_count": "150 ads"},
+            {"name": "Earphones", "icon": "🎧", "ads_count": "420 ads"},
+            {"name": "Headphones", "icon": "🎧", "ads_count": "180 ads"},
+            {"name": "Bluetooth Speaker", "icon": "🔊", "ads_count": "160 ads"},
+            {"name": "Tablet", "icon": "📱", "ads_count": "115 ads"},
+            {"name": "Smartwatch", "icon": "⌚", "ads_count": "95 ads"},
+            {"name": "Wi-Fi Router", "icon": "📶", "ads_count": "72 ads"},
+        ],
+    },
+    {
+        "name": "Mobile Phones & Accessories",
+        "icon": "📱",
+        "ads_count": "1.4K listings",
+        "subcategories": [
+            {"name": "Android Phone", "icon": "🤖", "ads_count": "410 ads"},
+            {"name": "iPhone", "icon": "📱", "ads_count": "520 ads"},
+            {"name": "Feature Phone", "icon": "📞", "ads_count": "64 ads"},
+            {"name": "Phone Case", "icon": "📱", "ads_count": "1.2K ads"},
+            {"name": "Screen Protector", "icon": "🛡️", "ads_count": "950 ads"},
+            {"name": "Memory Card", "icon": "💾", "ads_count": "320 ads"},
+            {"name": "SIM Card", "icon": "💳", "ads_count": "140 ads"},
+            {"name": "SIM Eject Tool", "icon": "📌", "ads_count": "60 ads"},
+            {"name": "USB Cable", "icon": "🔌", "ads_count": "850 ads"},
+            {"name": "OTG Adapter", "icon": "🔌", "ads_count": "110 ads"},
+            {"name": "Wireless Charger", "icon": "🔋", "ads_count": "95 ads"},
+            {"name": "Selfie Stick", "icon": "🤳", "ads_count": "40 ads"},
+            {"name": "Mobile Tripod", "icon": "📷", "ads_count": "75 ads"},
+            {"name": "Ring Light", "icon": "💡", "ads_count": "115 ads"},
+            {"name": "Phone Holder", "icon": "🚗", "ads_count": "130 ads"},
+            {"name": "Bluetooth Earbuds", "icon": "🎧", "ads_count": "280 ads"},
+        ],
+    },
+    {
+        "name": "Academic Books",
+        "icon": "📚",
+        "ads_count": "2.4K listings",
+        "subcategories": [
+            {"name": "Programming Books", "icon": "💻", "ads_count": "410 ads"},
+            {"name": "Database Books", "icon": "🗄️", "ads_count": "150 ads"},
+            {"name": "Networking Books", "icon": "🌐", "ads_count": "130 ads"},
+            {"name": "Cybersecurity Books", "icon": "🔒", "ads_count": "95 ads"},
+            {"name": "AI Books", "icon": "🤖", "ads_count": "180 ads"},
+            {"name": "Data Structures Books", "icon": "🧠", "ads_count": "210 ads"},
+            {"name": "Operating System Books", "icon": "⚙️", "ads_count": "85 ads"},
+            {"name": "Software Engineering Books", "icon": "🧩", "ads_count": "140 ads"},
+            {"name": "Mathematics Books", "icon": "➗", "ads_count": "310 ads"},
+            {"name": "Physics Books", "icon": "🔭", "ads_count": "240 ads"},
+            {"name": "Chemistry Books", "icon": "⚗️", "ads_count": "185 ads"},
+            {"name": "Biology Books", "icon": "🧬", "ads_count": "195 ads"},
+            {"name": "Accounting Books", "icon": "📈", "ads_count": "165 ads"},
+            {"name": "Economics Books", "icon": "💹", "ads_count": "220 ads"},
+            {"name": "Marketing Books", "icon": "📣", "ads_count": "140 ads"},
+            {"name": "Management Books", "icon": "📋", "ads_count": "180 ads"},
+            {"name": "Law Books", "icon": "⚖️", "ads_count": "115 ads"},
+            {"name": "Medical Books", "icon": "🩺", "ads_count": "290 ads"},
+            {"name": "English Grammar Books", "icon": "📝", "ads_count": "135 ads"},
+            {"name": "Dictionaries", "icon": "📖", "ads_count": "80 ads"},
+            {"name": "Research Methodology Books", "icon": "🔎", "ads_count": "95 ads"},
+            {"name": "Thesis Writing Books", "icon": "🎓", "ads_count": "70 ads"},
+            {"name": "Entrance Exam Books", "icon": "📝", "ads_count": "120 ads"},
+        ],
+    },
+    {
+        "name": "Stationery",
+        "icon": "✏️",
+        "ads_count": "350 listings",
+        "subcategories": [
+            {"name": "Notebook", "icon": "📓", "ads_count": "450 ads"},
+            {"name": "Exercise Book", "icon": "📖", "ads_count": "620 ads"},
+            {"name": "Pens", "icon": "🖊️", "ads_count": "850 ads"},
+            {"name": "Pencils", "icon": "✏️", "ads_count": "510 ads"},
+            {"name": "Mechanical Pencil", "icon": "✏️", "ads_count": "140 ads"},
+            {"name": "Eraser", "icon": "🧼", "ads_count": "95 ads"},
+            {"name": "Sharpener", "icon": "🧼", "ads_count": "80 ads"},
+            {"name": "Ruler", "icon": "📏", "ads_count": "120 ads"},
+            {"name": "Marker", "icon": "🖊️", "ads_count": "210 ads"},
+            {"name": "Highlighter", "icon": "🖊️", "ads_count": "160 ads"},
+            {"name": "Sticky Notes", "icon": "📄", "ads_count": "280 ads"},
+            {"name": "Folder", "icon": "📁", "ads_count": "195 ads"},
+            {"name": "Binder", "icon": "📁", "ads_count": "130 ads"},
+            {"name": "File Organizer", "icon": "📁", "ads_count": "85 ads"},
+            {"name": "Stapler", "icon": "📎", "ads_count": "95 ads"},
+            {"name": "Staples", "icon": "📎", "ads_count": "40 ads"},
+            {"name": "Glue", "icon": "🧴", "ads_count": "110 ads"},
+            {"name": "Scissors", "icon": "✂️", "ads_count": "75 ads"},
+            {"name": "A4 Paper", "icon": "📄", "ads_count": "340 ads"},
+            {"name": "Paper Clips", "icon": "📎", "ads_count": "150 ads"},
+        ],
+    },
+    {
+        "name": "Furniture & Study Desks",
+        "icon": "🪑",
+        "ads_count": "420 listings",
+        "subcategories": [
+            {"name": "Study Desk", "icon": "🪑", "ads_count": "210 ads"},
+            {"name": "Chair", "icon": "🪑", "ads_count": "320 ads"},
+            {"name": "Bookshelf", "icon": "📚", "ads_count": "140 ads"},
+            {"name": "Wardrobe", "icon": "🚪", "ads_count": "85 ads"},
+            {"name": "Table Lamp", "icon": "💡", "ads_count": "165 ads"},
+            {"name": "Bed Frame", "icon": "🛏️", "ads_count": "120 ads"},
+            {"name": "Mattress", "icon": "🛏️", "ads_count": "170 ads"},
+            {"name": "Filing Cabinet", "icon": "🗄️", "ads_count": "95 ads"},
+            {"name": "Shoe Rack", "icon": "👟", "ads_count": "75 ads"},
+            {"name": "Sofa", "icon": "🛋️", "ads_count": "130 ads"},
+            {"name": "Coffee Table", "icon": "🛋️", "ads_count": "110 ads"},
+            {"name": "Dining Table", "icon": "🍽️", "ads_count": "100 ads"},
+            {"name": "Desk Organizer", "icon": "🗃️", "ads_count": "90 ads"},
+            {"name": "Bean Bag", "icon": "🪑", "ads_count": "68 ads"},
+            {"name": "Closet Organizer", "icon": "🧺", "ads_count": "55 ads"},
+        ],
+    },
+    {
+        "name": "Clothing & Accessories",
+        "icon": "👗",
+        "ads_count": "1.1K listings",
+        "subcategories": [
+            {"name": "T-Shirt", "icon": "👕", "ads_count": "420 ads"},
+            {"name": "Hoodie", "icon": "🧥", "ads_count": "315 ads"},
+            {"name": "Jeans", "icon": "👖", "ads_count": "250 ads"},
+            {"name": "Jacket", "icon": "🧥", "ads_count": "190 ads"},
+            {"name": "Sneakers", "icon": "👟", "ads_count": "320 ads"},
+            {"name": "Sandals", "icon": "🩴", "ads_count": "140 ads"},
+            {"name": "Formal Shoes", "icon": "👞", "ads_count": "85 ads"},
+            {"name": "Backpack", "icon": "🎒", "ads_count": "410 ads"},
+            {"name": "Wallet", "icon": "👛", "ads_count": "115 ads"},
+            {"name": "Belt", "icon": "🧢", "ads_count": "95 ads"},
+            {"name": "Watch", "icon": "⌚", "ads_count": "220 ads"},
+            {"name": "Sunglasses", "icon": "🕶️", "ads_count": "160 ads"},
+            {"name": "Hat", "icon": "🎩", "ads_count": "125 ads"},
+            {"name": "Scarf", "icon": "🧣", "ads_count": "90 ads"},
+            {"name": "Socks", "icon": "🧦", "ads_count": "180 ads"},
+            {"name": "Sportswear", "icon": "🏃", "ads_count": "205 ads"},
+            {"name": "Uniform", "icon": "🎽", "ads_count": "80 ads"},
+            {"name": "Dress", "icon": "👗", "ads_count": "140 ads"},
+            {"name": "Skirt", "icon": "👗", "ads_count": "120 ads"},
+            {"name": "Blazer", "icon": "🧥", "ads_count": "100 ads"},
+        ],
+    },
+    {
+        "name": "Sports & Fitness",
+        "icon": "🏀",
+        "ads_count": "500 listings",
+        "subcategories": [
+            {"name": "Football", "icon": "⚽", "ads_count": "180 ads"},
+            {"name": "Basketball", "icon": "🏀", "ads_count": "140 ads"},
+            {"name": "Volleyball", "icon": "🏐", "ads_count": "90 ads"},
+            {"name": "Tennis Racket", "icon": "🎾", "ads_count": "75 ads"},
+            {"name": "Badminton Racket", "icon": "🏸", "ads_count": "65 ads"},
+            {"name": "Shuttlecock", "icon": "🏸", "ads_count": "50 ads"},
+            {"name": "Yoga Mat", "icon": "🧘", "ads_count": "120 ads"},
+            {"name": "Dumbbells", "icon": "🏋️", "ads_count": "95 ads"},
+            {"name": "Fitness Bands", "icon": "💪", "ads_count": "80 ads"},
+            {"name": "Running Shoes", "icon": "👟", "ads_count": "130 ads"},
+            {"name": "Bicycle", "icon": "🚲", "ads_count": "145 ads"},
+            {"name": "Helmet", "icon": "🪖", "ads_count": "70 ads"},
+            {"name": "Sports Bag", "icon": "🏐", "ads_count": "90 ads"},
+            {"name": "Water Bottle", "icon": "🚰", "ads_count": "110 ads"},
+            {"name": "Swimwear", "icon": "🏊", "ads_count": "55 ads"},
+            {"name": "Skates", "icon": "⛸️", "ads_count": "45 ads"},
+            {"name": "Boxing Gloves", "icon": "🥊", "ads_count": "40 ads"},
+            {"name": "Jump Rope", "icon": "🪢", "ads_count": "60 ads"},
+        ],
+    },
+    {
+        "name": "Vehicles & Transportation",
+        "icon": "🚗",
+        "ads_count": "310 listings",
+        "subcategories": [
+            {"name": "Bicycle", "icon": "🚲", "ads_count": "110 ads"},
+            {"name": "Motorcycle", "icon": "🏍️", "ads_count": "70 ads"},
+            {"name": "Scooter", "icon": "🛴", "ads_count": "65 ads"},
+            {"name": "Car", "icon": "🚘", "ads_count": "95 ads"},
+            {"name": "Car Parts", "icon": "🔧", "ads_count": "105 ads"},
+            {"name": "Tires", "icon": "🛞", "ads_count": "45 ads"},
+            {"name": "Helmet", "icon": "🪖", "ads_count": "85 ads"},
+            {"name": "Auto Battery", "icon": "🔋", "ads_count": "55 ads"},
+            {"name": "GPS Device", "icon": "🛰️", "ads_count": "40 ads"},
+            {"name": "Bike Lock", "icon": "🔒", "ads_count": "70 ads"},
+            {"name": "Car Charger", "icon": "🔌", "ads_count": "60 ads"},
+            {"name": "Travel Bag", "icon": "🧳", "ads_count": "80 ads"},
+        ],
+    },
+    {
+        "name": "Home Appliances",
+        "icon": "🏠",
+        "ads_count": "280 listings",
+        "subcategories": [
+            {"name": "Refrigerator", "icon": "🧊", "ads_count": "72 ads"},
+            {"name": "Microwave", "icon": "🔥", "ads_count": "65 ads"},
+            {"name": "Air Conditioner", "icon": "❄️", "ads_count": "48 ads"},
+            {"name": "Fan", "icon": "🌀", "ads_count": "90 ads"},
+            {"name": "Heater", "icon": "🔥", "ads_count": "55 ads"},
+            {"name": "Blender", "icon": "🥤", "ads_count": "82 ads"},
+            {"name": "Toaster", "icon": "🍞", "ads_count": "40 ads"},
+            {"name": "Vacuum Cleaner", "icon": "🧹", "ads_count": "48 ads"},
+            {"name": "Rice Cooker", "icon": "🍚", "ads_count": "58 ads"},
+            {"name": "Electric Kettle", "icon": "🍵", "ads_count": "74 ads"},
+            {"name": "Iron", "icon": "🧺", "ads_count": "50 ads"},
+            {"name": "Washing Machine", "icon": "🧺", "ads_count": "43 ads"},
+            {"name": "Air Fryer", "icon": "🍟", "ads_count": "36 ads"},
+        ],
+    },
+    {
+        "name": "Computer Parts",
+        "icon": "🖥️",
+        "ads_count": "410 listings",
+        "subcategories": [
+            {"name": "CPU", "icon": "🔧", "ads_count": "85 ads"},
+            {"name": "GPU", "icon": "🎮", "ads_count": "75 ads"},
+            {"name": "RAM", "icon": "💾", "ads_count": "98 ads"},
+            {"name": "Motherboard", "icon": "🧩", "ads_count": "60 ads"},
+            {"name": "Power Supply", "icon": "🔌", "ads_count": "52 ads"},
+            {"name": "PC Case", "icon": "🖥️", "ads_count": "45 ads"},
+            {"name": "Cooling Fan", "icon": "🌀", "ads_count": "70 ads"},
+            {"name": "Network Card", "icon": "🌐", "ads_count": "28 ads"},
+            {"name": "Sound Card", "icon": "🎧", "ads_count": "18 ads"},
+            {"name": "Thermal Paste", "icon": "🧪", "ads_count": "34 ads"},
+            {"name": "USB Hub", "icon": "🔌", "ads_count": "39 ads"},
+        ],
+    },
+    {
+        "name": "Arts & Crafts",
+        "icon": "🎨",
+        "ads_count": "180 listings",
+        "subcategories": [
+            {"name": "Paints", "icon": "🎨", "ads_count": "45 ads"},
+            {"name": "Brushes", "icon": "🖌️", "ads_count": "60 ads"},
+            {"name": "Canvas", "icon": "🖼️", "ads_count": "38 ads"},
+            {"name": "Sketchbook", "icon": "📓", "ads_count": "58 ads"},
+            {"name": "Craft Glue", "icon": "🧴", "ads_count": "40 ads"},
+            {"name": "Beads", "icon": "📿", "ads_count": "30 ads"},
+            {"name": "Embroidery Kit", "icon": "🧵", "ads_count": "22 ads"},
+            {"name": "Yarn", "icon": "🧶", "ads_count": "28 ads"},
+            {"name": "Origami Paper", "icon": "📄", "ads_count": "36 ads"},
+            {"name": "Model Kit", "icon": "🧩", "ads_count": "19 ads"},
+            {"name": "Stickers", "icon": "✨", "ads_count": "42 ads"},
+        ],
+    },
+    {
+        "name": "Music & Instruments",
+        "icon": "🎵",
+        "ads_count": "220 listings",
+        "subcategories": [
+            {"name": "Guitar", "icon": "🎸", "ads_count": "85 ads"},
+            {"name": "Keyboard", "icon": "🎹", "ads_count": "60 ads"},
+            {"name": "Drum Set", "icon": "🥁", "ads_count": "28 ads"},
+            {"name": "Violin", "icon": "🎻", "ads_count": "22 ads"},
+            {"name": "Ukulele", "icon": "🎸", "ads_count": "32 ads"},
+            {"name": "Microphone", "icon": "🎤", "ads_count": "45 ads"},
+            {"name": "Speakers", "icon": "🔊", "ads_count": "58 ads"},
+            {"name": "Headphones", "icon": "🎧", "ads_count": "88 ads"},
+            {"name": "Amplifier", "icon": "📢", "ads_count": "30 ads"},
+            {"name": "Sheet Music", "icon": "🎼", "ads_count": "24 ads"},
+            {"name": "Tuner", "icon": "🎚️", "ads_count": "16 ads"},
+        ],
+    },
+    {
+        "name": "Jobs & Internships",
+        "icon": "💼",
+        "ads_count": "160 listings",
+        "subcategories": [
+            {"name": "Part-time Jobs", "icon": "🕒", "ads_count": "72 ads"},
+            {"name": "Full-time Jobs", "icon": "🏢", "ads_count": "55 ads"},
+            {"name": "Internships", "icon": "📑", "ads_count": "86 ads"},
+            {"name": "Freelance Gigs", "icon": "🧑‍💻", "ads_count": "45 ads"},
+            {"name": "Teaching Assistant", "icon": "👩‍🏫", "ads_count": "32 ads"},
+            {"name": "Lab Assistant", "icon": "🔬", "ads_count": "29 ads"},
+            {"name": "Research Assistant", "icon": "📚", "ads_count": "18 ads"},
+        ],
+    },
+    {
+        "name": "Tutors & Lessons",
+        "icon": "🧑‍🏫",
+        "ads_count": "190 listings",
+        "subcategories": [
+            {"name": "Math Tutor", "icon": "➕", "ads_count": "63 ads"},
+            {"name": "Science Tutor", "icon": "🔬", "ads_count": "75 ads"},
+            {"name": "Language Tutor", "icon": "🗣️", "ads_count": "82 ads"},
+            {"name": "Programming Tutor", "icon": "💻", "ads_count": "71 ads"},
+            {"name": "Music Lessons", "icon": "🎵", "ads_count": "48 ads"},
+            {"name": "Art Lessons", "icon": "🎨", "ads_count": "34 ads"},
+            {"name": "Sports Coaching", "icon": "🏃", "ads_count": "39 ads"},
+            {"name": "Exam Preparation", "icon": "🧠", "ads_count": "54 ads"},
+        ],
+    },
+    {
+        "name": "Tickets & Events",
+        "icon": "🎫",
+        "ads_count": "130 listings",
+        "subcategories": [
+            {"name": "Concert Tickets", "icon": "🎤", "ads_count": "42 ads"},
+            {"name": "Seminar Tickets", "icon": "🎓", "ads_count": "35 ads"},
+            {"name": "Workshop Tickets", "icon": "🛠️", "ads_count": "28 ads"},
+            {"name": "Movie Tickets", "icon": "🎬", "ads_count": "22 ads"},
+            {"name": "Sports Tickets", "icon": "🏟️", "ads_count": "18 ads"},
+            {"name": "Festival Passes", "icon": "🎉", "ads_count": "26 ads"},
+        ],
+    },
+    {
+        "name": "Services & Others",
+        "icon": "🛎️",
+        "ads_count": "210 listings",
+        "subcategories": [
+            {"name": "Printing Services", "icon": "🖨️", "ads_count": "42 ads"},
+            {"name": "Delivery Services", "icon": "📦", "ads_count": "53 ads"},
+            {"name": "Cleaning Services", "icon": "🧹", "ads_count": "38 ads"},
+            {"name": "Repair Services", "icon": "🔧", "ads_count": "47 ads"},
+            {"name": "Photography", "icon": "📷", "ads_count": "25 ads"},
+            {"name": "Graphic Design", "icon": "🎨", "ads_count": "18 ads"},
+            {"name": "Web Design", "icon": "🌐", "ads_count": "20 ads"},
+            {"name": "Pet Sitting", "icon": "🐾", "ads_count": "16 ads"},
+            {"name": "Translation", "icon": "🌍", "ads_count": "22 ads"},
+        ],
+    },
+]
+
+
+def seed_categories():
+    print("Connecting to campusmarket_db and seeding categories...")
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        existing_count = db.query(Category).count()
+        if existing_count > 0:
+            print(f"Skipping seed: categories table already contains {existing_count} records.")
+            return
+
+        print("Seeding categories and subcategories...")
+        for category_data in categories_data:
+            category = Category(
+                name=category_data["name"],
+                icon=category_data["icon"],
+                ads_count=category_data["ads_count"],
+            )
+            db.add(category)
+            db.flush()
+
+            subcategories = [
+                SubCategory(
+                    name=sub["name"],
+                    icon=sub["icon"],
+                    ads_count=sub["ads_count"],
+                    category_id=category.id,
+                )
+                for sub in category_data["subcategories"]
+            ]
+            db.add_all(subcategories)
+
+        db.commit()
+        print("Successfully seeded categories and subcategories.")
+    except Exception as exc:
+        db.rollback()
+        print(f"Seeding failed: {exc}")
+        raise
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    seed_categories()

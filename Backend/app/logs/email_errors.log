@@ -1,0 +1,136 @@
+2026-08-10 05:32:53,101 ERROR Failed to send OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080c90db9sm378645966b.41 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 90, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080c90db9sm378645966b.41 - gsmtp')
+2026-08-10 05:40:18,048 ERROR Failed to send OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a29a8fsm384501866b.4 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 90, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a29a8fsm384501866b.4 - gsmtp')
+2026-08-10 05:40:18,060 ERROR Failed to send OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a29a8fsm384501766b.4 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 90, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a29a8fsm384501766b.4 - gsmtp')
+2026-08-10 05:42:29,000 ERROR Failed to send OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a6fa8csm390819566b.21 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 93, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a6fa8csm390819566b.21 - gsmtp')
+2026-08-10 05:51:37,747 ERROR Failed to send raw OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 4fb4d7f45d1cf-6a1e7d48dcasm3981628a12.15 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 94, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 4fb4d7f45d1cf-6a1e7d48dcasm3981628a12.15 - gsmtp')
+2026-08-10 05:51:37,758 ERROR Failed to send raw OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 4fb4d7f45d1cf-6a1e7d6c817sm3974229a12.27 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 94, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 4fb4d7f45d1cf-6a1e7d6c817sm3974229a12.27 - gsmtp')
+2026-08-10 05:56:04,021 ERROR Failed to send raw OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a29a6esm386921266b.10 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 85, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080a29a6esm386921266b.10 - gsmtp')
+2026-08-10 06:15:31,035 ERROR Failed to send raw OTP email to desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080cf5da5sm389079566b.53 - gsmtp')
+Traceback (most recent call last):
+  File "C:\xampp\htdocs\Backend\app\main.py", line 85, in send_otp_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2080cf5da5sm389079566b.53 - gsmtp')

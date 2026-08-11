@@ -1,0 +1,169 @@
+﻿# C:\xampp\htdocs\Backend\app\models.py
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric
+from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
+from .database import Base
+
+class Student(Base):
+    __tablename__ = "students"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    student_id = Column(String(50), unique=True, index=True, nullable=False)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    phone = Column(String(20), nullable=True)
+    password = Column(String(255), nullable=False)
+    college = Column(String(150), nullable=False)
+    department = Column(String(150), nullable=False)
+    wallet_balance = Column(Numeric(10, 2), default=200.00)
+
+    # 1. ሬላሽንሺፖቹ በምን አምድ በኩል መገናኘት እንዳለባቸው በ "primaryjoin" በግልጽ አስቀምጠነዋል
+    reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student", cascade="all, delete-orphan")
+    notifications = relationship("Notification", primaryjoin="Student.student_id == Notification.student_id", back_populates="student", cascade="all, delete-orphan")
+    wishlist_items = relationship("WishlistItem", primaryjoin="Student.student_id == WishlistItem.student_id", back_populates="student", cascade="all, delete-orphan")
+    cart_items = relationship("CartItem", primaryjoin="Student.student_id == CartItem.student_id", back_populates="student", cascade="all, delete-orphan")
+    orders = relationship("Order", primaryjoin="Student.student_id == Order.student_id", back_populates="student", cascade="all, delete-orphan")
+    transactions = relationship("Transaction", primaryjoin="Student.student_id == Transaction.student_id", back_populates="student", cascade="all, delete-orphan")
+    reviews = relationship("Review", primaryjoin="Student.student_id == Review.student_id", back_populates="student", cascade="all, delete-orphan")
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False)
+    icon = Column(String(50), nullable=True)
+    ads_count = Column(String(50), default="0 ads")
+    subcategories = relationship("SubCategory", back_populates="category", cascade="all, delete-orphan")
+
+class SubCategory(Base):
+    __tablename__ = "subcategories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    icon = Column(String(50), nullable=True)
+    ads_count = Column(String(50), default="0 ads")
+    category_id = Column(Integer, ForeignKey("categories.id", ondelete="CASCADE"))
+    category = relationship("Category", back_populates="subcategories")
+
+class Product(Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(150), nullable=False)
+    category = Column(String(100), nullable=False)
+    subcategory = Column(String(100), nullable=True)
+    price = Column(String(50), nullable=False)
+    image = Column(String(255), nullable=True)
+    description = Column(String(500), nullable=True)
+    seller = Column(String(100), nullable=True)
+    status = Column(String(50), default="Pending", nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    wishlist_items = relationship("WishlistItem", back_populates="product", cascade="all, delete-orphan")
+    cart_items = relationship("CartItem", back_populates="product", cascade="all, delete-orphan")
+    orders = relationship("Order", back_populates="product", cascade="all, delete-orphan")
+
+class WishlistItem(Base):
+    __tablename__ = "wishlist_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="WishlistItem.student_id == Student.student_id", back_populates="wishlist_items")
+    product = relationship("Product", back_populates="wishlist_items")
+
+class CartItem(Base):
+    __tablename__ = "cart_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    quantity = Column(Integer, default=1, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="CartItem.student_id == Student.student_id", back_populates="cart_items")
+    product = relationship("Product", back_populates="cart_items")
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(150), nullable=False)
+    price = Column(String(50), nullable=False)
+    status = Column(String(50), default="Processing", nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="Order.student_id == Student.student_id", back_populates="orders")
+    product = relationship("Product", back_populates="orders")
+    reviews = relationship("Review", back_populates="order", cascade="all, delete-orphan")
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    tx_id = Column(String(50), unique=True, nullable=False)
+    type = Column(String(50), nullable=False)
+    amount = Column(Numeric(10, 2), nullable=False)
+    description = Column(String(255), nullable=True)
+    status = Column(String(50), default="Successful", nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="Transaction.student_id == Student.student_id", back_populates="transactions")
+
+class Review(Base):
+    __tablename__ = "reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    rating = Column(Integer, nullable=False)
+    comment = Column(String(500), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    order = relationship("Order", back_populates="reviews")
+    student = relationship("Student", primaryjoin="Review.student_id == Student.student_id", back_populates="reviews")
+
+class Admin(Base):
+    __tablename__ = "admins"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, index=True, nullable=False)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    password = Column(String(255), nullable=False)
+
+class Report(Base):
+    __tablename__ = "reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_name = Column(String(150), nullable=False)
+    issue = Column(String(1000), nullable=False)
+    status = Column(String(50), nullable=False, default="Open")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="Report.student_id == Student.student_id", back_populates="reports")
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    message = Column(String(500), nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="Notification.student_id == Student.student_id", back_populates="notifications")
+
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(100), nullable=False)
+    otp_code = Column(String(6), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    is_used = Column(Boolean, default=False)

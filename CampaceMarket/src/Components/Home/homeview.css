@@ -1,0 +1,20 @@
+.homeview-flyout {
+  width: 18rem;
+  border-radius: 1.5rem;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background-color: #ffffff;
+  padding: 1.25rem;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.12);
+  animation: homeview-fade-in 160ms ease-out;
+}
+
+@keyframes homeview-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
