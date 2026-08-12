@@ -1,5 +1,20 @@
 ﻿import { useState, useEffect } from 'react';
 import ProductDetails from './ProductDetails';
+import desktop1 from '../../assets/desktop1.jpg';
+import laptop586 from '../../assets/laptop_586.webp';
+import monitorImg from '../../assets/monitor.jpg';
+import phone1 from '../../assets/phone1.jpg';
+import phone2 from '../../assets/phone2.jpg';
+import successImg from '../../assets/success.jpg';
+
+const bannerImages = [
+  desktop1,
+  laptop586,
+  monitorImg,
+  phone1,
+  phone2,
+  successImg
+];
 
 const defaultCategories = [
   {
@@ -377,8 +392,25 @@ function HomeView({ onAction, user }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchedTitle, setSearchedTitle] = useState('All Products');
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
   const visibleCategories = showAllCategories ? categories : categories.slice(0, 8);
+
+  const handlePrevBanner = () => {
+    setCurrentImageIndex((prevIndex) => (prevIndex - 1 + bannerImages.length) % bannerImages.length);
+  };
+
+  const handleNextBanner = () => {
+    setCurrentImageIndex((prevIndex) => (prevIndex + 1) % bannerImages.length);
+  };
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      setCurrentImageIndex((prevIndex) => (prevIndex + 1) % bannerImages.length);
+    }, 5000);
+
+    return () => clearInterval(intervalId);
+  }, []);
 
   const fetchCategories = async () => {
     try {
@@ -469,16 +501,60 @@ function HomeView({ onAction, user }) {
         />
       ) : (
         <div className="space-y-6">
-          <section className="rounded-[28px] bg-gradient-to-r from-blue-50 to-blue-100 border border-blue-100 p-8 shadow-md text-center text-slate-800">
-            <h2 className="text-3xl font-bold text-slate-900">Find What You Need on Campus</h2>
-            <p className="mt-2 text-slate-600">Browse peer listings or search specific academic items instantly.</p>
-            <form onSubmit={handleSearch} className="mt-6 mx-auto max-w-2xl flex gap-3">
+          <section className="group w-screen relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
+            {bannerImages.map((src, index) => (
+              <img
+                key={index}
+                src={src}
+                alt={`Campus banner ${index + 1}`}
+                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-in-out z-0 ${currentImageIndex === index ? 'opacity-100' : 'opacity-0'}`}
+              />
+            ))}
+            <button
+              type="button"
+              onClick={handlePrevBanner}
+              className="absolute left-6 top-1/2 -translate-y-1/2 z-30 rounded-full bg-black/30 hover:bg-black/50 text-white p-3.5"
+              aria-label="Previous banner"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                <path fillRule="evenodd" d="M12.707 15.707a1 1 0 01-1.414 0L6.586 11l4.707-4.707a1 1 0 011.414 1.414L9.414 11l3.293 3.293a1 1 0 010 1.414z" clipRule="evenodd" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={handleNextBanner}
+              className="absolute right-6 top-1/2 -translate-y-1/2 z-30 rounded-full bg-black/30 hover:bg-black/50 text-white p-3.5"
+              aria-label="Next banner"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+                <path fillRule="evenodd" d="M7.293 4.293a1 1 0 011.414 0L13.414 9l-4.707 4.707a1 1 0 01-1.414-1.414L10.586 9 7.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </button>
+            <div className="relative z-20">
+              <h2 className="text-3xl font-bold text-white">Find What You Need on Campus</h2>
+              <p className="mt-2 text-slate-200">Browse peer listings or search specific academic items instantly.</p>
+            </div>
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex gap-2 justify-center">
+              {bannerImages.map((_, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => setCurrentImageIndex(index)}
+                  aria-label={`Show banner ${index + 1}`}
+                  className={currentImageIndex === index ? 'w-6 h-2.5 rounded-full bg-white' : 'w-2.5 h-2.5 rounded-full bg-white/40 hover:bg-white/70'}
+                />
+              ))}
+            </div>
+          </section>
+
+          <div className="mx-auto w-full max-w-3xl">
+            <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3 p-2 rounded-full bg-white border border-slate-200 shadow-md max-w-3xl mx-auto w-full">
               <input
                 type="text"
                 placeholder="Search books, laptops, lab coats, calculators..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 rounded-full border border-blue-200 px-6 py-3.5 text-slate-900 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 transition"
+                className="flex-1 bg-slate-50 border border-slate-100 rounded-full px-6 py-3.5 text-slate-900 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 transition"
               />
               <button
                 type="submit"
@@ -487,7 +563,7 @@ function HomeView({ onAction, user }) {
                 Search Materials
               </button>
             </form>
-          </section>
+          </div>
 
           <div className="grid gap-8 lg:grid-cols-[280px_1fr]">
             <aside className="lg:sticky lg:top-6 h-fit z-30" onMouseLeave={() => setHoveredCategoryId(null)}>

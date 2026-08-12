@@ -6,7 +6,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
   return (
     <header className="bg-blue-600 text-white border-b border-blue-700 sticky top-0 z-[999]">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-[120px] flex items-center justify-between">
 
         {/* Logo */}
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate('home')}>
