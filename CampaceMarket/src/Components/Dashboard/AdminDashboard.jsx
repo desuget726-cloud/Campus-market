@@ -26,8 +26,10 @@ function AdminDashboard({ onLogout }) {
 
   // 1. User Management States
   const [userSearchTerm, setUserSearchTerm] = useState('');
+  const [userCollegeFilter, setUserCollegeFilter] = useState('');
   const [userDeptFilter, setUserDeptFilter] = useState('');
-  const [userYearFilter, setUserYearFilter] = useState('');
+  const [dbCollegesList, setDbCollegesList] = useState([]);
+  const [dbDepartmentsList, setDbDepartmentsList] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [studentUsers, setStudentUsers] = useState([
     { id: 1, student_id: "MAU1600002", name: "Tefesayiku", email: "desu5392@gmail.com", phone: "0962714305", college: "CCI", department: "Software Engineering", year: "Year 3", is_verified: true, status: "Active", rating: "4.8 ★", activity: [{ action: "Logged in", time: "10m ago" }] },
@@ -106,6 +108,52 @@ function AdminDashboard({ onLogout }) {
     const timer = window.setTimeout(() => setIsReady(true), 250);
     return () => window.clearTimeout(timer);
   }, []);
+
+  // Fetch colleges list on component mount
+  useEffect(() => {
+    fetchCollegesData();
+  }, []);
+
+  // Fetch departments whenever college filter changes
+  useEffect(() => {
+    if (activeTab === 'user-management') {
+      if (userCollegeFilter) {
+        fetchDepartmentsData(userCollegeFilter);
+      } else {
+        fetchDepartmentsData(null); // Fetch all departments
+      }
+      // Reset department filter when college changes
+      setUserDeptFilter('');
+    }
+  }, [userCollegeFilter, activeTab]);
+
+  // Fetch colleges from backend
+  const fetchCollegesData = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/admin/colleges');
+      const colleges = await response.json();
+      setDbCollegesList(colleges || []);
+    } catch (err) {
+      console.error('Failed to fetch colleges:', err);
+      setDbCollegesList([]);
+    }
+  };
+
+  // Fetch departments from backend (optionally filtered by college)
+  const fetchDepartmentsData = async (selectedCollege = null) => {
+    try {
+      const url = selectedCollege
+        ? `http://localhost:8000/api/admin/departments?college=${encodeURIComponent(selectedCollege)}`
+        : 'http://localhost:8000/api/admin/departments';
+
+      const response = await fetch(url);
+      const departments = await response.json();
+      setDbDepartmentsList(departments || []);
+    } catch (err) {
+      console.error('Failed to fetch departments:', err);
+      setDbDepartmentsList([]);
+    }
+  };
 
   const handleTabClick = (tabId) => {
     if (tabId === 'logout') {
@@ -312,21 +360,16 @@ function AdminDashboard({ onLogout }) {
           </div>
         );
       case 'user-management': {
-        const departmentsList = [
-          "Computer Science", "Software Engineering", "Information Technology (IT)",
-          "Economics", "Accounting and Finance", "Management", "Law (LLB)"
-        ];
-
         const filteredUsers = studentUsers.filter(u => {
           const matchesSearch =
             u.name.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
             u.student_id.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
             u.email.toLowerCase().includes(userSearchTerm.toLowerCase());
 
-          const matchesDept = userDeptFilter ? u.department.includes(userDeptFilter) : true;
-          const matchesYear = userYearFilter ? u.year === userYearFilter : true;
+          const matchesCollege = userCollegeFilter ? u.college === userCollegeFilter : true;
+          const matchesDept = userDeptFilter ? u.department === userDeptFilter : true;
 
-          return matchesSearch && matchesDept && matchesYear;
+          return matchesSearch && matchesCollege && matchesDept;
         });
 
         return (
@@ -348,6 +391,19 @@ function AdminDashboard({ onLogout }) {
                 />
               </div>
               <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Filter by College</label>
+                <select
+                  value={userCollegeFilter}
+                  onChange={(e) => setUserCollegeFilter(e.target.value)}
+                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
+                >
+                  <option value="">All Colleges</option>
+                  {dbCollegesList.map(college => (
+                    <option key={college} value={college}>{college}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Filter by Department</label>
                 <select
                   value={userDeptFilter}
@@ -355,23 +411,9 @@ function AdminDashboard({ onLogout }) {
                   className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
                 >
                   <option value="">All Departments</option>
-                  {departmentsList.map(dept => (
+                  {dbDepartmentsList.map(dept => (
                     <option key={dept} value={dept}>{dept}</option>
                   ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Filter by Year</label>
-                <select
-                  value={userYearFilter}
-                  onChange={(e) => setUserYearFilter(e.target.value)}
-                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
-                >
-                  <option value="">All Academic Years</option>
-                  <option value="Year 1">Year 1 (Freshman)</option>
-                  <option value="Year 2">Year 2 (Sophomore)</option>
-                  <option value="Year 3">Year 3 (Junior)</option>
-                  <option value="Year 4">Year 4 (Senior)</option>
                 </select>
               </div>
             </div>
@@ -382,7 +424,9 @@ function AdminDashboard({ onLogout }) {
                   <thead className="border-b border-slate-200 text-slate-500">
                     <tr>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Student</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Department/Year</th>
+                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">College</th>
+                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Department</th>
+                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Phone</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Verified</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Enforcement Status</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Actions</th>
@@ -396,8 +440,13 @@ function AdminDashboard({ onLogout }) {
                           <div className="text-xs text-slate-400 mt-0.5">{student.student_id} • {student.email}</div>
                         </td>
                         <td className="px-4 py-4">
+                          <div className="font-semibold text-slate-700">{student.college}</div>
+                        </td>
+                        <td className="px-4 py-4">
                           <div className="font-semibold text-slate-700">{student.department.replace("Department of ", "")}</div>
-                          <div className="text-xs text-slate-400 mt-0.5">{student.year}</div>
+                        </td>
+                        <td className="px-4 py-4">
+                          <div className="font-semibold text-slate-700">{student.phone || 'No Phone'}</div>
                         </td>
                         <td className="px-4 py-4 text-center">
                           <button

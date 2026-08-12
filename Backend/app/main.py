@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from passlib.context import CryptContext
+import bcrypt
 from typing import Optional, List
 import shutil
 import os
@@ -50,7 +50,30 @@ os.makedirs(AVATAR_DIR, exist_ok=True)
 # Mount static files directory
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing helper functions using native bcrypt
+def hash_password(password: str) -> str:
+    """
+    Hash a password using bcrypt.
+    Truncates password to 72 bytes to satisfy bcrypt limits.
+    """
+    password_bytes = password.encode('utf-8')[:72]
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(password_bytes, salt)
+    return hashed.decode('utf-8')
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a plain password against a bcrypt hashed password.
+    Securely compares using bcrypt.checkpw.
+    """
+    try:
+        plain_bytes = plain_password.encode('utf-8')[:72]
+        hashed_bytes = hashed_password.encode('utf-8')
+        return bcrypt.checkpw(plain_bytes, hashed_bytes)
+    except Exception:
+        return False
+
 
 # Gmail SMTP configuration - replace with your values
 import os
@@ -186,7 +209,7 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
     if existing_email:
         raise HTTPException(status_code=400, detail="Email is already registered.")
 
-    hashed_password = pwd_context.hash(student_data.password)
+    hashed_password = hash_password(student_data.password)
 
     db_student = Student(
         name=student_data.name,
@@ -212,7 +235,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         (Admin.username == data.id_or_email) | (Admin.email == data.id_or_email)
     ).first()
     
-    if admin and pwd_context.verify(data.password, admin.password):
+    if admin and verify_password(data.password, admin.password):
         return {"role": "admin", "user": {"name": admin.username, "email": admin.email}}
 
     # 2.2 ካልሆነ በተማሪዎች ሰንጠረዥ ይፈትሻል
@@ -220,7 +243,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         (Student.student_id == data.id_or_email) | (Student.email == data.id_or_email)
     ).first()
     
-    if student and pwd_context.verify(data.password, student.password):
+    if student and verify_password(data.password, student.password):
         return {"role": "student", "user": {"name": student.name, "studentId": student.student_id}}
 
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
@@ -277,7 +300,7 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
     student.department = profile.department
 
     if profile.password:
-        student.password = pwd_context.hash(profile.password)
+        student.password = hash_password(profile.password)
 
     db.commit()
     db.refresh(student)
@@ -829,6 +852,30 @@ def get_admin_users(db: Session = Depends(get_db)):
         for s in students
     ]
 
+# 8a. Get distinct colleges from UNIVERSITY_STRUCTURE
+@app.get("/api/admin/colleges")
+def get_colleges():
+    """Returns all 6 colleges from the university structure."""
+    return sorted(list(UNIVERSITY_STRUCTURE.keys()))
+
+
+# 8b. Get departments (optionally filtered by college)
+@app.get("/api/admin/departments")
+def get_departments(college: Optional[str] = None):
+    """
+    Returns departments from the university structure.
+    If college is provided, returns only that college's departments.
+    Otherwise, returns all departments flattened.
+    """
+    if college and college in UNIVERSITY_STRUCTURE:
+        return UNIVERSITY_STRUCTURE[college]
+    
+    # Return all departments from all colleges (flattened)
+    all_departments = []
+    for depts in UNIVERSITY_STRUCTURE.values():
+        all_departments.extend(depts)
+    return sorted(all_departments)
+
 # 9. የተማሪን አካውንት ማገጃ/ማስተካከያ (PATCH /api/admin/users/{id})
 @app.patch("/api/admin/users/{id}")
 def update_user_status(id: int, db: Session = Depends(get_db)):
@@ -1266,3 +1313,47 @@ class ReviewCreate(BaseModel):
 class CartItemCreate(BaseModel):
     student_id: str
     product_id: int
+
+# University Structure: All 6 Colleges and their Departments
+UNIVERSITY_STRUCTURE = {
+    "College of Computing and Informatics (CCI)": [
+        "Department of Computer Science",
+        "Department of Information Technology (IT)",
+        "Department of Software Engineering"
+    ],
+    "College of Natural and Computational Sciences (CNCS)": [
+        "Department of Biology",
+        "Department of Chemistry",
+        "Department of Geology",
+        "Department of Mathematics",
+        "Department of Physics",
+        "Department of Statistics",
+        "Department of Sport Science"
+    ],
+    "College of Agriculture and Natural Resource": [
+        "Department of Agro-Economics",
+        "Department of Agribusiness and Value Chain Management",
+        "Department of Animal Science",
+        "Department of Forestry",
+        "Department of Horticulture",
+        "Department of Natural Resource Management",
+        "Department of Plant Science",
+        "Department of Rural Development and Agricultural Extension"
+    ],
+    "College of Business and Economics": [
+        "Department of Accounting and Finance",
+        "Department of Economics",
+        "Department of Management",
+        "Department of Marketing Management"
+    ],
+    "College of Social Sciences and Humanities": [
+        "Department of Amharic Language and Literature",
+        "Department of English Language and Literature",
+        "Department of Geography and Environmental Studies",
+        "Department of History and Heritage Management",
+        "Department of Political Science and International Relations"
+    ],
+    "School of Law": [
+        "Department of Law (LLB)"
+    ]
+}
