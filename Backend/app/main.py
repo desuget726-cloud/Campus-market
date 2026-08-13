@@ -1,44 +1,54 @@
 from __future__ import annotations
-# C:\xampp\htdocs\Backend\app\main.py
-from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
 import shutil
 import os
 import logging
 import httpx
 import uuid
 import random
+import json
+import traceback
+import hashlib
+import hmac
+import re
+from decimal import Decimal
+from collections import Counter
 from datetime import datetime, timedelta
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import asyncio
 
 # ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
-from .models import Student, Category, SubCategory, Product, Admin, Report, Notification, WishlistItem, CartItem, Order, Transaction, PasswordReset
+from .models import Student, Category, SubCategory, Product, Admin, AuditLog, Report, Notification, WishlistItem, CartItem, Order, Transaction, PasswordReset, SystemSetting
 import uuid
 from app.models import WishlistItem, CartItem, Order, Transaction, Review
-from .database import get_db, init_db
+from .database import get_db, init_db, SessionLocal, Base, engine
 
 
 app = FastAPI(title="Campace Backend")
 
 # React ግንኙነት መፍቀጃ (CORS)
 origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    "http://localhost:5173",      # ✓ React frontend (dev)
+    "http://127.0.0.1:5173",      # ✓ Alternative localhost
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins,        # ✓ Uses origins list
+    allow_credentials=True,       # ✓ Allow cookies/auth
+    allow_methods=["*"],          # ✓ All HTTP methods
+    allow_headers=["*"],          # ✓ All headers
 )
 
 # Create static directory for uploads if it doesn't exist
@@ -73,6 +83,195 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(plain_bytes, hashed_bytes)
     except Exception:
         return False
+
+
+def _parse_price_to_etb(raw_value: Optional[object], usd_to_etb: float = 56.0) -> float:
+    """Parse product prices from database strings such as '$120', 'ETB 1700', or '1200' into ETB."""
+    if raw_value is None:
+        return 0.0
+
+    if isinstance(raw_value, Decimal):
+        return float(raw_value)
+    if isinstance(raw_value, (int, float)):
+        return float(raw_value)
+
+    value_text = str(raw_value).strip()
+    if not value_text:
+        return 0.0
+
+    is_usd = '$' in value_text or value_text.lower().startswith('usd') or 'usd' in value_text.lower()
+    cleaned = value_text.replace('ETB', '').replace('Birr', '').replace('USD', '').replace('$', '').replace(',', '').strip()
+
+    try:
+        amount = float(cleaned)
+    except ValueError:
+        match = re.search(r"[-+]?\d*\.?\d+", cleaned)
+        if not match:
+            return 0.0
+        amount = float(match.group(0))
+
+    return amount * usd_to_etb if is_usd else amount
+
+
+def _tokenize(text: Optional[str]) -> List[str]:
+    if not text:
+        return []
+    return re.findall(r"[a-zA-Z0-9]+", str(text).lower())
+
+
+def _build_tfidf_vectors(corpus: List[str]) -> Tuple[List[Dict[str, float]], List[str]]:
+    """Build a compact TF-IDF model without external libraries using a simple bag-of-words implementation."""
+    documents = [
+        [token for token in _tokenize(doc)] for doc in corpus if doc and _tokenize(doc)
+    ]
+    if not documents:
+        return [], []
+
+    vocab = sorted({token for document in documents for token in document})
+    doc_count = len(documents)
+    doc_frequency = {term: 0 for term in vocab}
+    for document in documents:
+        unique_terms = set(document)
+        for term in unique_terms:
+            doc_frequency[term] += 1
+
+    idf = {
+        term: 1.0 + (float(__import__('math').log((1 + doc_count) / (1 + doc_frequency.get(term, 0)))) + 1.0)
+        for term in vocab
+    }
+
+    vectors = []
+    for document in documents:
+        counts = Counter(document)
+        doc_total = sum(counts.values()) or 1
+        vector = {}
+        for term in vocab:
+            tf = counts.get(term, 0) / doc_total
+            vector[term] = tf * idf.get(term, 1.0)
+        vectors.append(vector)
+
+    return vectors, vocab
+
+
+def _cosine_similarity(vec_a: Dict[str, float], vec_b: Dict[str, float]) -> float:
+    dot = sum(vec_a.get(term, 0.0) * vec_b.get(term, 0.0) for term in set(vec_a) | set(vec_b))
+    norm_a = __import__('math').sqrt(sum(value * value for value in vec_a.values()))
+    norm_b = __import__('math').sqrt(sum(value * value for value in vec_b.values()))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _student_interest_text(student: Student, db: Session) -> str:
+    dept_terms = _tokenize(student.department) + _tokenize(student.college)
+    history_tokens = []
+
+    for model in (WishlistItem, CartItem, Order):
+        if model == WishlistItem:
+            rows = db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
+        elif model == CartItem:
+            rows = db.query(CartItem).filter(CartItem.student_id == student.student_id).all()
+        else:
+            rows = db.query(Order).filter(Order.student_id == student.student_id).all()
+
+        for row in rows:
+            product = None
+            if model == WishlistItem:
+                product = db.query(Product).filter(Product.id == row.product_id).first()
+            elif model == CartItem:
+                product = db.query(Product).filter(Product.id == row.product_id).first()
+            else:
+                product = db.query(Product).filter(Product.id == row.product_id).first()
+
+            if product:
+                history_tokens.extend(_tokenize(product.title))
+                history_tokens.extend(_tokenize(product.category))
+                history_tokens.extend(_tokenize(product.subcategory))
+                history_tokens.extend(_tokenize(product.description))
+
+    return " ".join(dept_terms + history_tokens)
+
+
+def _normalize_payment_type(raw_value: Optional[str]) -> str:
+    if not raw_value:
+        return "Product Purchase"
+
+    value = str(raw_value).strip().lower()
+    if not value:
+        return "Product Purchase"
+
+    mapping = {
+        "product purchase": "Product Purchase",
+        "purchase": "Product Purchase",
+        "checkout": "Product Purchase",
+        "wallet deposit": "Wallet Deposit",
+        "deposit": "Wallet Deposit",
+        "wallet": "Wallet Deposit",
+        "seller payout": "Seller Payout",
+        "payout": "Seller Payout",
+        "refund": "Refund",
+        "reversal": "Refund",
+    }
+    return mapping.get(value, value.title())
+
+
+def _normalize_order_status(raw_value: Optional[str]) -> str:
+    if raw_value is None:
+        return "Pending"
+    value = str(raw_value).strip()
+    if not value:
+        return "Pending"
+
+    normalized = value.lower()
+    aliases = {
+        "pending": "Pending",
+        "processing": "Processing",
+        "ready for pickup": "Ready for Pickup",
+        "ready_for_pickup": "Ready for Pickup",
+        "pickup": "Ready for Pickup",
+        "out for delivery": "Out for Delivery",
+        "out_for_delivery": "Out for Delivery",
+        "delivery": "Out for Delivery",
+        "completed": "Completed",
+        "success": "Completed",
+        "successful": "Completed",
+        "cancelled": "Cancelled",
+        "canceled": "Cancelled",
+        "returned": "Returned",
+    }
+    return aliases.get(normalized, value.title())
+
+
+def _normalize_payment_status(raw_value: Optional[str]) -> str:
+    if raw_value is None:
+        return "Pending"
+    value = str(raw_value).strip()
+    if not value:
+        return "Pending"
+
+    normalized = value.lower()
+    aliases = {
+        "pending": "Pending",
+        "processing": "Pending",
+        "success": "Successful",
+        "successful": "Successful",
+        "paid": "Successful",
+        "completed": "Successful",
+        "failed": "Failed",
+        "cancelled": "Failed",
+        "canceled": "Failed",
+        "refunded": "Refunded",
+        "refund": "Refunded",
+    }
+    return aliases.get(normalized, value.title())
+
+
+def _compute_chapa_signature(secret: str, payload: dict) -> str:
+    raw = (
+        f"{payload.get('tx_ref', '')}:{payload.get('status', '')}:"
+        f"{payload.get('amount', '')}:{payload.get('currency', '')}"
+    )
+    return hmac.new(secret.encode('utf-8'), raw.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
 # Gmail SMTP configuration - replace with your values
@@ -118,6 +317,36 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
         email_logger.exception(f"Failed to send raw OTP email to {receiver_email}: {e}")
         return False
 
+
+def send_verification_status_email(receiver_email: str, status: str, reason: Optional[str] = None) -> bool:
+    """Send a plain-text email summarizing the verification decision."""
+    try:
+        if not receiver_email:
+            return False
+
+        body_lines = [
+            "Campus Marketplace Verification Update",
+            f"Status: {status}",
+        ]
+        if reason:
+            body_lines.append(f"Reason: {reason}")
+
+        msg = MIMEMultipart()
+        msg["Subject"] = "Campus Marketplace Verification Update"
+        msg["From"] = SENDER_EMAIL
+        msg["To"] = receiver_email
+        msg.attach(MIMEText("\n".join(body_lines), "plain"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, receiver_email, msg.as_string())
+
+        return True
+    except Exception as e:
+        email_logger.exception(f"Failed to send verification email to {receiver_email}: {e}")
+        return False
+
 class StudentRegister(BaseModel):
     name: str
     student_id: str
@@ -143,6 +372,19 @@ class StudentProfileUpdate(BaseModel):
 class NotificationMarkReadRequest(BaseModel):
     student_id: str
 
+class NotificationCreate(BaseModel):
+    student_id: str
+    title: Optional[str] = None
+    message: str
+
+class VerificationDecisionRequest(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+class UserStatusUpdate(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
 # የተማሪ ድጋፍ እና ቅሬታ ፎርማት (Pydantic Schema)
 class ReportCreate(BaseModel):
     student_id: str
@@ -161,6 +403,58 @@ class ReportUpdate(BaseModel):
 class SettingUpdate(BaseModel):
     value: bool
 
+DEFAULT_SYSTEM_SETTINGS = {
+    "marketplaceName": "Campace Market",
+    "description": "A secure campus marketplace for buying and selling university essentials.",
+    "supportEmail": "support@campace.edu.et",
+    "currency": "ETB",
+    "timezone": "Africa/Addis_Ababa",
+    "maxImageSize": "5MB",
+    "maxImagesPerProduct": 5,
+    "requireApproval": True,
+    "allowEditing": True,
+    "autoHideSold": True,
+    "recommendationEngine": "Content-Based Filtering (TF-IDF)",
+    "numRecommendations": 5,
+    "minSimilarityScore": 0.20,
+    "enableAI": True,
+    "paymentProvider": "Chapa",
+    "enableOnlinePayment": True,
+    "paymentVerification": "Automatic",
+    "refundsEnabled": True,
+    "emailNotifs": True,
+    "orderNotifs": True,
+    "messageNotifs": True,
+    "approvalNotifs": True,
+    "paymentNotifs": True,
+    "announcementNotifs": True,
+    "requireStudentVerification": True,
+    "admin2FA": True,
+    "maxLoginAttempts": 5,
+    "sessionTimeout": 30,
+    "minPasswordLength": 8,
+    "auditLogging": True,
+    "allowedEmailDomain": "university.edu.et",
+    "requireUniversityEmail": True,
+    "autoApproveStudents": False,
+    "autoHideReported": True,
+    "requireAdminApproval": True,
+    "maxReportsBeforeReview": 3,
+    "allowStudentReports": True,
+}
+
+
+def _seed_default_system_settings(db: Session) -> None:
+    existing = db.query(SystemSetting).count()
+    if existing > 0:
+        return
+
+    for key, value in DEFAULT_SYSTEM_SETTINGS.items():
+        db.add(SystemSetting(key=key, value=json.dumps(value, ensure_ascii=False)))
+
+    db.commit()
+
+
 # የተለጠፉ ዕቃዎች ፈጠራ ፎርማት (Pydantic Schema)
 class ProductCreate(BaseModel):
     title: str
@@ -173,6 +467,7 @@ class ProductCreate(BaseModel):
 
 class ProductStatusUpdate(BaseModel):
     status: str
+    reason: Optional[str] = None
 
 class DepositRequest(BaseModel):
     student_id: str
@@ -191,12 +486,30 @@ class ReviewCreate(BaseModel):
     rating: int
     comment: str
 
+def ensure_database_compatibility(db: Session) -> None:
+    """Add backward-compatible columns when the local MySQL schema is older than the app model."""
+    try:
+        column = db.execute(text("SHOW COLUMNS FROM admins LIKE 'two_factor_enabled'"))
+        if column.fetchone() is None:
+            db.execute(text("ALTER TABLE admins ADD COLUMN two_factor_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
+            db.commit()
+    except Exception:
+        db.rollback()
+        traceback.print_exc()
+
+
 @app.on_event("startup")
 def on_startup():
     try:
-        init_db() # ሰንጠረዦቹን በራስ-ሰር ዳታቤዝ ውስጥ ይፈጥራል
+        init_db()
+        db = SessionLocal()
+        try:
+            ensure_database_compatibility(db)
+            _seed_default_system_settings(db)
+        finally:
+            db.close()
     except Exception:
-        pass
+        traceback.print_exc()
 
 # 1. የተማሪዎች ምዝገባ ኤፒአይ (POST /api/register)
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
@@ -235,7 +548,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         (Admin.username == data.id_or_email) | (Admin.email == data.id_or_email)
     ).first()
     
-    if admin and verify_password(data.password, admin.password):
+    if admin and verify_password(data.password, admin.password_hash):
         return {"role": "admin", "user": {"name": admin.username, "email": admin.email}}
 
     # 2.2 ካልሆነ በተማሪዎች ሰንጠረዥ ይፈትሻል
@@ -247,6 +560,271 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         return {"role": "student", "user": {"name": student.name, "studentId": student.student_id}}
 
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
+
+
+@app.get("/api/admin/profile")
+def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_db)):
+    admin = None
+    if username:
+        admin = db.query(Admin).filter(Admin.username == username).first()
+    if not admin:
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin profile not found.")
+
+    total_actions = db.query(AuditLog).filter(AuditLog.admin_id == admin.id).count()
+    avatar_filename = f"{admin.username}.jpg"
+    avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
+    if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
+        avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+
+    return {
+        "username": admin.username,
+        "email": admin.email,
+        "role": admin.role,
+        "status": admin.status,
+        "last_login": admin.last_login.isoformat() if admin.last_login else datetime.utcnow().isoformat(),
+        "total_actions": total_actions,
+        "avatarUrl": avatar_url,
+        "session_ip": "192.168.10.24",
+        "two_factor_enabled": bool(getattr(admin, "two_factor_enabled", True)),
+    }
+
+
+@app.put("/api/admin/profile")
+def update_admin_profile(payload: dict, db: Session = Depends(get_db)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Profile payload must be a JSON object.")
+
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin profile not found.")
+
+    username = payload.get("username") or admin.username
+    email = payload.get("email") or admin.email
+    new_password = payload.get("new_password")
+    confirm_password = payload.get("confirm_password")
+    current_password = payload.get("current_password")
+    two_factor_enabled = payload.get("two_factor_enabled", admin.two_factor_enabled if hasattr(admin, "two_factor_enabled") else True)
+
+    if new_password:
+        if not current_password:
+            raise HTTPException(status_code=400, detail="Current password is required to update the password.")
+        if not verify_password(current_password, admin.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect.")
+        if new_password != confirm_password:
+            raise HTTPException(status_code=400, detail="New password and confirm password do not match.")
+        admin.password_hash = hash_password(new_password)
+
+    admin.two_factor_enabled = bool(two_factor_enabled)
+
+    if username and username != admin.username:
+        existing = db.query(Admin).filter(Admin.username == username).first()
+        if existing and existing.id != admin.id:
+            raise HTTPException(status_code=400, detail="Username is already in use.")
+        admin.username = username
+
+    if email and email != admin.email:
+        existing = db.query(Admin).filter(Admin.email == email).first()
+        if existing and existing.id != admin.id:
+            raise HTTPException(status_code=400, detail="Email is already in use.")
+        admin.email = email
+
+    admin.last_login = datetime.utcnow()
+    db.commit()
+    db.refresh(admin)
+
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action="Admin Profile Updated",
+        entity_type="Admin",
+        entity_id=admin.id,
+        description="Administrator updated personal account information and access settings.",
+        status="SUCCESS",
+        ip_address="127.0.0.1",
+    ))
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Profile updated successfully",
+        "username": admin.username,
+        "email": admin.email,
+        "two_factor_enabled": bool(two_factor_enabled),
+    }
+
+
+@app.post("/api/admin/upload-avatar")
+async def upload_admin_avatar(
+    username: str = Form(...),
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+    filename = image.filename or ""
+    extension = os.path.splitext(filename)[1].lower()
+
+    if extension not in allowed_extensions:
+        raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp.")
+
+    admin = db.query(Admin).filter(Admin.username == username).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin not found.")
+
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    avatar_name = f"{admin.username}{extension or '.jpg'}"
+    avatar_path = os.path.join(AVATAR_DIR, avatar_name)
+
+    try:
+        contents = await image.read()
+        with open(avatar_path, "wb") as buffer:
+            buffer.write(contents)
+            buffer.flush()
+            os.fsync(buffer.fileno())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save avatar file: {str(exc)}")
+    finally:
+        await image.close()
+
+    image_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_name}"
+    return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
+
+
+@app.get("/api/admin/settings")
+def get_admin_settings(db: Session = Depends(get_db)):
+    settings = db.query(SystemSetting).all()
+    response = {}
+    for item in settings:
+        try:
+            parsed = json.loads(item.value)
+        except (TypeError, ValueError):
+            parsed = item.value
+        response[item.key] = parsed
+    return response
+
+
+@app.put("/api/admin/settings")
+def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Settings payload must be a JSON object.")
+
+    for key, value in payload.items():
+        existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+        serialized = json.dumps(value, ensure_ascii=False)
+        if existing:
+            existing.value = serialized
+        else:
+            db.add(SystemSetting(key=key, value=serialized))
+
+    db.commit()
+
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+    if admin:
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action="System Settings Updated",
+            entity_type="Settings",
+            entity_id=1,
+            description="Admin changed platform configuration settings through the dashboard.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+    db.commit()
+
+    return {"message": "Settings saved successfully", "settings": payload}
+
+
+@app.get("/api/admin/audit-logs")
+def get_admin_audit_logs(
+    search: Optional[str] = None,
+    action_type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    try:
+        query = db.query(AuditLog).outerjoin(Admin, AuditLog.admin_id == Admin.id)
+
+        if search and search.strip():
+            like_value = f"%{search.strip()}%"
+            query = query.filter(
+                or_(
+                    AuditLog.action.ilike(like_value),
+                    AuditLog.description.ilike(like_value),
+                    Admin.username.ilike(like_value),
+                )
+            )
+
+        if action_type and action_type.strip().lower() != "all":
+            normalized = action_type.strip().lower()
+            if normalized in {"login", "logins"}:
+                query = query.filter(AuditLog.action.ilike("%login%"))
+            elif normalized in {"approval", "approvals"}:
+                query = query.filter(AuditLog.action.ilike("%approved%") | AuditLog.action.ilike("%approval%") | AuditLog.action.ilike("%approve%"))
+            elif normalized in {"suspension", "suspensions"}:
+                query = query.filter(AuditLog.action.ilike("%suspend%") | AuditLog.action.ilike("%suspension%"))
+            elif normalized in {"deletion", "deletions"}:
+                query = query.filter(AuditLog.action.ilike("%delete%") | AuditLog.action.ilike("%deletion%"))
+            else:
+                query = query.filter(AuditLog.action.ilike(f"%{normalized}%"))
+
+        if status and status.strip().lower() != "all":
+            query = query.filter(AuditLog.status.ilike(f"%{status.strip()}%"))
+
+        logs = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
+
+        results = []
+        for log in logs:
+            action_label = log.action or "System Event"
+            status_value = (log.status or "SUCCESS").upper()
+            severity = "success" if status_value == "SUCCESS" else "warning" if status_value in {"WARNING", "PENDING"} else "critical"
+            performed_by = "System"
+            if log.admin_id:
+                admin_query = db.query(Admin.username).filter(Admin.id == log.admin_id).first()
+                if admin_query:
+                    performed_by = admin_query[0]
+
+            results.append({
+                "id": log.id,
+                "action": action_label,
+                "actionType": (
+                    "Logins" if "login" in action_label.lower()
+                    else "Approvals" if "approve" in action_label.lower() or "approval" in action_label.lower()
+                    else "Suspensions" if "suspend" in action_label.lower() or "suspension" in action_label.lower()
+                    else "Deletions" if "delete" in action_label.lower() or "deletion" in action_label.lower()
+                    else "System"
+                ),
+                "description": log.description or "No additional description provided.",
+                "performed_by": performed_by,
+                "entity_type": log.entity_type,
+                "entity_id": log.entity_id,
+                "ip_address": log.ip_address or "Unknown",
+                "date_time": log.created_at.isoformat() if log.created_at else None,
+                "status": status_value,
+                "severity": severity,
+            })
+
+        return results
+    except (OperationalError, SQLAlchemyError) as exc:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Failed to load audit logs",
+                "detail": str(exc),
+                "table": "audit_logs",
+                "expected_columns": ["admin_id", "action", "description", "status", "ip_address", "created_at"],
+            },
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Unexpected error while loading audit logs",
+                "detail": str(exc),
+            },
+        )
 
 
 # 2.1 የተማሪ ፕሮፋይል ፎቶ ማስገባት (POST /api/student/upload-avatar)
@@ -324,12 +902,40 @@ def get_unread_notifications_count(student_id: str, db: Session = Depends(get_db
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    count = db.query(Notification).filter(
+    unread_count = db.query(Notification).filter(
         Notification.student_id == student_id,
-        Notification.is_read == False
+        Notification.is_read.is_(False)
     ).count()
 
-    return {"unreadCount": count}
+    return {
+        "student_id": student_id,
+        "unreadCount": unread_count,
+        "unread_count": unread_count,
+    }
+
+
+@app.get("/api/student/messages/unread-count")
+def get_unread_messages_count(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    unread_messages = db.query(Notification).filter(
+        Notification.student_id == student_id,
+        Notification.is_read.is_(False),
+        or_(
+            Notification.message.ilike('%chat%'),
+            Notification.message.ilike('%message%'),
+            Notification.message.ilike('%reply%'),
+            Notification.message.ilike('%inbox%')
+        )
+    ).count()
+
+    return {
+        "student_id": student_id,
+        "unreadCount": unread_messages,
+        "unread_count": unread_messages,
+    }
 
 
 @app.post("/api/student/notifications/mark-read")
@@ -728,12 +1334,195 @@ def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
 
 
 # 6. ለተማሪው የተላኩትን ኖቲፊኬሽኖች በሙሉ ከዳታቤዝ የሚያወጣ ኤፒአይ (GET /api/student/notifications)
+@app.get("/api/student/highlights")
+def get_student_highlights(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    cart_rows = (
+        db.query(CartItem, Product)
+        .join(Product, CartItem.product_id == Product.id)
+        .filter(CartItem.student_id == student_id)
+        .all()
+    )
+    cart_total_etb = 0.0
+    for cart_item, product in cart_rows:
+        try:
+            unit_price_etb = _parse_price_to_etb(product.price)
+            cart_total_etb += unit_price_etb * int(cart_item.quantity or 1)
+        except Exception:
+            continue
+
+    wishlist_count = db.query(WishlistItem).filter(WishlistItem.student_id == student_id).count()
+    unread_notifications = db.query(Notification).filter(
+        Notification.student_id == student_id,
+        Notification.is_read.is_(False)
+    ).count()
+    pending_chat_messages = db.query(Notification).filter(
+        Notification.student_id == student_id,
+        Notification.is_read.is_(False),
+        Notification.message.ilike('%chat%')
+    ).count()
+    approved_products = db.query(Product).filter(Product.status.ilike('%approved%')).count()
+
+    pending_messages = unread_notifications + pending_chat_messages
+
+    return {
+        "student_id": student_id,
+        "cartValue": round(cart_total_etb, 2),
+        "cart_total_etb": round(cart_total_etb, 2),
+        "wishlistCount": wishlist_count,
+        "wishlist_count": wishlist_count,
+        "unreadNotifications": unread_notifications,
+        "unread_notifications": unread_notifications,
+        "pendingChatMessages": pending_chat_messages,
+        "pending_chat_messages": pending_chat_messages,
+        "pendingMessages": pending_messages,
+        "pending_messages": pending_messages,
+        "aiPicks": min(3, max(approved_products, 0)),
+        "latestListings": approved_products,
+    }
+
+
+@app.get("/api/student/recommendations")
+def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    approved_products = db.query(Product).filter(Product.status.ilike('%approved%')).all()
+    if not approved_products:
+        return []
+
+    profile_text = _student_interest_text(student, db)
+    product_texts = []
+    for product in approved_products:
+        product_texts.append(
+            " ".join([
+                product.title or '',
+                product.category or '',
+                product.subcategory or '',
+                product.description or '',
+                product.seller or '',
+            ])
+        )
+
+    corpus = [profile_text] + product_texts
+    vectors, _ = _build_tfidf_vectors(corpus)
+    if not vectors:
+        return []
+
+    profile_vector = vectors[0]
+    scored_products = []
+    for idx, product in enumerate(approved_products, start=1):
+        similarity = _cosine_similarity(profile_vector, vectors[idx])
+        scored_products.append({
+            "product": product,
+            "score": similarity,
+        })
+
+    scored_products.sort(key=lambda item: item["score"], reverse=True)
+    best_matches = []
+    seen_ids = set()
+    for item in scored_products:
+        product = item["product"]
+        if product.id in seen_ids:
+            continue
+        seen_ids.add(product.id)
+        best_matches.append({
+            "id": product.id,
+            "title": product.title,
+            "description": product.description or 'Popular product recommended for your academic needs.',
+            "category": product.category or 'General',
+            "price": product.price,
+            "image": product.image,
+            "match_score": round(item["score"], 4),
+            "match": "High match" if item["score"] >= 0.15 else "Recommended",
+        })
+        if len(best_matches) >= 3:
+            break
+
+    if not best_matches:
+        for product in approved_products[:3]:
+            best_matches.append({
+                "id": product.id,
+                "title": product.title,
+                "description": product.description or 'Popular product recommended for your academic needs.',
+                "category": product.category or 'General',
+                "price": product.price,
+                "image": product.image,
+                "match_score": 0.0,
+                "match": "Recommended",
+            })
+
+    return best_matches
+
+
+@app.get("/api/student/recent-activity")
+def get_student_recent_activity(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    products = db.query(Product).filter(Product.status.ilike('approved')).order_by(Product.created_at.desc()).limit(4).all()
+
+    activity = []
+    dept_label = student.department or 'Campus'
+    for product in products:
+        activity.append({
+            "title": f"New {product.category} item listed in {dept_label}",
+            "description": f"{product.title} is now available for students to discover and purchase.",
+            "time": (product.created_at.strftime('%b %d, %H:%M') if product.created_at else 'Just now'),
+        })
+
+    if not activity:
+        activity = [
+            {"title": "New products listed in CCI Department", "description": "Fresh student listings are now visible in the marketplace.", "time": "Just now"},
+            {"title": "Campus textbook exchange is active", "description": "Students are sharing verified course materials and study resources.", "time": "15 min ago"},
+            {"title": "AI recommendations refreshed", "description": "Your department-specific suggestions were updated based on recent listings.", "time": "1 hour ago"},
+        ]
+
+    return activity
+
+
 @app.get("/api/student/notifications")
 def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
     notifications = db.query(Notification).filter(
         Notification.student_id == student_id
     ).order_by(Notification.created_at.desc()).all()
     return notifications
+
+
+@app.post("/api/student/notifications")
+def create_student_notification(request: NotificationCreate, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == request.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    notification_text = request.message.strip() if request.message and request.message.strip() else "Marketplace update"
+    if request.title and request.title.strip():
+        notification_text = f"{request.title.strip()}: {notification_text}"
+
+    notification = Notification(
+        student_id=request.student_id,
+        message=notification_text,
+        is_read=False,
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+    return {
+        "success": True,
+        "message": "Notification created successfully",
+        "notification": {
+            "id": notification.id,
+            "student_id": notification.student_id,
+            "message": notification.message,
+            "is_read": notification.is_read,
+            "created_at": notification.created_at,
+        },
+    }
 
 
 # 7. የተማሪ ዊሽሊስት የተለጠፈ ኤፒአይ (GET /api/student/wishlist)
@@ -837,20 +1626,198 @@ def get_admin_kpis(db: Session = Depends(get_db)):
         {"label": "Pending Reports", "value": "3", "change": "-8.3%"}
     ]
 
+@app.get("/api/admin/analytics")
+def get_admin_analytics(db: Session = Depends(get_db)):
+    total_students = db.query(Student).count()
+    total_products = db.query(Product).count()
+    product_status_rows = db.query(Product.status, func.count(Product.id)).group_by(Product.status).all()
+    product_status_breakdown = {"Approved": 0, "Pending": 0, "Rejected": 0}
+    for status_value, count in product_status_rows:
+        normalized = (status_value or "").strip().title()
+        if normalized in product_status_breakdown:
+            product_status_breakdown[normalized] = int(count)
+
+    successful_orders = db.query(Order).filter(Order.status.in_(["Completed", "Successful"])).count()
+    revenue_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).scalar() or 0
+    revenue_total = float(revenue_total)
+
+    def format_revenue(value: float) -> str:
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M ETB"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}K ETB"
+        return f"{value:,.0f} ETB"
+
+    department_rows = db.query(
+        Student.department,
+        func.count(Student.id).label("count")
+    ).group_by(Student.department).order_by(func.count(Student.id).desc()).all()
+
+    department_activity = []
+    for index, (department_name, count) in enumerate(department_rows):
+        color_palette = ["bg-blue-500", "bg-violet-500", "bg-emerald-500", "bg-amber-500", "bg-slate-500", "bg-cyan-500", "bg-pink-500"]
+        department_activity.append({
+            "name": department_name or "Unknown",
+            "value": int(count),
+            "color": color_palette[index % len(color_palette)]
+        })
+
+    college_rows = db.query(
+        Student.college,
+        func.count(Student.id).label("count")
+    ).group_by(Student.college).order_by(func.count(Student.id).desc()).all()
+
+    college_activity = []
+    for index, (college_name, count) in enumerate(college_rows):
+        color_palette = ["bg-indigo-500", "bg-sky-500", "bg-teal-500", "bg-rose-500", "bg-amber-500", "bg-purple-500"]
+        college_activity.append({
+            "name": college_name or "Unknown",
+            "value": int(count),
+            "color": color_palette[index % len(color_palette)]
+        })
+
+    category_rows = db.query(
+        Product.category,
+        func.count(Product.id).label("product_count")
+    ).group_by(Product.category).order_by(func.count(Product.id).desc()).limit(5).all()
+
+    categories = []
+    for category_name, product_count in category_rows:
+        categories.append({
+            "name": category_name or "General",
+            "views": f"{int(product_count * 180):,}",
+            "likes": f"{int(product_count * 42):,}",
+            "sales": f"{int(product_count * 16):,}"
+        })
+
+    while len(categories) < 5:
+        fallback_categories = [
+            {"name": "Electronics", "views": "18.4K", "likes": "4.2K", "sales": "1,280"},
+            {"name": "Books", "views": "12.1K", "likes": "3.1K", "sales": "930"},
+            {"name": "Lab Equipment", "views": "9.6K", "likes": "2.7K", "sales": "760"},
+            {"name": "Accessories", "views": "8.3K", "likes": "2.2K", "sales": "640"},
+            {"name": "Stationery", "views": "6.7K", "likes": "1.8K", "sales": "490"}
+        ]
+        for fallback in fallback_categories:
+            if not any(item["name"] == fallback["name"] for item in categories):
+                categories.append(fallback)
+            if len(categories) >= 5:
+                break
+
+    recent_rows = db.query(
+        Transaction.type,
+        Transaction.description,
+        Transaction.created_at,
+        Transaction.student_id
+    ).order_by(Transaction.created_at.desc()).limit(5).all()
+
+    recent_activity = []
+    for tx_type, description, created_at, student_id in recent_rows:
+        recent_activity.append({
+            "time": (created_at.strftime("%I:%M %p") if created_at else "--:--"),
+            "action": description or f"{tx_type} transaction recorded",
+            "user": f"Student • {student_id}"
+        })
+
+    if not recent_activity:
+        recent_activity = [
+            {"time": "08:42 AM", "action": "New electronics listing approved by admin", "user": "Student • MAU1602041"},
+            {"time": "09:15 AM", "action": "Engineering books category gained 18% more click-through", "user": "AI Recommendation Engine"},
+            {"time": "10:05 AM", "action": "Payment verified for a laptop order from IT department", "user": "Finance • TXN-11842"},
+            {"time": "12:20 PM", "action": "Three new student accounts were verified successfully", "user": "Admin Review Queue"},
+            {"time": "02:40 PM", "action": "Lab equipment recommendation campaign reached 1.2K impressions", "user": "Marketing Module"}
+        ]
+
+    activity_ratio = max(1, len(department_activity))
+    department_activity = [
+        {
+            "name": item["name"],
+            "value": int(round((item["value"] / sum(d["value"] for d in department_activity if d["value"]) or 1) * 100)),
+            "color": item["color"]
+        }
+        for item in department_activity
+    ]
+
+    status_distribution = [
+        {"label": "Completed", "value": 58, "color": "#10b981"},
+        {"label": "Pending", "value": 22, "color": "#f59e0b"},
+        {"label": "Processing", "value": 14, "color": "#3b82f6"},
+        {"label": "Cancelled", "value": 6, "color": "#ef4444"}
+    ]
+
+    return {
+        "users": total_students,
+        "products": total_products,
+        "orders": successful_orders,
+        "revenue": format_revenue(revenue_total),
+        "salesTrend": [32, 50, 44, 68, 62, 81, 96],
+        "revenueTrend": [18, 26, 30, 49, 52, 64, 88],
+        "registrations": [12, 18, 16, 26, 24, 31, 39],
+        "orderStatus": status_distribution,
+        "categories": categories,
+        "departmentActivity": department_activity,
+        "collegeActivity": college_activity,
+        "productStatusBreakdown": product_status_breakdown,
+        "recentActivity": recent_activity,
+    }
+
 # 8. የተማሪዎች ዝርዝር መጥሪያ (GET /api/admin/users)
 @app.get("/api/admin/users")
-def get_admin_users(db: Session = Depends(get_db)):
-    students = db.query(Student).all()
-    return [
-        {
+def get_admin_users(
+    search: Optional[str] = None,
+    college: Optional[str] = None,
+    department: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Student)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Student.name.ilike(term),
+                Student.email.ilike(term),
+                Student.student_id.ilike(term),
+            )
+        )
+
+    if college and college.strip().lower() != "all":
+        query = query.filter(Student.college.ilike(college.strip()))
+
+    if department and department.strip().lower() != "all":
+        query = query.filter(Student.department.ilike(department.strip()))
+
+    students = query.order_by(Student.id.desc()).all()
+    results = []
+
+    for s in students:
+        active_listing_count = db.query(Product).filter(
+            or_(Product.seller == s.student_id, Product.seller == s.name),
+            Product.status.ilike("Approved"),
+        ).count()
+
+        wallet_balance = float(s.wallet_balance) if s.wallet_balance is not None else 0.0
+
+        results.append({
             "id": s.id,
             "name": s.name,
             "email": s.email,
+            "student_id": s.student_id,
+            "phone": s.phone,
+            "college": s.college,
+            "department": s.department,
+            "year": s.student_id[:4] if s.student_id and s.student_id[:4].isdigit() else "Year 1",
+            "is_verified": bool(s.is_verified),
+            "status": s.status or "Active",
+            "restriction_reason": s.restriction_reason,
+            "wallet_balance": wallet_balance,
+            "active_listings": active_listing_count,
+            "rating": "No ratings",
+            "activity": [{"action": "Account synced", "time": "Recently"}],
             "role": "Student",
-            "status": "Active"
-        }
-        for s in students
-    ]
+        })
+
+    return results
 
 # 8a. Get distinct colleges from UNIVERSITY_STRUCTURE
 @app.get("/api/admin/colleges")
@@ -876,10 +1843,64 @@ def get_departments(college: Optional[str] = None):
         all_departments.extend(depts)
     return sorted(all_departments)
 
-# 9. የተማሪን አካውንት ማገጃ/ማስተካከያ (PATCH /api/admin/users/{id})
-@app.patch("/api/admin/users/{id}")
-def update_user_status(id: int, db: Session = Depends(get_db)):
-    return {"message": "User status updated successfully"}
+# 9. የተማሪን አካውንት ማገጃ/ማስተካከያ (PUT /api/admin/users/{id}/status)
+@app.put("/api/admin/users/{id}/status")
+def update_user_status(id: int, payload: UserStatusUpdate, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    normalized_status = (payload.status or "").strip()
+    valid_statuses = {"Active", "Suspended", "Deactivated"}
+    if normalized_status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="Status must be one of: Active, Suspended, Deactivated")
+
+    reason_text = (payload.reason or "").strip() if payload.reason else ""
+    if normalized_status in {"Suspended", "Deactivated"} and not reason_text:
+        reason_text = "Policy review"
+
+    try:
+        student.status = normalized_status
+        student.restriction_reason = reason_text if normalized_status in {"Suspended", "Deactivated"} else None
+
+        if normalized_status in {"Suspended", "Deactivated"}:
+            admin = db.query(Admin).order_by(Admin.id.asc()).first()
+            message = (
+                f"Your account has been restricted. Reason: {reason_text}. Please contact support for review."
+            )
+
+            db.add(Notification(
+                student_id=student.student_id,
+                message=message,
+                is_read=False,
+            ))
+
+            db.add(AuditLog(
+                admin_id=admin.id if admin else None,
+                action=f"User {normalized_status}",
+                entity_type="User",
+                entity_id=student.id,
+                description=(
+                    f"Admin updated user {student.name} ({student.student_id}) to {normalized_status}."
+                    f" Reason: {reason_text}."
+                ),
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+
+        db.commit()
+        db.refresh(student)
+
+        return {
+            "message": "User status updated successfully",
+            "id": student.id,
+            "student_id": student.student_id,
+            "status": student.status,
+            "reason": student.restriction_reason,
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update user status.")
 
 # 10. የተማሪን አካውንት መደምሰሻ (DELETE /api/admin/users/{id})
 @app.delete("/api/admin/users/{id}")
@@ -906,32 +1927,278 @@ def delete_user_duplicate(id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "User deleted successfully"}
 
+# 13. የተማሪ ማረጋገጫ አባሪዎች መግለጫ (GET /api/admin/verifications)
+@app.get("/api/admin/verifications")
+def get_admin_verifications(
+    search: Optional[str] = None,
+    department: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Student).filter(Student.is_verified == False)
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Student.name.ilike(term),
+                Student.student_id.ilike(term),
+                Student.email.ilike(term),
+            )
+        )
+
+    if department and department.strip().lower() != "all":
+        query = query.filter(Student.department.ilike(department.strip()))
+
+    students = query.order_by(Student.id.desc()).all()
+    results = []
+    for student in students:
+        status = "Rejected" if student.verification_reason else "Pending"
+        results.append({
+            "id": student.id,
+            "name": student.name,
+            "student_id": student.student_id,
+            "email": student.email,
+            "department": student.department or "General Studies",
+            "status": status,
+            "uploaded_id_card": student.id_card_url or "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=600&q=80",
+            "reason": student.verification_reason,
+            "is_verified": student.is_verified,
+        })
+
+    return results
+
+
+@app.put("/api/admin/verifications/{id}")
+def update_student_verification(
+    id: int,
+    payload: VerificationDecisionRequest,
+    db: Session = Depends(get_db),
+):
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    normalized_status = (payload.status or "").strip().lower()
+    if normalized_status not in {"approved", "verified", "rejected", "rejected_flagged", "flagged"}:
+        raise HTTPException(status_code=400, detail="Status must be one of: Approved, Verified, Rejected")
+
+    approved = normalized_status in {"approved", "verified"}
+    rejection_reason = (payload.reason or "").strip() if not approved else None
+
+    if not approved and not rejection_reason:
+        raise HTTPException(status_code=400, detail="A rejection reason is required when rejecting a student verification request.")
+
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+
+    try:
+        with db.begin():
+            if approved:
+                student.is_verified = True
+                student.verification_reason = None
+                notification_message = (
+                    f"Your student identity has been successfully verified. "
+                    "You can now access full marketplace features and complete transactions without restrictions."
+                )
+                log_action = "Student Verification Approved"
+                description = f"Admin approved student verification for {student.name} ({student.student_id})."
+            else:
+                student.is_verified = False
+                student.verification_reason = rejection_reason
+                notification_message = (
+                    f"Your student identity verification was rejected. "
+                    f"Reason: {rejection_reason}. Please resubmit a clear and readable student ID."
+                )
+                log_action = "Student Verification Rejected"
+                description = (
+                    f"Admin rejected student verification for {student.name} ({student.student_id}) "
+                    f"with reason: {rejection_reason}."
+                )
+
+            db.add(Notification(
+                student_id=student.student_id,
+                message=notification_message,
+                is_read=False,
+            ))
+
+            db.add(AuditLog(
+                admin_id=admin.id if admin else None,
+                action=log_action,
+                entity_type="Student",
+                entity_id=student.id,
+                description=description,
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+
+            try:
+                send_verification_status_email(student.email, "Approved" if approved else "Rejected", rejection_reason)
+            except Exception:
+                pass
+
+            db.flush()
+
+        return {
+            "message": "Student verification updated successfully",
+            "student_id": student.student_id,
+            "status": "Approved" if approved else "Rejected",
+            "reason": rejection_reason,
+            "is_verified": student.is_verified,
+        }
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to process student verification request.")
+
+
 # 13. የዕቃዎች ዝርዝር መጥሪያ (GET /api/admin/products)
 @app.get("/api/admin/products")
-def get_admin_products(db: Session = Depends(get_db)):
-    products = db.query(Product).all()
-    return [
-        {
+def get_admin_products(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Product)
+
+    if status and status.strip().lower() != "all":
+        query = query.filter(Product.status.ilike(status.strip()))
+
+    if category and category.strip().lower() != "all":
+        query = query.filter(Product.category.ilike(category.strip()))
+
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                Product.title.ilike(term),
+                Product.description.ilike(term),
+                Product.category.ilike(term),
+                Product.seller.ilike(term),
+            )
+        )
+
+    products = query.order_by(Product.created_at.desc()).all()
+    results = []
+    for p in products:
+        seller_id = p.seller or "Unknown"
+        student_record = db.query(Student).filter(
+            (Student.student_id == seller_id) | (Student.name == seller_id)
+        ).first()
+
+        normalized_price = p.price or "0 ETB"
+        price_value = str(normalized_price).replace(",", "").replace(" ETB", "").replace("etb", "").strip()
+        try:
+            condition = "New" if float(price_value) >= 1000 else "Gently Used"
+        except (TypeError, ValueError):
+            condition = "New"
+
+        results.append({
             "id": p.id,
             "title": p.title,
             "seller": p.seller or "Student",
+            "seller_id": seller_id,
             "category": p.category,
-            "status": p.status,
-        }
-        for p in products
-    ]
+            "status": p.status or "Pending",
+            "price": p.price,
+            "image": p.image,
+            "description": p.description or "No description provided yet.",
+            "condition": condition,
+            "seller_verified": bool(student_record),
+            "moderation_reason": p.moderation_reason,
+        })
+
+    return results
 
 # 14. የተለጠፈ እቃን ማስተካከያ/ማፅደቂያ (PATCH /api/admin/products/{id})
 @app.patch("/api/admin/products/{id}")
 def update_product_status(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
+    return update_product_status_impl(id=id, data=data, db=db)
+
+@app.put("/api/admin/products/{id}")
+def update_product_status_put(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
+    return update_product_status_impl(id=id, data=data, db=db)
+
+
+def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
     product = db.query(Product).filter(Product.id == id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    product.status = data.status
-    db.commit()
-    db.refresh(product)
-    return {"message": "Product status updated successfully", "product": {"id": product.id, "status": product.status}}
+    normalized_status = (data.status or "").strip()
+    if not normalized_status:
+        raise HTTPException(status_code=400, detail="Status is required.")
+
+    action_label = normalized_status.lower()
+    product.status = normalized_status
+
+    reason_text = None
+    if data.reason and data.reason.strip():
+        reason_text = data.reason.strip()
+        product.moderation_reason = reason_text
+
+    if action_label in {"flagged", "rejected", "rejected_flagged", "flag"}:
+        if reason_text is None:
+            raise HTTPException(status_code=400, detail="A rejection reason is required when flagging or rejecting a product.")
+
+    seller_id = product.seller or None
+    seller_student = None
+    if seller_id:
+        seller_student = db.query(Student).filter(
+            (Student.student_id == seller_id) | (Student.name == seller_id)
+        ).first()
+
+    try:
+        if action_label in {"flagged", "rejected", "flag", "rejected_flagged"}:
+            notification_message = (
+                f"Your listing '{product.title}' was flagged by the admin moderation team. "
+                f"Reason: {reason_text}. Please review and update the listing before it is re-approved."
+            )
+            if seller_student:
+                db.add(Notification(
+                    student_id=seller_student.student_id,
+                    message=notification_message,
+                    is_read=False,
+                ))
+            elif seller_id:
+                db.add(Notification(
+                    student_id=seller_id,
+                    message=notification_message,
+                    is_read=False,
+                ))
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        log_action = "Product Approved" if normalized_status.lower() == "approved" else "Product Flagged" if normalized_status.lower() in {"flagged", "flag"} else "Product Rejected" if normalized_status.lower() in {"rejected", "rejected_flagged"} else f"Product {normalized_status}"
+        log_desc = (
+            f"Admin updated product '{product.title}' to status '{normalized_status}'."
+            if reason_text is None
+            else f"Admin updated product '{product.title}' to status '{normalized_status}' with reason: {reason_text}."
+        )
+
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action=log_action,
+            entity_type="Product",
+            entity_id=product.id,
+            description=log_desc,
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+
+        db.commit()
+        db.refresh(product)
+
+        return {
+            "message": "Product status updated successfully",
+            "product": {
+                "id": product.id,
+                "title": product.title,
+                "status": product.status,
+                "reason": product.moderation_reason,
+            },
+            "notification_created": bool(seller_student or seller_id),
+        }
+    except Exception:
+        db.rollback()
+        raise
 
 # 15. የተለጠፈ እቃን መደምሰሻ (DELETE /api/admin/products/{id})
 @app.delete("/api/admin/products/{id}")
@@ -946,12 +2213,290 @@ def delete_product_admin(id: int, db: Session = Depends(get_db)):
 
 # 16. የክፍያ ታሪኮች ማውጫ (GET /api/admin/payments)
 @app.get("/api/admin/payments")
-def get_admin_payments_endpoint():
-    return [
-        {"id": 1, "tx": "TX-10234", "type": "Payout", "amount": "$240.00", "status": "Successful"},
-        {"id": 2, "tx": "TX-10235", "type": "Subscription", "amount": "$9.99", "status": "Successful"},
-        {"id": 3, "tx": "TX-10236", "type": "Refund", "amount": "$32.50", "status": "Pending"}
-    ]
+def get_admin_payments_endpoint(
+    search: Optional[str] = None,
+    payment_type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    try:
+        query = db.query(Transaction)
+
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            query = query.filter(
+                or_(
+                    Transaction.tx_id.ilike(term),
+                    Transaction.student_id.ilike(term),
+                    Transaction.description.ilike(term),
+                    Transaction.type.ilike(term),
+                )
+            )
+
+        if payment_type and payment_type.strip().lower() != "all":
+            normalized = _normalize_payment_type(payment_type)
+            query = query.filter(
+                (Transaction.type.ilike(f"%{normalized}%"))
+                | (Transaction.description.ilike(f"%{normalized}%"))
+            )
+
+        if status and str(status).strip().lower() != "all":
+            normalized_status = str(status).strip().title()
+            query = query.filter(Transaction.status.ilike(f"%{normalized_status}%"))
+
+        transactions = query.order_by(Transaction.created_at.desc()).limit(limit).all()
+
+        results = []
+        for tx in transactions:
+            payment_type_value = _normalize_payment_type(tx.type or tx.description or "Product Purchase")
+            payment_status = _normalize_payment_status(tx.status or "Pending")
+            payment_method = (
+                "Chapa" if payment_type_value == "Product Purchase"
+                else "Wallet" if payment_type_value == "Wallet Deposit"
+                else "SantimPay" if payment_type_value == "Seller Payout"
+                else "Wallet"
+            )
+
+            results.append({
+                "id": tx.id,
+                "transaction_id": tx.tx_id,
+                "buyer_id": tx.student_id,
+                "seller_id": tx.student_id,
+                "order_id": tx.tx_id,
+                "amount": float(tx.amount or 0),
+                "payment_type": payment_type_value,
+                "payment_method": payment_method,
+                "status": payment_status,
+                "date": tx.created_at.isoformat() if tx.created_at else None,
+                "student_id": tx.student_id,
+                "type": tx.type,
+                "description": tx.description,
+            })
+
+        return results
+    except (OperationalError, SQLAlchemyError) as exc:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Failed to load payment transactions",
+                "detail": str(exc),
+            },
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Unexpected error while loading payment transactions",
+                "detail": str(exc),
+            },
+        )
+
+
+@app.put("/api/admin/payments/{payment_id}/status")
+def update_admin_payment_status(payment_id: int, payload: dict, db: Session = Depends(get_db)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payment status payload must be a JSON object.")
+
+    transaction = db.query(Transaction).filter(Transaction.id == payment_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Payment transaction not found.")
+
+    new_status = _normalize_payment_status(payload.get("status") or payload.get("payment_status") or transaction.status)
+    transaction.status = new_status
+    db.commit()
+    db.refresh(transaction)
+
+    return {
+        "message": "Payment status updated successfully",
+        "id": transaction.id,
+        "transaction_id": transaction.tx_id,
+        "status": new_status,
+    }
+
+
+@app.get("/api/admin/orders")
+def get_admin_orders(db: Session = Depends(get_db)):
+    try:
+        rows = db.query(Order).order_by(Order.created_at.desc()).all()
+        results = []
+        for order in rows:
+            amount_value = 0.0
+            try:
+                if isinstance(order.price, str):
+                    cleaned = order.price.replace("ETB", "").replace("$", "").replace(",", "").strip()
+                    amount_value = float(cleaned) if cleaned else 0.0
+                elif order.price is not None:
+                    amount_value = float(order.price)
+            except (TypeError, ValueError):
+                amount_value = 0.0
+
+            product = db.query(Product).filter(Product.id == order.product_id).first()
+            product_title = product.title if product else (order.title or "Unnamed Product")
+            seller_id = product.seller if product and product.seller else "Unknown"
+            buyer_id = order.student_id
+            order_status = _normalize_order_status(order.status)
+            payment_status = "Pending"
+            payment_rows = db.query(Transaction).filter(Transaction.student_id == buyer_id).order_by(Transaction.created_at.desc()).all()
+            if payment_rows:
+                payment_status = _normalize_payment_status(payment_rows[0].status)
+
+            record = {
+                "id": order.id,
+                "buyer_id": buyer_id,
+                "seller_id": seller_id,
+                "product_title": product_title,
+                "total_amount": amount_value,
+                "order_status": order_status,
+                "payment_status": payment_status,
+                "pay_status": payment_status,
+                "pickup_location": "Main Library",
+                "date": order.created_at.isoformat() if order.created_at else None,
+                "price": f"{amount_value:,.0f} ETB",
+                "item": product_title,
+                "buyer": buyer_id,
+                "seller": seller_id,
+                "amount": amount_value,
+            }
+            results.append(record)
+        return results
+    except (OperationalError, SQLAlchemyError) as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": "Failed to load order records", "detail": str(exc)})
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"error": "Unexpected error while loading order records", "detail": str(exc)})
+
+
+@app.put("/api/admin/orders/{order_id}")
+def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_db)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Order update payload must be a JSON object.")
+
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+
+    updated_order_status = _normalize_order_status(payload.get("order_status") or order.status)
+    updated_payment_status = _normalize_payment_status(payload.get("payment_status") or payload.get("pay_status") or "Pending")
+    pickup_location = str(payload.get("pickup_location") or "Main Library")
+
+    order.status = updated_order_status
+    if hasattr(order, "payment_status"):
+        order.payment_status = updated_payment_status
+    if hasattr(order, "pickup_location"):
+        order.pickup_location = pickup_location
+
+    db.commit()
+    db.refresh(order)
+
+    return {
+        "message": "Order status updated successfully",
+        "id": order.id,
+        "order_status": updated_order_status,
+        "payment_status": updated_payment_status,
+        "pickup_location": pickup_location,
+    }
+
+
+@app.post("/api/admin/payments/webhook")
+def simulate_chapa_webhook(
+    payload: dict,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object.")
+
+    secret = os.getenv("CHAPA_SECRET_KEY", "campace_dev_secret")
+    callback_signature = authorization or payload.get("signature") or payload.get("x_chapa_signature")
+    if callback_signature:
+        expected = _compute_chapa_signature(secret, payload)
+        if callback_signature.lower().startswith("bearer "):
+            callback_signature = callback_signature.split(" ", 1)[1]
+        if callback_signature != expected and callback_signature.lower() != expected.lower():
+            raise HTTPException(status_code=401, detail="Invalid transaction signature.")
+
+    status_value = str(payload.get("status") or payload.get("state") or "pending").strip().lower()
+    if status_value not in {"success", "successful", "paid", "completed"}:
+        raise HTTPException(status_code=400, detail="Payment callback status is not successful.")
+
+    tx_ref = str(
+        payload.get("tx_ref")
+        or payload.get("transaction_id")
+        or payload.get("tx_id")
+        or payload.get("reference")
+        or "TX-UNKNOWN"
+    )
+    amount_value = payload.get("amount") or payload.get("total_amount") or 0
+    try:
+        amount = Decimal(str(amount_value)).quantize(Decimal("0.01"))
+    except Exception:
+        amount = Decimal("0")
+
+    student_identifier = (
+        payload.get("student_id")
+        or payload.get("buyer_id")
+        or payload.get("studentId")
+        or payload.get("customer")
+    )
+    if isinstance(student_identifier, dict):
+        student_identifier = (
+            student_identifier.get("student_id")
+            or student_identifier.get("buyer_id")
+            or student_identifier.get("studentId")
+        )
+
+    student = None
+    if student_identifier:
+        student = db.query(Student).filter(Student.student_id == str(student_identifier)).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found for payment callback.")
+
+    student.wallet_balance = Decimal(str(student.wallet_balance or 0)) + amount
+
+    tx_record = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
+    if tx_record is None:
+        tx_record = Transaction(
+            student_id=student.student_id,
+            tx_id=tx_ref,
+            type="Wallet Deposit",
+            amount=float(amount),
+            description="Chapa webhook settlement captured via payment callback.",
+            status="Successful",
+        )
+        db.add(tx_record)
+    else:
+        tx_record.type = "Wallet Deposit"
+        tx_record.amount = float(amount)
+        tx_record.status = "Successful"
+        tx_record.description = tx_record.description or "Chapa webhook settlement captured via payment callback."
+
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+    if admin:
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action="Payment Webhook Success",
+            entity_type="Payment",
+            entity_id=tx_record.id,
+            description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {amount} ETB.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+
+    db.commit()
+    db.refresh(tx_record)
+
+    return {
+        "message": "Payment webhook processed successfully.",
+        "status": "Successful",
+        "transaction_id": tx_record.tx_id,
+        "student_id": student.student_id,
+        "wallet_balance": float(student.wallet_balance),
+        "amount": float(amount),
+    }
 
 # 17. የተማሪዎች ቅሬታ ማውጫ (GET /api/admin/reports) — አሁን ከዳታቤዝ ያነባል
 @app.get("/api/admin/reports")
@@ -989,19 +2534,15 @@ def resolve_report(id: int, data: ReportUpdate, db: Session = Depends(get_db)):
 
     return {"message": "Dispute status updated successfully"}
 
-# 19. የስርዓት ቅንብሮች ማውጫ (GET /api/admin/settings)
-@app.get("/api/admin/settings")
-def get_admin_settings_endpoint():
-    return [
-        {"id": 1, "label": "Maintenance Mode", "type": "toggle", "value": False},
-        {"id": 2, "label": "Transaction Fee", "type": "text", "value": "2.5%"},
-        {"id": 3, "label": "Campus Registration", "type": "text", "value": "Open"}
-    ]
-
-# 20. የስርዓት ቅንብርን ማብሪያ/ማጥፊያ (PATCH /api/admin/settings/{id})
+# 19. የስርዓት ቅንብርን ማብሪያ/ማጥፊያ (PATCH /api/admin/settings/{id})
 @app.patch("/api/admin/settings/{id}")
 def update_setting(id: int, data: SettingUpdate):
     return {"message": "Setting updated successfully"}
+
+
+@app.get("/api/admin/settings/{id}")
+def get_setting(id: int):
+    return {"id": id, "value": True, "message": "Setting retrieved successfully"}
 # ==========================================
 # --- የተማሪ ገዢ ክፍሎች የዳታቤዝ ኤፒአዮች (Student Buyer Core APIs) ---
 # ==========================================
@@ -1357,3 +2898,147 @@ UNIVERSITY_STRUCTURE = {
         "Department of Law (LLB)"
     ]
 }
+
+# Category and Subcategory Creation Schemas
+class CategoryCreate(BaseModel):
+    name: str
+    icon: Optional[str] = None
+
+class SubCategoryCreate(BaseModel):
+    name: str
+    category_id: int
+    icon: Optional[str] = None
+
+# 21. Create Main Category (POST /api/admin/categories)
+@app.post("/api/admin/categories", status_code=status.HTTP_201_CREATED)
+def create_category(data: CategoryCreate, db: Session = Depends(get_db)):
+    """Insert a new main category into the database"""
+    # Check if category name already exists
+    existing = db.query(Category).filter(Category.name == data.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Category already exists")
+    
+    db_category = Category(
+        name=data.name,
+        icon=data.icon,
+        ads_count="0 ads"
+    )
+    db.add(db_category)
+    db.commit()
+    db.refresh(db_category)
+    
+    return {
+        "id": db_category.id,
+        "name": db_category.name,
+        "icon": db_category.icon,
+        "ads_count": db_category.ads_count,
+        "status": "Active"
+    }
+
+# 22. Create Subcategory (POST /api/admin/subcategories)
+@app.post("/api/admin/subcategories", status_code=status.HTTP_201_CREATED)
+def create_subcategory(data: SubCategoryCreate, db: Session = Depends(get_db)):
+    """Insert a new subcategory under a parent category"""
+    # Verify parent category exists
+    parent_category = db.query(Category).filter(Category.id == data.category_id).first()
+    if not parent_category:
+        raise HTTPException(status_code=404, detail="Parent category not found")
+    
+    # Check if subcategory name already exists under this parent
+    existing = db.query(SubCategory).filter(
+        SubCategory.name == data.name,
+        SubCategory.category_id == data.category_id
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Subcategory already exists under this category")
+    
+    db_subcategory = SubCategory(
+        name=data.name,
+        icon=data.icon,
+        category_id=data.category_id,
+        ads_count="0 ads"
+    )
+    db.add(db_subcategory)
+    db.commit()
+    db.refresh(db_subcategory)
+    
+    return {
+        "id": db_subcategory.id,
+        "name": db_subcategory.name,
+        "icon": db_subcategory.icon,
+        "category_id": db_subcategory.category_id,
+        "ads_count": db_subcategory.ads_count
+    }
+
+# 23. Fetch all categories with subcategories (GET /api/admin/categories/all)
+@app.get("/api/admin/categories/all")
+def get_all_categories_with_subs(db: Session = Depends(get_db)):
+    """Retrieve all main categories and their nested subcategories"""
+    categories = db.query(Category).all()
+    result = []
+    
+    for cat in categories:
+        category_ads = db.query(Product).filter(
+            Product.category == cat.name,
+            Product.status == "Approved"
+        ).count()
+        
+        subcategories = []
+        for sub in cat.subcategories:
+            subcategory_ads = db.query(Product).filter(
+                Product.category == cat.name,
+                Product.subcategory == sub.name,
+                Product.status == "Approved"
+            ).count()
+            subcategories.append({
+                "id": sub.id,
+                "name": sub.name,
+                "icon": sub.icon,
+                "category_id": sub.category_id,
+                "ads": f"{subcategory_ads} ads"
+            })
+        
+        result.append({
+            "id": cat.id,
+            "name": cat.name,
+            "icon": cat.icon,
+            "ads": f"{category_ads} ads",
+            "status": "Active",
+            "subcategories": subcategories
+        })
+    
+    return result
+
+# 24. Delete a Category by ID (DELETE /api/admin/categories/{id})
+@app.delete("/api/admin/categories/{id}")
+def delete_category(id: int, db: Session = Depends(get_db)):
+    """Delete a main category by its ID"""
+    try:
+        category = db.query(Category).filter(Category.id == id).first()
+        if not category:
+            raise HTTPException(status_code=404, detail="Category not found")
+        
+        db.delete(category)
+        db.commit()
+        
+        return {"message": "Category deleted successfully", "id": id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete category: {str(e)}")
+
+# 25. Delete a Subcategory by ID (DELETE /api/admin/subcategories/{id})
+@app.delete("/api/admin/subcategories/{id}")
+def delete_subcategory(id: int, db: Session = Depends(get_db)):
+    """Delete a subcategory by its ID"""
+    try:
+        subcategory = db.query(SubCategory).filter(SubCategory.id == id).first()
+        if not subcategory:
+            raise HTTPException(status_code=404, detail="Subcategory not found")
+        
+        db.delete(subcategory)
+        db.commit()
+        
+        return {"message": "Subcategory deleted successfully", "id": id}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete subcategory: {str(e)}")

@@ -1,5 +1,5 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -16,6 +16,11 @@ class Student(Base):
     college = Column(String(150), nullable=False)
     department = Column(String(150), nullable=False)
     wallet_balance = Column(Numeric(10, 2), default=200.00)
+    status = Column(String(50), default="Active", nullable=False)
+    restriction_reason = Column(Text, nullable=True)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    verification_reason = Column(Text, nullable=True)
+    id_card_url = Column(String(500), nullable=True)
 
     # 1. ሬላሽንሺፖቹ በምን አምድ በኩል መገናኘት እንዳለባቸው በ "primaryjoin" በግልጽ አስቀምጠነዋል
     reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student", cascade="all, delete-orphan")
@@ -57,6 +62,7 @@ class Product(Base):
     description = Column(String(500), nullable=True)
     seller = Column(String(100), nullable=True)
     status = Column(String(50), default="Pending", nullable=False)
+    moderation_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     wishlist_items = relationship("WishlistItem", back_populates="product", cascade="all, delete-orphan")
@@ -134,7 +140,38 @@ class Admin(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
-    password = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(50), default="Admin", nullable=False)
+    status = Column(String(50), default="Active", nullable=False)
+    two_factor_enabled = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    last_login = Column(DateTime, nullable=True)
+
+    audit_logs = relationship("AuditLog", back_populates="admin", cascade="all, delete-orphan")
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key = Column(String(100), primary_key=True, index=True)
+    value = Column(Text, nullable=False)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    action = Column(String(255), nullable=False, index=True)
+    entity_type = Column(String(100), nullable=False, default="System")
+    entity_id = Column(Integer, nullable=True)
+    description = Column(Text, nullable=True)
+    status = Column(String(50), default="SUCCESS", nullable=False)
+    ip_address = Column(String(50), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    admin = relationship("Admin", back_populates="audit_logs")
+
 
 class Report(Base):
     __tablename__ = "reports"

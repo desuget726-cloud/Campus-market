@@ -50,18 +50,27 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
 
   const [notifications, setNotifications] = useState([]);
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [walletBalance, setWalletBalance] = useState(0);
   const [loading, setLoading] = useState(false);
   const [isMarkingRead, setIsMarkingRead] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
-  const [aiMessages, setAiMessages] = useState([
+  const [chatHistory, setChatHistory] = useState([
     {
       role: 'assistant',
       text: 'Hello! I am your Campus AI assistant. Ask me anything about textbooks, gadget pricing, or campus trading tips!'
     }
   ]);
   const [aiInput, setAiInput] = useState('');
-  const [isSending, setIsSending] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const aiScrollRef = useRef(null);
+  const suggestedPrompts = [
+    '🔍 Laptops under 25k ETB',
+    '📖 CCI Textbooks',
+    '💡 Pricing Tips',
+    '🧥 Best study gear under 5k ETB'
+  ];
 
   const [profileForm, setProfileForm] = useState({
     name: user?.name || '',
@@ -89,6 +98,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
   const [highlights, setHighlights] = useState({ aiPicks: 0, latestListings: 0, cartValue: 0.00, pendingMessages: 0 });
+  const [recommendedProducts, setRecommendedProducts] = useState([]);
+  const [recentCampusActivity, setRecentCampusActivity] = useState([]);
 
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
   const [showProductModal, setShowProductModal] = useState(false);
@@ -140,7 +151,28 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return Number.isFinite(numeric) ? numeric : 0;
   };
 
+  const formatETB = (value) => {
+    const numeric = Number(value ?? 0);
+    if (!Number.isFinite(numeric)) return '0 ETB';
+    return `${numeric.toLocaleString('en-US', { maximumFractionDigits: 0 })} ETB`;
+  };
+
   const cartTotal = cart.reduce((total, item) => total + normalizePrice(item.price) * (item.quantity || 1), 0);
+
+  const sellerStatusSummary = (() => {
+    if (!myListings.length) {
+      return { label: 'Pending', tone: 'amber', details: 'No listings posted yet' };
+    }
+
+    const statuses = myListings.map((item) => String(item.status || 'Pending').toLowerCase());
+    if (statuses.some((status) => status.includes('flag') || status.includes('reject'))) {
+      return { label: 'Flagged', tone: 'rose', details: `${statuses.filter((status) => status.includes('flag') || status.includes('reject')).length} listing(s) flagged` };
+    }
+    if (statuses.some((status) => status.includes('pending'))) {
+      return { label: 'Pending', tone: 'amber', details: `${statuses.filter((status) => status.includes('pending')).length} listing(s) awaiting review` };
+    }
+    return { label: 'Approved', tone: 'emerald', details: `${statuses.length} listing(s) approved` };
+  })();
 
   const fetchProducts = async ({ search, category, subcategory } = {}) => {
     setSearchLoading(true);
@@ -305,6 +337,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           setHighlights(highlightData);
         }
 
+        const [recommendationRes, activityRes] = await Promise.all([
+          fetch(`http://127.0.0.1:8000/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`),
+          fetch(`http://127.0.0.1:8000/api/student/recent-activity?student_id=${encodeURIComponent(user.studentId)}`),
+        ]);
+
+        if (recommendationRes.ok) {
+          const recommendationData = await recommendationRes.json();
+          setRecommendedProducts(Array.isArray(recommendationData) ? recommendationData : (recommendationData.recommendations || []));
+        }
+
+        if (activityRes.ok) {
+          const activityData = await activityRes.json();
+          setRecentCampusActivity(Array.isArray(activityData) ? activityData : (activityData.items || []));
+        }
+
         await fetchMyListings();
         await fetchSellerDashboardData();
         await loadSearchDefaults();
@@ -321,6 +368,65 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (!user?.studentId) return;
+
+    let isMounted = true;
+
+    const fetchUnreadCounts = async () => {
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/api/student/notifications/unread-count?student_id=${encodeURIComponent(user.studentId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const totalUnread = Number(data.unreadCount ?? data.unread_count ?? 0);
+
+        if (isMounted) {
+          setUnreadNotificationCount(totalUnread);
+          setUnreadMessageCount((prev) => (totalUnread > 0 ? totalUnread : prev));
+        }
+      } catch (err) {
+        console.error('Error fetching unread notification count:', err);
+      }
+    };
+
+    const fetchWalletBalance = async () => {
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const nextBalance = Number(data.balance ?? data.walletBalance ?? data.wallet_balance ?? 0);
+
+        if (isMounted) {
+          setWalletBalance(Number.isFinite(nextBalance) ? nextBalance : 0);
+        }
+      } catch (err) {
+        console.error('Error fetching wallet balance:', err);
+      }
+    };
+
+    fetchUnreadCounts();
+    fetchWalletBalance();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.studentId]);
+
+  useEffect(() => {
+    if (!notifications.length) {
+      setUnreadMessageCount(0);
+      return;
+    }
+
+    const messageCount = notifications.filter((notification) => {
+      if (notification.read) return false;
+      const text = `${notification.title || ''} ${notification.message || ''}`.toLowerCase();
+      return /message|chat|reply|inbox/.test(text);
+    }).length;
+
+    setUnreadMessageCount(messageCount);
+  }, [notifications]);
 
   // 2. ተማሪው ቅሬታውን ለአስተዳዳሪው የሚልክበት አሠራር (Submit Support Ticket)
   const handleSupportSubmit = async (e) => {
@@ -704,12 +810,42 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
-  const handleAiSend = async () => {
-    const trimmed = aiInput.trim();
-    if (!trimmed || isSending) return;
+  const parseInlineProductCards = (text) => {
+    if (!text) return [];
+    const regex = /\[PRODUCT:(\d+):([^\]]+):([^\]]+)\]/g;
+    const matches = [];
+    let match;
 
-    setIsSending(true);
-    setAiMessages((prev) => [...prev, { role: 'user', text: trimmed }]);
+    while ((match = regex.exec(text)) !== null) {
+      const [, id, title, price] = match;
+      matches.push({
+        id: Number(id),
+        title: title.trim(),
+        price: price.trim(),
+        raw: match[0],
+      });
+    }
+
+    return matches;
+  };
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      aiScrollRef.current?.scrollTo({
+        top: aiScrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }, 80);
+
+    return () => clearTimeout(timer);
+  }, [chatHistory, isTyping]);
+
+  const handleAiSend = async (messageText = aiInput) => {
+    const trimmed = String(messageText || '').trim();
+    if (!trimmed || isTyping) return;
+
+    setIsTyping(true);
+    setChatHistory((prev) => [...prev, { role: 'user', text: trimmed }]);
     setAiInput('');
 
     try {
@@ -720,19 +856,27 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       const data = await res.json();
       if (res.ok) {
-        setAiMessages((prev) => [...prev, { role: 'assistant', text: data.reply }]);
+        setChatHistory((prev) => [...prev, { role: 'assistant', text: data.reply }]);
       } else {
-        setAiMessages((prev) => [...prev, { role: 'assistant', text: data.detail || 'Sorry, I could not answer that right now.' }]);
+        setChatHistory((prev) => [...prev, { role: 'assistant', text: data.detail || 'Sorry, I could not answer that right now.' }]);
       }
     } catch (err) {
       console.error('AI chat error:', err);
-      setAiMessages((prev) => [...prev, { role: 'assistant', text: 'Connection error. Please try again in a moment.' }]);
+      setChatHistory((prev) => [...prev, { role: 'assistant', text: 'Connection error. Please try again in a moment.' }]);
     } finally {
-      setIsSending(false);
-      setTimeout(() => {
-        aiScrollRef.current?.scrollTo({ top: aiScrollRef.current.scrollHeight, behavior: 'smooth' });
-      }, 50);
+      setIsTyping(false);
     }
+  };
+
+  const handleClearChat = () => {
+    setChatHistory([
+      {
+        role: 'assistant',
+        text: 'Hello! I am your Campus AI assistant. Ask me anything about textbooks, gadget pricing, or campus trading tips!'
+      }
+    ]);
+    setAiInput('');
+    setIsTyping(false);
   };
 
   const handleCheckout = async () => {
@@ -786,19 +930,25 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
       <aside className={`
-        fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-[#111c3a] border-r border-slate-900/40 p-6 text-slate-100 shadow-sm sidebar-transition
+        fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-[#111c3a] border-r border-slate-900/40 p-6 text-slate-100 shadow-[0_20px_60px_rgba(15,23,42,0.35)] sidebar-transition
         lg:static lg:flex lg:translate-x-0
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:-ml-72'}
       `}>
         <div className="mb-8 flex items-start justify-between">
           <div>
-            <p className="text-[10px] uppercase tracking-[0.24em] text-slate-400 font-bold border-b-2 border-white w-fit pb-1">STUDENT DASHBOARD</p>
+            <p className="text-[10px] uppercase tracking-[0.24em] text-slate-400 font-bold border-b-2 border-white/80 w-fit pb-1">STUDENT DASHBOARD</p>
             <h1 className="mt-3 text-2xl font-bold text-white">Campus Portal</h1>
+            {user?.is_verified && (
+              <span className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-300">
+                <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-bold text-white">✓</span>
+                Verified Student
+              </span>
+            )}
           </div>
 
           <button
             onClick={() => setIsSidebarOpen(false)}
-            className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition cursor-pointer lg:flex hidden"
+            className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer lg:flex hidden"
             title="Close sidebar"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -810,7 +960,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         <nav className="space-y-2">
           <button
             onClick={() => { setActiveTab('home'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'home' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'home' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
             <span>Home</span>
             <svg className={`h-4 w-4 ${activeTab === 'home' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -819,7 +969,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </button>
           <button
             onClick={() => { setActiveTab('buyer'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'buyer' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'buyer' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
             <span>Buyer Hub</span>
             <svg className={`h-4 w-4 ${activeTab === 'buyer' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -828,7 +978,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </button>
           <button
             onClick={() => { setActiveTab('seller'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'seller' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'seller' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
             <span>Seller Hub</span>
             <svg className={`h-4 w-4 ${activeTab === 'seller' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -837,16 +987,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </button>
           <button
             onClick={() => { setActiveTab('messages'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'messages' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'messages' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
-            <span>Messages</span>
+            <span className="flex items-center gap-3">
+              <span>Messages</span>
+              {unreadMessageCount > 0 && (
+                <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white ring-2 ring-[#111c3a]">
+                  {unreadMessageCount}
+                </span>
+              )}
+            </span>
             <svg className={`h-4 w-4 ${activeTab === 'messages' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>
           <button
             onClick={() => { setActiveTab('ai-advisor'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'ai-advisor' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'ai-advisor' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
             <span>AI Advisor</span>
             <svg className={`h-4 w-4 ${activeTab === 'ai-advisor' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -855,16 +1012,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </button>
           <button
             onClick={() => { setActiveTab('notifications'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'notifications' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'notifications' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
-            <span>Notifications</span>
+            <span className="flex items-center gap-3">
+              <span>Notifications</span>
+              {unreadNotificationCount > 0 && (
+                <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-slate-950 ring-2 ring-[#111c3a]">
+                  {unreadNotificationCount}
+                </span>
+              )}
+            </span>
             <svg className={`h-4 w-4 ${activeTab === 'notifications' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
           </button>
           <button
             onClick={() => { setActiveTab('profile'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'profile' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'profile' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
             <span>Profile</span>
             <svg className={`h-4 w-4 ${activeTab === 'profile' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -873,7 +1037,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </button>
           <button
             onClick={() => { setActiveTab('settings'); }}
-            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition duration-200 ${activeTab === 'settings' ? 'bg-[#1d4ed8] text-white shadow-md' : 'text-slate-300 hover:bg-white/10 hover:text-white'}`}
+            className={`group rounded-2xl px-5 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${activeTab === 'settings' ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'}`}
           >
             <span>Settings</span>
             <svg className={`h-4 w-4 ${activeTab === 'settings' ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -881,6 +1045,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             </svg>
           </button>
         </nav>
+
+        <div className="mt-auto pt-5">
+          <div className="rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-400">
+              <span>Wallet</span>
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-300">Live</span>
+            </div>
+            <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(walletBalance || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })} ETB</div>
+          </div>
+        </div>
       </aside>
 
       {/* በሞባይል ስልኮች ላይ የጎን ማውጫው ሲከፈት በስተጀርባ የሚመጣ ጥቁር ጥላ (Mobile Overlay Backdrop) */}
@@ -991,46 +1165,103 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 {/* Highlights Grid */}
                 <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
-                    <p className="text-xs font-semibold text-sky-600 uppercase">Recommendations</p>
-                    <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.aiPicks} AI Picks</p>
+                    <p className="text-xs font-semibold text-sky-600 uppercase">AI Picks</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.aiPicks || 0}</p>
                   </div>
                   <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
                     <p className="text-xs font-semibold text-sky-600 uppercase">Latest Listings</p>
-                    <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.latestListings} items</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.latestListings || 0} items</p>
                   </div>
                   <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
                     <p className="text-xs font-semibold text-sky-600 uppercase">Cart Value</p>
-                    <p className="mt-2 text-2xl font-bold text-slate-900">${highlights.cartValue}</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-900">{formatETB(highlights.cartValue)}</p>
                   </div>
                   <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
                     <p className="text-xs font-semibold text-sky-600 uppercase">Pending Messages</p>
-                    <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.pendingMessages}</p>
+                    <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.pendingMessages || 0}</p>
                   </div>
                 </div>
               </div>
 
-              <div className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
+              <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
                 {/* AI Recommendations */}
                 <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">AI Recommendations</h3>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <div className="rounded-[24px] bg-slate-50 p-4 border border-slate-100">
-                      <p className="text-xs text-sky-600 font-semibold">Trending textbook for your department</p>
-                      <h4 className="mt-2 text-lg font-bold text-slate-900">Algorithms Unlocked</h4>
-                    </div>
-                    <div className="rounded-[24px] bg-slate-50 p-4 border border-slate-100">
-                      <p className="text-xs text-sky-600 font-semibold">Suggested gadget</p>
-                      <h4 className="mt-2 text-lg font-bold text-slate-900">Noise-cancelling headphones</h4>
-                    </div>
+                  <div className="mb-4 flex items-center justify-between border-b pb-2">
+                    <h3 className="text-xl font-bold text-slate-900">AI Recommendations</h3>
+                    <span className="rounded-full bg-sky-100 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Department Match</span>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {recommendedProducts.length ? (
+                      recommendedProducts.map((item) => (
+                        <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+                              {item.category || 'Recommended'}
+                            </span>
+                            <span className="text-xs font-semibold text-slate-500">{item.match || 'High match'}</span>
+                          </div>
+                          <h4 className="mt-3 text-lg font-bold text-slate-900">{item.title}</h4>
+                          <p className="mt-2 line-clamp-2 text-sm text-slate-600">{item.description || 'Popular campus item tailored to your department.'}</p>
+                          <div className="mt-4 flex items-center justify-between">
+                            <span className="text-lg font-black text-slate-950">{formatETB(item.price)}</span>
+                            <button type="button" className="rounded-full bg-slate-950 px-3 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition cursor-pointer">View</button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-[24px] bg-slate-50 p-4 border border-slate-100 text-sm text-slate-500 md:col-span-2">
+                        No recommendations are available yet for your department.
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* Quick Actions */}
-                <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Quick Actions</h3>
-                  <div className="space-y-2">
-                    <button onClick={() => setActiveTab('buyer')} className="w-full text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Continue browsing marketplace</button>
-                    <button onClick={() => setActiveTab('buyer')} className="w-full text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Check seller orders</button>
+                <div className="space-y-6">
+                  {/* Quick Actions */}
+                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                    <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Quick Actions</h3>
+                    <div className="space-y-2">
+                      <button onClick={() => setActiveTab('buyer')} className="w-full text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Continue browsing marketplace</button>
+                      <button onClick={() => setActiveTab('buyer')} className="w-full text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Check seller orders</button>
+                    </div>
+                  </div>
+
+                  {/* Recent Campus Activity */}
+                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                    <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Recent Campus Activity</h3>
+                    <div className="space-y-3">
+                      {recentCampusActivity.length ? (
+                        recentCampusActivity.map((item, index) => (
+                          <div key={`${item.title || 'activity'}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{item.time || 'Now'}</span>
+                              <span className="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                            </div>
+                            <p className="text-sm font-semibold text-slate-900">{item.title || item.action || 'Marketplace update'}</p>
+                            <p className="mt-1 text-xs text-slate-600">{item.description || item.detail || 'Fresh student marketplace activity.'}</p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-500">
+                          New products are being listed across campus.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* My Seller Status */}
+                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                    <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">My Seller Status</h3>
+                    <div className={`rounded-[24px] border p-4 ${sellerStatusSummary.tone === 'amber' ? 'border-amber-200 bg-amber-50' : sellerStatusSummary.tone === 'rose' ? 'border-rose-200 bg-rose-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${sellerStatusSummary.tone === 'amber' ? 'bg-amber-100 text-amber-700' : sellerStatusSummary.tone === 'rose' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                          {sellerStatusSummary.label}
+                        </span>
+                        <span className="text-xl font-black text-slate-900">{myListings.length}</span>
+                      </div>
+                      <p className="mt-3 text-sm text-slate-700">{sellerStatusSummary.details}</p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1512,29 +1743,108 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <h3 className="text-xl font-bold text-slate-950">Campus AI Assistant</h3>
                       <p className="text-sm text-slate-500 mt-1">Ask anything about campus listings, pricing, or student trading tips.</p>
                     </div>
-                    <span className="inline-flex items-center rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
-                      Active
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <span className="inline-flex items-center rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
+                        Active
+                      </span>
+                      <button
+                        type="button"
+                        aria-label="Clear chat"
+                        onClick={handleClearChat}
+                        className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-lg font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2.5">
+                    {suggestedPrompts.map((prompt) => (
+                      <button
+                        key={prompt}
+                        type="button"
+                        onClick={() => handleAiSend(prompt)}
+                        className="rounded-full border border-sky-200 bg-gradient-to-br from-sky-50 to-sky-100 px-4 py-2.5 text-xs font-semibold text-sky-700 shadow-sm hover:shadow-md hover:border-sky-300 transition-all active:scale-95"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
                   </div>
 
                   <div className="rounded-[28px] border border-slate-200 bg-sky-50 p-5 h-[540px] flex flex-col">
                     <div ref={aiScrollRef} className="flex-1 overflow-y-auto space-y-4 pr-2">
-                      {aiMessages.map((message, index) => (
-                        <div key={index} className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                          <div className={`max-w-[85%] rounded-3xl px-5 py-4 text-sm leading-6 shadow-sm ${message.role === 'assistant' ? 'bg-white text-slate-900' : 'bg-emerald-500 text-white'}`}>
-                            {message.text}
+                      {chatHistory.map((message, index) => {
+                        const productMatches = message.role === 'assistant' ? parseInlineProductCards(message.text) : [];
+                        const renderedText = productMatches.length ? message.text.replace(/\[PRODUCT:[^\]]+\]/g, '') : message.text;
+
+                        return (
+                          <div key={index} className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
+                            <div className={`max-w-[88%] rounded-3xl px-5 py-4 text-sm leading-6 shadow-md ${message.role === 'assistant' ? 'bg-gradient-to-br from-white to-slate-50 text-slate-900 border border-slate-200' : 'bg-emerald-500 text-white'}`}>
+                              {renderedText && <div className="whitespace-pre-wrap font-medium">{renderedText}</div>}
+
+                              {productMatches.length > 0 && (
+                                <div className="mt-4 space-y-3">
+                                  {productMatches.map((product) => (
+                                    <div key={`${product.id}-${index}`} className="rounded-[20px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4 text-slate-900 shadow-md hover:shadow-lg transition-shadow">
+                                      <div className="flex items-start gap-3">
+                                        <div className="flex-shrink-0">
+                                          <div className="h-14 w-14 rounded-[12px] bg-gradient-to-br from-sky-100 to-sky-50 border border-sky-200 flex items-center justify-center">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-sky-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                                            </svg>
+                                          </div>
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <div className="flex items-start justify-between gap-2 mb-1">
+                                            <p className="text-[10px] font-bold uppercase tracking-wider text-sky-600 bg-sky-50 rounded-full px-2 py-0.5">AI Recommended</p>
+                                            <span className="text-xs font-bold text-emerald-700 bg-emerald-50 rounded-full px-2.5 py-0.5 whitespace-nowrap">{product.price}</span>
+                                          </div>
+                                          <h4 className="text-sm font-bold text-slate-900 leading-snug">{product.title}</h4>
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleAddToCartFromSearch(product.id)}
+                                        className="mt-3 w-full inline-flex items-center justify-center rounded-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:shadow-md transition-all"
+                                      >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                        </svg>
+                                        Add to Cart
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {isTyping && (
+                        <div className="flex justify-start">
+                          <div className="rounded-3xl bg-gradient-to-br from-white to-slate-50 border border-slate-200 px-5 py-4 text-sm text-slate-600 shadow-md">
+                            <div className="flex items-center gap-2">
+                              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500" />
+                              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500 [animation-delay:150ms]" />
+                              <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500 [animation-delay:300ms]" />
+                              <span className="ml-2 text-slate-500 font-medium">AI is thinking…</span>
+                            </div>
                           </div>
                         </div>
-                      ))}
+                      )}
                     </div>
 
-                    <div className="mt-4 flex items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                    <div className="mt-4 flex items-center gap-3 rounded-full border border-slate-200 bg-gradient-to-r from-white to-slate-50 px-5 py-4 shadow-md focus-within:shadow-lg focus-within:border-emerald-300 transition-all">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
                       <input
                         type="text"
                         value={aiInput}
                         onChange={(e) => setAiInput(e.target.value)}
-                        placeholder="Ask me about textbooks, phones, pricing, or campus tips..."
-                        className="w-full bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
+                        placeholder="Ask me about textbooks, phones, pricing, or campus tips…"
+                        className="flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             e.preventDefault();
@@ -1544,11 +1854,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       />
                       <button
                         type="button"
-                        onClick={handleAiSend}
-                        className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition cursor-pointer disabled:opacity-50"
-                        disabled={isSending}
+                        onClick={() => handleAiSend()}
+                        className="inline-flex items-center justify-center rounded-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 px-6 py-2.5 text-sm font-semibold text-white shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={isTyping}
                       >
-                        {isSending ? 'Sending...' : 'Send'}
+                        {isTyping ? (
+                          <>
+                            <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-r-transparent mr-1.5" />
+                            Sending…
+                          </>
+                        ) : (
+                          <>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1.5" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 L4.13399899,1.16027068 C3.50612381,-0.1 2.40999899,0.0570974055 1.77946707,0.4870386 C0.994623095,1.11 0.8376543,2.20 1.15159189,3.1 L3.03521743,9.5 C3.03521743,9.68012422 3.34915502,9.83721169 3.50612381,9.83721169 L16.6915026,10.6227347 C16.6915026,10.6227347 17.1624089,10.6227347 17.1624089,11.0526759 C17.1624089,11.4860699 16.6915026,11.4860699 16.6915026,12.4744748 Z" />
+                            </svg>
+                            Send
+                          </>
+                        )}
                       </button>
                     </div>
                   </div>
@@ -1570,7 +1892,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <div className="space-y-6 rounded-[24px] border border-slate-200 bg-slate-50 p-6">
                     <div className="flex flex-col items-center gap-4 text-center">
                       <img
-                        src={`http://127.0.0.1:8000/static/uploads/avatars/${user?.studentId}.jpg`}
+                        src={user?.studentId ? `http://127.0.0.1:8000/static/uploads/avatars/${user.studentId}.jpg` : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=280&q=80'}
                         alt="Profile avatar"
                         onError={(e) => {
                           e.currentTarget.onerror = null;
