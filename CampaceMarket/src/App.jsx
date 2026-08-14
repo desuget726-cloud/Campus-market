@@ -61,11 +61,24 @@ function App() {
   const [pendingView, setPendingView] = useState('home');
   const [pendingUsername, setPendingUsername] = useState('');
 
+  const activeRole = userRole || user?.role || null;
+  const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
+
   useEffect(() => {
     if (!user || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
-    const session = { user, currentView, dashboardTab, userRole };
+    const session = { user, currentView, dashboardTab, userRole: activeRole };
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-  }, [currentView, dashboardTab, user, userRole]);
+  }, [currentView, dashboardTab, user, activeRole]);
+
+  useEffect(() => {
+    if (!user || !activeRole || !expectedDashboardView) return;
+
+    const dashboardViews = new Set(['student-dashboard', 'admin-dashboard', 'student-dashboard-profile']);
+
+    if (dashboardViews.has(currentView) && currentView !== expectedDashboardView) {
+      setCurrentView(expectedDashboardView);
+    }
+  }, [user, activeRole, currentView, expectedDashboardView]);
 
   useEffect(() => {
     if (!user?.studentId || userRole !== 'student') {
@@ -119,7 +132,7 @@ function App() {
 
   const handleContinueToDashboard = () => {
     setShowSuccessModal(false);
-    setCurrentView(userRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
+    setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
   };
 
   const handleLogout = () => {
@@ -137,9 +150,36 @@ function App() {
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
 
   const handleNavigate = (view) => {
+    if (activeRole === 'admin') {
+      if (view === 'student-dashboard' || view === 'student-dashboard-profile') {
+        setCurrentView('admin-dashboard');
+        return;
+      }
+      if (view === 'admin-dashboard') {
+        setCurrentView('admin-dashboard');
+        return;
+      }
+    }
+
+    if (activeRole === 'student') {
+      if (view === 'admin-dashboard') {
+        setCurrentView('student-dashboard');
+        return;
+      }
+      if (view === 'student-dashboard-profile') {
+        setDashboardTab('profile');
+        setCurrentView('student-dashboard');
+        return;
+      }
+      if (view === 'student-dashboard') {
+        setCurrentView('student-dashboard');
+        return;
+      }
+    }
+
     if (view === 'student-dashboard-profile') {
       setDashboardTab('profile');
-      setCurrentView('student-dashboard');
+      setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
       return;
     }
 
@@ -215,14 +255,25 @@ function App() {
         {currentView === 'services' && <ServicesView />}
 
         {currentView === 'contact' && <ContactView />}
-        {currentView === 'admin-dashboard' && <AdminDashboard onLogout={handleLogout} />}
-        {currentView === 'student-dashboard' && (
+        {activeRole === 'admin' && currentView === 'admin-dashboard' && <AdminDashboard onLogout={handleLogout} />}
+        {activeRole === 'student' && currentView === 'student-dashboard' && (
           <StudentDashboard
             onLogout={handleLogout}
             user={user}
             initialTab={dashboardTab}
             onTabChange={setDashboardTab}
             onUserUpdate={setUser}
+            onNavigate={handleNavigate}
+          />
+        )}
+        {!activeRole && currentView === 'student-dashboard' && (
+          <StudentDashboard
+            onLogout={handleLogout}
+            user={user}
+            initialTab={dashboardTab}
+            onTabChange={setDashboardTab}
+            onUserUpdate={setUser}
+            onNavigate={handleNavigate}
           />
         )}
       </main>

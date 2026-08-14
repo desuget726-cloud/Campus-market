@@ -29,7 +29,7 @@ from email.mime.multipart import MIMEMultipart
 import asyncio
 
 # ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
-from .models import Student, Category, SubCategory, Product, Admin, AuditLog, Report, Notification, WishlistItem, CartItem, Order, Transaction, PasswordReset, SystemSetting
+from .models import Student, Category, SubCategory, Product, Admin, AuditLog, Report, Notification, Message, WishlistItem, CartItem, Order, Transaction, PasswordReset, SystemSetting
 import uuid
 from app.models import WishlistItem, CartItem, Order, Transaction, Review
 from .database import get_db, init_db, SessionLocal, Base, engine
@@ -83,6 +83,27 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(plain_bytes, hashed_bytes)
     except Exception:
         return False
+
+
+def _validate_student_id(db: Session, raw_student_id: Optional[str], *, field_name: str = "student_id") -> str:
+    normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
+    if not normalized_student_id:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required.")
+
+    admin_user = db.query(Admin).filter(
+        or_(Admin.username == normalized_student_id, Admin.email == normalized_student_id)
+    ).first()
+    if admin_user:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}. Please provide a valid student ID, not an admin username."
+        )
+
+    student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    return normalized_student_id
 
 
 def _parse_price_to_etb(raw_value: Optional[object], usd_to_etb: float = 56.0) -> float:
@@ -376,6 +397,13 @@ class NotificationCreate(BaseModel):
     student_id: str
     title: Optional[str] = None
     message: str
+    type: str = "system"
+
+class SendMessageRequest(BaseModel):
+    sender_id: str
+    receiver_id: str
+    product_id: Optional[int] = None
+    message_text: str
 
 class VerificationDecisionRequest(BaseModel):
     status: str
@@ -489,10 +517,20 @@ class ReviewCreate(BaseModel):
 def ensure_database_compatibility(db: Session) -> None:
     """Add backward-compatible columns when the local MySQL schema is older than the app model."""
     try:
-        column = db.execute(text("SHOW COLUMNS FROM admins LIKE 'two_factor_enabled'"))
-        if column.fetchone() is None:
+        admin_column = db.execute(text("SHOW COLUMNS FROM admins LIKE 'two_factor_enabled'"))
+        if admin_column.fetchone() is None:
             db.execute(text("ALTER TABLE admins ADD COLUMN two_factor_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
-            db.commit()
+
+        for column_name, definition in {
+            "pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
+            "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'Successful'",
+            "reviewed": "BOOLEAN NOT NULL DEFAULT FALSE",
+        }.items():
+            column = db.execute(text(f"SHOW COLUMNS FROM orders LIKE '{column_name}'"))
+            if column.fetchone() is None:
+                db.execute(text(f"ALTER TABLE orders ADD COLUMN {column_name} {definition}"))
+
+        db.commit()
     except Exception:
         db.rollback()
         traceback.print_exc()
@@ -841,7 +879,8 @@ async def upload_student_avatar(
     if extension not in allowed_extensions:
         raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp.")
 
-    student = db.query(Student).filter(Student.student_id == student_id).first()
+    validated_student_id = _validate_student_id(db, student_id)
+    student = db.query(Student).filter(Student.student_id == validated_student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
@@ -902,10 +941,14 @@ def get_unread_notifications_count(student_id: str, db: Session = Depends(get_db
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    unread_count = db.query(Notification).filter(
-        Notification.student_id == student_id,
-        Notification.is_read.is_(False)
-    ).count()
+    unread_count = (
+        db.query(Notification.id)
+        .filter(
+            Notification.student_id == student_id,
+            Notification.is_read.is_(False),
+        )
+        .count()
+    )
 
     return {
         "student_id": student_id,
@@ -920,16 +963,20 @@ def get_unread_messages_count(student_id: str, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    unread_messages = db.query(Notification).filter(
-        Notification.student_id == student_id,
-        Notification.is_read.is_(False),
-        or_(
-            Notification.message.ilike('%chat%'),
-            Notification.message.ilike('%message%'),
-            Notification.message.ilike('%reply%'),
-            Notification.message.ilike('%inbox%')
+    unread_messages = (
+        db.query(Notification.id)
+        .filter(
+            Notification.student_id == student_id,
+            Notification.is_read.is_(False),
+            or_(
+                Notification.message.ilike('%chat%'),
+                Notification.message.ilike('%message%'),
+                Notification.message.ilike('%reply%'),
+                Notification.message.ilike('%inbox%')
+            )
         )
-    ).count()
+        .count()
+    )
 
     return {
         "student_id": student_id,
@@ -1021,16 +1068,66 @@ def get_locations():
 
 # 4. የዕቃዎች ማውጫ እና ማጣሪያ ኤፒአይ (GET /api/products)
 @app.get("/api/products")
-def get_products(category: Optional[str] = None, search: Optional[str] = None, db: Session = Depends(get_db)):
-    query = db.query(Product)
+def get_products(
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: Optional[int] = None,
+    department: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from sqlalchemy import case, or_
+
+    query = db.query(Product).filter(Product.status == "Approved")
+
+    manual_filters_active = bool(category or subcategory or search)
+
     if category:
         query = query.filter(Product.category == category)
+    if subcategory:
+        query = query.filter(Product.subcategory == subcategory)
     if search:
-        query = query.filter(
-            Product.title.contains(search) | 
-            Product.description.contains(search) |
-            Product.subcategory.contains(search)
-        )
+        search_term = search.strip()
+        if search_term:
+            query = query.filter(
+                or_(
+                    Product.title.ilike(f"%{search_term}%"),
+                    Product.description.ilike(f"%{search_term}%"),
+                    Product.subcategory.ilike(f"%{search_term}%"),
+                    Product.category.ilike(f"%{search_term}%"),
+                )
+            )
+
+    if department and not manual_filters_active:
+        cleaned_department = re.sub(r"(?i)\bdepartment of\b|\bdept\.?\b|\bdepartment\b", "", department)
+        cleaned_department = cleaned_department.replace("(IT)", "").replace("/", " ")
+        tokens = [
+            token.strip(" ,;:-()[]")
+            for token in re.split(r"\s+", cleaned_department)
+            if token.strip(" ,;:-()[]") and len(token.strip(" ,;:-()[]")) > 2
+        ]
+        excluded = {"the", "and", "for", "with", "engineering", "science", "technology", "school", "college"}
+        keyword = next((token for token in tokens if token.lower() not in excluded), None)
+
+        if keyword:
+            keyword = keyword.strip()
+            query = query.order_by(
+                case(
+                    (Product.title.ilike(f"%{keyword}%"), 0),
+                    (Product.description.ilike(f"%{keyword}%"), 0),
+                    (Product.category.ilike(f"%{keyword}%"), 0),
+                    else_=1,
+                ),
+                Product.created_at.desc(),
+            )
+        else:
+            query = query.order_by(Product.created_at.desc())
+    else:
+        query = query.order_by(Product.created_at.desc())
+
+    if limit is not None and not manual_filters_active:
+        query = query.limit(limit)
+
     return query.all()
 
 
@@ -1038,38 +1135,10 @@ class ChatInitiateRequest(BaseModel):
     buyer_id: str
     product_id: int
 
-
-@app.get("/api/products/{product_id}")
-def get_product_details(product_id: int, db: Session = Depends(get_db)):
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    seller = None
-    if product.seller:
-        seller = db.query(Student).filter(
-            (Student.student_id == product.seller) | (Student.name == product.seller)
-        ).first()
-
-    return {
-        "id": product.id,
-        "title": product.title,
-        "category": product.category,
-        "subcategory": product.subcategory,
-        "price": product.price,
-        "image": product.image,
-        "description": product.description,
-        "seller": product.seller,
-        "seller_name": seller.name if seller else (product.seller or "Verified Seller"),
-        "seller_phone": seller.phone if seller else "No phone provided",
-        "status": product.status,
-        "created_at": product.created_at,
-    }
-
-
 @app.post("/api/student/chat/initiate")
 def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
-    buyer = db.query(Student).filter(Student.student_id == request.buyer_id).first()
+    buyer_id = _validate_student_id(db, request.buyer_id, field_name="buyer_id")
+    buyer = db.query(Student).filter(Student.student_id == buyer_id).first()
     if not buyer:
         raise HTTPException(status_code=404, detail="Buyer not found")
 
@@ -1316,8 +1385,8 @@ def create_product(
 # 5. ተማሪዎች አዲስ ቅሬታ ወይም የድጋፍ ፎርም የሚልኩበት ኤፒአይ (POST /api/student/report)
 @app.post("/api/student/report", status_code=status.HTTP_201_CREATED)
 def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
-    # ሪፖርት የሚያደርገው ተማሪ በዳታቤዝ ውስጥ መኖሩን ያረጋግጣል
-    student = db.query(Student).filter(Student.student_id == report_data.student_id).first()
+    validated_student_id = _validate_student_id(db, report_data.student_id)
+    student = db.query(Student).filter(Student.student_id == validated_student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student record not found in database.")
 
@@ -1488,15 +1557,80 @@ def get_student_recent_activity(student_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/student/notifications")
 def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
     notifications = db.query(Notification).filter(
         Notification.student_id == student_id
     ).order_by(Notification.created_at.desc()).all()
-    return notifications
+
+    unread_notifications = [
+        {
+            "id": item.id,
+            "student_id": item.student_id,
+            "title": item.title,
+            "message": item.message,
+            "type": item.type,
+            "is_read": item.is_read,
+            "created_at": item.created_at,
+        }
+        for item in notifications if not item.is_read
+    ]
+
+    all_notifications = [
+        {
+            "id": item.id,
+            "student_id": item.student_id,
+            "title": item.title,
+            "message": item.message,
+            "type": item.type,
+            "is_read": item.is_read,
+            "created_at": item.created_at,
+        }
+        for item in notifications
+    ]
+
+    return {
+        "student_id": student_id,
+        "unreadCount": len(unread_notifications),
+        "unread_count": len(unread_notifications),
+        "unreadNotifications": unread_notifications,
+        "unread_notifications": unread_notifications,
+        "allNotifications": all_notifications,
+        "notifications": all_notifications,
+    }
+
+
+@app.post("/api/student/notifications/mark-all-read")
+def mark_all_student_notifications_read(student_id: str, db: Session = Depends(get_db)):
+    validated_student_id = _validate_student_id(db, student_id)
+    student = db.query(Student).filter(Student.student_id == validated_student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    unread_notifications = db.query(Notification).filter(
+        Notification.student_id == student_id,
+        Notification.is_read.is_(False),
+    ).all()
+
+    for notification in unread_notifications:
+        notification.is_read = True
+
+    db.commit()
+
+    return {
+        "success": True,
+        "student_id": student_id,
+        "updatedCount": len(unread_notifications),
+        "updated_count": len(unread_notifications),
+    }
 
 
 @app.post("/api/student/notifications")
 def create_student_notification(request: NotificationCreate, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == request.student_id).first()
+    validated_student_id = _validate_student_id(db, request.student_id)
+    student = db.query(Student).filter(Student.student_id == validated_student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
@@ -1506,7 +1640,9 @@ def create_student_notification(request: NotificationCreate, db: Session = Depen
 
     notification = Notification(
         student_id=request.student_id,
+        title=request.title.strip() if request.title and request.title.strip() else None,
         message=notification_text,
+        type=request.type or "system",
         is_read=False,
     )
     db.add(notification)
@@ -1518,11 +1654,170 @@ def create_student_notification(request: NotificationCreate, db: Session = Depen
         "notification": {
             "id": notification.id,
             "student_id": notification.student_id,
+            "title": notification.title,
             "message": notification.message,
+            "type": notification.type,
             "is_read": notification.is_read,
             "created_at": notification.created_at,
         },
     }
+
+
+@app.get("/api/student/messages/chat-history")
+def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Depends(get_db)):
+    sender = db.query(Student).filter(Student.student_id == sender_id).first()
+    receiver = db.query(Student).filter(Student.student_id == receiver_id).first()
+    if not sender or not receiver:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    chat_messages = (
+        db.query(Message)
+        .filter(
+            (
+                (Message.sender_id == sender_id) & (Message.receiver_id == receiver_id)
+            ) | (
+                (Message.sender_id == receiver_id) & (Message.receiver_id == sender_id)
+            )
+        )
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+
+    unread_messages = [
+        message for message in chat_messages
+        if message.receiver_id == sender_id and not message.is_read
+    ]
+    for message in unread_messages:
+        message.is_read = True
+
+    db.commit()
+
+    return {
+        "sender_id": sender_id,
+        "receiver_id": receiver_id,
+        "chatHistory": [
+            {
+                "id": message.id,
+                "sender_id": message.sender_id,
+                "receiver_id": message.receiver_id,
+                "product_id": message.product_id,
+                "message_text": message.message_text,
+                "is_read": message.is_read,
+                "created_at": message.created_at,
+            }
+            for message in chat_messages
+        ],
+        "messages": [
+            {
+                "id": message.id,
+                "sender_id": message.sender_id,
+                "receiver_id": message.receiver_id,
+                "product_id": message.product_id,
+                "message_text": message.message_text,
+                "is_read": message.is_read,
+                "created_at": message.created_at,
+            }
+            for message in chat_messages
+        ],
+    }
+
+
+@app.post("/api/student/messages/send")
+def send_student_message(request: SendMessageRequest, db: Session = Depends(get_db)):
+    validated_sender_id = _validate_student_id(db, request.sender_id, field_name="sender_id")
+    validated_receiver_id = _validate_student_id(db, request.receiver_id, field_name="receiver_id")
+    sender = db.query(Student).filter(Student.student_id == validated_sender_id).first()
+    receiver = db.query(Student).filter(Student.student_id == validated_receiver_id).first()
+    if not sender or not receiver:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    if not request.message_text or not request.message_text.strip():
+        raise HTTPException(status_code=400, detail="Message text is required.")
+
+    if request.product_id is not None:
+        product = db.query(Product).filter(Product.id == request.product_id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found.")
+
+    existing_incoming_messages = db.query(Message).filter(
+        Message.sender_id == request.receiver_id,
+        Message.receiver_id == request.sender_id,
+        Message.is_read.is_(False),
+    ).all()
+    for message in existing_incoming_messages:
+        message.is_read = True
+
+    chat_message = Message(
+        sender_id=request.sender_id,
+        receiver_id=request.receiver_id,
+        product_id=request.product_id,
+        message_text=request.message_text.strip(),
+        is_read=False,
+    )
+    db.add(chat_message)
+    db.commit()
+    db.refresh(chat_message)
+
+    return {
+        "success": True,
+        "message": "Message sent successfully",
+        "chatMessage": {
+            "id": chat_message.id,
+            "sender_id": chat_message.sender_id,
+            "receiver_id": chat_message.receiver_id,
+            "product_id": chat_message.product_id,
+            "message_text": chat_message.message_text,
+            "is_read": chat_message.is_read,
+            "created_at": chat_message.created_at,
+        },
+        "readReceiptUpdated": len(existing_incoming_messages),
+        "read_receipt_updated": len(existing_incoming_messages),
+    }
+
+
+def _resolve_pickup_location(db: Session, product: Optional[Product]) -> str:
+    if not product:
+        return "Student Center"
+
+    combined_text = f"{product.category or ''} {product.subcategory or ''} {product.title or ''}".lower()
+    if any(token in combined_text for token in ["book", "textbook", "course", "study", "notebook"]):
+        return "Campus Bookstore"
+    if any(token in combined_text for token in ["phone", "laptop", "computer", "tablet", "device", "electronic", "gadget"]):
+        return "ICT Service Desk"
+    if any(token in combined_text for token in ["lab", "science", "equipment", "instrument", "chemistry", "biology", "physics"]):
+        return "Science Block Store"
+    if any(token in combined_text for token in ["bag", "clothes", "shoe", "fashion", "accessory"]):
+        return "Student Center"
+    return "Student Center"
+
+
+def _build_order_timeline(order_status: Optional[str], pickup_location: str) -> List[Dict[str, object]]:
+    normalized = _normalize_order_status(order_status)
+    steps = [
+        "Order Placed",
+        "Processing",
+        f"Ready for Pickup at {pickup_location}",
+        "Completed",
+    ]
+
+    index_map = {
+        "Pending": 0,
+        "Order Placed": 0,
+        "Processing": 1,
+        "Ready for Pickup": 2,
+        "Out for Delivery": 2,
+        "Completed": 3,
+    }
+
+    current_index = index_map.get(normalized, 0)
+    timeline = []
+    for i, step in enumerate(steps):
+        timeline.append({
+            "label": step,
+            "completed": i <= current_index,
+            "current": i == current_index,
+        })
+    return timeline
 
 
 # 7. የተማሪ ዊሽሊስት የተለጠፈ ኤፒአይ (GET /api/student/wishlist)
@@ -1559,12 +1854,476 @@ def get_student_wishlist(student_id: str, db: Session = Depends(get_db)):
     return result
 
 
+@app.get("/api/student/cart")
+def get_student_cart(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    cart_items = (
+        db.query(CartItem)
+        .filter(CartItem.student_id == student_id)
+        .order_by(CartItem.created_at.desc())
+        .all()
+    )
+
+    items = []
+    total_quantity = 0
+    for item in cart_items:
+        product = db.query(Product).filter(Product.id == item.product_id).first()
+        if not product:
+            continue
+
+        quantity = int(item.quantity or 1)
+        total_quantity += quantity
+        items.append({
+            "id": item.id,
+            "student_id": item.student_id,
+            "product_id": item.product_id,
+            "quantity": quantity,
+            "created_at": item.created_at,
+            "title": product.title,
+            "price": product.price,
+            "description": product.description,
+            "image": product.image,
+            "category": product.category,
+            "subcategory": product.subcategory,
+            "seller": product.seller,
+            "status": product.status,
+        })
+
+    wishlist_item_count = db.query(WishlistItem).filter(WishlistItem.student_id == student_id).count()
+    meta = {
+        "cart_item_count": total_quantity,
+        "wishlist_item_count": wishlist_item_count,
+        "cart_count": total_quantity,
+        "wishlist_count": wishlist_item_count,
+        "total_items": total_quantity,
+    }
+
+    return {"items": items, "meta": meta}
+
+
+@app.post("/api/student/cart")
+def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
+    raw_student_id = data.student_id
+    normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
+
+    if not normalized_student_id:
+        raise HTTPException(status_code=400, detail="student_id is required.")
+
+    admin_user = db.query(Admin).filter(
+        or_(Admin.username == normalized_student_id, Admin.email == normalized_student_id)
+    ).first()
+    if admin_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid student_id. Please provide a valid student ID, not an admin username."
+        )
+
+    student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
+    if not student:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid student_id. The student does not exist in the students table."
+        )
+
+    product = db.query(Product).filter(Product.id == data.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    existing_cart_item = (
+        db.query(CartItem)
+        .filter(
+            CartItem.student_id == normalized_student_id,
+            CartItem.product_id == data.product_id,
+        )
+        .first()
+    )
+    wishlist_item = (
+        db.query(WishlistItem)
+        .filter(
+            WishlistItem.student_id == normalized_student_id,
+            WishlistItem.product_id == data.product_id,
+        )
+        .first()
+    )
+
+    moved_from_wishlist = False
+    message = "Item added to cart."
+
+    try:
+        if wishlist_item:
+            if existing_cart_item:
+                existing_cart_item.quantity = (existing_cart_item.quantity or 1) + 1
+                cart_item = existing_cart_item
+            else:
+                cart_item = CartItem(
+                    student_id=data.student_id,
+                    product_id=data.product_id,
+                    quantity=1,
+                )
+                db.add(cart_item)
+
+            db.delete(wishlist_item)
+            db.commit()
+            db.refresh(cart_item)
+            moved_from_wishlist = True
+            message = "Item moved from wishlist to cart."
+        else:
+            if existing_cart_item:
+                existing_cart_item.quantity = (existing_cart_item.quantity or 1) + 1
+                cart_item = existing_cart_item
+                db.commit()
+                db.refresh(cart_item)
+                message = "Cart quantity updated."
+            else:
+                cart_item = CartItem(
+                    student_id=data.student_id,
+                    product_id=data.product_id,
+                    quantity=1,
+                )
+                db.add(cart_item)
+                db.commit()
+                db.refresh(cart_item)
+                message = "Item added to cart."
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not update cart.")
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Unexpected error while updating cart.")
+
+    cart_count = db.query(CartItem).filter(CartItem.student_id == data.student_id).count()
+    wishlist_count = db.query(WishlistItem).filter(WishlistItem.student_id == data.student_id).count()
+
+    return {
+        "message": message,
+        "moved_from_wishlist": moved_from_wishlist,
+        "item": {
+            "id": cart_item.id,
+            "student_id": cart_item.student_id,
+            "product_id": cart_item.product_id,
+            "quantity": cart_item.quantity,
+        },
+        "cart_count": cart_count,
+        "wishlist_count": wishlist_count,
+        "cart_item_count": cart_count,
+        "wishlist_item_count": wishlist_count,
+        "meta": {
+            "cart_count": cart_count,
+            "wishlist_count": wishlist_count,
+        },
+    }
+
+
+@app.put("/api/student/cart/{item_id}/quantity")
+def update_student_cart_item_quantity(item_id: int, payload: CartItemQuantityUpdate, db: Session = Depends(get_db)):
+    new_quantity = payload.quantity
+    if new_quantity is None:
+        raise HTTPException(status_code=400, detail="quantity is required.")
+
+    try:
+        new_quantity = int(new_quantity)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="quantity must be an integer.")
+
+    cart_item = db.query(CartItem).filter(CartItem.id == item_id).first()
+    if not cart_item:
+        raise HTTPException(status_code=404, detail="Cart item not found.")
+
+    if new_quantity <= 0:
+        db.delete(cart_item)
+        db.commit()
+        return {
+            "message": "Cart item removed.",
+            "deleted": True,
+            "item": {
+                "id": cart_item.id,
+                "student_id": cart_item.student_id,
+                "product_id": cart_item.product_id,
+                "quantity": 0,
+            },
+        }
+
+    cart_item.quantity = new_quantity
+    db.commit()
+    db.refresh(cart_item)
+
+    return {
+        "message": "Cart item quantity updated.",
+        "deleted": False,
+        "item": {
+            "id": cart_item.id,
+            "student_id": cart_item.student_id,
+            "product_id": cart_item.product_id,
+            "quantity": cart_item.quantity,
+        },
+    }
+
+
+@app.post("/api/student/cart/checkout")
+def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == data.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    cart_items = db.query(CartItem).filter(CartItem.student_id == data.student_id).all()
+    if not cart_items:
+        raise HTTPException(status_code=400, detail="Cart is empty.")
+
+    cart_total = Decimal("0.00")
+    order_payload = []
+
+    for cart_item in cart_items:
+        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+        if not product:
+            continue
+
+        unit_price_etb = Decimal(str(_parse_price_to_etb(product.price)))
+        cart_total += unit_price_etb * Decimal(int(cart_item.quantity or 1))
+
+    current_wallet_balance = Decimal(str(student.wallet_balance or 0))
+    if current_wallet_balance < cart_total:
+        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
+
+    student.wallet_balance = current_wallet_balance - cart_total
+
+    for cart_item in cart_items:
+        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+        if not product:
+            continue
+
+        order = Order(
+            student_id=data.student_id,
+            product_id=product.id,
+            title=product.title,
+            price=product.price,
+            status="Processing",
+        )
+        db.add(order)
+        db.flush()
+        order_payload.append({
+            "id": order.id,
+            "student_id": order.student_id,
+            "product_id": order.product_id,
+            "title": order.title,
+            "status": order.status,
+            "price": order.price,
+        })
+
+    tx_id = f"TX-{uuid.uuid4().hex[:8].upper()}"
+    transaction = Transaction(
+        student_id=data.student_id,
+        tx_id=tx_id,
+        type="Purchase",
+        amount=cart_total,
+        description="Cart checkout",
+        status="Successful",
+    )
+    db.add(transaction)
+
+    for cart_item in cart_items:
+        db.delete(cart_item)
+
+    db.commit()
+
+    return {
+        "message": "Checkout successful.",
+        "total": float(cart_total),
+        "wallet_balance": float(student.wallet_balance),
+        "orders": order_payload,
+    }
+
+
+@app.get("/api/student/orders")
+def get_student_orders(student_id: str, db: Session = Depends(get_db)):
+    _validate_student_id(db, student_id, field_name="student_id")
+
+    rows = db.execute(text("""
+        SELECT
+            o.id,
+            o.student_id,
+            o.product_id,
+            o.title,
+            o.price,
+            o.status,
+            o.created_at,
+            COALESCE(o.pickup_location, '') AS pickup_location,
+            COALESCE(o.payment_status, 'Successful') AS payment_status,
+            COALESCE(o.reviewed, FALSE) AS reviewed
+        FROM orders o
+        WHERE o.student_id = :student_id
+        ORDER BY o.created_at DESC
+    """), {"student_id": student_id}).mappings().all()
+
+    result = []
+    for row in rows:
+        product = db.query(Product).filter(Product.id == row["product_id"]).first()
+        pickup_location = (row["pickup_location"] or "").strip() or _resolve_pickup_location(db, product)
+        payment_status = _normalize_payment_status(row["payment_status"] or "Successful")
+        seller_name = product.seller if product and product.seller else "Campus Seller"
+
+        result.append({
+            "id": row["id"],
+            "student_id": row["student_id"],
+            "product_id": row["product_id"],
+            "title": row["title"] or (product.title if product else "Campus Purchase"),
+            "status": _normalize_order_status(row["status"] or "Processing"),
+            "fulfillment_status": _normalize_order_status(row["status"] or "Processing"),
+            "price": row["price"],
+            "created_at": row["created_at"],
+            "pickup_location": pickup_location,
+            "payment_status": payment_status,
+            "seller_name": seller_name,
+            "seller": seller_name,
+            "reviewed": bool(row["reviewed"]),
+        })
+
+    return result
+
+
+@app.post("/api/student/review")
+def submit_student_review(payload: ReviewCreate, db: Session = Depends(get_db)):
+    _validate_student_id(db, payload.student_id, field_name="student_id")
+
+    order = db.query(Order).filter(Order.id == payload.order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+
+    if str(order.student_id) != str(payload.student_id):
+        raise HTTPException(status_code=403, detail="You can only review your own order.")
+
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5.")
+
+    if not payload.comment or not payload.comment.strip():
+        raise HTTPException(status_code=400, detail="Review comment is required.")
+
+    try:
+        existing_review = db.query(Review).filter(
+            Review.order_id == payload.order_id,
+            Review.student_id == payload.student_id,
+        ).first()
+
+        if existing_review:
+            existing_review.rating = payload.rating
+            existing_review.comment = payload.comment.strip()
+            review_record = existing_review
+        else:
+            review_record = Review(
+                order_id=payload.order_id,
+                student_id=payload.student_id,
+                rating=payload.rating,
+                comment=payload.comment.strip(),
+            )
+            db.add(review_record)
+
+        db.execute(text("UPDATE orders SET reviewed = TRUE, payment_status = 'Successful' WHERE id = :order_id"), {"order_id": payload.order_id})
+        db.commit()
+        db.refresh(review_record)
+
+        return {
+            "success": True,
+            "message": "Review submitted successfully.",
+            "review_id": review_record.id,
+            "order_id": payload.order_id,
+            "reviewed": True,
+        }
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Could not submit review: {str(exc)}") from exc
+
+
+@app.get("/api/student/payments")
+def get_student_payments(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.student_id == student_id)
+        .order_by(Transaction.created_at.desc())
+        .all()
+    )
+
+    recent_tx = "No transactions yet"
+    recent_tx_record = transactions[0] if transactions else None
+    if recent_tx_record:
+        recent_tx = recent_tx_record.description or f"{recent_tx_record.type} — {recent_tx_record.tx_id}"
+
+    ledger = []
+    for tx in transactions[:20]:
+        amount = float(tx.amount or 0)
+        ledger.append({
+            "id": tx.id,
+            "type": tx.type,
+            "label": tx.description or tx.type,
+            "amount": amount,
+            "status": tx.status,
+            "date": tx.created_at.strftime("%Y-%m-%d") if tx.created_at else None,
+            "hash": tx.tx_id,
+        })
+
+    return {
+        "balance": float(student.wallet_balance or 0),
+        "recentTx": recent_tx,
+        "transactions": ledger,
+    }
+
+
+@app.get("/api/student/orders/tracker")
+def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
+    orders = (
+        db.query(Order)
+        .filter(Order.student_id == student_id)
+        .order_by(Order.created_at.desc())
+        .all()
+    )
+
+    order_payload = []
+    for order in orders:
+        product = db.query(Product).filter(Product.id == order.product_id).first()
+        pickup_location = _resolve_pickup_location(db, product)
+        timeline = _build_order_timeline(order.status, pickup_location)
+        order_payload.append({
+            "id": order.id,
+            "title": order.title or (product.title if product else "Campus Purchase"),
+            "status": order.status,
+            "price": order.price,
+            "pickup_location": pickup_location,
+            "timeline": timeline,
+            "created_at": order.created_at,
+        })
+
+    return {"orders": order_payload}
+
+
 # 8. ተማሪ ዊሽሊስት ዉስጥ እቃ ማስገባት (POST /api/student/wishlist)
 @app.post("/api/student/wishlist", status_code=status.HTTP_201_CREATED)
 def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == wishlist_data.student_id).first()
+    raw_student_id = wishlist_data.student_id
+    normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
+
+    if not normalized_student_id:
+        raise HTTPException(status_code=400, detail="student_id is required.")
+
+    admin_user = db.query(Admin).filter(
+        or_(Admin.username == normalized_student_id, Admin.email == normalized_student_id)
+    ).first()
+    if admin_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid student_id. Please provide a valid student ID, not an admin username."
+        )
+
+    student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
     if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid student_id. The student does not exist in the students table."
+        )
 
     product = db.query(Product).filter(Product.id == wishlist_data.product_id).first()
     if not product:
@@ -1573,7 +2332,7 @@ def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(ge
     existing_item = (
         db.query(WishlistItem)
         .filter(
-            WishlistItem.student_id == wishlist_data.student_id,
+            WishlistItem.student_id == normalized_student_id,
             WishlistItem.product_id == wishlist_data.product_id,
         )
         .first()
@@ -2854,6 +3613,9 @@ class ReviewCreate(BaseModel):
 class CartItemCreate(BaseModel):
     student_id: str
     product_id: int
+
+class CartItemQuantityUpdate(BaseModel):
+    quantity: int
 
 # University Structure: All 6 Colleges and their Departments
 UNIVERSITY_STRUCTURE = {

@@ -1,20 +1,21 @@
 ﻿import { useState, useEffect } from 'react';
 import ProductDetails from './ProductDetails';
-import desktop1 from '../../assets/desktop1.jpg';
-import laptop586 from '../../assets/laptop_586.webp';
-import monitorImg from '../../assets/monitor.jpg';
-import phone1 from '../../assets/phone1.jpg';
-import phone2 from '../../assets/phone2.jpg';
-import successImg from '../../assets/success.jpg';
+import c5 from '../../assets/c5.jpg';
+import c2 from '../../assets/c2.jpg';
+import c3 from '../../assets/c3.jpg';
+import c4 from '../../assets/c4.jpg';
+import c6 from '../../assets/c6.jpg';
+import c7 from '../../assets/c7.jpg';
 
 const bannerImages = [
-  desktop1,
-  laptop586,
-  monitorImg,
-  phone1,
-  phone2,
-  successImg
+  c5,
+  c2,
+  c3,
+  c4,
+  c6,
+  c7
 ];
+
 
 const defaultCategories = [
   {
@@ -419,19 +420,30 @@ function HomeView({ onAction, user }) {
         throw new Error('Failed to load categories');
       }
       const data = await response.json();
-      setCategories(data || []);
+      const normalizedCategories = (Array.isArray(data) ? data : []).map((category) => ({
+        ...category,
+        items: Array.isArray(category.sub_categories)
+          ? category.sub_categories.map((subCategory) => ({
+            name: subCategory.name,
+            icon: subCategory.icon || '📦',
+            adsCount: subCategory.adsCount || `${subCategory.count || 0} ads`,
+          }))
+          : Array.isArray(category.items) ? category.items : [],
+      }));
+      setCategories(normalizedCategories.length ? normalizedCategories : defaultCategories);
     } catch (error) {
       console.error('Category fetch error:', error);
       setCategories(defaultCategories);
     }
   };
 
-  const fetchProducts = async ({ search, category, subcategory } = {}) => {
+  const fetchProducts = async ({ search, category, subcategory, department } = {}) => {
     try {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
       if (category) params.set('category', category);
       if (subcategory) params.set('subcategory', subcategory);
+      if (department) params.set('department', department);
 
       const url = params.toString()
         ? `http://127.0.0.1:8000/api/products?${params.toString()}`
@@ -441,7 +453,7 @@ function HomeView({ onAction, user }) {
         throw new Error('Failed to load products');
       }
       const data = await response.json();
-      setSearchResults(data || []);
+      setSearchResults(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Product fetch error:', error);
       setSearchResults([]);
@@ -451,34 +463,41 @@ function HomeView({ onAction, user }) {
   useEffect(() => {
     const loadInitialData = async () => {
       setLoading(true);
-      await Promise.all([fetchCategories(), fetchProducts()]);
+      const department = user?.department || user?.college || user?.departmentName || '';
+      await Promise.all([
+        fetchCategories(),
+        fetchProducts({ department: department || undefined }),
+      ]);
       setLoading(false);
     };
     loadInitialData();
-  }, []);
+  }, [user?.department, user?.college, user?.departmentName]);
 
   const handleSearch = async (e) => {
     e?.preventDefault();
     const trimmedSearch = searchQuery.trim();
+    const department = user?.department || user?.college || user?.departmentName || '';
     if (!trimmedSearch) {
-      await fetchProducts();
+      await fetchProducts({ department: department || undefined });
       setSearchedTitle('All Products');
       return;
     }
-    await fetchProducts({ search: trimmedSearch });
+    await fetchProducts({ search: trimmedSearch, department: department || undefined });
     setSearchedTitle(`Results for "${trimmedSearch}"`);
   };
 
   const handleCategoryClick = async (categoryName) => {
     setSearchQuery('');
-    await fetchProducts({ category: categoryName });
+    const department = user?.department || user?.college || user?.departmentName || '';
+    await fetchProducts({ category: categoryName, department: department || undefined });
     setSearchedTitle(categoryName);
     setHoveredCategoryId(null);
   };
 
   const handleSubCategoryClick = async (subCategoryName, categoryName) => {
     setSearchQuery(subCategoryName);
-    await fetchProducts({ subcategory: subCategoryName });
+    const department = user?.department || user?.college || user?.departmentName || '';
+    await fetchProducts({ subcategory: subCategoryName, department: department || undefined });
     setSearchedTitle(`${categoryName} > ${subCategoryName}`);
     setHoveredCategoryId(null);
   };
@@ -500,7 +519,7 @@ function HomeView({ onAction, user }) {
           }}
         />
       ) : (
-        <div className="space-y-6">
+        <div className="space-y-6 pt-20">
           <section className="group w-screen relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
             {bannerImages.map((src, index) => (
               <img
@@ -566,7 +585,7 @@ function HomeView({ onAction, user }) {
           </div>
 
           <div className="grid gap-8 lg:grid-cols-[280px_1fr]">
-            <aside className="lg:sticky lg:top-6 h-fit z-30" onMouseLeave={() => setHoveredCategoryId(null)}>
+            <aside className="lg:sticky lg:top-[88px] z-30 h-fit lg:overflow-visible" onMouseLeave={() => setHoveredCategoryId(null)}>
               <div className="rounded-[24px] border border-slate-200 bg-white shadow-sm min-h-[500px]">
                 <h3 className="m-4 text-md font-bold text-slate-900 border-b pb-2">Directory</h3>
                 <ul className="divide-y divide-slate-100">

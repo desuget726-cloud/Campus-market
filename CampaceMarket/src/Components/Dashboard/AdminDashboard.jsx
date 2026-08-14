@@ -4742,13 +4742,13 @@ function AdminDashboard({ onLogout }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="flex min-h-screen flex-col gap-6 px-4 py-6 lg:flex-row lg:px-8">
+    <div className="min-h-screen bg-slate-50 text-slate-900 pt-20">
+      <div className="flex min-h-screen flex-col gap-6 px-4 py-6 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-8">
 
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className={`
           fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-[#111c3a] p-6 text-white shadow-xl transition-all duration-300 ease-in-out
-          lg:static lg:translate-x-0
+          lg:static lg:translate-x-0 lg:h-full lg:overflow-visible lg:shrink-0 lg:shadow-none lg:inset-auto lg:left-auto lg:inset-y-auto
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:w-72 lg:ml-0'}
         `}>
           <div className="mb-8 flex items-center justify-between">
@@ -4800,7 +4800,7 @@ function AdminDashboard({ onLogout }) {
         )}
 
         {/* Main Panel Content Area */}
-        <main className="flex-1">
+        <main className="flex-1 lg:h-full lg:overflow-y-auto lg:pr-2">
           <div className="mb-6 flex flex-col gap-4 rounded-[32px] bg-white p-6 text-slate-950 shadow-sm border border-slate-200/40">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-4">

@@ -3,6 +3,7 @@ import logo1 from '../../assets/logo1.jpg';
 
 function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const isAuthenticatedDashboardView = Boolean(user) && (userRole === 'admin' || userRole === 'student' || user?.role === 'admin' || user?.role === 'student');
 
   return (
     <header className="bg-blue-600 text-white border-b border-blue-700 sticky top-0 z-[999]">
@@ -19,17 +20,18 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Navigation Links */}
         <nav className="hidden md:flex items-center gap-6">
-          <button onClick={() => onNavigate('home')} className="text-sm font-semibold text-white hover:text-blue-200 transition">Home</button>
-          <button onClick={() => onNavigate('about')} className="text-sm font-semibold text-white hover:text-blue-200 transition">About</button>
-          <button onClick={() => onNavigate('services')} className="text-sm font-semibold text-white hover:text-blue-200 transition">Services</button>
-          <button onClick={() => onNavigate('contact')} className="text-sm font-semibold text-white hover:text-blue-200 transition">Contact</button>
+          <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">Home</button>
+          <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">About</button>
+          <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">Services</button>
+          <button onClick={() => onNavigate('contact')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">Contact</button>
+
           {user && (
             <button
               type="button"
               onClick={() => onNavigate(userRole === 'admin' ? 'admin-dashboard' : 'student-dashboard')}
               className="text-xs font-bold text-blue-600 bg-white px-4 py-1.5 rounded-full hover:bg-blue-50 transition shadow-sm"
             >
-              Dashboard
+              DASHBOARD
             </button>
           )}
         </nav>

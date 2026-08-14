@@ -25,6 +25,8 @@ class Student(Base):
     # 1. ሬላሽንሺፖቹ በምን አምድ በኩል መገናኘት እንዳለባቸው በ "primaryjoin" በግልጽ አስቀምጠነዋል
     reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student", cascade="all, delete-orphan")
     notifications = relationship("Notification", primaryjoin="Student.student_id == Notification.student_id", back_populates="student", cascade="all, delete-orphan")
+    messages_sent = relationship("Message", foreign_keys="Message.sender_id", back_populates="sender", cascade="all, delete-orphan")
+    messages_received = relationship("Message", foreign_keys="Message.receiver_id", back_populates="receiver", cascade="all, delete-orphan")
     wishlist_items = relationship("WishlistItem", primaryjoin="Student.student_id == WishlistItem.student_id", back_populates="student", cascade="all, delete-orphan")
     cart_items = relationship("CartItem", primaryjoin="Student.student_id == CartItem.student_id", back_populates="student", cascade="all, delete-orphan")
     orders = relationship("Order", primaryjoin="Student.student_id == Order.student_id", back_populates="student", cascade="all, delete-orphan")
@@ -68,6 +70,7 @@ class Product(Base):
     wishlist_items = relationship("WishlistItem", back_populates="product", cascade="all, delete-orphan")
     cart_items = relationship("CartItem", back_populates="product", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="product", cascade="all, delete-orphan")
+    messages = relationship("Message", back_populates="product", cascade="all, delete-orphan")
 
 class WishlistItem(Base):
     __tablename__ = "wishlist_items"
@@ -190,11 +193,30 @@ class Notification(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(200), nullable=True)
     message = Column(String(500), nullable=False)
     is_read = Column(Boolean, default=False, nullable=False)
+    type = Column(String(50), nullable=False, default="system")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Notification.student_id == Student.student_id", back_populates="notifications")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sender_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    receiver_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True)
+    message_text = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    sender = relationship("Student", foreign_keys=[sender_id], back_populates="messages_sent")
+    receiver = relationship("Student", foreign_keys=[receiver_id], back_populates="messages_received")
+    product = relationship("Product", back_populates="messages")
+
 
 class PasswordReset(Base):
     __tablename__ = "password_resets"
