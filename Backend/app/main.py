@@ -27,6 +27,9 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
 from .models import Student, Category, SubCategory, Product, Admin, AuditLog, Report, Notification, Message, WishlistItem, CartItem, Order, Transaction, PasswordReset, SystemSetting
@@ -585,6 +588,12 @@ class CheckoutRequest(BaseModel):
 
 class AIChatRequest(BaseModel):
     message: str
+
+class AIAdvisorRequest(BaseModel):
+    message: str
+    student_id: Optional[str] = None
+    department: Optional[str] = None
+    context: Optional[str] = "general"  # 'academic_defense', 'general', etc.
 
 class ReviewCreate(BaseModel):
     order_id: int
@@ -1404,8 +1413,399 @@ def ai_chat(chat_request: AIChatRequest, db: Session = Depends(get_db)):
     return {"reply": reply}
 
 
+# ============ AI ADVISOR HELPER FUNCTIONS ============
+
+def detect_intent(message: str) -> str:
+    """
+    Detect user intent from message:
+    - 'buy': Looking for products to purchase
+    - 'sell': Asking for pricing/selling advice
+    - 'general': General campus questions
+    """
+    message_lower = message.lower()
+    
+    # Selling/Pricing intent indicators
+    sell_keywords = ['sell', 'price', 'how much', 'worth', 'cost', 'value', 'should i sell', 
+                     'selling', 'what price', 'rate', 'negotiat', 'bid', 'offer']
+    
+    # Buying/Finding intent indicators
+    buy_keywords = ['find', 'buy', 'purchase', 'where', 'show', 'list', 'available', 'have', 
+                    'get', 'recommend', 'suggest', 'need', 'looking for', 'search']
+    
+    sell_count = sum(1 for kw in sell_keywords if kw in message_lower)
+    buy_count = sum(1 for kw in buy_keywords if kw in message_lower)
+    
+    if sell_count > buy_count and sell_count > 0:
+        return 'sell'
+    elif buy_count > 0:
+        return 'buy'
+    else:
+        return 'general'
+
+
+def extract_keywords(message: str) -> List[str]:
+    """Extract product search keywords from message."""
+    # Remove common words
+    stopwords = {'the', 'a', 'an', 'and', 'or', 'is', 'are', 'for', 'to', 'from', 
+                 'in', 'on', 'under', 'over', 'should', 'i', 'me', 'my', 'etb', 
+                 'birr', 'how', 'much', 'sell', 'buy', 'find', 'show', 'list'}
+    
+    # Clean and tokenize
+    words = re.findall(r'\b[a-z]+\b', message.lower())
+    keywords = [w for w in words if w not in stopwords and len(w) > 2]
+    
+    return keywords
+
+
+def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tuple[Product, float]]:
+    """
+    Calculate TF-IDF similarity between query and product titles/descriptions.
+    Returns products sorted by relevance score.
+    """
+    if not products:
+        return []
+    
+    # Combine title and description for each product
+    product_texts = [f"{p.title} {p.description or ''}" for p in products]
+    
+    # Create TF-IDF vectorizer
+    try:
+        vectorizer = TfidfVectorizer(lowercase=True, stop_words='english', max_features=100)
+        all_texts = [query] + product_texts
+        tfidf_matrix = vectorizer.fit_transform(all_texts)
+        
+        # Calculate cosine similarity with query (first row)
+        query_vector = tfidf_matrix[0:1]
+        product_vectors = tfidf_matrix[1:]
+        
+        similarities = cosine_similarity(query_vector, product_vectors)[0]
+        
+        # Pair products with scores and sort
+        scored_products = list(zip(products, similarities))
+        scored_products.sort(key=lambda x: x[1], reverse=True)
+        
+        return scored_products
+    except Exception as e:
+        logging.error(f"TF-IDF calculation error: {str(e)}")
+        # Fallback: return products in original order
+        return [(p, 0.5) for p in products]
+
+
+def search_products_by_intent(db: Session, message: str, intent: str, department: str = None) -> List[Product]:
+    """
+    Search MySQL database for products matching the user's intent.
+    Filter by status='Approved' and optionally by department.
+    """
+    try:
+        keywords = extract_keywords(message)
+        
+        if not keywords:
+            # Generic fallback search
+            query = db.query(Product).filter(Product.status == 'Approved')
+        else:
+            # Build query with keyword matching
+            keyword_filters = []
+            for keyword in keywords[:5]:  # Limit to 5 keywords
+                keyword_filters.append(Product.title.ilike(f"%{keyword}%"))
+                keyword_filters.append(Product.description.ilike(f"%{keyword}%"))
+                keyword_filters.append(Product.category.ilike(f"%{keyword}%"))
+            
+            query = db.query(Product).filter(
+                Product.status == 'Approved',
+                or_(*keyword_filters)
+            )
+        
+        # Department-specific filtering for personalized results
+        if department:
+            query = query.order_by(Product.created_at.desc())
+        else:
+            query = query.order_by(Product.created_at.desc())
+        
+        products = query.limit(20).all()
+        
+        # Rank by TF-IDF similarity if we have results
+        if products and keywords:
+            query_text = ' '.join(keywords)
+            ranked = calculate_tf_idf_similarity(query_text, products)
+            return [p for p, score in ranked if score > 0.1][:10]  # Top 10 relevant
+        
+        return products[:10]
+    except Exception as e:
+        logging.error(f"Product search error: {str(e)}")
+        return []
+
+
+def calculate_price_recommendation(db: Session, keywords: List[str]) -> Dict:
+    """
+    Calculate price recommendation for sellers.
+    Search for similar products and calculate average price range.
+    """
+    try:
+        # Search for similar approved/sold products
+        similar_products = db.query(Product).filter(
+            Product.status.in_(['Approved', 'Sold'])
+        ).all()
+        
+        # Filter by keyword relevance
+        if keywords and similar_products:
+            scored = calculate_tf_idf_similarity(' '.join(keywords), similar_products)
+            similar_products = [p for p, score in scored if score > 0.15][:20]
+        
+        if not similar_products:
+            return {
+                "status": "no_data",
+                "message": "Not enough similar products in database to calculate recommendation.",
+                "suggestion": "Try listing at a competitive price based on product condition and market demand."
+            }
+        
+        # Extract prices
+        prices = []
+        for p in similar_products:
+            if p.price and isinstance(p.price, (int, float, Decimal)):
+                prices.append(float(p.price))
+        
+        if not prices:
+            return {"status": "error", "message": "Unable to extract price data."}
+        
+        # Calculate price statistics
+        avg_price = np.mean(prices)
+        min_price = np.min(prices)
+        max_price = np.max(prices)
+        std_dev = np.std(prices)
+        
+        # Recommend price range (avg ± 10%)
+        recommended_low = int(avg_price * 0.85)
+        recommended_high = int(avg_price * 1.15)
+        
+        return {
+            "status": "success",
+            "recommended_low": recommended_low,
+            "recommended_high": recommended_high,
+            "average_market_price": int(avg_price),
+            "price_range": f"{recommended_low:,} - {recommended_high:,} ETB",
+            "market_min": int(min_price),
+            "market_max": int(max_price),
+            "similar_products_analyzed": len(prices),
+            "tips": [
+                "✅ Condition matters: Excellent condition justifies higher prices",
+                "✅ Demand: High-demand items (laptops, books) sell faster at premium",
+                "✅ Timing: Semester start/exams increase demand for study materials",
+                "✅ Negotiation: Leave 10-15% room for buyer negotiation",
+                f"✅ Competitiveness: Current market average is {int(avg_price):,} ETB"
+            ]
+        }
+    except Exception as e:
+        logging.error(f"Price calculation error: {str(e)}")
+        return {"status": "error", "message": "Error calculating price recommendation."}
+
+
+def format_products_for_response(products: List[Product]) -> str:
+    """
+    Format products as structured string pattern for frontend parsing.
+    Returns: "[PRODUCT:id:title:price]" patterns that frontend React app can render.
+    """
+    if not products:
+        return ""
+    
+    product_cards = []
+    for p in products:
+        # Format: [PRODUCT:id:title:price]
+        product_string = f"[PRODUCT:{p.id}:{p.title}:{p.price}]"
+        product_cards.append(product_string)
+    
+    return "\n".join(product_cards)
+
+
+# ============ AI ADVISOR ENDPOINT ============
+
+@app.post("/api/ai/advisor")
+def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
+    """
+    Academic Defense AI Advisor endpoint.
+    
+    Features:
+    1. Intent parsing: Detects if user wants to buy/find products or get pricing advice
+    2. Product search: MySQL query with TF-IDF/Cosine Similarity relevance ranking
+    3. Price advice: Analyzes similar products and recommends price range for sellers
+    4. Structured response: Returns products as [PRODUCT:id:title:price] for frontend rendering
+    """
+    message = request.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required.")
+    
+    logger = logging.getLogger("ai_advisor")
+    logger.info(f"[AI ADVISOR] Query from {request.student_id}: {message[:100]}")
+    
+    try:
+        # Step 1: Detect user intent
+        intent = detect_intent(message)
+        keywords = extract_keywords(message)
+        
+        logger.debug(f"[AI ADVISOR] Detected intent: {intent}, Keywords: {keywords}")
+        
+        # Step 2a: BUYING INTENT - Search for products
+        if intent == 'buy':
+            products = search_products_by_intent(
+                db=db,
+                message=message,
+                intent=intent,
+                department=request.department
+            )
+            
+            if products:
+                # Format products as structured cards for frontend
+                product_cards = format_products_for_response(products)
+                
+                reply = f"""🔍 **Search Results for Your Query**
+
+I found {len(products)} relevant products in our database that match your request:
+
+{product_cards}
+
+📌 **Tips:**
+✅ Check product details and seller ratings before contacting
+✅ Ask questions about condition and shipping
+✅ Read reviews from other buyers for similar products
+✅ Consider timing - semester start usually has better deals!
+
+Would you like recommendations in a specific price range or category?"""
+                
+                logger.info(f"[AI ADVISOR] Found {len(products)} products for buying intent")
+                
+                return {
+                    "reply": reply,
+                    "products": [{"id": p.id, "title": p.title, "price": p.price} for p in products],
+                    "intent": intent,
+                    "message_type": "product_search"
+                }
+            else:
+                reply = """❌ **No Matching Products Found**
+
+Unfortunately, I didn't find any products matching your search in our current database.
+
+💡 **Suggestions:**
+✅ Try searching for similar items (e.g., 'electronics' instead of specific brand)
+✅ Be the first to list what you're looking for in the Seller Hub
+✅ Check back soon - new listings are added daily!
+✅ Browse our categories to discover available options
+
+Would you like suggestions for alternative products or categories?"""
+                
+                return {
+                    "reply": reply,
+                    "products": [],
+                    "intent": intent,
+                    "message_type": "no_results"
+                }
+        
+        # Step 2b: SELLING INTENT - Price advice & tips
+        elif intent == 'sell':
+            price_data = calculate_price_recommendation(db, keywords)
+            
+            if price_data["status"] == "success":
+                reply = f"""💰 **AI Price Recommendation for Your Sale**
+
+Based on analysis of {price_data['similar_products_analyzed']} similar products in our marketplace:
+
+**📊 Recommended Price Range: {price_data['price_range']}**
+- Market Average: {price_data['average_market_price']:,} ETB
+- Market Range: {price_data['market_min']:,} - {price_data['market_max']:,} ETB
+
+**🎯 Seller Tips:**
+{chr(10).join(price_data['tips'])}
+
+**Pro Tips for Your Listing:**
+✅ Take clear, well-lit photos from multiple angles
+✅ Write detailed description (condition, age, any defects)
+✅ Mention warranty if applicable
+✅ Respond quickly to inquiries - speeds up sales
+✅ Consider offering delivery options for extra convenience
+
+Ready to list? Head to Seller Hub to post your item! 📱"""
+                
+                logger.info(f"[AI ADVISOR] Price recommendation: {price_data['recommended_low']}-{price_data['recommended_high']}")
+                
+                return {
+                    "reply": reply,
+                    "price_recommendation": price_data,
+                    "intent": intent,
+                    "message_type": "price_advice"
+                }
+            else:
+                reply = """⚠️ **Unable to Calculate Price Recommendation**
+
+""" + price_data.get("message", "An error occurred.") + """
+
+🔍 **Here's what you can do:**
+
+1. **Check similar products manually** in our marketplace for current pricing
+2. **Consider product factors:**
+   - Condition (new, like-new, good, fair)
+   - Age and usage
+   - Market demand (high during semester start/exams)
+   - Brand and model popularity
+   
+3. **Competitive pricing tips:**
+   - Be 5-10% below market average to sell faster
+   - Price premium only if condition is excellent or brand is highly desired
+   - Leave room for negotiation
+
+Ready to list your item? Create a detailed listing in the Seller Hub!"""
+                
+                return {
+                    "reply": reply,
+                    "price_recommendation": None,
+                    "intent": intent,
+                    "message_type": "price_no_data"
+                }
+        
+        # Step 2c: GENERAL - Campus tips & guidance
+        else:
+            reply = """🎓 **Welcome to Campus AI Advisor!**
+
+I'm here to help with your academic defense preparation and campus marketplace needs.
+
+**What I can help with:**
+
+📚 **Find Study Materials & Books**
+- "Find calculus textbooks"
+- "Show me CCI programming books"
+- "Laptops under 25,000 ETB"
+
+💰 **Pricing & Selling Advice**
+- "How much should I sell my Dell laptop for?"
+- "Price recommendation for used HP notebook"
+- "What's the market rate for textbooks?"
+
+🎯 **Defense Preparation Tips**
+- Best study materials for your department
+- Recommended resources and tools
+- Timeline and budgeting advice
+
+**Try asking:**
+- "Find laptops under 25k ETB" → Search our database
+- "How much is a used MacBook worth?" → Get price advice
+- "Show programming books" → Browse available textbooks
+- "Defense tips for Computer Science" → Get expert guidance
+
+How can I help you today? 🚀"""
+            
+            return {
+                "reply": reply,
+                "intent": intent,
+                "message_type": "general_guidance"
+            }
+    
+    except Exception as e:
+        logger.error(f"[AI ADVISOR ERROR] {str(e)}", exc_info=True)
+        return {
+            "reply": f"⚠️ An error occurred while processing your request: {str(e)}. Please try again in a moment.",
+            "intent": "error",
+            "message_type": "error"
+        }
+
+
 # 4.1. አዲስ ተለጠፈ እቃ በተማሪ ወይም ሻጭ የሚፈጠር ኤፒአይ (POST /api/products)
-@app.post("/api/products", status_code=status.HTTP_201_CREATED)
 def create_product(
     title: str = Form(...),
     category: str = Form(...),

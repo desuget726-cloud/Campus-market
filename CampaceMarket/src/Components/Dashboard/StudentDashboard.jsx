@@ -608,6 +608,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     loadSearchDefaults();
   }, [activeTab, buyerTab, user?.department]);
 
+  // Load personalized recommendations for AI Advisor tab
+  useEffect(() => {
+    if (activeTab !== 'ai-advisor') return;
+    if (!user?.department) return;
+
+    const loadAiRecommendations = async () => {
+      try {
+        await fetchProducts({ limit: 12, department: user?.department });
+      } catch (err) {
+        console.error('Error loading AI advisor recommendations:', err);
+      }
+    };
+
+    loadAiRecommendations();
+  }, [activeTab, user?.department]);
+
   useEffect(() => {
     if (initialTab && initialTab !== activeTab) {
       setActiveTab(initialTab);
@@ -1233,20 +1249,40 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setAiInput('');
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/ai/chat', {
+      // Send to Academic Defense AI Advisor endpoint
+      const payload = {
+        message: trimmed,
+        student_id: user?.studentId,
+        department: user?.department,
+        context: 'academic_defense'
+      };
+
+      const res = await fetch('http://127.0.0.1:8000/api/ai/advisor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: trimmed })
+        body: JSON.stringify(payload)
       });
+
       const data = await res.json();
-      if (res.ok) {
+
+      if (res.ok && data.reply) {
+        // AI response with optional product recommendations
         setChatHistory((prev) => [...prev, { role: 'assistant', text: data.reply }]);
+
+        // If advisor included recommendations, update recommended products
+        if (data.recommendations && Array.isArray(data.recommendations)) {
+          setRecommendedProducts(data.recommendations);
+        }
       } else {
-        setChatHistory((prev) => [...prev, { role: 'assistant', text: data.detail || 'Sorry, I could not answer that right now.' }]);
+        const errorMsg = data.detail || data.error || 'Sorry, I could not answer that right now.';
+        setChatHistory((prev) => [...prev, { role: 'assistant', text: errorMsg }]);
       }
     } catch (err) {
-      console.error('AI chat error:', err);
-      setChatHistory((prev) => [...prev, { role: 'assistant', text: 'Connection error. Please try again in a moment.' }]);
+      console.error('AI advisor error:', err);
+      setChatHistory((prev) => [...prev, {
+        role: 'assistant',
+        text: '⚠️ Connection error. Please try again in a moment. Ensure the backend server is running at http://127.0.0.1:8000'
+      }]);
     } finally {
       setIsTyping(false);
     }
@@ -2834,42 +2870,81 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
             {activeTab === 'ai-advisor' && (
               <div className="space-y-6">
+                {/* Main AI Chat Container */}
                 <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                   <div className="flex flex-col gap-4">
+                    {/* Header with Status & Actions */}
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <h3 className="text-xl font-bold text-slate-950">Campus AI Assistant</h3>
-                        <p className="text-sm text-slate-500 mt-1">Ask anything about campus listings, pricing, or student trading tips.</p>
+                        <h3 className="text-xl font-bold text-slate-950">Academic Defense AI Advisor</h3>
+                        <p className="text-sm text-slate-500 mt-1">Expert guidance on study materials, pricing strategies, and campus resources for your defense readiness.</p>
                       </div>
-                      <div className="flex items-center gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="inline-flex items-center rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
-                          Active
+                          🟢 Active
                         </span>
                         <button
                           type="button"
-                          aria-label="Clear chat"
                           onClick={handleClearChat}
-                          className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-lg font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                          className="rounded-full border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition active:scale-95"
+                          title="Clear Chat"
                         >
-                          ×
+                          🗑️ Clear
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleClearChat();
+                            setAiInput('');
+                          }}
+                          className="rounded-full border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition active:scale-95"
+                          title="New Conversation"
+                        >
+                          ✨ New
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const lastAssistantMsg = [...chatHistory].reverse().find(m => m.role === 'assistant');
+                            if (lastAssistantMsg) {
+                              navigator.clipboard.writeText(lastAssistantMsg.text);
+                              alert('Response copied to clipboard!');
+                            }
+                          }}
+                          className="rounded-full border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition active:scale-95"
+                          title="Copy Response"
+                        >
+                          📋 Copy
                         </button>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-2.5">
-                      {suggestedPrompts.map((prompt) => (
+                    {/* Quick-Start Chips - Dynamic Prompts */}
+                    <div className="space-y-3">
+                      <p className="text-xs font-bold uppercase tracking-[0.1em] text-slate-500">Quick Start Prompts</p>
+                      <div className="flex flex-wrap gap-2">
+                        {suggestedPrompts.map((prompt) => (
+                          <button
+                            key={prompt}
+                            type="button"
+                            onClick={() => handleAiSend(prompt)}
+                            className="group rounded-full border-2 border-sky-200 bg-gradient-to-br from-sky-50 to-sky-100 px-4 py-2.5 text-xs font-semibold text-sky-700 shadow-sm hover:shadow-lg hover:border-sky-400 hover:from-sky-100 hover:to-sky-200 transition-all active:scale-95"
+                          >
+                            <span>{prompt}</span>
+                          </button>
+                        ))}
                         <button
-                          key={prompt}
                           type="button"
-                          onClick={() => handleAiSend(prompt)}
-                          className="rounded-full border border-sky-200 bg-gradient-to-br from-sky-50 to-sky-100 px-4 py-2.5 text-xs font-semibold text-sky-700 shadow-sm hover:shadow-md hover:border-sky-300 transition-all active:scale-95"
+                          onClick={() => handleAiSend('🎓 Defense tips for ' + (user?.department || 'my field'))}
+                          className="group rounded-full border-2 border-violet-200 bg-gradient-to-br from-violet-50 to-violet-100 px-4 py-2.5 text-xs font-semibold text-violet-700 shadow-sm hover:shadow-lg hover:border-violet-400 transition-all active:scale-95"
                         >
-                          {prompt}
+                          🎓 Defense Tips
                         </button>
-                      ))}
+                      </div>
                     </div>
 
-                    <div className="rounded-[28px] border border-slate-200 bg-sky-50 p-5 h-[540px] flex flex-col">
+                    {/* Chat History */}
+                    <div className="rounded-[28px] border border-slate-200 bg-sky-50 p-5 h-[480px] flex flex-col">
                       <div ref={aiScrollRef} className="flex-1 overflow-y-auto space-y-4 pr-2">
                         {chatHistory.map((message, index) => {
                           const productMatches = message.role === 'assistant' ? parseInlineProductCards(message.text) : [];
@@ -2877,41 +2952,58 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                           return (
                             <div key={index} className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                              <div className={`max-w-[88%] rounded-3xl px-5 py-4 text-sm leading-6 shadow-md ${message.role === 'assistant' ? 'bg-gradient-to-br from-white to-slate-50 text-slate-900 border border-slate-200' : 'bg-emerald-500 text-white'}`}>
+                              <div className={`max-w-[85%] rounded-3xl px-5 py-4 text-sm leading-6 shadow-md ${message.role === 'assistant' ? 'bg-gradient-to-br from-white to-slate-50 text-slate-900 border border-slate-200' : 'bg-emerald-500 text-white'}`}>
                                 {renderedText && <div className="whitespace-pre-wrap font-medium">{renderedText}</div>}
 
+                                {/* Dynamic Product Cards */}
                                 {productMatches.length > 0 && (
                                   <div className="mt-4 space-y-3">
-                                    {productMatches.map((product) => (
-                                      <div key={`${product.id}-${index}`} className="rounded-[20px] border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-4 text-slate-900 shadow-md hover:shadow-lg transition-shadow">
-                                        <div className="flex items-start gap-3">
-                                          <div className="flex-shrink-0">
-                                            <div className="h-14 w-14 rounded-[12px] bg-gradient-to-br from-sky-100 to-sky-50 border border-sky-200 flex items-center justify-center">
-                                              <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-sky-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                              </svg>
+                                    {productMatches.map((product, pIdx) => {
+                                      const productObj = recommendedProducts.find(p => p.id === product.id) || {};
+                                      return (
+                                        <div key={`${product.id}-${pIdx}`} className="rounded-[20px] border-2 border-emerald-200 bg-gradient-to-br from-white to-emerald-50 p-4 text-slate-900 shadow-lg hover:shadow-xl hover:border-emerald-300 transition-all">
+                                          <div className="flex items-start gap-3">
+                                            {/* Product Image */}
+                                            <div className="flex-shrink-0">
+                                              <div className="h-16 w-16 rounded-[14px] bg-gradient-to-br from-blue-100 to-blue-50 border-2 border-blue-200 flex items-center justify-center overflow-hidden">
+                                                {productObj.image ? (
+                                                  <img src={productObj.image} alt={product.title} className="h-full w-full object-cover" />
+                                                ) : (
+                                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
+                                                  </svg>
+                                                )}
+                                              </div>
+                                            </div>
+                                            {/* Product Info */}
+                                            <div className="flex-1 min-w-0">
+                                              <div className="flex items-center justify-between gap-2 mb-2">
+                                                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-100 rounded-full px-2.5 py-0.5">✨ AI Recommended</p>
+                                                <span className="text-xs font-bold text-emerald-700 bg-emerald-50 rounded-full px-3 py-1 whitespace-nowrap">{product.price} ETB</span>
+                                              </div>
+                                              <h4 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2">{product.title}</h4>
+                                              {productObj.category && <p className="text-[11px] text-slate-500 mt-1">{productObj.category}</p>}
                                             </div>
                                           </div>
-                                          <div className="flex-1 min-w-0">
-                                            <div className="flex items-start justify-between gap-2 mb-1">
-                                              <p className="text-[10px] font-bold uppercase tracking-wider text-sky-600 bg-sky-50 rounded-full px-2 py-0.5">AI Recommended</p>
-                                              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 rounded-full px-2.5 py-0.5 whitespace-nowrap">{product.price}</span>
-                                            </div>
-                                            <h4 className="text-sm font-bold text-slate-900 leading-snug">{product.title}</h4>
+                                          <div className="flex gap-2 mt-3">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleAddToCartFromSearch(product.id)}
+                                              className="flex-1 rounded-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:shadow-md transition-all"
+                                            >
+                                              🛒 Add to Cart
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => onNavigate('product-details', { productId: product.id })}
+                                              className="flex-1 rounded-full border-2 border-sky-300 bg-sky-50 hover:bg-sky-100 px-3 py-2.5 text-xs font-semibold text-sky-700 transition-all"
+                                            >
+                                              👁️ View
+                                            </button>
                                           </div>
                                         </div>
-                                        <button
-                                          type="button"
-                                          onClick={() => handleAddToCartFromSearch(product.id)}
-                                          className="mt-3 w-full inline-flex items-center justify-center rounded-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:shadow-md transition-all"
-                                        >
-                                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                                          </svg>
-                                          Add to Cart
-                                        </button>
-                                      </div>
-                                    ))}
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>
@@ -2919,6 +3011,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           );
                         })}
 
+                        {/* Typing Indicator */}
                         {isTyping && (
                           <div className="flex justify-start">
                             <div className="rounded-3xl bg-gradient-to-br from-white to-slate-50 border border-slate-200 px-5 py-4 text-sm text-slate-600 shadow-md">
@@ -2926,13 +3019,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500" />
                                 <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500 [animation-delay:150ms]" />
                                 <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500 [animation-delay:300ms]" />
-                                <span className="ml-2 text-slate-500 font-medium">AI is thinking…</span>
+                                <span className="ml-2 text-slate-500 font-medium">🤖 Thinking…</span>
                               </div>
                             </div>
                           </div>
                         )}
                       </div>
 
+                      {/* Input Box */}
                       <div className="mt-4 flex items-center gap-3 rounded-full border border-slate-200 bg-gradient-to-r from-white to-slate-50 px-5 py-4 shadow-md focus-within:shadow-lg focus-within:border-emerald-300 transition-all">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -2941,7 +3035,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           type="text"
                           value={aiInput}
                           onChange={(e) => setAiInput(e.target.value)}
-                          placeholder="Ask me about textbooks, phones, pricing, or campus tips…"
+                          placeholder="Ask about study resources, exam prep, project materials…"
                           className="flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
@@ -2974,6 +3068,50 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     </div>
                   </div>
                 </div>
+
+                {/* Recommended for You Widget */}
+                {recommendedProducts.length > 0 && (
+                  <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <h4 className="text-lg font-bold text-slate-950">📚 Recommended for You</h4>
+                        <p className="text-xs text-slate-500 mt-1">Based on your {user?.department || 'department'}</p>
+                      </div>
+                      <span className="text-xs font-bold uppercase tracking-[0.1em] text-sky-600 bg-sky-100 rounded-full px-3 py-1.5">
+                        {recommendedProducts.length} Items
+                      </span>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {recommendedProducts.slice(0, 4).map((item) => (
+                        <div key={item.id} className="group rounded-[20px] border border-slate-200 bg-gradient-to-br from-sky-50 to-white p-4 hover:shadow-lg transition-all">
+                          <div className="relative mb-3 h-32 w-full overflow-hidden rounded-[14px] bg-slate-100 border border-slate-200">
+                            {item.image ? (
+                              <img src={item.image} alt={item.title} className="h-full w-full object-cover group-hover:scale-110 transition-transform" />
+                            ) : (
+                              <div className="flex h-full items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                              </div>
+                            )}
+                          </div>
+                          <h5 className="text-sm font-bold text-slate-900 line-clamp-2 mb-2">{item.title}</h5>
+                          <div className="flex items-center justify-between mb-3">
+                            <span className="text-lg font-bold text-emerald-600">{item.price} ETB</span>
+                            {item.category && <span className="text-[10px] font-bold uppercase text-slate-500 bg-slate-100 rounded-full px-2 py-0.5">{item.category}</span>}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleAddToCartFromSearch(item.id)}
+                            className="w-full rounded-full bg-emerald-500 hover:bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition-all shadow-sm hover:shadow-md"
+                          >
+                            🛒 Add to Cart
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
