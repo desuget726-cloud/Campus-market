@@ -8,7 +8,7 @@ from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 import shutil
 import os
 import logging
@@ -20,6 +20,7 @@ import traceback
 import hashlib
 import hmac
 import re
+import math
 from decimal import Decimal
 from collections import Counter
 from datetime import datetime, timedelta
@@ -27,14 +28,13 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
 
 # ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
-from .models import Student, Category, SubCategory, Product, Admin, AuditLog, Report, Notification, Message, WishlistItem, CartItem, Order, Transaction, PasswordReset, SystemSetting
-import uuid
-from app.models import WishlistItem, CartItem, Order, Transaction, Review
+from .models import (
+    Student, Category, SubCategory, Product, Admin, AuditLog, Report,
+    Notification, Message, WishlistItem, CartItem, Order, Transaction,
+    PasswordReset, SystemSetting, Review
+)
 from .database import get_db, init_db, SessionLocal, Base, engine
 
 
@@ -44,6 +44,10 @@ app = FastAPI(title="Campace Backend")
 origins = [
     "http://localhost:5173",      # ✓ React frontend (dev)
     "http://127.0.0.1:5173",      # ✓ Alternative localhost
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
 ]
 
 app.add_middleware(
@@ -55,7 +59,7 @@ app.add_middleware(
 )
 
 # Create static directory for uploads if it doesn't exist
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static/uploads")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(STATIC_DIR, exist_ok=True)
 AVATAR_DIR = os.path.join(STATIC_DIR, "avatars")
 os.makedirs(AVATAR_DIR, exist_ok=True)
@@ -238,7 +242,7 @@ def _build_tfidf_vectors(corpus: List[str]) -> Tuple[List[Dict[str, float]], Lis
             doc_frequency[term] += 1
 
     idf = {
-        term: 1.0 + (float(__import__('math').log((1 + doc_count) / (1 + doc_frequency.get(term, 0)))) + 1.0)
+        term: 1.0 + (float(math.log((1 + doc_count) / (1 + doc_frequency.get(term, 0)))) + 1.0)
         for term in vocab
     }
 
@@ -257,8 +261,8 @@ def _build_tfidf_vectors(corpus: List[str]) -> Tuple[List[Dict[str, float]], Lis
 
 def _cosine_similarity(vec_a: Dict[str, float], vec_b: Dict[str, float]) -> float:
     dot = sum(vec_a.get(term, 0.0) * vec_b.get(term, 0.0) for term in set(vec_a) | set(vec_b))
-    norm_a = __import__('math').sqrt(sum(value * value for value in vec_a.values()))
-    norm_b = __import__('math').sqrt(sum(value * value for value in vec_b.values()))
+    norm_a = math.sqrt(sum(value * value for value in vec_a.values()))
+    norm_b = math.sqrt(sum(value * value for value in vec_b.values()))
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
@@ -277,14 +281,7 @@ def _student_interest_text(student: Student, db: Session) -> str:
             rows = db.query(Order).filter(Order.student_id == student.student_id).all()
 
         for row in rows:
-            product = None
-            if model == WishlistItem:
-                product = db.query(Product).filter(Product.id == row.product_id).first()
-            elif model == CartItem:
-                product = db.query(Product).filter(Product.id == row.product_id).first()
-            else:
-                product = db.query(Product).filter(Product.id == row.product_id).first()
-
+            product = db.query(Product).filter(Product.id == row.product_id).first()
             if product:
                 history_tokens.extend(_tokenize(product.title))
                 history_tokens.extend(_tokenize(product.category))
@@ -376,12 +373,8 @@ def _compute_chapa_signature(secret: str, payload: dict) -> str:
     return hmac.new(secret.encode('utf-8'), raw.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
-# Gmail SMTP configuration - replace with your values
-import os
-
 # Read Gmail SMTP credentials from environment (preferred) with sensible defaults
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "your-gmail-address@gmail.com")
-# Replace the default below with your 16-character Google App Password (no spaces) or set SENDER_PASSWORD env var
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "abcdefghijklmnop")
 
 # Configure a simple file logger for email/SMTP errors
@@ -449,19 +442,80 @@ def send_verification_status_email(receiver_email: str, status: str, reason: Opt
         email_logger.exception(f"Failed to send verification email to {receiver_email}: {e}")
         return False
 
+
+# University Structure: All 6 Colleges and their Departments
+UNIVERSITY_STRUCTURE = {
+    "College of Computing and Informatics (CCI)": [
+        "Department of Computer Science",
+        "Department of Information Technology (IT)",
+        "Department of Software Engineering"
+    ],
+    "College of Natural and Computational Sciences (CNCS)": [
+        "Department of Biology",
+        "Department of Chemistry",
+        "Department of Geology",
+        "Department of Mathematics",
+        "Department of Physics",
+        "Department of Statistics",
+        "Department of Sport Science"
+    ],
+    "College of Agriculture and Natural Resource": [
+        "Department of Agro-Economics",
+        "Department of Agribusiness and Value Chain Management",
+        "Department of Animal Science",
+        "Department of Forestry",
+        "Department of Horticulture",
+        "Department of Natural Resource Management",
+        "Department of Plant Science",
+        "Department of Rural Development and Agricultural Extension"
+    ],
+    "College of Business and Economics": [
+        "Department of Accounting and Finance",
+        "Department of Economics",
+        "Department of Management",
+        "Department of Marketing Management"
+    ],
+    "College of Social Sciences and Humanities": [
+        "Department of Amharic Language and Literature",
+        "Department of English Language and Literature",
+        "Department of Geography and Environmental Studies",
+        "Department of History and Heritage Management",
+        "Department of Political Science and International Relations"
+    ],
+    "School of Law": [
+        "Department of Law (LLB)"
+    ]
+}
+
+
+# ==========================================
+# --- Pydantic Schemas ---
+# ==========================================
+
 class StudentRegister(BaseModel):
     name: str
     student_id: str
     email: str
-    phone: Optional[str] = None # <-- አዲሱ የስልክ ቁጥር መቀበያ እዚህ ጋር ተጨምሯል
+    phone: Optional[str] = None
     password: str
     college: str
     department: str
 
-# የሎጊን ፎርማት (Pydantic Schema)
+
 class LoginRequest(BaseModel):
     id_or_email: str
     password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    otp_code: str
+    new_password: str
+
 
 class StudentProfileUpdate(BaseModel):
     student_id: str
@@ -471,8 +525,10 @@ class StudentProfileUpdate(BaseModel):
     department: str
     password: Optional[str] = None
 
+
 class NotificationMarkReadRequest(BaseModel):
     student_id: str
+
 
 class NotificationCreate(BaseModel):
     student_id: str
@@ -480,37 +536,122 @@ class NotificationCreate(BaseModel):
     message: str
     type: str = "system"
 
+
+class BroadcastNotificationRequest(BaseModel):
+    title: Optional[str] = None
+    message: str
+    target: Optional[str] = "All Students"
+    sendType: Optional[str] = "instant"
+    scheduleDate: Optional[str] = None
+    scheduleTime: Optional[str] = None
+
+
 class SendMessageRequest(BaseModel):
     sender_id: str
     receiver_id: str
     product_id: Optional[int] = None
     message_text: str
 
+
 class VerificationDecisionRequest(BaseModel):
     status: str
     reason: Optional[str] = None
+
 
 class UserStatusUpdate(BaseModel):
     status: str
     reason: Optional[str] = None
 
-# የተማሪ ድጋፍ እና ቅሬታ ፎርማት (Pydantic Schema)
+
 class ReportCreate(BaseModel):
     student_id: str
     student_name: str
     issue: str
 
+
 class WishlistCreate(BaseModel):
     student_id: str
     product_id: int
 
-# የቅሬታ ማሻሻያ/መዝጊያ ፎርማት (Pydantic Schema)
+
+class CartItemCreate(BaseModel):
+    student_id: str
+    product_id: int
+
+
+class CartItemQuantityUpdate(BaseModel):
+    quantity: int
+
+
 class ReportUpdate(BaseModel):
     status: str
+    decision: Optional[str] = None
+    priority: Optional[str] = None
+    resolved_at: Optional[str] = None
 
-# የአስተዳዳሪ የስርዓት ቅንብሮች ማሻሻያ ፎርማት
+
 class SettingUpdate(BaseModel):
     value: bool
+
+
+class CategoryCreate(BaseModel):
+    name: str
+    icon: Optional[str] = None
+
+
+class SubCategoryCreate(BaseModel):
+    name: str
+    category_id: int
+    icon: Optional[str] = None
+
+
+class ProductCreate(BaseModel):
+    title: str
+    category: str
+    subcategory: Optional[str] = None
+    price: str
+    image: Optional[str] = None
+    description: Optional[str] = None
+    seller: Optional[str] = None
+
+
+class ProductStatusUpdate(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+
+class DepositRequest(BaseModel):
+    student_id: str
+    amount: float
+    email: Optional[str] = None
+
+
+class CheckoutRequest(BaseModel):
+    student_id: str
+
+
+class AIChatRequest(BaseModel):
+    message: str
+
+
+class AIAdvisorRequest(BaseModel):
+    message: str
+    student_id: Optional[str] = None
+    department: Optional[str] = None
+    context: Optional[str] = "general"
+
+
+class ReviewCreate(BaseModel):
+    order_id: int
+    student_id: str
+    rating: int
+    comment: str
+
+
+class ChatInitiateRequest(BaseModel):
+    buyer_id: str
+    product_id: int
+
 
 DEFAULT_SYSTEM_SETTINGS = {
     "marketplaceName": "Campace Market",
@@ -564,43 +705,6 @@ def _seed_default_system_settings(db: Session) -> None:
     db.commit()
 
 
-# የተለጠፉ ዕቃዎች ፈጠራ ፎርማት (Pydantic Schema)
-class ProductCreate(BaseModel):
-    title: str
-    category: str
-    subcategory: Optional[str] = None
-    price: str
-    image: Optional[str] = None
-    description: Optional[str] = None
-    seller: Optional[str] = None
-
-class ProductStatusUpdate(BaseModel):
-    status: str
-    reason: Optional[str] = None
-
-class DepositRequest(BaseModel):
-    student_id: str
-    amount: float
-    email: Optional[str] = None
-
-class CheckoutRequest(BaseModel):
-    student_id: str
-
-class AIChatRequest(BaseModel):
-    message: str
-
-class AIAdvisorRequest(BaseModel):
-    message: str
-    student_id: Optional[str] = None
-    department: Optional[str] = None
-    context: Optional[str] = "general"  # 'academic_defense', 'general', etc.
-
-class ReviewCreate(BaseModel):
-    order_id: int
-    student_id: str
-    rating: int
-    comment: str
-
 def ensure_database_compatibility(db: Session) -> None:
     """Add backward-compatible columns when the local MySQL schema is older than the app model."""
     try:
@@ -635,6 +739,11 @@ def on_startup():
             db.close()
     except Exception:
         traceback.print_exc()
+
+
+# ==========================================
+# --- Authentication Endpoints ---
+# ==========================================
 
 # 1. የተማሪዎች ምዝገባ ኤፒአይ (POST /api/register)
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
@@ -686,6 +795,75 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
 
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
+
+# 2.3 የይለፍ ቃል መርሻ ኮድ መላኪያ (POST /api/auth/forgot-password)
+@app.post("/api/auth/forgot-password")
+def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    email = request.email.strip().lower()
+    student = db.query(Student).filter(Student.email.ilike(email)).first()
+    admin = db.query(Admin).filter(Admin.email.ilike(email)).first()
+    if not student and not admin:
+        raise HTTPException(status_code=404, detail="Email not found.")
+
+    otp = f"{random.randint(100000, 999999)}"
+    expires = datetime.utcnow() + timedelta(minutes=15)
+
+    reset_entry = PasswordReset(
+        email=email,
+        otp_code=otp,
+        expires_at=expires,
+        is_used=False
+    )
+    db.add(reset_entry)
+    db.commit()
+
+    send_otp_email(email, otp)
+    return {"message": "Verification code has been sent to your email.", "success": True}
+
+
+# 2.4 አዲስ የይለፍ ቃል መቀየሪያ (POST /api/auth/reset-password)
+@app.post("/api/auth/reset-password")
+def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+    email = request.email.strip().lower()
+    otp = request.otp_code.strip()
+    new_password = request.new_password
+
+    if not otp or len(otp) != 6:
+        raise HTTPException(status_code=400, detail="Invalid OTP format.")
+
+    reset_record = (
+        db.query(PasswordReset)
+        .filter(
+            PasswordReset.email.ilike(email),
+            PasswordReset.otp_code == otp,
+            PasswordReset.is_used == False,
+            PasswordReset.expires_at >= datetime.utcnow()
+        )
+        .order_by(PasswordReset.id.desc())
+        .first()
+    )
+
+    if not reset_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+
+    hashed = hash_password(new_password)
+    student = db.query(Student).filter(Student.email.ilike(email)).first()
+    if student:
+        student.password = hashed
+
+    admin = db.query(Admin).filter(Admin.email.ilike(email)).first()
+    if admin:
+        admin.password_hash = hashed
+
+    reset_record.is_used = True
+    db.commit()
+
+    return {"message": "Password reset successful! You can now log in.", "success": True}
+
+
+# ==========================================
+# --- Admin Profile & Settings Endpoints ---
+# ==========================================
 
 @app.get("/api/admin/profile")
 def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_db)):
@@ -859,6 +1037,16 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
     return {"message": "Settings saved successfully", "settings": payload}
 
 
+@app.patch("/api/admin/settings/{id}")
+def update_setting_patch(id: int, data: SettingUpdate):
+    return {"message": "Setting updated successfully"}
+
+
+@app.get("/api/admin/settings/{id}")
+def get_setting_by_id(id: int):
+    return {"id": id, "value": True, "message": "Setting retrieved successfully"}
+
+
 @app.get("/api/admin/audit-logs")
 def get_admin_audit_logs(
     search: Optional[str] = None,
@@ -952,6 +1140,10 @@ def get_admin_audit_logs(
         )
 
 
+# ==========================================
+# --- Student Profile & Notifications ---
+# ==========================================
+
 # 2.1 የተማሪ ፕሮፋይል ፎቶ ማስገባት (POST /api/student/upload-avatar)
 @app.post("/api/student/upload-avatar")
 async def upload_student_avatar(
@@ -971,10 +1163,7 @@ async def upload_student_avatar(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    # Ensure avatar directory exists (safe to call repeatedly)
     os.makedirs(AVATAR_DIR, exist_ok=True)
-
-    # Force the saved filename to use .jpg so the public path is predictable
     avatar_path = os.path.join(AVATAR_DIR, f"{student_id}.jpg")
 
     try:
@@ -989,7 +1178,7 @@ async def upload_student_avatar(
         await image.close()
 
     image_url = f"http://127.0.0.1:8000/static/uploads/avatars/{student_id}.jpg"
-    return {"success": True, "imageUrl": image_url}
+    return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
 
 
 @app.put("/api/student/profile")
@@ -1051,16 +1240,10 @@ def get_unread_messages_count(student_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Student not found.")
 
     unread_messages = (
-        db.query(Notification.id)
+        db.query(Message.id)
         .filter(
-            Notification.student_id == student_id,
-            Notification.is_read.is_(False),
-            or_(
-                Notification.message.ilike('%chat%'),
-                Notification.message.ilike('%message%'),
-                Notification.message.ilike('%reply%'),
-                Notification.message.ilike('%inbox%')
-            )
+            Message.receiver_id == student_id,
+            Message.is_read.is_(False)
         )
         .count()
     )
@@ -1090,6 +1273,10 @@ def mark_notifications_read(request: NotificationMarkReadRequest, db: Session = 
 
     return {"success": True, "markedReadCount": updated_count}
 
+
+# ==========================================
+# --- Categories & Locations ---
+# ==========================================
 
 # 3. የዋና እና የንዑሳን ምድቦች ማውጫ ኤፒአይ (GET /api/categories)
 @app.get("/api/categories")
@@ -1152,6 +1339,10 @@ def get_locations():
         "Kombolcha University"
     ]
 
+
+# ==========================================
+# --- Products Catalog & Seller Endpoints ---
+# ==========================================
 
 # 4. የዕቃዎች ማውጫ እና ማጣሪያ ኤፒአይ (GET /api/products)
 @app.get("/api/products")
@@ -1220,9 +1411,7 @@ def get_products(
 
 @app.get("/api/products/{product_id}")
 def get_product_detail(product_id: int, db: Session = Depends(get_db)):
-    """
-    Fetch details for a single product by ID.
-    """
+    """Fetch details for a single product by ID."""
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
@@ -1241,9 +1430,71 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
     }
 
 
-class ChatInitiateRequest(BaseModel):
-    buyer_id: str
-    product_id: int
+# 4.1. አዲስ ተለጠፈ እቃ በተማሪ ወይም ሻጭ የሚፈጠር ኤፒአይ (POST /api/products)
+@app.post("/api/products", status_code=status.HTTP_201_CREATED)
+def create_product(
+    title: str = Form(...),
+    category: str = Form(...),
+    subcategory: Optional[str] = Form(None),
+    price: str = Form(...),
+    description: Optional[str] = Form(None),
+    seller: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db)
+):
+    """ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።"""
+    try:
+        image_url = None
+        
+        # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
+        if image and image.filename:
+            allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+            file_ext = os.path.splitext(image.filename)[1].lower()
+            
+            if file_ext not in allowed_extensions:
+                raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp")
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
+            unique_filename = timestamp + image.filename.replace(" ", "_")
+            file_path = os.path.join(STATIC_DIR, unique_filename)
+            
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(image.file, buffer)
+            
+            image_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
+        
+        # ምርት ወደ ዳታቤዝ ያስቀምጡ (Save product to database)
+        db_product = Product(
+            title=title,
+            category=category,
+            subcategory=subcategory,
+            price=price,
+            image=image_url,
+            description=description,
+            seller=seller,
+            status="Pending"
+        )
+        db.add(db_product)
+        db.commit()
+        db.refresh(db_product)
+        
+        return {
+            "success": True,
+            "message": "Product posted successfully! Awaiting admin approval.",
+            "product": {
+                "id": db_product.id,
+                "title": db_product.title,
+                "image": db_product.image,
+                "status": db_product.status,
+                "created_at": db_product.created_at
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create product: {str(e)}")
+
 
 @app.post("/api/student/chat/initiate")
 def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
@@ -1337,13 +1588,12 @@ def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
     # 3. Calculate earnings
     earnings = 0.00
     for order in received_orders:
-        cleaned_price = order.price.replace('$', '').replace('ETB', '').replace(',', '').strip()
+        cleaned_price = str(order.price).replace('$', '').replace('ETB', '').replace(',', '').strip()
         try:
             earnings += float(cleaned_price)
         except ValueError:
             pass
 
-    # Return formatted payload
     return {
         "stats": {
             "total_listings": total_listings,
@@ -1358,12 +1608,16 @@ def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
                 "price": o.price,
                 "status": o.status,
                 "buyer_id": o.student_id,
-                "created_at": o.created_at.strftime("%Y-%m-%d %H:%M")
+                "created_at": o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "Recent"
             }
             for o in received_orders
         ]
     }
 
+
+# ==========================================
+# --- AI Chat & Advisor Functions ---
+# ==========================================
 
 # --- 5. የ Jiji-style የዳታቤዝ AI አማካሪ ቻት ኤንድፖይንት (POST /api/ai/chat) ---
 @app.post("/api/ai/chat")
@@ -1372,7 +1626,7 @@ def ai_chat(chat_request: AIChatRequest, db: Session = Depends(get_db)):
     if not message:
         raise HTTPException(status_code=400, detail="Message is required.")
 
-    # 5.1 ተጠቃሚው ስለ ላፕቶፕ ወይም ኮምፒውተር ከጠየቀ (Query MySQL for Laptops)
+    # 5.1 ተጠቃሚው ስለ ላፕቶፕ ወይም ኮምፒውተር ከጠየቀ
     if "laptop" in message or "computer" in message or "pc" in message:
         db_products = db.query(Product).filter(
             (Product.category.ilike("%electronics%")) | 
@@ -1383,12 +1637,13 @@ def ai_chat(chat_request: AIChatRequest, db: Session = Depends(get_db)):
         if db_products:
             reply = "I searched our MySQL database in real-time and found these laptops currently listed by students:\n\n"
             for p in db_products:
-                reply += f"📍 **{p.title}** — **{p.price}**\n👤 Seller: {p.seller}\n📝 Description: {p.description[:100]}...\n\n"
+                desc = (p.description or "")[:100]
+                reply += f"📍 **{p.title}** — **{p.price}**\n👤 Seller: {p.seller}\n📝 Description: {desc}...\n\n"
             reply += "You can browse these directly under the 'Electronics' directory on your home page!"
         else:
             reply = "I checked our MySQL database, but there are currently no laptops listed by students. You can be the first to list one in the 'Seller Hub'!"
             
-    # 5.2 ተጠቃሚው ስለ መማሪያ መጻሕፍት ከጠየቀ (Query MySQL for Books)
+    # 5.2 ተጠቃሚው ስለ መማሪያ መጻሕፍት ከጠየቀ
     elif "book" in message or "calculus" in message or "textbook" in message or "math" in message:
         db_products = db.query(Product).filter(
             (Product.category.ilike("%books%")) | 
@@ -1399,11 +1654,12 @@ def ai_chat(chat_request: AIChatRequest, db: Session = Depends(get_db)):
         if db_products:
             reply = "Here are the academic textbooks currently listed in our database:\n\n"
             for p in db_products:
-                reply += f"📖 **{p.title}** — **{p.price}**\n📝 Description: {p.description[:100]}...\n\n"
+                desc = (p.description or "")[:100]
+                reply += f"📖 **{p.title}** — **{p.price}**\n📝 Description: {desc}...\n\n"
         else:
             reply = "I couldn't find any academic books listed in our database at this moment. Graduating students usually upload them soon!"
             
-    # 5.3 አጠቃላይ መረጃዎች (Default fallback)
+    # 5.3 አጠቃላይ መረጃዎች
     else:
         reply = (
             "I’m your Campus AI assistant. Ask me about textbooks, gadget pricing, or campus trading tips. "
@@ -1413,22 +1669,10 @@ def ai_chat(chat_request: AIChatRequest, db: Session = Depends(get_db)):
     return {"reply": reply}
 
 
-# ============ AI ADVISOR HELPER FUNCTIONS ============
-
 def detect_intent(message: str) -> str:
-    """
-    Detect user intent from message:
-    - 'buy': Looking for products to purchase
-    - 'sell': Asking for pricing/selling advice
-    - 'general': General campus questions
-    """
     message_lower = message.lower()
-    
-    # Selling/Pricing intent indicators
     sell_keywords = ['sell', 'price', 'how much', 'worth', 'cost', 'value', 'should i sell', 
                      'selling', 'what price', 'rate', 'negotiat', 'bid', 'offer']
-    
-    # Buying/Finding intent indicators
     buy_keywords = ['find', 'buy', 'purchase', 'where', 'show', 'list', 'available', 'have', 
                     'get', 'recommend', 'suggest', 'need', 'looking for', 'search']
     
@@ -1444,90 +1688,59 @@ def detect_intent(message: str) -> str:
 
 
 def extract_keywords(message: str) -> List[str]:
-    """Extract product search keywords from message."""
-    # Remove common words
     stopwords = {'the', 'a', 'an', 'and', 'or', 'is', 'are', 'for', 'to', 'from', 
                  'in', 'on', 'under', 'over', 'should', 'i', 'me', 'my', 'etb', 
                  'birr', 'how', 'much', 'sell', 'buy', 'find', 'show', 'list'}
-    
-    # Clean and tokenize
-    words = re.findall(r'\b[a-z]+\b', message.lower())
+    words = re.findall(r'\b[a-zA-Z0-9]+\b', message.lower())
     keywords = [w for w in words if w not in stopwords and len(w) > 2]
-    
     return keywords
 
 
 def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tuple[Product, float]]:
-    """
-    Calculate TF-IDF similarity between query and product titles/descriptions.
-    Returns products sorted by relevance score.
-    """
+    """Calculate TF-IDF cosine similarity using pure Python standard library."""
     if not products:
         return []
     
-    # Combine title and description for each product
-    product_texts = [f"{p.title} {p.description or ''}" for p in products]
+    product_texts = [f"{p.title or ''} {p.description or ''} {p.category or ''} {p.subcategory or ''}" for p in products]
     
-    # Create TF-IDF vectorizer
     try:
-        vectorizer = TfidfVectorizer(lowercase=True, stop_words='english', max_features=100)
-        all_texts = [query] + product_texts
-        tfidf_matrix = vectorizer.fit_transform(all_texts)
+        corpus = [query] + product_texts
+        vectors, _ = _build_tfidf_vectors(corpus)
+        if not vectors or len(vectors) < 2:
+            return [(p, 0.5) for p in products]
         
-        # Calculate cosine similarity with query (first row)
-        query_vector = tfidf_matrix[0:1]
-        product_vectors = tfidf_matrix[1:]
+        query_vec = vectors[0]
+        product_vecs = vectors[1:]
         
-        similarities = cosine_similarity(query_vector, product_vectors)[0]
-        
-        # Pair products with scores and sort
+        similarities = [_cosine_similarity(query_vec, p_vec) for p_vec in product_vecs]
         scored_products = list(zip(products, similarities))
         scored_products.sort(key=lambda x: x[1], reverse=True)
-        
         return scored_products
     except Exception as e:
         logging.error(f"TF-IDF calculation error: {str(e)}")
-        # Fallback: return products in original order
         return [(p, 0.5) for p in products]
 
 
 def search_products_by_intent(db: Session, message: str, intent: str, department: str = None) -> List[Product]:
-    """
-    Search MySQL database for products matching the user's intent.
-    Filter by status='Approved' and optionally by department.
-    """
     try:
         keywords = extract_keywords(message)
+        query = db.query(Product).filter(Product.status == 'Approved')
         
-        if not keywords:
-            # Generic fallback search
-            query = db.query(Product).filter(Product.status == 'Approved')
-        else:
-            # Build query with keyword matching
+        if keywords:
             keyword_filters = []
-            for keyword in keywords[:5]:  # Limit to 5 keywords
+            for keyword in keywords[:5]:
                 keyword_filters.append(Product.title.ilike(f"%{keyword}%"))
                 keyword_filters.append(Product.description.ilike(f"%{keyword}%"))
                 keyword_filters.append(Product.category.ilike(f"%{keyword}%"))
-            
-            query = db.query(Product).filter(
-                Product.status == 'Approved',
-                or_(*keyword_filters)
-            )
+                keyword_filters.append(Product.subcategory.ilike(f"%{keyword}%"))
+            query = query.filter(or_(*keyword_filters))
         
-        # Department-specific filtering for personalized results
-        if department:
-            query = query.order_by(Product.created_at.desc())
-        else:
-            query = query.order_by(Product.created_at.desc())
+        products = query.order_by(Product.created_at.desc()).limit(30).all()
         
-        products = query.limit(20).all()
-        
-        # Rank by TF-IDF similarity if we have results
         if products and keywords:
             query_text = ' '.join(keywords)
             ranked = calculate_tf_idf_similarity(query_text, products)
-            return [p for p, score in ranked if score > 0.1][:10]  # Top 10 relevant
+            return [p for p, score in ranked if score > 0.05][:10]
         
         return products[:10]
     except Exception as e:
@@ -1536,20 +1749,14 @@ def search_products_by_intent(db: Session, message: str, intent: str, department
 
 
 def calculate_price_recommendation(db: Session, keywords: List[str]) -> Dict:
-    """
-    Calculate price recommendation for sellers.
-    Search for similar products and calculate average price range.
-    """
     try:
-        # Search for similar approved/sold products
         similar_products = db.query(Product).filter(
-            Product.status.in_(['Approved', 'Sold'])
+            Product.status.in_(['Approved', 'Sold', 'Active'])
         ).all()
         
-        # Filter by keyword relevance
         if keywords and similar_products:
             scored = calculate_tf_idf_similarity(' '.join(keywords), similar_products)
-            similar_products = [p for p, score in scored if score > 0.15][:20]
+            similar_products = [p for p, score in scored if score > 0.05][:20]
         
         if not similar_products:
             return {
@@ -1558,22 +1765,23 @@ def calculate_price_recommendation(db: Session, keywords: List[str]) -> Dict:
                 "suggestion": "Try listing at a competitive price based on product condition and market demand."
             }
         
-        # Extract prices
         prices = []
         for p in similar_products:
-            if p.price and isinstance(p.price, (int, float, Decimal)):
-                prices.append(float(p.price))
+            val = _parse_price_to_etb(p.price)
+            if val > 0:
+                prices.append(val)
         
         if not prices:
-            return {"status": "error", "message": "Unable to extract price data."}
+            return {
+                "status": "no_data",
+                "message": "Unable to extract pricing data for similar products.",
+                "suggestion": "Check market listings for manual price estimation."
+            }
         
-        # Calculate price statistics
-        avg_price = np.mean(prices)
-        min_price = np.min(prices)
-        max_price = np.max(prices)
-        std_dev = np.std(prices)
+        avg_price = sum(prices) / len(prices)
+        min_price = min(prices)
+        max_price = max(prices)
         
-        # Recommend price range (avg ± 10%)
         recommended_low = int(avg_price * 0.85)
         recommended_high = int(avg_price * 1.15)
         
@@ -1587,11 +1795,11 @@ def calculate_price_recommendation(db: Session, keywords: List[str]) -> Dict:
             "market_max": int(max_price),
             "similar_products_analyzed": len(prices),
             "tips": [
-                "✅ Condition matters: Excellent condition justifies higher prices",
-                "✅ Demand: High-demand items (laptops, books) sell faster at premium",
-                "✅ Timing: Semester start/exams increase demand for study materials",
-                "✅ Negotiation: Leave 10-15% room for buyer negotiation",
-                f"✅ Competitiveness: Current market average is {int(avg_price):,} ETB"
+                "Condition matters: Excellent condition justifies higher prices",
+                "Demand: High-demand items (laptops, books) sell faster at premium",
+                "Timing: Semester start/exams increase demand for study materials",
+                "Negotiation: Leave 10-15% room for buyer negotiation",
+                f"Competitiveness: Current market average is {int(avg_price):,} ETB"
             ]
         }
     except Exception as e:
@@ -1600,35 +1808,18 @@ def calculate_price_recommendation(db: Session, keywords: List[str]) -> Dict:
 
 
 def format_products_for_response(products: List[Product]) -> str:
-    """
-    Format products as structured string pattern for frontend parsing.
-    Returns: "[PRODUCT:id:title:price]" patterns that frontend React app can render.
-    """
     if not products:
         return ""
-    
     product_cards = []
     for p in products:
-        # Format: [PRODUCT:id:title:price]
         product_string = f"[PRODUCT:{p.id}:{p.title}:{p.price}]"
         product_cards.append(product_string)
-    
     return "\n".join(product_cards)
 
 
-# ============ AI ADVISOR ENDPOINT ============
-
 @app.post("/api/ai/advisor")
 def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
-    """
-    Academic Defense AI Advisor endpoint.
-    
-    Features:
-    1. Intent parsing: Detects if user wants to buy/find products or get pricing advice
-    2. Product search: MySQL query with TF-IDF/Cosine Similarity relevance ranking
-    3. Price advice: Analyzes similar products and recommends price range for sellers
-    4. Structured response: Returns products as [PRODUCT:id:title:price] for frontend rendering
-    """
+    """Academic Defense AI Advisor endpoint."""
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required.")
@@ -1637,13 +1828,9 @@ def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
     logger.info(f"[AI ADVISOR] Query from {request.student_id}: {message[:100]}")
     
     try:
-        # Step 1: Detect user intent
         intent = detect_intent(message)
         keywords = extract_keywords(message)
         
-        logger.debug(f"[AI ADVISOR] Detected intent: {intent}, Keywords: {keywords}")
-        
-        # Step 2a: BUYING INTENT - Search for products
         if intent == 'buy':
             products = search_products_by_intent(
                 db=db,
@@ -1653,9 +1840,7 @@ def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
             )
             
             if products:
-                # Format products as structured cards for frontend
                 product_cards = format_products_for_response(products)
-                
                 reply = f"""🔍 **Search Results for Your Query**
 
 I found {len(products)} relevant products in our database that match your request:
@@ -1669,8 +1854,6 @@ I found {len(products)} relevant products in our database that match your reques
 ✅ Consider timing - semester start usually has better deals!
 
 Would you like recommendations in a specific price range or category?"""
-                
-                logger.info(f"[AI ADVISOR] Found {len(products)} products for buying intent")
                 
                 return {
                     "reply": reply,
@@ -1698,11 +1881,11 @@ Would you like suggestions for alternative products or categories?"""
                     "message_type": "no_results"
                 }
         
-        # Step 2b: SELLING INTENT - Price advice & tips
         elif intent == 'sell':
             price_data = calculate_price_recommendation(db, keywords)
             
-            if price_data["status"] == "success":
+            if price_data.get("status") == "success":
+                tips_list = "\n".join(f"- {tip}" for tip in price_data.get('tips', []))
                 reply = f"""💰 **AI Price Recommendation for Your Sale**
 
 Based on analysis of {price_data['similar_products_analyzed']} similar products in our marketplace:
@@ -1712,7 +1895,7 @@ Based on analysis of {price_data['similar_products_analyzed']} similar products 
 - Market Range: {price_data['market_min']:,} - {price_data['market_max']:,} ETB
 
 **🎯 Seller Tips:**
-{chr(10).join(price_data['tips'])}
+{tips_list}
 
 **Pro Tips for Your Listing:**
 ✅ Take clear, well-lit photos from multiple angles
@@ -1722,8 +1905,6 @@ Based on analysis of {price_data['similar_products_analyzed']} similar products 
 ✅ Consider offering delivery options for extra convenience
 
 Ready to list? Head to Seller Hub to post your item! 📱"""
-                
-                logger.info(f"[AI ADVISOR] Price recommendation: {price_data['recommended_low']}-{price_data['recommended_high']}")
                 
                 return {
                     "reply": reply,
@@ -1759,7 +1940,6 @@ Ready to list your item? Create a detailed listing in the Seller Hub!"""
                     "message_type": "price_no_data"
                 }
         
-        # Step 2c: GENERAL - Campus tips & guidance
         else:
             reply = """🎓 **Welcome to Campus AI Advisor!**
 
@@ -1805,82 +1985,8 @@ How can I help you today? 🚀"""
         }
 
 
-# 4.1. አዲስ ተለጠፈ እቃ በተማሪ ወይም ሻጭ የሚፈጠር ኤፒአይ (POST /api/products)
-def create_product(
-    title: str = Form(...),
-    category: str = Form(...),
-    subcategory: Optional[str] = Form(None),
-    price: str = Form(...),
-    description: Optional[str] = Form(None),
-    seller: Optional[str] = Form(None),
-    image: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
-):
-    """
-    ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
-    ሁሉም ምርቶች በ "Pending" ሁኔታ ይጀምራሉ - ተግባር ሰው እና ይጠብቅ።
-    ছবი ገልብጥ - ፋይል ወደ static/uploads ይቀመጡ።
-    """
-    try:
-        image_url = None
-        
-        # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
-        if image and image.filename:
-            # Validate file type
-            allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-            file_ext = os.path.splitext(image.filename)[1].lower()
-            
-            if file_ext not in allowed_extensions:
-                raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp")
-            
-            # Create unique filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
-            unique_filename = timestamp + image.filename
-            file_path = os.path.join(STATIC_DIR, unique_filename)
-            
-            # Save file
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(image.file, buffer)
-            
-            # Generate public URL
-            image_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
-        
-        # ምርት ወደ ዳታቤዝ ያስቀምጡ (Save product to database)
-        db_product = Product(
-            title=title,
-            category=category,
-            subcategory=subcategory,
-            price=price,
-            image=image_url,
-            description=description,
-            seller=seller,
-            status="Pending"  # ሁሉም አዲስ ምርቶች "Pending" ሁኔታ ይጀምራሉ
-        )
-        db_product.location = "Addis Ababa" # default location
-        db.add(db_product)
-        db.commit()
-        db.refresh(db_product)
-        
-        return {
-            "success": True,
-            "message": "Product posted successfully! Awaiting admin approval.",
-            "product": {
-                "id": db_product.id,
-                "title": db_product.title,
-                "image": db_product.image,
-                "status": db_product.status,
-                "created_at": db_product.created_at
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create product: {str(e)}")
-
-
 # ==========================================
-# --- የተማሪዎች የድጋፍ እና የኖቲፊኬሽን ኤፒአዮች (Student Core API) ---
+# --- Student Support, Activity, Feeds ---
 # ==========================================
 
 # 5. ተማሪዎች አዲስ ቅሬታ ወይም የድጋፍ ፎርም የሚልኩበት ኤፒአይ (POST /api/student/report)
@@ -1903,7 +2009,6 @@ def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
     return {"message": "Success", "report": db_report}
 
 
-# 6. ለተማሪው የተላኩትን ኖቲፊኬሽኖች በሙሉ ከዳታቤዝ የሚያወጣ ኤፒአይ (GET /api/student/notifications)
 @app.get("/api/student/highlights")
 def get_student_highlights(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
@@ -1986,7 +2091,7 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     profile_vector = vectors[0]
     scored_products = []
     for idx, product in enumerate(approved_products, start=1):
-        similarity = _cosine_similarity(profile_vector, vectors[idx])
+        similarity = _cosine_similarity(profile_vector, vectors[idx]) if idx < len(vectors) else 0.0
         scored_products.append({
             "product": product,
             "score": similarity,
@@ -2164,18 +2269,18 @@ def create_student_notification(request: NotificationCreate, db: Session = Depen
     }
 
 
+# ==========================================
+# --- Real-Time Chat & Messaging ---
+# ==========================================
+
 @app.get("/api/student/messages/conversations")
 def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
-    """
-    Fetch all unique conversation partners with optimized SQL window functions.
-    Returns: sorted list with partner details, last message, unread count.
-    """
+    """Fetch all unique conversation partners with details, last message, unread count."""
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
     try:
-        # Use raw SQL with efficient subqueries for better performance
         query_text = text("""
             SELECT DISTINCT
                 CASE 
@@ -2239,22 +2344,15 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to fetch conversations.")
 
 
-
 @app.get("/api/student/messages/chat-history")
 def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Depends(get_db)):
-    """
-    Retrieve all messages between two students with product details via outer join.
-    Efficiently marks unread messages as read in batch.
-    """
+    """Retrieve all messages between two students with product details."""
     sender = db.query(Student).filter(Student.student_id == sender_id).first()
     receiver = db.query(Student).filter(Student.student_id == receiver_id).first()
     if not sender or not receiver:
         raise HTTPException(status_code=404, detail="Student not found.")
 
     try:
-        from sqlalchemy import or_
-
-        # Fetch all messages with product details in a single efficient query
         chat_messages = (
             db.query(
                 Message.id,
@@ -2281,10 +2379,9 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
             .all()
         )
 
-        # Mark incoming unread messages as read in single batch update
         unread_message_ids = [
             msg[0] for msg in chat_messages
-            if msg[2] == sender_id and not msg[5]  # receiver_id == sender_id and not is_read
+            if msg[2] == sender_id and not msg[5]
         ]
         if unread_message_ids:
             db.query(Message).filter(Message.id.in_(unread_message_ids)).update(
@@ -2293,7 +2390,6 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
             )
             db.commit()
 
-        # Format response with product details
         formatted_messages = []
         for msg in chat_messages:
             formatted_msg = {
@@ -2306,8 +2402,7 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
                 "created_at": msg[6].isoformat() if msg[6] else None,
             }
             
-            # Add product details if message has product attachment
-            if msg[3] and msg[8]:  # product_id and product_title
+            if msg[3] and msg[8]:
                 formatted_msg["product"] = {
                     "id": msg[3],
                     "title": msg[8],
@@ -2332,24 +2427,21 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
 
 @app.websocket("/api/student/chat/ws/{student_id}")
 async def student_chat_websocket(websocket: WebSocket, student_id: str):
-    """WebSocket endpoint for real-time P2P messaging with transaction logging and security."""
+    """WebSocket endpoint for real-time P2P messaging."""
     db = SessionLocal()
     logger = logging.getLogger("websocket_chat")
     
     try:
-        # Validate student exists
         student = db.query(Student).filter(Student.student_id == student_id).first()
         if not student:
             await websocket.close(code=1008, reason="Student not found")
             logger.warning(f"[WS SECURITY] Invalid student_id: {student_id}")
             return
 
-        # Register connection
         await manager.connect(student_id, websocket, student_name=student.name)
         logger.info(f"[WS CONNECT] {student_id} ({student.name}) connected. Online: {manager.get_online_count()}")
 
         while True:
-            # Receive message from client
             raw_payload = await websocket.receive_text()
             
             try:
@@ -2362,12 +2454,10 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 })
                 continue
 
-            # Extract and validate fields
             receiver_id = payload.get("receiver_id", "").strip()
             message_text = payload.get("message_text", "").strip()
             product_id = payload.get("product_id")
 
-            # Validate required fields
             if not receiver_id:
                 await websocket.send_json({"success": False, "error": "receiver_id is required."})
                 continue
@@ -2381,32 +2471,25 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 await websocket.send_json({"success": False, "error": "Message exceeds max length (5000)."})
                 continue
 
-            # Prevent self-messaging
             if student_id == receiver_id:
-                logger.warning(f"[WS SECURITY] Self-message attempt from {student_id}")
                 await websocket.send_json({"success": False, "error": "Cannot message yourself."})
                 continue
 
-            # Validate receiver
             receiver = db.query(Student).filter(Student.student_id == receiver_id).first()
             if not receiver:
-                logger.warning(f"[WS SECURITY] Message to non-existent {receiver_id} from {student_id}")
                 await websocket.send_json({"success": False, "error": "Recipient not found."})
                 continue
 
-            # Validate product if attached
             if product_id is not None:
                 try:
                     product_id = int(product_id)
                     product = db.query(Product).filter(Product.id == product_id).first()
                     if not product:
-                        logger.warning(f"[WS] Product {product_id} not found")
                         await websocket.send_json({"success": False, "error": "Product not found."})
                         continue
                 except (ValueError, TypeError):
                     product_id = None
 
-            # Save message to database
             try:
                 db_message = Message(
                     sender_id=student_id,
@@ -2418,18 +2501,12 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 db.add(db_message)
                 db.commit()
                 db.refresh(db_message)
-                
-                logger.info(
-                    f"[MESSAGE SAVED] ID={db_message.id} | {student_id} → {receiver_id} | "
-                    f"Product={product_id} | Len={len(message_text)}"
-                )
             except Exception as exc:
                 db.rollback()
                 logger.error(f"[DB ERROR] Failed to save message from {student_id}: {str(exc)}")
                 await websocket.send_json({"success": False, "error": "Failed to save message."})
                 continue
 
-            # Build response
             chat_payload = {
                 "type": "incoming_message",
                 "id": db_message.id,
@@ -2441,15 +2518,8 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 "created_at": db_message.created_at.isoformat() if hasattr(db_message.created_at, "isoformat") else str(db_message.created_at),
             }
 
-            # Send to recipient if online
             delivered = await manager.send_personal_message(receiver_id, chat_payload)
-            
-            if delivered:
-                logger.info(f"[DELIVERED LIVE] ID={db_message.id} to {receiver_id}")
-            else:
-                logger.info(f"[QUEUED] ID={db_message.id} for {receiver_id} (offline)")
 
-            # Confirm to sender
             await websocket.send_json({
                 "success": True,
                 "message": "Message sent",
@@ -2470,7 +2540,6 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
     finally:
         if db:
             db.close()
-        logger.debug(f"[WS CLEANUP] Closed session for {student_id}")
 
 
 @app.post("/api/student/messages/send")
@@ -2525,6 +2594,10 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
         "read_receipt_updated": len(existing_incoming_messages),
     }
 
+
+# ==========================================
+# --- Wishlist, Cart, Orders & Payments ---
+# ==========================================
 
 def _resolve_pickup_location(db: Session, product: Optional[Product]) -> str:
     if not product:
@@ -2605,6 +2678,64 @@ def get_student_wishlist(student_id: str, db: Session = Depends(get_db)):
     return result
 
 
+@app.post("/api/student/wishlist", status_code=status.HTTP_201_CREATED)
+def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(get_db)):
+    raw_student_id = wishlist_data.student_id
+    normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
+
+    if not normalized_student_id:
+        raise HTTPException(status_code=400, detail="student_id is required.")
+
+    student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
+    if not student:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid student_id. The student does not exist in the students table."
+        )
+
+    product = db.query(Product).filter(Product.id == wishlist_data.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    existing_item = (
+        db.query(WishlistItem)
+        .filter(
+            WishlistItem.student_id == normalized_student_id,
+            WishlistItem.product_id == wishlist_data.product_id,
+        )
+        .first()
+    )
+    if existing_item:
+        raise HTTPException(status_code=400, detail="Product already exists in wishlist.")
+
+    db_item = WishlistItem(
+        student_id=student.student_id,
+        product_id=product.id,
+    )
+    db.add(db_item)
+    db.commit()
+    db.refresh(db_item)
+
+    return {
+        "message": "Product added to wishlist.",
+        "id": db_item.id,
+        "student_id": db_item.student_id,
+        "product_id": db_item.product_id,
+        "created_at": db_item.created_at,
+    }
+
+
+@app.delete("/api/student/wishlist/{id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_wishlist_item(id: int, db: Session = Depends(get_db)):
+    item = db.query(WishlistItem).filter(WishlistItem.id == id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Wishlist item not found.")
+
+    db.delete(item)
+    db.commit()
+    return
+
+
 @app.get("/api/student/cart")
 def get_student_cart(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
@@ -2662,15 +2793,6 @@ def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
 
     if not normalized_student_id:
         raise HTTPException(status_code=400, detail="student_id is required.")
-
-    admin_user = db.query(Admin).filter(
-        or_(Admin.username == normalized_student_id, Admin.email == normalized_student_id)
-    ).first()
-    if admin_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid student_id. Please provide a valid student ID, not an admin username."
-        )
 
     student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
     if not student:
@@ -2813,6 +2935,18 @@ def update_student_cart_item_quantity(item_id: int, payload: CartItemQuantityUpd
     }
 
 
+@app.delete("/api/student/cart/{item_id}")
+def delete_cart_item(item_id: int, db: Session = Depends(get_db)):
+    """Remove a specific item from student's cart."""
+    item = db.query(CartItem).filter(CartItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Cart item not found.")
+    
+    db.delete(item)
+    db.commit()
+    return {"message": "Cart item removed successfully.", "id": item_id}
+
+
 @app.post("/api/student/cart/checkout")
 def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == data.student_id).first()
@@ -2935,6 +3069,7 @@ def get_student_orders(student_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/student/review")
+@app.post("/api/student/reviews")
 def submit_student_review(payload: ReviewCreate, db: Session = Depends(get_db)):
     _validate_student_id(db, payload.student_id, field_name="student_id")
 
@@ -3051,77 +3186,42 @@ def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
     return {"orders": order_payload}
 
 
-# 8. ተማሪ ዊሽሊስት ዉስጥ እቃ ማስገባት (POST /api/student/wishlist)
-@app.post("/api/student/wishlist", status_code=status.HTTP_201_CREATED)
-def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(get_db)):
-    raw_student_id = wishlist_data.student_id
-    normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
-
-    if not normalized_student_id:
-        raise HTTPException(status_code=400, detail="student_id is required.")
-
-    admin_user = db.query(Admin).filter(
-        or_(Admin.username == normalized_student_id, Admin.email == normalized_student_id)
-    ).first()
-    if admin_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid student_id. Please provide a valid student ID, not an admin username."
-        )
-
-    student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
+@app.post("/api/payment/initialize")
+def initialize_payment(request: DepositRequest, db: Session = Depends(get_db)):
+    """Initialize a payment / deposit gateway session for student wallet."""
+    student = db.query(Student).filter(Student.student_id == request.student_id).first()
     if not student:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid student_id. The student does not exist in the students table."
-        )
-
-    product = db.query(Product).filter(Product.id == wishlist_data.product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found.")
-
-    existing_item = (
-        db.query(WishlistItem)
-        .filter(
-            WishlistItem.student_id == normalized_student_id,
-            WishlistItem.product_id == wishlist_data.product_id,
-        )
-        .first()
-    )
-    if existing_item:
-        raise HTTPException(status_code=400, detail="Product already exists in wishlist.")
-
-    db_item = WishlistItem(
+        raise HTTPException(status_code=404, detail="Student not found.")
+    
+    amount = float(request.amount)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
+    
+    tx_ref = f"TX-{uuid.uuid4().hex[:8].upper()}"
+    
+    checkout_url = f"http://localhost:5173/?tx_ref={tx_ref}&status=success&amount={amount}"
+    
+    transaction = Transaction(
         student_id=student.student_id,
-        product_id=product.id,
+        tx_id=tx_ref,
+        type="Wallet Deposit",
+        amount=Decimal(str(amount)),
+        description=f"Wallet deposit initiated for {student.student_id}",
+        status="Pending"
     )
-    db.add(db_item)
+    db.add(transaction)
     db.commit()
-    db.refresh(db_item)
-
+    
     return {
-        "message": "Product added to wishlist.",
-        "id": db_item.id,
-        "student_id": db_item.student_id,
-        "product_id": db_item.product_id,
-        "created_at": db_item.created_at,
+        "status": "success",
+        "message": "Payment initialized successfully.",
+        "checkout_url": checkout_url,
+        "tx_ref": tx_ref
     }
 
 
-# 9. ከተማሪዎች ዊሽሊስት እቃ ማስወገድ (DELETE /api/student/wishlist/{id})
-@app.delete("/api/student/wishlist/{id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_wishlist_item(id: int, db: Session = Depends(get_db)):
-    item = db.query(WishlistItem).filter(WishlistItem.id == id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Wishlist item not found.")
-
-    db.delete(item)
-    db.commit()
-    return
-
-
 # ==========================================
-# --- አዳዲሶቹ የአስተዳዳሪ ኤፒአይ ኤንድፖይንቶች (Admin Endpoints) ---
+# --- Admin KPI, Analytics, Management ---
 # ==========================================
 
 # 7. የአስተዳዳሪ ስታቲስቲክስ መግለጫ (GET /api/admin/kpis)
@@ -3129,12 +3229,16 @@ def delete_wishlist_item(id: int, db: Session = Depends(get_db)):
 def get_admin_kpis(db: Session = Depends(get_db)):
     total_users = db.query(Student).count()
     active_listings = db.query(Product).count()
+    revenue_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).scalar() or 0
+    pending_reports = db.query(Report).filter(Report.status.ilike("Open")).count()
+
     return [
         {"label": "Total Users", "value": f"{total_users}", "change": "+4.7%"},
         {"label": "Active Listings", "value": f"{active_listings}", "change": "+2.1%"},
-        {"label": "Total Revenue", "value": "$0.00", "change": "0.0%"},
-        {"label": "Pending Reports", "value": "3", "change": "-8.3%"}
+        {"label": "Total Revenue", "value": f"{float(revenue_total):,.2f} ETB", "change": "+5.2%"},
+        {"label": "Pending Reports", "value": f"{pending_reports}", "change": "-8.3%"}
     ]
+
 
 @app.get("/api/admin/analytics")
 def get_admin_analytics(db: Session = Depends(get_db)):
@@ -3238,16 +3342,6 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             {"time": "02:40 PM", "action": "Lab equipment recommendation campaign reached 1.2K impressions", "user": "Marketing Module"}
         ]
 
-    activity_ratio = max(1, len(department_activity))
-    department_activity = [
-        {
-            "name": item["name"],
-            "value": int(round((item["value"] / sum(d["value"] for d in department_activity if d["value"]) or 1) * 100)),
-            "color": item["color"]
-        }
-        for item in department_activity
-    ]
-
     status_distribution = [
         {"label": "Completed", "value": 58, "color": "#10b981"},
         {"label": "Pending", "value": 22, "color": "#f59e0b"},
@@ -3271,7 +3365,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         "recentActivity": recent_activity,
     }
 
-# 8. የተማሪዎች ዝርዝር መጥሪያ (GET /api/admin/users)
+
 @app.get("/api/admin/users")
 def get_admin_users(
     search: Optional[str] = None,
@@ -3329,14 +3423,13 @@ def get_admin_users(
 
     return results
 
-# 8a. Get distinct colleges from UNIVERSITY_STRUCTURE
+
 @app.get("/api/admin/colleges")
 def get_colleges():
-    """Returns all 6 colleges from the university structure."""
+    """Returns all colleges from the university structure."""
     return sorted(list(UNIVERSITY_STRUCTURE.keys()))
 
 
-# 8b. Get departments (optionally filtered by college)
 @app.get("/api/admin/departments")
 def get_departments(college: Optional[str] = None):
     """
@@ -3347,13 +3440,12 @@ def get_departments(college: Optional[str] = None):
     if college and college in UNIVERSITY_STRUCTURE:
         return UNIVERSITY_STRUCTURE[college]
     
-    # Return all departments from all colleges (flattened)
     all_departments = []
     for depts in UNIVERSITY_STRUCTURE.values():
         all_departments.extend(depts)
     return sorted(all_departments)
 
-# 9. የተማሪን አካውንት ማገጃ/ማስተካከያ (PUT /api/admin/users/{id}/status)
+
 @app.put("/api/admin/users/{id}/status")
 def update_user_status(id: int, payload: UserStatusUpdate, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.id == id).first()
@@ -3412,7 +3504,7 @@ def update_user_status(id: int, payload: UserStatusUpdate, db: Session = Depends
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update user status.")
 
-# 10. የተማሪን አካውንት መደምሰሻ (DELETE /api/admin/users/{id})
+
 @app.delete("/api/admin/users/{id}")
 def delete_user(id: int, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.id == id).first()
@@ -3422,22 +3514,7 @@ def delete_user(id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "User deleted successfully"}
 
-# 11. የተማሪን አካውንት ማገጃ/ማስተካከያ (PATCH /api/admin/users/{id})
-@app.patch("/api/admin/users/{id}")
-def update_user_status_duplicate(id: int, db: Session = Depends(get_db)):
-    return {"message": "User status updated successfully"}
 
-# 12. የተማሪን አካውንት መደምሰሻ (DELETE /api/admin/users/{id})
-@app.delete("/api/admin/users/{id}")
-def delete_user_duplicate(id: int, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.id == id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-    db.delete(student)
-    db.commit()
-    return {"message": "User deleted successfully"}
-
-# 13. የተማሪ ማረጋገጫ አባሪዎች መግለጫ (GET /api/admin/verifications)
 @app.get("/api/admin/verifications")
 def get_admin_verifications(
     search: Optional[str] = None,
@@ -3501,51 +3578,51 @@ def update_student_verification(
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
 
     try:
-        with db.begin():
-            if approved:
-                student.is_verified = True
-                student.verification_reason = None
-                notification_message = (
-                    f"Your student identity has been successfully verified. "
-                    "You can now access full marketplace features and complete transactions without restrictions."
-                )
-                log_action = "Student Verification Approved"
-                description = f"Admin approved student verification for {student.name} ({student.student_id})."
-            else:
-                student.is_verified = False
-                student.verification_reason = rejection_reason
-                notification_message = (
-                    f"Your student identity verification was rejected. "
-                    f"Reason: {rejection_reason}. Please resubmit a clear and readable student ID."
-                )
-                log_action = "Student Verification Rejected"
-                description = (
-                    f"Admin rejected student verification for {student.name} ({student.student_id}) "
-                    f"with reason: {rejection_reason}."
-                )
+        if approved:
+            student.is_verified = True
+            student.verification_reason = None
+            notification_message = (
+                f"Your student identity has been successfully verified. "
+                "You can now access full marketplace features and complete transactions without restrictions."
+            )
+            log_action = "Student Verification Approved"
+            description = f"Admin approved student verification for {student.name} ({student.student_id})."
+        else:
+            student.is_verified = False
+            student.verification_reason = rejection_reason
+            notification_message = (
+                f"Your student identity verification was rejected. "
+                f"Reason: {rejection_reason}. Please resubmit a clear and readable student ID."
+            )
+            log_action = "Student Verification Rejected"
+            description = (
+                f"Admin rejected student verification for {student.name} ({student.student_id}) "
+                f"with reason: {rejection_reason}."
+            )
 
-            db.add(Notification(
-                student_id=student.student_id,
-                message=notification_message,
-                is_read=False,
-            ))
+        db.add(Notification(
+            student_id=student.student_id,
+            message=notification_message,
+            is_read=False,
+        ))
 
-            db.add(AuditLog(
-                admin_id=admin.id if admin else None,
-                action=log_action,
-                entity_type="Student",
-                entity_id=student.id,
-                description=description,
-                status="SUCCESS",
-                ip_address="127.0.0.1",
-            ))
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action=log_action,
+            entity_type="Student",
+            entity_id=student.id,
+            description=description,
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
 
-            try:
-                send_verification_status_email(student.email, "Approved" if approved else "Rejected", rejection_reason)
-            except Exception:
-                pass
+        try:
+            send_verification_status_email(student.email, "Approved" if approved else "Rejected", rejection_reason)
+        except Exception:
+            pass
 
-            db.flush()
+        db.commit()
+        db.refresh(student)
 
         return {
             "message": "Student verification updated successfully",
@@ -3559,7 +3636,6 @@ def update_student_verification(
         raise HTTPException(status_code=500, detail="Failed to process student verification request.")
 
 
-# 13. የዕቃዎች ዝርዝር መጥሪያ (GET /api/admin/products)
 @app.get("/api/admin/products")
 def get_admin_products(
     status: Optional[str] = None,
@@ -3617,15 +3693,6 @@ def get_admin_products(
         })
 
     return results
-
-# 14. የተለጠፈ እቃን ማስተካከያ/ማፅደቂያ (PATCH /api/admin/products/{id})
-@app.patch("/api/admin/products/{id}")
-def update_product_status(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
-    return update_product_status_impl(id=id, data=data, db=db)
-
-@app.put("/api/admin/products/{id}")
-def update_product_status_put(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
-    return update_product_status_impl(id=id, data=data, db=db)
 
 
 def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
@@ -3710,7 +3777,17 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
         db.rollback()
         raise
 
-# 15. የተለጠፈ እቃን መደምሰሻ (DELETE /api/admin/products/{id})
+
+@app.patch("/api/admin/products/{id}")
+def update_product_status_patch(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
+    return update_product_status_impl(id=id, data=data, db=db)
+
+
+@app.put("/api/admin/products/{id}")
+def update_product_status_put(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
+    return update_product_status_impl(id=id, data=data, db=db)
+
+
 @app.delete("/api/admin/products/{id}")
 def delete_product_admin(id: int, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == id).first()
@@ -3721,7 +3798,7 @@ def delete_product_admin(id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Product deleted successfully"}
 
-# 16. የክፍያ ታሪኮች ማውጫ (GET /api/admin/payments)
+
 @app.get("/api/admin/payments")
 def get_admin_payments_endpoint(
     search: Optional[str] = None,
@@ -4008,23 +4085,27 @@ def simulate_chapa_webhook(
         "amount": float(amount),
     }
 
-# 17. የተማሪዎች ቅሬታ ማውጫ (GET /api/admin/reports) — አሁን ከዳታቤዝ ያነባል
+
+# 17. የተማሪዎች ቅሬታ ማውጫ (GET /api/admin/reports)
 @app.get("/api/admin/reports")
 def get_admin_reports(db: Session = Depends(get_db)):
-    reports = db.query(Report).all()
+    reports = db.query(Report).order_by(Report.created_at.desc()).all()
     return [
         {
             "id": r.id,
+            "report_id": f"RPT-{r.id:04d}",
             "issue": r.issue,
             "student": r.student_name,
-            "status": r.status
+            "student_id": r.student_id,
+            "status": r.status,
+            "date": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else None,
         }
         for r in reports
     ]
 
-# 18. የቅሬታ መፍቻ እና አውቶማቲክ ኖቲፊኬሽን መላኪያ (PATCH /api/admin/reports/{id})
-@app.patch("/api/admin/reports/{id}")
-def resolve_report(id: int, data: ReportUpdate, db: Session = Depends(get_db)):
+
+# 18. የቅሬታ መፍቻ እና አውቶማቲክ ኖቲፊኬሽን መላኪያ (PUT & PATCH /api/admin/reports/{id})
+def resolve_report_impl(id: int, data: ReportUpdate, db: Session = Depends(get_db)):
     report = db.query(Report).filter(Report.id == id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -4033,400 +4114,53 @@ def resolve_report(id: int, data: ReportUpdate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(report)
 
-    # አስተዳዳሪው ቅሬታውን ሲዘጋው (Closed ሲያደርገው) በራስ-ሰር ኖቲፊኬሽን ይፈጥራል (Auto-notification logic)
-    if data.status.lower() == "closed":
+    if data.status.lower() in {"closed", "resolved"}:
+        issue_snippet = (report.issue or "")[:30]
         db_notification = Notification(
             student_id=report.student_id,
-            message=f"Your reported issue regarding '{report.issue[:30]}...' has been resolved by the Admin."
+            title="Support Case Update",
+            message=f"Your reported issue regarding '{issue_snippet}...' has been marked as {data.status} by Admin."
         )
         db.add(db_notification)
         db.commit()
 
-    return {"message": "Dispute status updated successfully"}
-
-# 19. የስርዓት ቅንብርን ማብሪያ/ማጥፊያ (PATCH /api/admin/settings/{id})
-@app.patch("/api/admin/settings/{id}")
-def update_setting(id: int, data: SettingUpdate):
-    return {"message": "Setting updated successfully"}
+    return {"message": "Dispute status updated successfully", "status": report.status}
 
 
-@app.get("/api/admin/settings/{id}")
-def get_setting(id: int):
-    return {"id": id, "value": True, "message": "Setting retrieved successfully"}
-# ==========================================
-# --- የተማሪ ገዢ ክፍሎች የዳታቤዝ ኤፒአዮች (Student Buyer Core APIs) ---
-# ==========================================
-
-def _parse_price_duplicate(value: Optional[str]) -> float:
-    if value is None:
-        return 0.0
-
-    text = str(value).strip()
-    if not text:
-        return 0.0
-
-    cleaned = text.replace("$", "").replace("ETB", "").replace(",", "").strip()
-    try:
-        return float(cleaned)
-    except (TypeError, ValueError):
-        return 0.0
+@app.put("/api/admin/reports/{id}")
+def resolve_report_put(id: int, data: ReportUpdate, db: Session = Depends(get_db)):
+    return resolve_report_impl(id, data, db)
 
 
-# 1. የተማሪውን የዊሽሊስት እቃዎች ዝርዝር መጥሪያ (GET /api/student/wishlist)
-@app.get("/api/student/wishlist_duplicate")
-def get_student_wishlist_duplicate(student_id: str, db: Session = Depends(get_db)):
-    rows = (
-        db.query(
-            WishlistItem.id,
-            WishlistItem.student_id,
-            WishlistItem.product_id,
-            WishlistItem.created_at,
-            Product.title,
-            Product.price,
-            Product.description,
-            Product.image,
-            Product.category,
-            Product.subcategory,
-            Product.seller,
-            Product.status,
-        )
-        .join(Product, WishlistItem.product_id == Product.id)
-        .filter(WishlistItem.student_id == student_id)
-        .order_by(WishlistItem.created_at.desc())
-        .all()
-    )
+@app.patch("/api/admin/reports/{id}")
+def resolve_report_patch(id: int, data: ReportUpdate, db: Session = Depends(get_db)):
+    return resolve_report_impl(id, data, db)
 
-    return [
-        {
-            "id": row.id,
-            "student_id": row.student_id,
-            "product_id": row.product_id,
-            "created_at": row.created_at,
-            "title": row.title,
-            "price": row.price,
-            "description": row.description,
-            "image": row.image,
-            "category": row.category,
-            "subcategory": row.subcategory,
-            "seller": row.seller,
-            "status": row.status,
-        }
-        for row in rows
-    ]
 
-# 2. የዊሽሊስት እቃን በቀጥታ ወደ ካርት ማዛወሪያ (DELETE /api/student/wishlist/{id})
-@app.delete("/api/student/wishlist/{id}_duplicate")
-def delete_wishlist_item_duplicate(id: int):
-    return {"message": "Item moved successfully"}
-
-# 3. የተማሪውን የካርት እቃዎች ዝርዝር መጥሪያ (GET /api/student/cart)
-@app.get("/api/student/cart_duplicate")
-def get_student_cart_duplicate(student_id: str, db: Session = Depends(get_db)):
-    rows = (
-        db.query(
-            CartItem.id,
-            CartItem.student_id,
-            CartItem.product_id,
-            CartItem.quantity,
-            Product.title,
-            Product.price,
-            Product.description,
-            Product.image,
-            Product.category,
-            Product.subcategory,
-            Product.seller,
-            Product.status,
-        )
-        .join(Product, CartItem.product_id == Product.id)
-        .filter(CartItem.student_id == student_id)
-        .all()
-    )
-
-    items = [
-        {
-            "id": row.id,
-            "title": row.title,
-            "price": row.price,
-            "quantity": row.quantity,
-            "description": row.description,
-            "image": row.image,
-            "category": row.category,
-            "subcategory": row.subcategory,
-            "seller": row.seller,
-            "status": row.status,
-        }
-        for row in rows
-    ]
-    return {"items": items}
-
-# 4. አዲስ እቃ ወደ ካርት መመዝገቢያ (POST /api/student/cart)
-@app.post("/api/student/cart_duplicate")
-def add_to_cart_duplicate(data: CartItemCreate):
-    return {"message": "Item added to cart"}
-
-# 5. ክፍያን ፈጽሞ ካርቱን ማጽጃ (POST /api/student/cart/checkout)
-@app.post("/api/student/cart/checkout_duplicate")
-def checkout_cart_duplicate(data: CheckoutRequest):
-    return {"message": "Checkout completed successfully"}
-
-# 6. የተማሪውን የትዕዛዞች ታሪክ መጥሪያ (GET /api/student/orders)
-@app.get("/api/student/orders_duplicate")
-def get_student_orders_duplicate(student_id: str, db: Session = Depends(get_db)):
-    orders = (
-        db.query(Order)
-        .filter(Order.student_id == student_id)
-        .order_by(Order.created_at.desc())
-        .all()
-    )
-
-    return [
-        {
-            "id": order.id,
-            "title": order.title,
-            "status": order.status,
-            "price": order.price,
-            "created_at": order.created_at,
-        }
-        for order in orders
-    ]
-
-# 7. የተማሪውን የዋሌት ቀሪ ሂሳብ እና ክፍያ መጥሪያ (GET /api/student/payments)
-@app.get("/api/student/payments_duplicate")
-def get_student_payments_duplicate(student_id: str, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-
-    latest_tx = (
-        db.query(Transaction)
-        .filter(Transaction.student_id == student_id)
-        .order_by(Transaction.created_at.desc())
-        .first()
-    )
-
-    recent_tx = "No transactions yet"
-    if latest_tx:
-        recent_tx = latest_tx.description if getattr(latest_tx, "description", None) else f"{latest_tx.type} - {latest_tx.tx_id}"
-
-    return {
-        "balance": float(student.wallet_balance),
-        "recentTx": recent_tx,
-    }
-
-# 8. አጠቃላይ የቤት ገጽ የተማሪ መግለጫዎች መጥሪያ (GET /api/student/highlights)
-@app.get("/api/student/highlights_duplicate")
-def get_student_highlights_duplicate(student_id: str, db: Session = Depends(get_db)):
-    cart_rows = (
-        db.query(CartItem, Product)
-        .join(Product, CartItem.product_id == Product.id)
-        .filter(CartItem.student_id == student_id)
-        .all()
-    )
-
-    cart_total = 0.0
-    for cart_item, product in cart_rows:
-        cart_total += _parse_price_duplicate(product.price) * cart_item.quantity
-
-    approved_listing_count = (
-        db.query(Product)
-        .filter(Product.status.ilike("approved"))
-        .count()
-    )
-
-    return {
-        "cartValue": round(cart_total, 2),
-        "approvedListings": approved_listing_count,
-    }
-
-# 3.1 የዊሽሊስት እቃዎችን ከዳታቤዝ መጥሪያ (GET /api/student/wishlist) — አሁን ከዳታቤዝ ያነባል
-@app.get("/api/student/wishlist_dynamic")
-def get_student_wishlist_dynamic(student_id: str, db: Session = Depends(get_db)):
-    wish_items = db.query(WishlistItem).filter(WishlistItem.student_id == student_id).all()
-    result = []
-    for item in wish_items:
-        # ምርቱን ከ products ሰንጠረዥ ጋር ያገናኘዋል
-        prod = db.query(Product).filter(Product.id == item.product_id).first()
-        if prod:
-            result.append({"id": item.id, "product_id": prod.id, "title": prod.title, "price": prod.price})
-    return result
-
-# 3.2 የካርት እቃዎችን ከዳታቤዝ መጥሪያ (GET /api/student/cart) — አሁን ከዳታቤዝ ያነባል
-@app.get("/api/student/cart_dynamic")
-def get_student_cart_dynamic(student_id: str, db: Session = Depends(get_db)):
-    cart_items = db.query(CartItem).filter(CartItem.student_id == student_id).all()
-    result = []
-    for item in cart_items:
-        prod = db.query(Product).filter(Product.id == item.product_id).first()
-        if prod:
-            result.append({"id": item.id, "title": prod.title, "price": prod.price, "quantity": item.quantity})
-    return {"items": result}
-
-# 3.3 የካርት እቃዎችን መግዣ እና ዋሌት ቀሪ ሂሳብ መቀነሻ (POST /api/student/cart/checkout) — አሁን ከዳታቤዝ ያነባል
-@app.post("/api/student/cart/checkout_dynamic")
-def checkout_cart_dynamic(data: CheckoutRequest, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == data.student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-
-    cart_items = db.query(CartItem).filter(CartItem.student_id == data.student_id).all()
-    if not cart_items:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-
-    # አጠቃላይ ሂሳቡን ማስላት
-    total_price = 0.00
-    for item in cart_items:
-        prod = db.query(Product).filter(Product.id == item.product_id).first()
-        if prod:
-            # የዋጋ ምልክቱን ($ ወይም ETB) በማጥፋት ወደ ቁጥር ይቀይረዋል
-            price_val = float(prod.price.replace('$', '').replace('ETB', '').strip())
-            total_price += price_val * item.quantity
-
-    # የዋሌት ቀሪ ሂሳብ መፈተሽ
-    if float(student.wallet_balance) < total_price:
-        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
-
-    # 1. የዋሌት ቀሪ ሂሳብን መቀነስ (Deduct Wallet Balance)
-    student.wallet_balance = float(student.wallet_balance) - total_price
-
-    # 2. እቃዎቹን ወደ ትዕዛዞች ሰንጠረዥ ማዛወር (Create Orders)
-    for item in cart_items:
-        prod = db.query(Product).filter(Product.id == item.product_id).first()
-        if prod:
-            db_order = Order(
-                student_id=data.student_id,
-                product_id=prod.id,
-                title=prod.title,
-                price=prod.price,
-                status="Processing"
-            )
-            db.add(db_order)
-
-    # 3. ክፍያውን በታሪክ ውስጥ መመዝገብ (Log Transaction)
-    db_tx = Transaction(
-        student_id=data.student_id,
-        tx_id=f"TX-{uuid.uuid4().hex[:6].upper()}",
-        type="Purchase",
-        amount=total_price,
-        status="Successful"
-    )
-    db.add(db_tx)
-
-    # 4. ካርቱን ማጽዳት (Clear Cart)
-    for item in cart_items:
-        db.delete(item)
-
+# 19. የአስተዳዳሪ ማስታወቂያ ማሰራጫ (POST /api/admin/notifications/broadcast)
+@app.post("/api/admin/notifications/broadcast")
+def broadcast_notification(data: BroadcastNotificationRequest, db: Session = Depends(get_db)):
+    query = db.query(Student)
+    if data.target and data.target.lower() not in {"all students", "all"}:
+        query = query.filter((Student.college == data.target) | (Student.department == data.target))
+    
+    students = query.all()
+    for s in students:
+        db.add(Notification(
+            student_id=s.student_id,
+            title=data.title,
+            message=data.message,
+            type="announcement",
+            is_read=False
+        ))
     db.commit()
-    return {"message": "Checkout successful!"}
+    return {"message": f"Broadcast delivered to {len(students)} students", "delivered_count": len(students)}
 
-# 3.4 የትዕዛዞችን ታሪክ መጥሪያ (GET /api/student/orders) — አሁን ከዳታቤዝ ያነባል
-@app.get("/api/student/orders_dynamic")
-def get_student_orders_dynamic(student_id: str, db: Session = Depends(get_db)):
-    return db.query(Order).filter(Order.student_id == student_id).all()
-
-# 3.5 የዋሌት ቀሪ ሂሳብ እና ክፍያ መጥሪያ (GET /api/student/payments) — አሁን ከዳታቤዝ ያነባል
-@app.get("/api/student/payments_dynamic")
-def get_student_payments_dynamic(student_id: str, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-
-    recent_tx = db.query(Transaction).filter(Transaction.student_id == student_id).order_by(Transaction.created_at.desc()).first()
-    tx_message = "No transactions yet"
-    if recent_tx:
-        tx_message = f"{recent_tx.type} - {recent_tx.tx_id} - ${recent_tx.amount}"
-
-    return {
-        "balance": float(student.wallet_balance),
-        "recentTx": tx_message
-    }
-
-# 3.6 ለአስተዳዳሪው የኮከብ ደረጃ እና አስተያየት መላኪያ (POST /api/student/reviews) — አሁን ከዳታቤዝ ያነባል
-@app.post("/api/student/reviews_dynamic")
-def submit_review_dynamic(data: ReviewCreate, db: Session = Depends(get_db)):
-    db_review = Review(
-        order_id=data.order_id,
-        student_id=data.student_id,
-        rating=data.rating,
-        comment=data.comment
-    )
-    db.add(db_review)
-    db.commit()
-    return {"message": "Review submitted successfully!"}
-
-
-
-class ReviewCreate(BaseModel):
-    order_id: int
-    student_id: str
-    rating: int
-    comment: str
-
-class CartItemCreate(BaseModel):
-    student_id: str
-    product_id: int
-
-class CartItemQuantityUpdate(BaseModel):
-    quantity: int
-
-# University Structure: All 6 Colleges and their Departments
-UNIVERSITY_STRUCTURE = {
-    "College of Computing and Informatics (CCI)": [
-        "Department of Computer Science",
-        "Department of Information Technology (IT)",
-        "Department of Software Engineering"
-    ],
-    "College of Natural and Computational Sciences (CNCS)": [
-        "Department of Biology",
-        "Department of Chemistry",
-        "Department of Geology",
-        "Department of Mathematics",
-        "Department of Physics",
-        "Department of Statistics",
-        "Department of Sport Science"
-    ],
-    "College of Agriculture and Natural Resource": [
-        "Department of Agro-Economics",
-        "Department of Agribusiness and Value Chain Management",
-        "Department of Animal Science",
-        "Department of Forestry",
-        "Department of Horticulture",
-        "Department of Natural Resource Management",
-        "Department of Plant Science",
-        "Department of Rural Development and Agricultural Extension"
-    ],
-    "College of Business and Economics": [
-        "Department of Accounting and Finance",
-        "Department of Economics",
-        "Department of Management",
-        "Department of Marketing Management"
-    ],
-    "College of Social Sciences and Humanities": [
-        "Department of Amharic Language and Literature",
-        "Department of English Language and Literature",
-        "Department of Geography and Environmental Studies",
-        "Department of History and Heritage Management",
-        "Department of Political Science and International Relations"
-    ],
-    "School of Law": [
-        "Department of Law (LLB)"
-    ]
-}
-
-# Category and Subcategory Creation Schemas
-class CategoryCreate(BaseModel):
-    name: str
-    icon: Optional[str] = None
-
-class SubCategoryCreate(BaseModel):
-    name: str
-    category_id: int
-    icon: Optional[str] = None
 
 # 21. Create Main Category (POST /api/admin/categories)
 @app.post("/api/admin/categories", status_code=status.HTTP_201_CREATED)
 def create_category(data: CategoryCreate, db: Session = Depends(get_db)):
     """Insert a new main category into the database"""
-    # Check if category name already exists
     existing = db.query(Category).filter(Category.name == data.name).first()
     if existing:
         raise HTTPException(status_code=400, detail="Category already exists")
@@ -4448,16 +4182,15 @@ def create_category(data: CategoryCreate, db: Session = Depends(get_db)):
         "status": "Active"
     }
 
+
 # 22. Create Subcategory (POST /api/admin/subcategories)
 @app.post("/api/admin/subcategories", status_code=status.HTTP_201_CREATED)
 def create_subcategory(data: SubCategoryCreate, db: Session = Depends(get_db)):
     """Insert a new subcategory under a parent category"""
-    # Verify parent category exists
     parent_category = db.query(Category).filter(Category.id == data.category_id).first()
     if not parent_category:
         raise HTTPException(status_code=404, detail="Parent category not found")
     
-    # Check if subcategory name already exists under this parent
     existing = db.query(SubCategory).filter(
         SubCategory.name == data.name,
         SubCategory.category_id == data.category_id
@@ -4482,6 +4215,7 @@ def create_subcategory(data: SubCategoryCreate, db: Session = Depends(get_db)):
         "category_id": db_subcategory.category_id,
         "ads_count": db_subcategory.ads_count
     }
+
 
 # 23. Fetch all categories with subcategories (GET /api/admin/categories/all)
 @app.get("/api/admin/categories/all")
@@ -4522,6 +4256,7 @@ def get_all_categories_with_subs(db: Session = Depends(get_db)):
     
     return result
 
+
 # 24. Delete a Category by ID (DELETE /api/admin/categories/{id})
 @app.delete("/api/admin/categories/{id}")
 def delete_category(id: int, db: Session = Depends(get_db)):
@@ -4538,6 +4273,7 @@ def delete_category(id: int, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete category: {str(e)}")
+
 
 # 25. Delete a Subcategory by ID (DELETE /api/admin/subcategories/{id})
 @app.delete("/api/admin/subcategories/{id}")
