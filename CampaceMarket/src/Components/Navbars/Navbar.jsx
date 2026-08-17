@@ -1,13 +1,20 @@
 import { useState } from 'react';
 import logo1 from '../../assets/logo1.jpg';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const isAuthenticatedDashboardView = Boolean(user) && (userRole === 'admin' || userRole === 'student' || user?.role === 'admin' || user?.role === 'student');
+  const effectiveRole = userRole || user?.role || 'student';
+  const isAdmin = effectiveRole === 'admin';
+  const displayName = isAdmin ? (user?.username || user?.name || 'mau9999') : (user?.name || user?.studentId || 'Student');
+  const displayEmail = user?.email || 'student@campus.edu';
+  const avatarSrc = isAdmin
+    ? null
+    : (user?.avatarUrl || (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : ''));
 
   return (
     <header className="bg-blue-600 text-white border-b border-blue-700 sticky top-0 z-[999]">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-[120px] flex items-center justify-between">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-[100px] flex items-center justify-between">
 
         {/* Logo */}
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate('home')}>
@@ -44,7 +51,8 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               <button
                 type="button"
                 onClick={onNotificationClick}
-                className="relative inline-flex h-11 w-11 items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10"
+                aria-label="Open notifications"
+                className="relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10 hover:text-slate-200 focus:outline-none"
                 title="Notifications"
               >
                 <svg className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -59,54 +67,88 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
               <div className="relative">
                 <button
-                  onClick={() => setIsDropdownOpen(!isDropdownOpen)}
-                  className="flex items-center gap-2 focus:outline-none cursor-pointer"
+                  type="button"
+                  onClick={() => setIsDropdownOpen((prev) => !prev)}
+                  className="flex cursor-pointer items-center gap-3 rounded-full border border-slate-200 bg-white px-2 py-1.5 text-left shadow-sm transition hover:bg-slate-50"
                   title="Account Menu"
                 >
-                  <img
-                    src={user?.studentId ? `http://127.0.0.1:8000/static/uploads/avatars/${user.studentId}.jpg` : "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"}
-                    alt="Student Avatar"
-                    onError={(e) => {
-                      e.currentTarget.onerror = null;
-                      e.currentTarget.src = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80";
-                    }}
-                    className="h-11 w-11 rounded-full object-cover border-[3px] border-green-500 shadow-sm"
-                  />
-                  <span className="hidden sm:inline text-md font-bold text-white">{user.name || "Student"}</span>
-                  <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50">
+                    {isAdmin ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
+                      </svg>
+                    ) : avatarSrc ? (
+                      <img src={avatarSrc} alt={displayName} className="h-full w-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.parentElement.innerHTML = `<svg xmlns='http://www.w3.org/2000/svg' class='h-5 w-5 text-emerald-600' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2'><path stroke-linecap='round' stroke-linejoin='round' d='M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z' /></svg>`; }} />
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
+                      </svg>
+                    )}
+                  </div>
+                  <div className="hidden sm:block leading-tight">
+                    <div className="text-sm font-bold leading-tight text-slate-900">{displayName}</div>
+                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{isAdmin ? 'SUPER ADMIN' : 'STUDENT'}</div>
+                  </div>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    className={`h-4 w-4 text-slate-500 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                   </svg>
                 </button>
 
                 {isDropdownOpen && (
-                  <div className="absolute right-0 mt-3 w-60 rounded-2xl border border-slate-800 bg-slate-900 p-3 shadow-2xl z-50">
-                    <div className="px-3 py-3 border-b border-slate-800">
-                      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Signed in as</p>
-                      <p className="text-sm font-bold text-white truncate mt-1">{user.name || 'Student'}</p>
-                      {user.email && <p className="text-xs text-slate-400 truncate">{user.email}</p>}
+                  <div className="absolute right-0 top-14 z-50 w-60 overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-lg">
+                    <div className="px-4 py-3 border-b border-slate-200">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Signed in as</p>
+                      <p className="mt-1 text-sm font-bold text-slate-900">{displayName}</p>
+                      <p className="text-xs text-slate-400">{displayEmail}</p>
                     </div>
 
-                    <div className="py-2">
-                      <button
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          onNavigate('student-dashboard-profile');
-                        }}
-                        className="w-full text-left rounded-xl px-4 py-2 text-sm text-slate-200 hover:bg-slate-800 transition font-medium"
-                      >
-                        Profile
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDropdownOpen(false);
 
-                      <button
-                        onClick={() => {
-                          setIsDropdownOpen(false);
-                          onLogout();
-                        }}
-                        className="w-full text-left rounded-xl px-4 py-2 text-sm text-red-400 hover:bg-slate-800 transition font-semibold"
-                      >
-                        Logout
-                      </button>
-                    </div>
+                        if (user?.role === 'student' || userRole === 'student') {
+                          if (onStudentProfileClick) {
+                            onStudentProfileClick();
+                          } else if (onNavigate) {
+                            onNavigate('student-dashboard');
+                          }
+                          return;
+                        }
+
+                        if (onAdminProfileClick) {
+                          onAdminProfileClick();
+                        } else if (onNavigate) {
+                          onNavigate('admin-dashboard');
+                        }
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
+                      </svg>
+                      Profile
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDropdownOpen(false);
+                        onLogout?.();
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-rose-600 transition hover:bg-slate-50"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1" />
+                      </svg>
+                      Logout
+                    </button>
                   </div>
                 )}
               </div>

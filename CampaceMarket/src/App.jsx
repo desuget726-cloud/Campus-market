@@ -25,7 +25,6 @@ function App() {
       return 'home';
     }
   });
-
   const [user, setUser] = useState(() => {
     if (typeof window === 'undefined') return null;
     try {
@@ -57,6 +56,8 @@ function App() {
       return 'home';
     }
   });
+  const [adminTab, setAdminTab] = useState('dashboard');
+  const [studentTab, setStudentTab] = useState('home');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingView, setPendingView] = useState('home');
   const [pendingUsername, setPendingUsername] = useState('');
@@ -66,9 +67,9 @@ function App() {
 
   useEffect(() => {
     if (!user || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
-    const session = { user, currentView, dashboardTab, userRole: activeRole };
+    const session = { user, currentView, dashboardTab, adminTab, studentTab, userRole: activeRole };
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-  }, [currentView, dashboardTab, user, activeRole]);
+  }, [currentView, dashboardTab, adminTab, studentTab, user, activeRole]);
 
   useEffect(() => {
     if (!user || !activeRole || !expectedDashboardView) return;
@@ -125,6 +126,7 @@ function App() {
     setUser(userData);
     setUserRole(role);
     setDashboardTab('home');
+    setStudentTab('home');
     setPendingView(nextView);
     setPendingUsername(username);
     setShowSuccessModal(true);
@@ -141,6 +143,7 @@ function App() {
     setUnreadCount(0);
     setCurrentView('home');
     setDashboardTab('home');
+    setStudentTab('home');
 
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -167,7 +170,7 @@ function App() {
         return;
       }
       if (view === 'student-dashboard-profile') {
-        setDashboardTab('profile');
+        setStudentTab('profile');
         setCurrentView('student-dashboard');
         return;
       }
@@ -178,7 +181,7 @@ function App() {
     }
 
     if (view === 'student-dashboard-profile') {
-      setDashboardTab('profile');
+      setStudentTab('profile');
       setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
       return;
     }
@@ -187,10 +190,18 @@ function App() {
   };
 
   const handleNotificationClick = async () => {
-    if (!user?.studentId || userRole !== 'student') return;
+    const effectiveRole = userRole || user?.role;
+
+    if (effectiveRole === 'admin') {
+      setCurrentView('admin-dashboard');
+      setAdminTab('notifications');
+      return;
+    }
+
+    if (effectiveRole !== 'student' || !user?.studentId) return;
 
     setCurrentView('student-dashboard');
-    setDashboardTab('notifications');
+    setStudentTab('notifications');
 
     try {
       const response = await fetch('http://127.0.0.1:8000/api/student/notifications/mark-read', {
@@ -219,6 +230,14 @@ function App() {
         onLogout={handleLogout}
         unreadCount={unreadCount}
         onNotificationClick={handleNotificationClick}
+        onAdminProfileClick={() => {
+          setAdminTab('profile');
+          setCurrentView('admin-dashboard');
+        }}
+        onStudentProfileClick={() => {
+          setStudentTab('profile');
+          setCurrentView('student-dashboard');
+        }}
       />
 
       <main className={`${isDashboardView ? 'w-full flex-1' : 'mx-auto max-w-7xl'} flex-grow px-4 py-6 sm:px-6 lg:px-8 lg:py-8`}>
@@ -255,13 +274,19 @@ function App() {
         {currentView === 'services' && <ServicesView />}
 
         {currentView === 'contact' && <ContactView />}
-        {activeRole === 'admin' && currentView === 'admin-dashboard' && <AdminDashboard onLogout={handleLogout} />}
+        {activeRole === 'admin' && currentView === 'admin-dashboard' && (
+          <AdminDashboard
+            onLogout={handleLogout}
+            initialTab={adminTab}
+            onTabChange={(tab) => setAdminTab(tab)}
+          />
+        )}
         {activeRole === 'student' && currentView === 'student-dashboard' && (
           <StudentDashboard
             onLogout={handleLogout}
             user={user}
-            initialTab={dashboardTab}
-            onTabChange={setDashboardTab}
+            initialTab={studentTab}
+            onTabChange={setStudentTab}
             onUserUpdate={setUser}
             onNavigate={handleNavigate}
           />
@@ -270,8 +295,8 @@ function App() {
           <StudentDashboard
             onLogout={handleLogout}
             user={user}
-            initialTab={dashboardTab}
-            onTabChange={setDashboardTab}
+            initialTab={studentTab}
+            onTabChange={setStudentTab}
             onUserUpdate={setUser}
             onNavigate={handleNavigate}
           />

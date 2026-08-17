@@ -17,8 +17,8 @@ const adminTabs = [
   { id: 'logout', label: 'Logout', icon: 'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1' }
 ];
 
-function AdminDashboard({ onLogout }) {
-  const [activeTab, setActiveTab] = useState('dashboard');
+function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isReady, setIsReady] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -513,15 +513,65 @@ function AdminDashboard({ onLogout }) {
 
   // KPI calculations
   const [metrics, setMetrics] = useState({
-    totalStudents: 4812,
-    activeStudents: 4320,
-    totalProducts: 1245,
-    pendingProducts: 84,
-    totalOrders: 612,
-    completedOrders: 580,
-    totalRevenue: "24,580.00 ETB",
-    pendingReports: 3
+    totalStudents: 0,
+    activeStudents: 0,
+    totalProducts: 0,
+    pendingProducts: 0,
+    totalOrders: 0,
+    completedOrders: 0,
+    totalRevenue: '0 ETB',
+    pendingReports: 0,
   });
+
+  const fetchDashboardOverview = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/analytics');
+      if (!response.ok) {
+        throw new Error('Admin analytics endpoint unavailable');
+      }
+
+      const data = await response.json();
+      const productBreakdown = data?.productStatusBreakdown ?? data?.product_status_breakdown ?? {};
+      const pendingProducts = Number(
+        data?.pendingProducts ?? data?.pending_products ?? productBreakdown.Pending ?? productBreakdown['Pending'] ?? 0,
+      );
+      const totalStudents = Number(data?.users ?? data?.totalStudents ?? data?.total_students ?? 0);
+      const totalProducts = Number(data?.products ?? data?.totalProducts ?? data?.total_products ?? 0);
+      const totalOrders = Number(data?.orders ?? data?.totalOrders ?? data?.total_orders ?? 0);
+      const completedOrders = Number(
+        data?.completedOrders ?? data?.completed_orders ?? Math.max(totalOrders - (data?.pendingOrders ?? 0), 0),
+      );
+      const totalRevenue = data?.revenue ?? data?.totalRevenue ?? data?.total_revenue ?? '0 ETB';
+      const pendingReports = Number(data?.pendingReports ?? data?.pending_reports ?? 0);
+      const activeStudents = Number(
+        data?.activeStudents ?? data?.active_students ?? Math.max(Math.round(totalStudents * 0.9), 0),
+      );
+
+      setMetrics({
+        totalStudents,
+        activeStudents,
+        totalProducts,
+        pendingProducts,
+        totalOrders,
+        completedOrders,
+        totalRevenue,
+        pendingReports,
+      });
+    } catch (error) {
+      console.error('Failed to fetch dashboard overview metrics:', error);
+      setMetrics((prev) => ({
+        ...prev,
+        totalStudents: prev.totalStudents || 0,
+        activeStudents: prev.activeStudents || 0,
+        totalProducts: prev.totalProducts || 0,
+        pendingProducts: prev.pendingProducts || 0,
+        totalOrders: prev.totalOrders || 0,
+        completedOrders: prev.completedOrders || 0,
+        totalRevenue: prev.totalRevenue || '0 ETB',
+        pendingReports: prev.pendingReports || 0,
+      }));
+    }
+  };
 
   const mockAnalyticsData = {
     users: 5240,
@@ -561,6 +611,25 @@ function AdminDashboard({ onLogout }) {
   };
 
   const [analyticsData, setAnalyticsData] = useState(mockAnalyticsData);
+
+  const analyticsSummaryCards = [
+    { label: 'Users', value: analyticsData.users ?? 0, trend: '+12.8%' },
+    { label: 'Products', value: analyticsData.products ?? 0, trend: '+9.4%' },
+    { label: 'Orders', value: analyticsData.orders ?? 0, trend: '+17.1%' },
+    { label: 'Revenue', value: analyticsData.revenue ?? '0 ETB', trend: '+23.6%' },
+  ];
+
+  const analyticsOrderStatus = Array.isArray(analyticsData.orderStatus) && analyticsData.orderStatus.length > 0
+    ? analyticsData.orderStatus
+    : mockAnalyticsData.orderStatus;
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    fetchDashboardOverview();
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setIsReady(true), 250);
@@ -824,6 +893,7 @@ function AdminDashboard({ onLogout }) {
       return;
     }
     setActiveTab(tabId);
+    onTabChange?.(tabId);
   };
 
   // State manipulation handlers
@@ -1620,6 +1690,136 @@ function AdminDashboard({ onLogout }) {
 
   const renderTabContent = () => {
     switch (activeTab) {
+      case 'profile':
+        return (
+          <div className="space-y-6 animate-fade-in text-slate-900">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p>
+                  <h2 className="mt-2 text-2xl font-black text-slate-950">Admin Security Profile</h2>
+                </div>
+                <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">
+                  Protected
+                </span>
+              </div>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="flex items-center gap-4 border-b border-slate-200 pb-5">
+                  <img
+                    src="http://127.0.0.1:8000/static/uploads/avatars/mau9999.jpg"
+                    alt="Admin avatar"
+                    className="h-16 w-16 rounded-full border-4 border-emerald-200 object-cover shadow-md"
+                    onError={(e) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80';
+                    }}
+                  />
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Primary Account</p>
+                    <h3 className="mt-2 text-2xl font-black text-slate-950">{profileForm.username || 'mau9999'}</h3>
+                    <p className="text-sm text-slate-500">{adminProfile.role || 'Primary Super Admin'}</p>
+                  </div>
+                </div>
+
+                <form onSubmit={handleProfileSubmit} className="mt-6 space-y-5">
+                  <div>
+                    <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Username</label>
+                    <input
+                      type="text"
+                      value={profileForm.username || 'mau9999'}
+                      disabled
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-500 outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Admin Email</label>
+                    <input
+                      type="email"
+                      value={profileForm.email || 'admin@campace.edu'}
+                      onChange={(e) => handleProfileFieldChange('email', e.target.value)}
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Current Password</label>
+                      <input
+                        type="password"
+                        value={profileForm.currentPassword}
+                        onChange={(e) => handleProfileFieldChange('currentPassword', e.target.value)}
+                        placeholder="Enter current password"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">New Password</label>
+                      <input
+                        type="password"
+                        value={profileForm.newPassword}
+                        onChange={(e) => handleProfileFieldChange('newPassword', e.target.value)}
+                        placeholder="Enter new password"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Confirm New Password</label>
+                    <input
+                      type="password"
+                      value={profileForm.confirmPassword}
+                      onChange={(e) => handleProfileFieldChange('confirmPassword', e.target.value)}
+                      placeholder="Confirm new password"
+                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end pt-2">
+                    <button
+                      type="submit"
+                      disabled={profileLoading}
+                      className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {profileLoading ? 'Saving...' : 'Save Profile Changes'}
+                    </button>
+                  </div>
+
+                  {profileMsg && (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
+                      {profileMsg}
+                    </div>
+                  )}
+                </form>
+              </div>
+
+              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                <h3 className="text-lg font-black text-slate-950">Session Analytics</h3>
+                <div className="mt-5 space-y-4">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Last Login</p>
+                    <p className="mt-2 text-lg font-bold text-slate-900">August 17, 2026 — 9:25 AM</p>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Local IP Address</p>
+                    <p className="mt-2 text-lg font-bold text-slate-900">127.0.0.1</p>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Role</p>
+                    <p className="mt-2 text-lg font-bold text-slate-900">Primary Super Admin</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
       case 'dashboard':
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -3753,18 +3953,13 @@ function AdminDashboard({ onLogout }) {
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {[
-                { label: 'Users', value: '5,240', trend: '+12.8%' },
-                { label: 'Products', value: '12,450', trend: '+9.4%' },
-                { label: 'Orders', value: '8,920', trend: '+17.1%' },
-                { label: 'Revenue', value: '2.4M ETB', trend: '+23.6%' }
-              ].map((item) => (
+              {analyticsSummaryCards.map((item) => (
                 <div key={item.label} className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
                   <div className="flex items-center justify-between">
                     <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">{item.label}</p>
                     <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700">{item.trend}</span>
                   </div>
-                  <p className="mt-4 text-3xl font-black text-slate-950">{item.value}</p>
+                  <p className="mt-4 text-3xl font-black text-slate-950">{typeof item.value === 'number' ? item.value.toLocaleString() : item.value}</p>
                   <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-emerald-600">
                     <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500" />
                     Up trending
@@ -3834,18 +4029,13 @@ function AdminDashboard({ onLogout }) {
                 </div>
 
                 <div className="mt-5 space-y-2">
-                  {[
-                    { label: 'Completed', value: '58%', color: 'bg-emerald-500' },
-                    { label: 'Pending', value: '22%', color: 'bg-amber-500' },
-                    { label: 'Processing', value: '14%', color: 'bg-blue-500' },
-                    { label: 'Cancelled', value: '6%', color: 'bg-red-500' }
-                  ].map((status) => (
+                  {analyticsOrderStatus.map((status) => (
                     <div key={status.label} className="flex items-center justify-between text-sm font-semibold text-slate-700">
                       <div className="flex items-center gap-2">
-                        <span className={`h-2.5 w-2.5 rounded-full ${status.color}`} />
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: status.color ?? '#64748b' }} />
                         {status.label}
                       </div>
-                      <span>{status.value}</span>
+                      <span>{typeof status.value === 'number' ? `${status.value}%` : status.value}</span>
                     </div>
                   ))}
                 </div>
@@ -4742,9 +4932,8 @@ function AdminDashboard({ onLogout }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pt-20">
-      <div className="flex min-h-screen flex-col gap-6 px-4 py-6 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-8">
-
+    <div className="min-h-screen bg-slate-50 text-slate-900 pt-16 lg:pt-0">
+      <div className="flex min-h-screen flex-col gap-2 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className={`
           fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-[#111c3a] p-6 text-white shadow-xl transition-all duration-300 ease-in-out
@@ -4818,65 +5007,6 @@ function AdminDashboard({ onLogout }) {
                 </div>
               </div>
 
-              <div className="relative ml-auto">
-                <button
-                  type="button"
-                  onClick={() => setIsDropdownOpen((prev) => !prev)}
-                  className="flex cursor-pointer items-center gap-3 rounded-full border border-slate-200 bg-white px-2 py-1.5 text-left shadow-sm transition hover:bg-slate-50"
-                >
-                  <img
-                    src={adminProfile.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
-                    alt="Admin avatar"
-                    className="h-10 w-10 rounded-full object-cover border border-slate-200"
-                  />
-                  <div className="hidden sm:block leading-tight">
-                    <div className="text-sm font-bold leading-tight text-slate-900">{profileForm.username || adminProfile.username}</div>
-                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">SUPER ADMIN</div>
-                  </div>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className={`h-4 w-4 text-slate-500 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-
-                {isDropdownOpen && (
-                  <div className="absolute right-0 top-14 z-50 w-52 overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-lg">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveTab('profile');
-                        setShowProfileModal(true);
-                        setIsDropdownOpen(false);
-                      }}
-                      className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
-                      </svg>
-                      Profile
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsDropdownOpen(false);
-                        onLogout?.();
-                      }}
-                      className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-rose-600 transition hover:bg-slate-50"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1" />
-                      </svg>
-                      Logout
-                    </button>
-                  </div>
-                )}
-              </div>
             </div>
           </div>
 

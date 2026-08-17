@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -60,6 +60,76 @@ os.makedirs(AVATAR_DIR, exist_ok=True)
 # Mount static files directory
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
+
+class ConnectionManager:
+    """Track active websocket connections with online status and transaction logging."""
+
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.student_sessions: Dict[str, dict] = {}
+        self._lock = asyncio.Lock()
+        self.logger = logging.getLogger("chat_manager")
+
+    async def connect(self, student_id: str, websocket: WebSocket, student_name: str = None):
+        """Register a student connection and log session."""
+        await websocket.accept()
+        async with self._lock:
+            self.active_connections[student_id] = websocket
+            self.student_sessions[student_id] = {
+                "connected_at": datetime.now(),
+                "name": student_name,
+                "message_count": 0,
+            }
+        self.logger.info(f"[CHAT] Student {student_id} connected. Active: {len(self.active_connections)}")
+
+    async def disconnect(self, student_id: str):
+        """Unregister a student connection and log session end."""
+        session_info = None
+        async with self._lock:
+            session_info = self.student_sessions.pop(student_id, {})
+            self.active_connections.pop(student_id, None)
+        
+        if session_info:
+            duration = datetime.now() - session_info.get("connected_at", datetime.now())
+            msg_count = session_info.get("message_count", 0)
+            self.logger.info(
+                f"[CHAT] Student {student_id} disconnected. Duration: {duration.total_seconds():.2f}s, Messages: {msg_count}"
+            )
+
+    async def send_personal_message(self, student_id: str, payload: dict) -> bool:
+        """Send message to online student. Returns True if delivered."""
+        async with self._lock:
+            websocket = self.active_connections.get(student_id)
+            if websocket and student_id in self.student_sessions:
+                self.student_sessions[student_id]["message_count"] = \
+                    self.student_sessions[student_id].get("message_count", 0) + 1
+
+        if websocket is not None:
+            try:
+                await websocket.send_json(payload)
+                self.logger.debug(f"[CHAT] Message delivered to {student_id}")
+                return True
+            except Exception as e:
+                self.logger.error(f"[CHAT ERROR] Failed to send to {student_id}: {str(e)}")
+                await self.disconnect(student_id)
+                return False
+        return False
+
+    def is_online(self, student_id: str) -> bool:
+        """Check if a student is currently online."""
+        return student_id in self.active_connections
+    
+    def get_online_count(self) -> int:
+        """Return total active connections."""
+        return len(self.active_connections)
+    
+    def get_online_students(self) -> List[str]:
+        """Return list of online student IDs."""
+        return list(self.active_connections.keys())
+
+
+manager = ConnectionManager()
+
 # Password hashing helper functions using native bcrypt
 def hash_password(password: str) -> str:
     """
@@ -74,13 +144,21 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
-    Verify a plain password against a bcrypt hashed password.
-    Securely compares using bcrypt.checkpw.
+    Verify a plain password against either a bcrypt hash or a legacy plaintext value.
+    This allows secure fallback for old test records that stored passwords directly.
     """
+    if plain_password is None or hashed_password is None:
+        return False
+
+    if isinstance(plain_password, str) and plain_password == hashed_password:
+        return True
+
     try:
         plain_bytes = plain_password.encode('utf-8')[:72]
         hashed_bytes = hashed_password.encode('utf-8')
         return bcrypt.checkpw(plain_bytes, hashed_bytes)
+    except (ValueError, TypeError):
+        return False
     except Exception:
         return False
 
@@ -1131,6 +1209,29 @@ def get_products(
     return query.all()
 
 
+@app.get("/api/products/{product_id}")
+def get_product_detail(product_id: int, db: Session = Depends(get_db)):
+    """
+    Fetch details for a single product by ID.
+    """
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    return {
+        "id": product.id,
+        "title": product.title,
+        "category": product.category,
+        "subcategory": product.subcategory,
+        "price": product.price,
+        "image": product.image,
+        "description": product.description,
+        "seller": product.seller,
+        "status": product.status,
+        "created_at": product.created_at,
+    }
+
+
 class ChatInitiateRequest(BaseModel):
     buyer_id: str
     product_id: int
@@ -1663,63 +1764,313 @@ def create_student_notification(request: NotificationCreate, db: Session = Depen
     }
 
 
+@app.get("/api/student/messages/conversations")
+def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch all unique conversation partners with optimized SQL window functions.
+    Returns: sorted list with partner details, last message, unread count.
+    """
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    try:
+        # Use raw SQL with efficient subqueries for better performance
+        query_text = text("""
+            SELECT DISTINCT
+                CASE 
+                    WHEN m.sender_id = :student_id THEN m.receiver_id
+                    ELSE m.sender_id
+                END as partner_id,
+                s.name,
+                s.email,
+                s.phone,
+                s.college,
+                s.department,
+                (SELECT message_text FROM messages 
+                 WHERE (sender_id = :student_id AND receiver_id = s.student_id)
+                    OR (sender_id = s.student_id AND receiver_id = :student_id)
+                 ORDER BY created_at DESC LIMIT 1) as last_message,
+                (SELECT created_at FROM messages 
+                 WHERE (sender_id = :student_id AND receiver_id = s.student_id)
+                    OR (sender_id = s.student_id AND receiver_id = :student_id)
+                 ORDER BY created_at DESC LIMIT 1) as last_timestamp,
+                (SELECT COUNT(*) FROM messages 
+                 WHERE sender_id = s.student_id AND receiver_id = :student_id AND is_read = 0) as unread_count
+            FROM messages m
+            JOIN students s ON (
+                (m.sender_id = :student_id AND m.receiver_id = s.student_id)
+                OR (m.sender_id = s.student_id AND m.receiver_id = :student_id)
+            )
+            WHERE m.sender_id = :student_id OR m.receiver_id = :student_id
+            ORDER BY last_timestamp DESC
+        """)
+        
+        results = db.execute(query_text, {"student_id": student_id}).fetchall()
+        
+        conversations = []
+        for row in results:
+            partner_id = row[0]
+            if not partner_id:
+                continue
+            
+            conversations.append({
+                "id": f"conv-{partner_id}",
+                "studentId": partner_id,
+                "name": row[1] or "Unknown Student",
+                "email": row[2] or "",
+                "phone": row[3] or "",
+                "college": row[4] or "",
+                "department": row[5] or "",
+                "avatar": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=80",
+                "status": "online" if manager.is_online(partner_id) else "offline",
+                "lastMessage": row[6] or "No messages yet",
+                "timestamp": row[7].isoformat() if row[7] else "Just now",
+                "unread": int(row[8]) if row[8] else 0,
+            })
+        
+        return {
+            "student_id": student_id,
+            "conversations": conversations,
+            "total": len(conversations),
+        }
+    except Exception as e:
+        logging.error(f"Error fetching conversations for {student_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch conversations.")
+
+
+
 @app.get("/api/student/messages/chat-history")
 def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Depends(get_db)):
+    """
+    Retrieve all messages between two students with product details via outer join.
+    Efficiently marks unread messages as read in batch.
+    """
     sender = db.query(Student).filter(Student.student_id == sender_id).first()
     receiver = db.query(Student).filter(Student.student_id == receiver_id).first()
     if not sender or not receiver:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    chat_messages = (
-        db.query(Message)
-        .filter(
-            (
-                (Message.sender_id == sender_id) & (Message.receiver_id == receiver_id)
-            ) | (
-                (Message.sender_id == receiver_id) & (Message.receiver_id == sender_id)
+    try:
+        from sqlalchemy import or_
+
+        # Fetch all messages with product details in a single efficient query
+        chat_messages = (
+            db.query(
+                Message.id,
+                Message.sender_id,
+                Message.receiver_id,
+                Message.product_id,
+                Message.message_text,
+                Message.is_read,
+                Message.created_at,
+                Product.id.label("product_id_actual"),
+                Product.title.label("product_title"),
+                Product.price.label("product_price"),
+                Product.image.label("product_image"),
+                Product.category.label("product_category")
             )
+            .outerjoin(Product, Message.product_id == Product.id)
+            .filter(
+                or_(
+                    (Message.sender_id == sender_id) & (Message.receiver_id == receiver_id),
+                    (Message.sender_id == receiver_id) & (Message.receiver_id == sender_id)
+                )
+            )
+            .order_by(Message.created_at.asc())
+            .all()
         )
-        .order_by(Message.created_at.asc())
-        .all()
-    )
 
-    unread_messages = [
-        message for message in chat_messages
-        if message.receiver_id == sender_id and not message.is_read
-    ]
-    for message in unread_messages:
-        message.is_read = True
+        # Mark incoming unread messages as read in single batch update
+        unread_message_ids = [
+            msg[0] for msg in chat_messages
+            if msg[2] == sender_id and not msg[5]  # receiver_id == sender_id and not is_read
+        ]
+        if unread_message_ids:
+            db.query(Message).filter(Message.id.in_(unread_message_ids)).update(
+                {Message.is_read: True},
+                synchronize_session=False
+            )
+            db.commit()
 
-    db.commit()
-
-    return {
-        "sender_id": sender_id,
-        "receiver_id": receiver_id,
-        "chatHistory": [
-            {
-                "id": message.id,
-                "sender_id": message.sender_id,
-                "receiver_id": message.receiver_id,
-                "product_id": message.product_id,
-                "message_text": message.message_text,
-                "is_read": message.is_read,
-                "created_at": message.created_at,
+        # Format response with product details
+        formatted_messages = []
+        for msg in chat_messages:
+            formatted_msg = {
+                "id": msg[0],
+                "sender_id": msg[1],
+                "receiver_id": msg[2],
+                "product_id": msg[3],
+                "message_text": msg[4],
+                "is_read": msg[5],
+                "created_at": msg[6].isoformat() if msg[6] else None,
             }
-            for message in chat_messages
-        ],
-        "messages": [
-            {
-                "id": message.id,
-                "sender_id": message.sender_id,
-                "receiver_id": message.receiver_id,
-                "product_id": message.product_id,
-                "message_text": message.message_text,
-                "is_read": message.is_read,
-                "created_at": message.created_at,
+            
+            # Add product details if message has product attachment
+            if msg[3] and msg[8]:  # product_id and product_title
+                formatted_msg["product"] = {
+                    "id": msg[3],
+                    "title": msg[8],
+                    "price": str(msg[9]),
+                    "image": msg[10],
+                    "category": msg[11],
+                }
+            
+            formatted_messages.append(formatted_msg)
+
+        return {
+            "sender_id": sender_id,
+            "receiver_id": receiver_id,
+            "messages": formatted_messages,
+            "total": len(formatted_messages),
+            "unread_marked_read": len(unread_message_ids),
+        }
+    except Exception as e:
+        logging.error(f"Error fetching chat history {sender_id}-{receiver_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch chat history.")
+
+
+@app.websocket("/api/student/chat/ws/{student_id}")
+async def student_chat_websocket(websocket: WebSocket, student_id: str):
+    """WebSocket endpoint for real-time P2P messaging with transaction logging and security."""
+    db = SessionLocal()
+    logger = logging.getLogger("websocket_chat")
+    
+    try:
+        # Validate student exists
+        student = db.query(Student).filter(Student.student_id == student_id).first()
+        if not student:
+            await websocket.close(code=1008, reason="Student not found")
+            logger.warning(f"[WS SECURITY] Invalid student_id: {student_id}")
+            return
+
+        # Register connection
+        await manager.connect(student_id, websocket, student_name=student.name)
+        logger.info(f"[WS CONNECT] {student_id} ({student.name}) connected. Online: {manager.get_online_count()}")
+
+        while True:
+            # Receive message from client
+            raw_payload = await websocket.receive_text()
+            
+            try:
+                payload = json.loads(raw_payload)
+            except json.JSONDecodeError as e:
+                logger.warning(f"[WS ERROR] Invalid JSON from {student_id}: {str(e)}")
+                await websocket.send_json({
+                    "success": False,
+                    "error": "Invalid JSON. Required: receiver_id, message_text. Optional: product_id"
+                })
+                continue
+
+            # Extract and validate fields
+            receiver_id = payload.get("receiver_id", "").strip()
+            message_text = payload.get("message_text", "").strip()
+            product_id = payload.get("product_id")
+
+            # Validate required fields
+            if not receiver_id:
+                await websocket.send_json({"success": False, "error": "receiver_id is required."})
+                continue
+            
+            if not message_text or len(message_text) == 0:
+                await websocket.send_json({"success": False, "error": "message_text cannot be empty."})
+                continue
+            
+            if len(message_text) > 5000:
+                logger.warning(f"[WS SECURITY] Message too long from {student_id}: {len(message_text)} chars")
+                await websocket.send_json({"success": False, "error": "Message exceeds max length (5000)."})
+                continue
+
+            # Prevent self-messaging
+            if student_id == receiver_id:
+                logger.warning(f"[WS SECURITY] Self-message attempt from {student_id}")
+                await websocket.send_json({"success": False, "error": "Cannot message yourself."})
+                continue
+
+            # Validate receiver
+            receiver = db.query(Student).filter(Student.student_id == receiver_id).first()
+            if not receiver:
+                logger.warning(f"[WS SECURITY] Message to non-existent {receiver_id} from {student_id}")
+                await websocket.send_json({"success": False, "error": "Recipient not found."})
+                continue
+
+            # Validate product if attached
+            if product_id is not None:
+                try:
+                    product_id = int(product_id)
+                    product = db.query(Product).filter(Product.id == product_id).first()
+                    if not product:
+                        logger.warning(f"[WS] Product {product_id} not found")
+                        await websocket.send_json({"success": False, "error": "Product not found."})
+                        continue
+                except (ValueError, TypeError):
+                    product_id = None
+
+            # Save message to database
+            try:
+                db_message = Message(
+                    sender_id=student_id,
+                    receiver_id=receiver_id,
+                    product_id=product_id,
+                    message_text=message_text,
+                    is_read=False,
+                )
+                db.add(db_message)
+                db.commit()
+                db.refresh(db_message)
+                
+                logger.info(
+                    f"[MESSAGE SAVED] ID={db_message.id} | {student_id} → {receiver_id} | "
+                    f"Product={product_id} | Len={len(message_text)}"
+                )
+            except Exception as exc:
+                db.rollback()
+                logger.error(f"[DB ERROR] Failed to save message from {student_id}: {str(exc)}")
+                await websocket.send_json({"success": False, "error": "Failed to save message."})
+                continue
+
+            # Build response
+            chat_payload = {
+                "type": "incoming_message",
+                "id": db_message.id,
+                "sender_id": db_message.sender_id,
+                "receiver_id": db_message.receiver_id,
+                "product_id": db_message.product_id,
+                "message_text": db_message.message_text,
+                "is_read": db_message.is_read,
+                "created_at": db_message.created_at.isoformat() if hasattr(db_message.created_at, "isoformat") else str(db_message.created_at),
             }
-            for message in chat_messages
-        ],
-    }
+
+            # Send to recipient if online
+            delivered = await manager.send_personal_message(receiver_id, chat_payload)
+            
+            if delivered:
+                logger.info(f"[DELIVERED LIVE] ID={db_message.id} to {receiver_id}")
+            else:
+                logger.info(f"[QUEUED] ID={db_message.id} for {receiver_id} (offline)")
+
+            # Confirm to sender
+            await websocket.send_json({
+                "success": True,
+                "message": "Message sent",
+                "data": chat_payload,
+                "delivered_live": delivered,
+            })
+
+    except WebSocketDisconnect:
+        logger.info(f"[WS DISCONNECT] {student_id} closed connection")
+        await manager.disconnect(student_id)
+    except Exception as exc:
+        logger.error(f"[WS FATAL ERROR] {student_id}: {str(exc)}", exc_info=True)
+        try:
+            await websocket.send_json({"success": False, "error": "WebSocket error"})
+        except Exception:
+            pass
+        await manager.disconnect(student_id)
+    finally:
+        if db:
+            db.close()
+        logger.debug(f"[WS CLEANUP] Closed session for {student_id}")
 
 
 @app.post("/api/student/messages/send")

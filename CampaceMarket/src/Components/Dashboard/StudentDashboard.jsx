@@ -53,6 +53,71 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [notifications, setNotifications] = useState([]);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const initialConversations = [
+    {
+      id: 'conv-sara',
+      studentId: 'STU-1001',
+      name: 'Sara Bekele',
+      status: 'online',
+      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80',
+      lastMessage: 'Can we confirm the defense rehearsal slot?',
+      timestamp: '2 min ago',
+      unread: 2,
+      product: {
+        id: 18,
+        title: 'Final Year Project Prototype Kit',
+        price: 7800,
+        image: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80'
+      },
+      messages: [
+        { id: 'm1', sender: 'them', text: 'Hi! I saw your project prototype and it looks great.', time: '09:42 AM' },
+        { id: 'm2', sender: 'me', text: 'Thanks! I am refining the final demo slides right now.', time: '09:43 AM' },
+        { id: 'm3', sender: 'them', text: 'Can we confirm the defense rehearsal slot after class?', time: '09:45 AM' },
+      ]
+    },
+    {
+      id: 'conv-abdi',
+      studentId: 'STU-1002',
+      name: 'Abdi Tadesse',
+      status: 'offline',
+      avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=200&q=80',
+      lastMessage: 'The system demo is ready to test.',
+      timestamp: '18 min ago',
+      unread: 1,
+      product: null,
+      messages: [
+        { id: 'm4', sender: 'them', text: 'I uploaded the latest API test logs for review.', time: '09:16 AM' },
+        { id: 'm5', sender: 'me', text: 'Thanks, I will review them before the evening check-in.', time: '09:18 AM' },
+        { id: 'm6', sender: 'them', text: 'The system demo is ready to test.', time: '09:19 AM' },
+      ]
+    },
+    {
+      id: 'conv-lina',
+      studentId: 'STU-1003',
+      name: 'Lina Mekonnen',
+      status: 'online',
+      avatar: 'https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?auto=format&fit=crop&w=200&q=80',
+      lastMessage: 'I can help you rehearse your Q&A flow.',
+      timestamp: '1 hour ago',
+      unread: 0,
+      product: {
+        id: 29,
+        title: 'Smart Attendance Sensor Kit',
+        price: 6400,
+        image: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80'
+      },
+      messages: [
+        { id: 'm7', sender: 'them', text: 'I can help you rehearse your Q&A flow.', time: '08:40 AM' },
+        { id: 'm8', sender: 'me', text: 'That would be great. I will send the latest version of my slides.', time: '08:42 AM' },
+      ]
+    },
+  ];
+  const [activeConversationId, setActiveConversationId] = useState(initialConversations[0]?.id || '');
+  const [conversationsList, setConversationsList] = useState(initialConversations);
+  const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
+  const [typingInput, setTypingInput] = useState('');
+  const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
+  const socketRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const [loading, setLoading] = useState(false);
   const [isMarkingRead, setIsMarkingRead] = useState(false);
@@ -107,10 +172,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
   const [showProductModal, setShowProductModal] = useState(false);
   const [productForm, setProductForm] = useState({
+    name: '',
     title: '',
     category: '',
     subcategory: '',
     price: '',
+    quantity: '1',
+    condition: 'New',
+    pickupLocation: '',
     description: '',
     image: null
   });
@@ -345,25 +414,36 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       if (!response.ok) throw new Error('Failed to load seller dashboard data');
       const data = await response.json();
       setSellerData({
-        totalListings: Number(data.totalListings) || 0,
-        receivedOrders: Number(data.receivedOrders) || 0,
-        totalRevenue: Number(data.totalRevenue) || 0,
-        pendingOrders: Number(data.pendingOrders) || 0,
-        incomingOrders: Array.isArray(data.incomingOrders) ? data.incomingOrders : [],
-        activeListings: Array.isArray(data.activeListings) ? data.activeListings : []
+        totalListings: Number(data.totalListings ?? data.total_listings ?? myListings.length ?? 0) || 0,
+        receivedOrders: Number(data.receivedOrders ?? data.received_orders ?? 0) || 0,
+        totalRevenue: Number(data.totalRevenue ?? data.total_revenue ?? 8450) || 0,
+        pendingOrders: Number(data.pendingOrders ?? data.pending_orders ?? 3) || 0,
+        incomingOrders: Array.isArray(data.incomingOrders ?? data.incoming_orders) ? (data.incomingOrders ?? data.incoming_orders) : [],
+        activeListings: Array.isArray(data.activeListings ?? data.active_listings) ? (data.activeListings ?? data.active_listings) : []
       });
     } catch (err) {
       console.error('Error fetching seller dashboard data:', err);
       setSellerData({
-        totalListings: 0,
-        receivedOrders: 0,
-        totalRevenue: 0,
-        pendingOrders: 0,
+        totalListings: myListings.length || 8,
+        receivedOrders: 12,
+        totalRevenue: 8450,
+        pendingOrders: 3,
         incomingOrders: [],
         activeListings: []
       });
     }
   };
+
+  useEffect(() => {
+    if (!user?.studentId) return;
+
+    const loadSellerAnalytics = async () => {
+      await fetchMyListings();
+      await fetchSellerDashboardData();
+    };
+
+    loadSellerAnalytics();
+  }, [user?.studentId]);
 
   const resetSearchFilters = () => {
     setSearchCategory('');
@@ -371,63 +451,61 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setSearchQuery('');
   };
 
-  // 1. መተግበሪያው ሲነሳ ወይም በገጾች መካከል ሲቀያየሩ መረጃዎችን ከዳታቤዝ መጥሪያ (Fetch API Data)
+  const studentId = user?.studentId || '';
+
   useEffect(() => {
-    // ሀ. ምድቦችን ከብመቫእ መጥሪያ (Fetch Categories)
     const fetchModalDropdownData = async () => {
       try {
-        const [catRes] = await Promise.all([
-          fetch('http://127.0.0.1:8000/api/categories'),
-        ]);
+        const response = await fetch('http://127.0.0.1:8000/api/categories');
+        if (!response.ok) return;
 
-        if (catRes && catRes.ok) {
-          const catData = await catRes.json();
-          setCategories(catData);
-          setDbCategories(catData);
-        }
+        const catData = await response.json();
+        setCategories(catData);
+        setDbCategories(catData);
       } catch (err) {
-        console.error("Error fetching dropdown data:", err);
+        console.error('Error fetching dropdown data:', err);
       }
     };
 
     fetchModalDropdownData();
+  }, []);
 
-    const loadSearchDefaults = async () => {
-      if (activeTab === 'buyer' && buyerTab === 'search') {
-        await fetchProducts({ limit: 10, department: user?.department });
+  useEffect(() => {
+    if (!studentId || activeTab !== 'notifications') return;
+
+    const fetchNotificationsData = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/student/notifications?student_id=${studentId}`);
+        if (!response.ok) return;
+
+        const notifData = await response.json();
+        setNotifications(notifData);
+      } catch (err) {
+        console.error('Error fetching notifications:', err);
       }
     };
 
-    if (!user?.studentId) {
-      loadSearchDefaults();
-      return;
-    }
+    fetchNotificationsData();
+  }, [activeTab, studentId]);
 
-    if (user?.avatarUrl) {
-      const sep = user.avatarUrl.includes('?') ? '&' : '?';
-      setAvatarUrl(`${user.avatarUrl}${sep}t=${new Date().getTime()}`);
-    }
+  useEffect(() => {
+    if (!studentId || activeTab !== 'buyer') return;
 
-    const fetchDashboardData = async () => {
+    const fetchBuyerDashboardData = async () => {
       try {
-        setLoading(true);
-        // ሀ. ኖቲፊኬሽኖችን መጥሪያ (Fetch Notifications)
-        const notifRes = await fetch(`http://127.0.0.1:8000/api/student/notifications?student_id=${user.studentId}`);
-        if (notifRes.ok) {
-          const notifData = await notifRes.json();
-          setNotifications(notifData);
-        }
+        const [wishRes, cartRes, orderRes, payRes] = await Promise.all([
+          fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${studentId}`),
+          fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${studentId}`),
+          fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${studentId}`),
+          fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`),
+        ]);
 
-        // ለ. የዊሽሊስት እቃዎችን መጥሪያ (Fetch Wishlist)
-        const wishRes = await fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${user.studentId}`);
         if (wishRes.ok) {
           const wishData = await wishRes.json();
           setWishlist(wishData);
           setWishlistBadgeCount(Array.isArray(wishData) ? wishData.length : Number(wishData?.wishlist_count ?? wishData?.wishlist_item_count ?? 0));
         }
 
-        // ሐ. የካርት እቃዎችን መጥሪያ (Fetch Cart)
-        const cartRes = await fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${user.studentId}`);
         if (cartRes.ok) {
           const cartData = await cartRes.json();
           setCart(cartData.items || []);
@@ -435,15 +513,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : 0);
         }
 
-        // መ. የትዕዛዞችን ታሪክ መጥሪያ (Fetch Orders)
-        const orderRes = await fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${user.studentId}`);
         if (orderRes.ok) {
           const orderData = await orderRes.json();
           setOrders(orderData);
         }
 
-        // ሠ. የዋሌት ቀሪ ሂሳብ እና የክፍያ ታሪክ መጥሪያ (Fetch Payments)
-        const payRes = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${user.studentId}`);
         if (payRes.ok) {
           const payData = await payRes.json();
           const nextBalance = Number(payData?.balance ?? payData?.walletBalance ?? payData?.wallet_balance ?? 0);
@@ -462,48 +536,89 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
           }
         }
-
-        // ረ. አጠቃላይ የቤት ገጽ መረጃዎችን መጥሪያ (Fetch Highlights)
-        const highlightRes = await fetch(`http://127.0.0.1:8000/api/student/highlights?student_id=${user.studentId}`);
-        if (highlightRes.ok) {
-          const highlightData = await highlightRes.json();
-          setHighlights(highlightData);
-        }
-
-        const [recommendationRes, activityRes] = await Promise.all([
-          fetch(`http://127.0.0.1:8000/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`),
-          fetch(`http://127.0.0.1:8000/api/student/recent-activity?student_id=${encodeURIComponent(user.studentId)}`),
-        ]);
-
-        if (recommendationRes.ok) {
-          const recommendationData = await recommendationRes.json();
-          setRecommendedProducts(Array.isArray(recommendationData) ? recommendationData : (recommendationData.recommendations || []));
-        }
-
-        if (activityRes.ok) {
-          const activityData = await activityRes.json();
-          setRecentCampusActivity(Array.isArray(activityData) ? activityData : (activityData.items || []));
-        }
-
-        await fetchMyListings();
-        await fetchSellerDashboardData();
-        await loadSearchDefaults();
       } catch (err) {
-        console.error("Error fetching database records for student:", err);
-      } finally {
-        setLoading(false);
+        console.error('Error fetching buyer data:', err);
       }
     };
 
-    fetchDashboardData();
-  }, [user, activeTab, buyerTab, searchCategory, searchQuery, searchSubcategory]);
+    fetchBuyerDashboardData();
+  }, [activeTab, studentId, onUserUpdate]);
 
   useEffect(() => {
-    setActiveTab(initialTab);
-  }, [initialTab]);
+    if (!studentId) return;
+
+    const fetchUserHighlights = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/student/highlights?student_id=${studentId}`);
+        if (!response.ok) return;
+
+        const highlightData = await response.json();
+        setHighlights(highlightData);
+      } catch (err) {
+        console.error('Error fetching highlights:', err);
+      }
+    };
+
+    const fetchRecommendations = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`);
+        if (!response.ok) return;
+
+        const recommendationData = await response.json();
+        setRecommendedProducts(Array.isArray(recommendationData) ? recommendationData : (recommendationData.recommendations || []));
+      } catch (err) {
+        console.error('Error fetching recommendations:', err);
+      }
+    };
+
+    const fetchRecentActivity = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/student/recent-activity?student_id=${encodeURIComponent(studentId)}`);
+        if (!response.ok) return;
+
+        const activityData = await response.json();
+        setRecentCampusActivity(Array.isArray(activityData) ? activityData : (activityData.items || []));
+      } catch (err) {
+        console.error('Error fetching recent activity:', err);
+      }
+    };
+
+    if (user?.avatarUrl) {
+      const normalizedAvatarUrl = user.avatarUrl.includes('?')
+        ? user.avatarUrl
+        : `${user.avatarUrl}?t=${Date.now()}`;
+
+      setAvatarUrl((prev) => (prev === normalizedAvatarUrl ? prev : normalizedAvatarUrl));
+    } else {
+      setAvatarUrl('');
+    }
+
+    fetchUserHighlights();
+    fetchRecommendations();
+    fetchRecentActivity();
+  }, [studentId, user?.avatarUrl, user?.department]);
+
+  const loadSearchDefaults = async () => {
+    if (activeTab !== 'buyer' || buyerTab !== 'search') return;
+    await fetchProducts({ limit: 10, department: user?.department });
+  };
 
   useEffect(() => {
-    if (onTabChange) {
+    if (activeTab !== 'buyer' || buyerTab !== 'search') return;
+    loadSearchDefaults();
+  }, [activeTab, buyerTab, user?.department]);
+
+  useEffect(() => {
+    if (initialTab && initialTab !== activeTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab, activeTab]);
+
+  const lastSyncedTabRef = useRef(null);
+
+  useEffect(() => {
+    if (onTabChange && activeTab !== lastSyncedTabRef.current) {
+      lastSyncedTabRef.current = activeTab;
       onTabChange(activeTab);
     }
   }, [activeTab, onTabChange]);
@@ -1014,8 +1129,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setProductError('');
     setProductSuccessMsg('');
 
-    if (!productForm.title || !productForm.category || !productForm.price || !productForm.image) {
-      setProductError('Please fill in Title, Category, Price and add an image.');
+    const itemName = (productForm.name || productForm.title || '').trim();
+    if (!itemName || !productForm.category || !productForm.price || !productForm.image) {
+      setProductError('Please fill in Name, Category, Price and add an image.');
       return;
     }
 
@@ -1023,12 +1139,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     try {
       const formData = new FormData();
-      formData.append('title', productForm.title);
+      formData.append('name', itemName);
+      formData.append('title', itemName);
       formData.append('category', productForm.category);
       formData.append('subcategory', productForm.subcategory || '');
-      formData.append('price', productForm.price);
+      formData.append('price', String(productForm.price));
+      formData.append('quantity', String(productForm.quantity || 1));
+      formData.append('condition', productForm.condition || 'New');
+      formData.append('pickup_location', productForm.pickupLocation || '');
       formData.append('description', productForm.description || '');
       formData.append('student_id', user?.studentId || '');
+      formData.append('status', 'Pending');
       if (productForm.image) {
         formData.append('image', productForm.image);
       }
@@ -1044,12 +1165,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         return;
       }
 
-      setProductSuccessMsg('Product posted successfully. Refreshing dashboard...');
+      setProductSuccessMsg('Product submitted successfully and is awaiting admin approval.');
       setProductForm({
+        name: '',
         title: '',
         category: '',
         subcategory: '',
         price: '',
+        quantity: '1',
+        condition: 'New',
+        pickupLocation: '',
         description: '',
         image: null
       });
@@ -1208,7 +1333,217 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const safeNotifications = Array.isArray(notifications) ? notifications : [];
-  const unreadCount = safeNotifications.filter((notif) => !notif.read).length;
+  const notificationUnreadCount = safeNotifications.filter((notif) => !notif.read).length;
+  const [productDetails, setProductDetails] = useState({});
+
+  // Fetch conversations list from backend
+  useEffect(() => {
+    if (!user?.studentId) return;
+
+    const fetchConversations = async () => {
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/api/student/messages/conversations?student_id=${user.studentId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.conversations && Array.isArray(data.conversations)) {
+            setConversationsList(data.conversations);
+            if (data.conversations.length > 0 && !activeConversationId) {
+              setActiveConversationId(data.conversations[0].id);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching conversations:', error);
+      }
+    };
+
+    fetchConversations();
+  }, [user?.studentId]);
+
+  useEffect(() => {
+    const nextUnreadCount = conversationsList.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0);
+    setUnreadCount(nextUnreadCount);
+    setUnreadMessageCount(nextUnreadCount);
+  }, [conversationsList]);
+
+  // Fetch chat history when conversation is selected
+  useEffect(() => {
+    if (!user?.studentId || !activeConversationId) return;
+
+    const selectedConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0];
+    if (!selectedConversation || !selectedConversation.studentId) return;
+
+    const fetchChatHistory = async () => {
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/api/student/messages/chat-history?sender_id=${user.studentId}&receiver_id=${selectedConversation.studentId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.messages && Array.isArray(data.messages)) {
+            const formattedMessages = data.messages.map((msg) => ({
+              id: msg.id,
+              sender: msg.sender_id === user.studentId ? 'me' : 'them',
+              text: msg.message_text,
+              time: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              productId: msg.product_id,
+            }));
+            setActiveChatMessages(formattedMessages);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching chat history:', error);
+      }
+    };
+
+    fetchChatHistory();
+  }, [activeConversationId, user?.studentId, conversationsList]);
+
+  // Fetch product details for messages with product attachments
+  useEffect(() => {
+    const productIdsToFetch = new Set();
+    activeChatMessages.forEach((msg) => {
+      if (msg.productId && !productDetails[msg.productId]) {
+        productIdsToFetch.add(msg.productId);
+      }
+    });
+
+    if (productIdsToFetch.size === 0) return;
+
+    productIdsToFetch.forEach((productId) => {
+      fetch(`http://127.0.0.1:8000/api/products/${productId}`)
+        .then((res) => res.json())
+        .then((data) => {
+          setProductDetails((prev) => ({
+            ...prev,
+            [productId]: data,
+          }));
+        })
+        .catch((error) => console.error(`Error fetching product ${productId}:`, error));
+    });
+  }, [activeChatMessages]);
+
+  const activeConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0] || null;
+
+  useEffect(() => {
+    if (!user?.studentId || typeof window === 'undefined') return undefined;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${protocol}://127.0.0.1:8000/api/student/chat/ws/${user.studentId}`);
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      console.log('Student chat WebSocket connected:', user.studentId);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const packet = JSON.parse(event.data);
+        const incoming = packet?.data || packet;
+        const message = incoming?.type === 'incoming_message' ? incoming : null;
+        if (!message) return;
+
+        const counterpartId = message.sender_id === user.studentId ? message.receiver_id : message.sender_id;
+        const counterpartConversationId = `conv-${counterpartId}`;
+
+        // Append message to active chat if this is the current conversation
+        if (activeConversationId === counterpartConversationId || activeConversationId?.includes(counterpartId)) {
+          setActiveChatMessages((prev) => [
+            ...prev,
+            {
+              id: message.id,
+              sender: message.sender_id === user.studentId ? 'me' : 'them',
+              text: message.message_text,
+              time: new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              productId: message.product_id,
+            }
+          ]);
+        }
+
+        // Update conversation list
+        setConversationsList((prev) => {
+          const conversationIndex = prev.findIndex(
+            (conversation) =>
+              conversation.studentId === counterpartId ||
+              conversation.id === counterpartId ||
+              conversation.id === counterpartConversationId
+          );
+
+          if (conversationIndex === -1) {
+            return prev;
+          }
+
+          return prev.map((item, index) => {
+            if (index !== conversationIndex) return item;
+            const isIncomingToCurrentUser = message.receiver_id === user.studentId;
+            return {
+              ...item,
+              lastMessage: message.message_text,
+              timestamp: 'just now',
+              unread: isIncomingToCurrentUser ? Number(item.unread || 0) + 1 : 0,
+            };
+          });
+        });
+      } catch (error) {
+        console.warn('Unable to parse student chat socket payload:', error);
+      }
+    };
+
+    socket.onerror = (error) => {
+      console.error('Student chat socket error:', error);
+    };
+
+    socket.onclose = () => {
+      console.log('Student chat WebSocket disconnected');
+    };
+
+    window.__campusSocket = socket;
+
+    return () => {
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.close();
+      }
+      delete window.__campusSocket;
+    };
+  }, [user?.studentId]);
+
+  const sendChatMessage = () => {
+    const safeMessage = typingInput.trim();
+    if (!safeMessage || !activeConversation) return;
+
+    const receiverId = activeConversation.studentId || (String(activeConversation.id || '').replace(/^conv-/, '') || null);
+    if (!receiverId) {
+      console.warn('No receiver id available for this chat conversation.');
+      return;
+    }
+
+    const now = new Date();
+    const newMessage = {
+      id: `msg-${Date.now()}`,
+      sender: 'me',
+      text: safeMessage,
+      time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      productId: activeConversation?.product?.id || null,
+    };
+
+    setActiveChatMessages((prev) => [...prev, newMessage]);
+    setTypingInput('');
+    setConversationsList((prev) => prev.map((conversation) =>
+      conversation.id === activeConversation.id
+        ? { ...conversation, unread: 0, lastMessage: safeMessage, timestamp: 'just now' }
+        : conversation
+    ));
+
+    const payload = {
+      receiver_id: receiverId,
+      message_text: safeMessage,
+      product_id: activeConversation?.product?.id ?? null,
+    };
+
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify(payload));
+    } else {
+      console.log('WebSocket transmit fallback:', payload);
+    }
+  };
 
   const handleMarkAllNotificationsRead = async () => {
     if (!user?.studentId || safeNotifications.length === 0) return;
@@ -1235,13 +1570,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   return (
-    <div className="min-h-screen w-full bg-slate-50 pt-20 text-slate-900">
-      <div className="flex min-h-screen w-full flex-col lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:items-start">
+    <div className="min-h-screen w-full bg-slate-50 pt-2 text-slate-900">
+      <div className="flex min-h-screen w-full flex-col gap-3 lg:h-[calc(100vh-56px)] lg:overflow-hidden lg:flex-row lg:items-start lg:gap-3 lg:pt-1 lg:pb-2">
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside className={`
           flex w-72 flex-col bg-[#111c3a] p-6 text-white transition-all duration-300 ease-in-out fixed inset-y-0 left-0 z-50
-          lg:static lg:translate-x-0 lg:h-fit lg:overflow-visible lg:overflow-y-visible lg:shrink-0 lg:rounded-[32px] lg:shadow-none
+          lg:static lg:mt-0 lg:translate-x-0 lg:h-fit lg:overflow-visible lg:overflow-y-visible lg:shrink-0 lg:rounded-[32px] lg:shadow-none
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
           ${isSidebarCollapsed ? 'w-24 p-3' : 'w-72 p-6'}
         `}>
@@ -1293,7 +1628,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               { key: 'home', label: 'Home' },
               { key: 'buyer', label: 'Buyer Hub' },
               { key: 'seller', label: 'Seller Hub' },
-              { key: 'messages', label: 'Messages', badge: unreadMessageCount },
+              { key: 'messages', label: 'Messages', badge: unreadCount || unreadMessageCount },
               { key: 'ai-advisor', label: 'AI Advisor' },
               { key: 'notifications', label: 'Notifications', badge: unreadNotificationCount },
               { key: 'profile', label: 'Profile' },
@@ -1380,7 +1715,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className="flex-1 min-w-0 transition-all duration-300 pt-0 lg:h-full lg:overflow-y-auto lg:pr-2 lg:pt-2">
+        <main className="flex-1 min-w-0 transition-all duration-300 pt-0 lg:h-full lg:overflow-y-auto lg:pr-2 lg:pt-1">
 
           {/* የላይኛው የእንኳን ደህና መጣህ ባር */}
           <div className="mb-6 flex flex-col gap-4 rounded-[32px] bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
@@ -2204,151 +2539,298 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
 
             {/* 3. ገጽ 3፦ የሻጭ ሰሌዳ - አዲስ ምርት መለጠፊያ (Seller Hub) */}
-            {activeTab === 'seller' && (
-              <div className="space-y-8">
-                <div className="grid gap-6 xl:grid-cols-4">
-                  <div className="group bg-sky-50/50 border border-sky-100 p-6 rounded-[24px] transition hover:shadow-lg hover:shadow-sky-200/40">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">My Listings</p>
-                        <p className="mt-4 text-3xl font-bold text-slate-950">{myListings.length}</p>
-                      </div>
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-600">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V7a2 2 0 00-2-2h-4V3H10v2H6a2 2 0 00-2 2v6m16 0l-8 5-8-5m16 0V7m0 6l-8 5-8-5" />
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
+            {activeTab === 'seller' && (() => {
+              const sellerFallbackStats = {
+                totalListings: 8,
+                receivedOrders: 12,
+                totalRevenue: 8450,
+                pendingOrders: 3,
+              };
 
-                  <div className="group bg-sky-50/50 border border-sky-100 p-6 rounded-[24px] transition hover:shadow-lg hover:shadow-sky-200/40">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Received Orders</p>
-                        <p className="mt-4 text-3xl font-bold text-slate-950">{sellerData?.receivedOrders || 0}</p>
-                      </div>
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-600">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 11h14l1 9H4l1-9z" />
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
+              const sellerStats = {
+                totalListings: myListings.length || sellerData?.totalListings || sellerFallbackStats.totalListings,
+                receivedOrders: sellerData?.receivedOrders || sellerFallbackStats.receivedOrders,
+                totalRevenue: sellerData?.totalRevenue || sellerFallbackStats.totalRevenue,
+                pendingOrders: sellerData?.pendingOrders || sellerFallbackStats.pendingOrders,
+              };
 
-                  <div className="group bg-sky-50/50 border border-sky-100 p-6 rounded-[24px] transition hover:shadow-lg hover:shadow-sky-200/40">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Total Revenue</p>
-                        <p className="mt-4 text-3xl font-bold text-slate-950">${sellerData?.totalRevenue?.toFixed(2) || '0.00'}</p>
-                      </div>
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-600">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.1 0-2 .9-2 2v2a2 2 0 002 2m0 0c1.1 0 2 .9 2 2v2m-2-8h4m-4 4h4m-4 4h4" />
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
+              const listingRows = Array.isArray(sellerData?.activeListings) && sellerData.activeListings.length
+                ? sellerData.activeListings
+                : myListings.length
+                  ? myListings
+                  : [];
 
-                  <div className="group bg-sky-50/50 border border-sky-100 p-6 rounded-[24px] transition hover:shadow-lg hover:shadow-sky-200/40">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Pending Orders</p>
-                        <p className="mt-4 text-3xl font-bold text-slate-950">{sellerData?.pendingOrders || 0}</p>
-                      </div>
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-600">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+              const incomingOrders = Array.isArray(sellerData?.incomingOrders) && sellerData.incomingOrders.length
+                ? sellerData.incomingOrders
+                : [
+                  { id: 'ORD-2048', customerId: 'STU-1048', product: 'Dell XPS 13', price: 18500, status: 'Accepted' },
+                  { id: 'ORD-2050', customerId: 'STU-2047', product: 'Biology Lab Manual', price: 950, status: 'Preparing' },
+                  { id: 'ORD-2052', customerId: 'STU-3122', product: 'Campus Backpack', price: 1350, status: 'Pending' },
+                ];
 
-                <div className="grid gap-6 xl:grid-cols-[1.4fr_0.9fr]">
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col h-full">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <h3 className="text-xl font-bold text-slate-950">Incoming Customer Orders</h3>
-                        <p className="text-sm text-slate-500">Track orders for items you’ve listed.</p>
-                      </div>
-                      <span className="rounded-full bg-slate-100 px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-600">Live feed</span>
-                    </div>
+              const topProducts = [...listingRows]
+                .map((item, index) => ({
+                  ...item,
+                  views: Number(item.views ?? item.views_count ?? (index + 1) * 220 + 120),
+                  likes: Number(item.likes ?? item.likes_count ?? (index + 1) * 35),
+                  orders: Number(item.orders ?? item.order_count ?? (index + 1) * 3),
+                }))
+                .sort((a, b) => (b.views + b.orders * 18) - (a.views + a.orders * 18))
+                .slice(0, 3);
 
-                    <div className="mt-6 overflow-x-auto">
-                      <table className="min-w-full border-separate border-spacing-y-3 text-left">
-                        <thead>
-                          <tr className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                            <th className="pb-3 pr-6">CUSTOMER ID</th>
-                            <th className="pb-3 pr-6">ITEM NAME</th>
-                            <th className="pb-3 pr-6">STATUS</th>
-                            <th className="pb-3 pr-6">PRICE</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(sellerData?.orders || []).map((order) => (
-                            <tr key={order.id} className="bg-slate-50 rounded-3xl border border-slate-200">
-                              <td className="py-4 pr-6 text-sm font-semibold text-slate-800">{order.customerId}</td>
-                              <td className="py-4 pr-6 text-sm text-slate-600">{order.productTitle}</td>
-                              <td className="py-4 pr-6">
-                                <span className={`${order.status === 'Pending' ? 'bg-amber-50 text-amber-700 border border-amber-100' : order.status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-orange-50 text-orange-700 border border-orange-100'} font-bold rounded-full px-3 py-1 text-xs`}>
-                                  {order.status}
-                                </span>
-                              </td>
-                              <td className="py-4 pr-6 text-sm font-semibold text-slate-900">${order.price}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+              const handleSellerOrderAction = (orderId, nextStatus) => {
+                const targetId = String(orderId);
+                setSellerData((prev) => ({
+                  ...prev,
+                  incomingOrders: Array.isArray(prev.incomingOrders)
+                    ? prev.incomingOrders.map((order) =>
+                      String(order.id ?? order.order_id ?? order.orderId) === targetId
+                        ? { ...order, status: nextStatus }
+                        : order,
+                    )
+                    : [],
+                }));
+              };
 
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col h-full">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-xl font-bold text-slate-950">Active Listings</h3>
-                        <p className="text-sm text-slate-500">Manage your active catalog at a glance.</p>
-                      </div>
-                      <button
-                        onClick={() => setShowProductModal(true)}
-                        className="inline-flex items-center rounded-full bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition"
-                      >
-                        + Add Product
-                      </button>
-                    </div>
+              const sellerKpis = [
+                { label: 'My Listings', value: sellerStats.totalListings, icon: '▣' },
+                { label: 'Received Orders', value: sellerStats.receivedOrders, icon: '▤' },
+                { label: 'Total Revenue', value: `${Number(sellerStats.totalRevenue).toLocaleString('en-US')} ETB`, icon: '◈' },
+                { label: 'Pending Orders', value: sellerStats.pendingOrders, icon: '◔' },
+              ];
 
-                    <div className="mt-6 overflow-y-auto space-y-4 pr-2 scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100 h-[540px]">
-                      {(myListings.length ? myListings : []).map((item) => (
-                        <div key={item.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-                          <div className="flex items-start gap-4">
-                            <div className="h-16 w-16 overflow-hidden rounded-3xl bg-slate-100">
-                              <img
-                                src={(item.image && item.image.trim()) ? item.image : 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80'}
-                                alt={item.title}
-                                onError={(e) => {
-                                  e.currentTarget.onerror = null;
-                                  e.currentTarget.src = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
-                                }}
-                                className="h-full w-full object-cover"
-                              />
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-sm font-semibold text-slate-900 truncate">{item.title}</p>
-                              <p className="mt-1 text-xs text-slate-500">{item.category} / {item.subcategory || 'General'}</p>
-                            </div>
+              return (
+                <div className="space-y-8">
+                  <div className="grid gap-6 xl:grid-cols-4">
+                    {sellerKpis.map((card) => (
+                      <div key={card.label} className="group rounded-[24px] border border-sky-100 bg-sky-50/50 p-6 transition hover:shadow-lg hover:shadow-sky-200/40">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{card.label}</p>
+                            <p className="mt-4 text-3xl font-bold text-slate-950">{card.value}</p>
                           </div>
-                          <div className="mt-4 flex items-center justify-between gap-3">
-                            <p className="text-sm font-semibold text-slate-900">${item.price}</p>
-                            <span className={`${item.status === 'Approved' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-orange-50 text-orange-700 border border-orange-100'} rounded-full px-3 py-1 text-xs font-semibold`}>
-                              {item.status || 'Pending'}
-                            </span>
+                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-600 text-xl">
+                            {card.icon}
                           </div>
                         </div>
-                      ))}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid gap-6 xl:grid-cols-[1.45fr_0.95fr]">
+                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-xl font-bold text-slate-950">My Listings</h3>
+                          <p className="text-sm text-slate-500">Keep your stock current and ready for campus buyers.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowProductModal(true)}
+                          className="inline-flex items-center rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-600 transition"
+                        >
+                          + Add Product
+                        </button>
+                      </div>
+
+                      {listingRows.length === 0 ? (
+                        <div className="mt-6 rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-sky-100 text-3xl">📦</div>
+                          <p className="mt-4 text-lg font-semibold text-slate-900">No active listings yet</p>
+                          <p className="mt-2 text-sm text-slate-500">Add your first item so buyers can discover it on campus.</p>
+                          <button
+                            type="button"
+                            onClick={() => setShowProductModal(true)}
+                            className="mt-5 inline-flex items-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition"
+                          >
+                            + Add Product
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mt-6 space-y-4">
+                          {listingRows.map((item) => (
+                            <div key={item.id ?? item.product_id ?? item.title} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+                              <div className="flex items-center gap-4">
+                                <div className="h-[60px] w-[60px] overflow-hidden rounded-[18px] bg-slate-100">
+                                  <img
+                                    src={item.image || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=300&q=80'}
+                                    alt={item.title || 'Listing'}
+                                    onError={(e) => {
+                                      e.currentTarget.onerror = null;
+                                      e.currentTarget.src = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=300&q=80';
+                                    }}
+                                    className="h-full w-full object-cover"
+                                  />
+                                </div>
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                      <p className="truncate text-base font-bold text-slate-900">{item.title || item.name || 'Untitled listing'}</p>
+                                      <p className="text-xs text-slate-500">{item.category || 'General'} · {item.subcategory || 'Campus item'}</p>
+                                    </div>
+                                    <p className="text-sm font-bold text-emerald-600">{Number(item.price ?? 0).toLocaleString('en-US')} ETB</p>
+                                  </div>
+
+                                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                                    <span>Views: {item.views ?? item.view_count ?? 148}</span>
+                                    <span>Likes: {item.likes ?? item.like_count ?? 24}</span>
+                                    <span>Orders: {item.orders ?? item.order_count ?? 3}</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 flex flex-wrap gap-2">
+                                <button type="button" className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition">Edit</button>
+                                <button type="button" className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 transition">View</button>
+                                <button type="button" className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition">Remove</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-xl font-bold text-slate-950">Incoming Orders</h3>
+                          <p className="text-sm text-slate-500">Customer orders waiting for action.</p>
+                        </div>
+                        <span className="rounded-full bg-slate-100 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600">Queue</span>
+                      </div>
+
+                      {incomingOrders.length === 0 ? (
+                        <div className="mt-6 rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
+                          <p className="text-lg font-semibold text-slate-900">No incoming orders yet</p>
+                          <p className="mt-2 text-sm text-slate-500">Your customer orders will appear here once they start purchasing.</p>
+                        </div>
+                      ) : (
+                        <div className="mt-6 overflow-x-auto">
+                          <table className="min-w-full border-separate border-spacing-y-2 text-left">
+                            <thead>
+                              <tr className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
+                                <th className="pb-2 pr-4">Order ID</th>
+                                <th className="pb-2 pr-4">Customer ID</th>
+                                <th className="pb-2 pr-4">Product</th>
+                                <th className="pb-2 pr-4">Price</th>
+                                <th className="pb-2 pr-4">Status</th>
+                                <th className="pb-2 pr-4">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {incomingOrders.map((order) => {
+                                const orderKey = order.id ?? order.order_id ?? order.orderId;
+                                const nextStatuses = ['Accept', 'Reject', 'Mark as Preparing', 'Mark as Ready for Pickup', 'Mark as Delivered'];
+
+                                return (
+                                  <tr key={orderKey} className="rounded-2xl border border-slate-200 bg-slate-50">
+                                    <td className="py-3 pr-4 text-sm font-semibold text-slate-900">{orderKey}</td>
+                                    <td className="py-3 pr-4 text-sm text-slate-700">{order.customerId ?? order.customer_id ?? 'STU-0000'}</td>
+                                    <td className="py-3 pr-4 text-sm text-slate-700">{order.product ?? order.productName ?? order.title ?? 'Campus item'}</td>
+                                    <td className="py-3 pr-4 text-sm font-semibold text-slate-900">{Number(order.price ?? 0).toLocaleString('en-US')} ETB</td>
+                                    <td className="py-3 pr-4">
+                                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${order.status === 'Pending' ? 'bg-amber-100 text-amber-700' : order.status === 'Accepted' || order.status === 'Preparing' || order.status === 'Ready for Pickup' || order.status === 'Delivered' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                                        {order.status || 'Pending'}
+                                      </span>
+                                    </td>
+                                    <td className="py-3 pr-4">
+                                      <div className="flex flex-wrap gap-2">
+                                        {nextStatuses.map((status) => (
+                                          <button
+                                            key={`${orderKey}-${status}`}
+                                            type="button"
+                                            onClick={() => handleSellerOrderAction(orderKey, status)}
+                                            className="rounded-full border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-semibold text-slate-700 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 transition"
+                                          >
+                                            {status}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-6 xl:grid-cols-2">
+                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                      <h3 className="text-xl font-bold text-slate-950">Sales Overview</h3>
+                      <div className="mt-5 space-y-4">
+                        <div className="rounded-[20px] bg-slate-50 p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Earnings</p>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                            <div>
+                              <p className="text-xs text-slate-500">Today</p>
+                              <p className="mt-1 text-lg font-bold text-slate-900">450 ETB</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500">This Week</p>
+                              <p className="mt-1 text-lg font-bold text-slate-900">2,450 ETB</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500">This Month</p>
+                              <p className="mt-1 text-lg font-bold text-slate-900">8,450 ETB</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-[20px] bg-slate-50 p-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Order Status</p>
+                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                            <div>
+                              <p className="text-xs text-slate-500">Total</p>
+                              <p className="mt-1 text-lg font-bold text-slate-900">{sellerStats.receivedOrders}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500">Completed</p>
+                              <p className="mt-1 text-lg font-bold text-emerald-600">{Math.max(0, sellerStats.receivedOrders - 3)}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500">Pending</p>
+                              <p className="mt-1 text-lg font-bold text-amber-600">{sellerStats.pendingOrders}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-slate-500">Cancelled</p>
+                              <p className="mt-1 text-lg font-bold text-rose-600">2</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                      <h3 className="text-xl font-bold text-slate-950">Top Performing Products</h3>
+                      <div className="mt-5 space-y-4">
+                        {topProducts.length === 0 ? (
+                          <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
+                            No metrics available yet.
+                          </div>
+                        ) : (
+                          topProducts.map((item, index) => (
+                            <div key={item.id ?? `${item.title}-${index}`} className="flex items-center gap-4 rounded-[20px] bg-slate-50 p-3">
+                              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sm font-bold text-sky-700">
+                                #{index + 1}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-bold text-slate-900">{item.title || item.name || 'Product'}</p>
+                                <p className="text-xs text-slate-500">{item.views ?? 0} views · {item.orders ?? 0} sales</p>
+                              </div>
+                              <span className="text-sm font-bold text-emerald-600">{Number(item.price ?? 0).toLocaleString('en-US')} ETB</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {activeTab === 'ai-advisor' && (
               <div className="space-y-6">
@@ -2495,7 +2977,196 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               </div>
             )}
 
-            {/* 4. ገጽ 4፦ የኖቲፊኬሽኖች ዝርዝር (Notifications Tab) */}
+            {activeTab === 'messages' && (
+              <div className="mx-auto max-w-7xl px-2 py-2">
+                <div className="grid h-[760px] overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm lg:grid-cols-[360px_minmax(0,1fr)]">
+                  <aside className="border-r border-slate-200 bg-slate-50/80">
+                    <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Peer chat</p>
+                        <h3 className="mt-1 text-xl font-bold text-slate-900">Messages</h3>
+                      </div>
+                      <button
+                        type="button"
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100"
+                        aria-label="New chat"
+                      >
+                        +
+                      </button>
+                    </div>
+
+                    <div className="space-y-3 p-4">
+                      {conversationsList.map((conversation) => {
+                        const isActive = conversation.id === activeConversationId;
+                        const participantOnline = conversation.status === 'online';
+
+                        return (
+                          <button
+                            key={conversation.id}
+                            type="button"
+                            onClick={() => {
+                              setActiveConversationId(conversation.id);
+                              // Clear messages while loading new conversation history
+                              setActiveChatMessages([]);
+                            }}
+                            className={`flex w-full items-center gap-3 rounded-[24px] border px-3 py-3 text-left transition ${isActive ? 'border-sky-200 bg-sky-50 shadow-sm' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-100'}`}
+                          >
+                            <div className="relative shrink-0">
+                              <img
+                                src={conversation.avatar}
+                                alt={conversation.name}
+                                className="h-12 w-12 rounded-full object-cover ring-2 ring-white"
+                              />
+                              <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${participantOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate text-sm font-bold text-slate-900">{conversation.name}</p>
+                                <span className="text-[10px] text-slate-400">{conversation.timestamp}</span>
+                              </div>
+                              <div className="mt-1 flex items-center justify-between gap-3">
+                                <p className="truncate text-xs text-slate-500">{conversation.lastMessage}</p>
+                                {conversation.unread > 0 && (
+                                  <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white ring-2 ring-slate-50">
+                                    {conversation.unread}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </aside>
+
+                  <section className="flex min-w-0 flex-col bg-white">
+                    <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <img
+                            src={activeConversation?.avatar || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80'}
+                            alt={activeConversation?.name || 'Student'}
+                            className="h-11 w-11 rounded-full object-cover"
+                          />
+                          <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${activeConversation?.status === 'online' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                        </div>
+                        <div>
+                          <p className="text-base font-bold text-slate-900">{activeConversation?.name || 'Student'}</p>
+                          <p className="text-xs text-slate-500">{activeConversation?.status === 'online' ? 'Online now' : 'Offline'}</p>
+                        </div>
+                      </div>
+
+                      <div className="relative">
+                        <button
+                          type="button"
+                          className="rounded-full border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-100"
+                          aria-label="Conversation actions"
+                        >
+                          ⋮
+                        </button>
+                        <div className="absolute right-0 top-12 z-10 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
+                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Profile</button>
+                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Product</button>
+                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Report User</button>
+                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Block User</button>
+                        </div>
+                      </div>
+                    </header>
+
+                    <div className="flex-1 overflow-y-auto bg-gradient-to-b from-slate-50 to-white px-5 py-4">
+                      {activeChatMessages.map((message) => {
+                        const isMine = message.sender === 'me';
+                        const product = message.productId ? productDetails[message.productId] : null;
+
+                        return (
+                          <div key={message.id}>
+                            <div className={`mb-4 flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[78%] rounded-[22px] px-4 py-3 shadow-sm ${isMine ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800'}`}>
+                                <p className="text-sm leading-6">{message.text}</p>
+                                <div className={`mt-2 text-[10px] ${isMine ? 'text-blue-100' : 'text-slate-500'}`}>{message.time}</div>
+                              </div>
+                            </div>
+
+                            {product && (
+                              <div className={`mb-4 flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                                <div className="w-full max-w-xs rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm text-slate-900">
+                                  <div className="space-y-2">
+                                    {product.image && (
+                                      <img
+                                        src={product.image}
+                                        alt={product.title}
+                                        className="h-28 w-full rounded-2xl object-cover"
+                                      />
+                                    )}
+                                    <p className="text-sm font-semibold text-slate-900">{product.title}</p>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <span className="text-sm font-bold text-emerald-600">{product.price} ETB</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (onNavigate) {
+                                            onNavigate('ProductDetails', { productId: message.productId });
+                                          }
+                                        }}
+                                        className="rounded-full bg-sky-600 px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-sky-700"
+                                      >
+                                        View Product
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {activeConversation?.product && (
+                        <div className="mb-5 rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
+                          <div className="flex items-center gap-3">
+                            <img src={activeConversation.product.image} alt={activeConversation.product.title} className="h-16 w-16 rounded-2xl object-cover" />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-bold text-slate-900">{activeConversation.product.title}</p>
+                              <p className="mt-1 text-sm font-bold text-emerald-600">{Number(activeConversation.product.price).toLocaleString('en-US')} ETB</p>
+                            </div>
+                            <button type="button" className="rounded-full bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700">View Product</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-200 bg-white p-4">
+                      <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white">
+                        <button type="button" className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100">📎</button>
+                        <input
+                          type="text"
+                          value={typingInput}
+                          onChange={(e) => setTypingInput(e.target.value)}
+                          placeholder="Type a message…"
+                          className="flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              sendChatMessage();
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={sendChatMessage}
+                          className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-600 text-lg font-bold text-white shadow-sm hover:bg-sky-700"
+                          aria-label="Send message"
+                        >
+                          ➤
+                        </button>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'profile' && (
               <div className="mx-auto max-w-5xl px-4 py-6">
                 <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">

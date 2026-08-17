@@ -17,7 +17,13 @@ DATABASE_URL = os.getenv("DATABASE_URL") or "mysql+pymysql://root:@127.0.0.1:330
 
 
 # Create SQLAlchemy engine and session factory
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_timeout=30,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
