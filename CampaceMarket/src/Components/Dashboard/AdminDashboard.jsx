@@ -509,6 +509,16 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
     maxReportsBeforeReview: 3,
     allowStudentReports: true
   });
+  const [chatSettings, setChatSettings] = useState({
+    enabled: true,
+    allowAttachments: true,
+    maxMessageLength: 1000
+  });
+  const [maintenanceSettings, setMaintenanceSettings] = useState({
+    maintenanceMode: false,
+    maintenanceMessage: 'The marketplace is temporarily unavailable for maintenance.'
+  });
+  const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
 
   // KPI calculations
@@ -660,21 +670,27 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
   useEffect(() => {
     if (activeTab === 'settings') {
       const fetchSystemSettings = async () => {
+        setSettingsLoading(true);
         try {
           const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
           if (!response.ok) throw new Error('Settings endpoint unavailable');
 
           const data = await response.json();
-          if (data.general) setGeneralSettings({ ...generalSettings, ...data.general });
-          if (data.product) setProductSettings({ ...productSettings, ...data.product });
-          if (data.ai) setAiSettings({ ...aiSettings, ...data.ai });
-          if (data.payment) setPaymentSettings({ ...paymentSettings, ...data.payment });
-          if (data.notifications) setNotificationSettings({ ...notificationSettings, ...data.notifications });
-          if (data.security) setSecuritySettings({ ...securitySettings, ...data.security });
-          if (data.studentVerification) setStudentVerificationSettings({ ...studentVerificationSettings, ...data.studentVerification });
-          if (data.moderation) setModerationSettings({ ...moderationSettings, ...data.moderation });
+          if (data.general) setGeneralSettings((prev) => ({ ...prev, ...data.general }));
+          if (data.marketplace) setProductSettings((prev) => ({ ...prev, ...data.marketplace }));
+          if (data.ai) setAiSettings((prev) => ({ ...prev, ...data.ai }));
+          if (data.payment) setPaymentSettings((prev) => ({ ...prev, ...data.payment }));
+          if (data.notification) setNotificationSettings((prev) => ({ ...prev, ...data.notification }));
+          if (data.security) setSecuritySettings((prev) => ({ ...prev, ...data.security }));
+          if (data.user) setStudentVerificationSettings((prev) => ({ ...prev, ...data.user }));
+          if (data.marketplace) setModerationSettings((prev) => ({ ...prev, ...data.marketplace }));
+          if (data.chat) setChatSettings((prev) => ({ ...prev, ...data.chat }));
+          if (data.maintenance) setMaintenanceSettings((prev) => ({ ...prev, ...data.maintenance }));
         } catch (error) {
           console.error('Failed to fetch system settings:', error);
+          setSettingsSaveMessage('Could not load system settings from the backend.');
+        } finally {
+          setSettingsLoading(false);
         }
       };
 
@@ -1517,45 +1533,18 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
 
   const handleSaveSystemSettings = async () => {
     const payload = {
-      marketplaceName: generalSettings.marketplaceName,
-      description: generalSettings.description,
-      supportEmail: generalSettings.supportEmail,
-      currency: generalSettings.currency,
-      timezone: generalSettings.timezone,
-      maxImageSize: productSettings.maxImageSize,
-      maxImagesPerProduct: productSettings.maxImagesPerProduct,
-      requireApproval: productSettings.requireApproval,
-      allowEditing: productSettings.allowEditing,
-      autoHideSold: productSettings.autoHideSold,
-      recommendationEngine: aiSettings.recommendationEngine,
-      numRecommendations: aiSettings.numRecommendations,
-      minSimilarityScore: aiSettings.minSimilarityScore,
-      enableAI: aiSettings.enableAI,
-      paymentProvider: paymentSettings.paymentProvider,
-      enableOnlinePayment: paymentSettings.enableOnlinePayment,
-      paymentVerification: paymentSettings.paymentVerification,
-      refundsEnabled: paymentSettings.refundsEnabled,
-      emailNotifs: notificationSettings.emailNotifs,
-      orderNotifs: notificationSettings.orderNotifs,
-      messageNotifs: notificationSettings.messageNotifs,
-      approvalNotifs: notificationSettings.approvalNotifs,
-      paymentNotifs: notificationSettings.paymentNotifs,
-      announcementNotifs: notificationSettings.announcementNotifs,
-      requireStudentVerification: securitySettings.requireStudentVerification,
-      admin2FA: securitySettings.admin2FA,
-      maxLoginAttempts: securitySettings.maxLoginAttempts,
-      sessionTimeout: securitySettings.sessionTimeout,
-      minPasswordLength: securitySettings.minPasswordLength,
-      auditLogging: securitySettings.auditLogging,
-      allowedEmailDomain: studentVerificationSettings.allowedEmailDomain,
-      requireUniversityEmail: studentVerificationSettings.requireUniversityEmail,
-      autoApproveStudents: studentVerificationSettings.autoApproveStudents,
-      autoHideReported: moderationSettings.autoHideReported,
-      requireAdminApproval: moderationSettings.requireAdminApproval,
-      maxReportsBeforeReview: moderationSettings.maxReportsBeforeReview,
-      allowStudentReports: moderationSettings.allowStudentReports,
+      general: generalSettings,
+      user: studentVerificationSettings,
+      marketplace: { ...productSettings, ...moderationSettings },
+      payment: paymentSettings,
+      ai: aiSettings,
+      notification: notificationSettings,
+      chat: chatSettings,
+      security: securitySettings,
+      maintenance: maintenanceSettings,
     };
 
+    setSettingsLoading(true);
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/settings', {
         method: 'PUT',
@@ -1563,27 +1552,17 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
         body: JSON.stringify(payload)
       });
 
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error('Failed to save settings');
+        throw new Error(data.detail || 'Failed to save settings');
       }
 
-      setSettingsSaveMessage('System configurations saved successfully.');
-      setAuditLogs(prev => [{
-        id: Date.now(),
-        action: 'System Settings Updated',
-        actionType: 'Approvals',
-        description: 'Admin updated platform configuration settings through the dashboard.',
-        performed_by: 'admin.console',
-        entity_type: 'Settings',
-        entity_id: 1,
-        ip_address: '127.0.0.1',
-        date_time: new Date().toISOString(),
-        status: 'Success',
-        severity: 'success'
-      }, ...prev]);
+      setSettingsSaveMessage(data.changes?.length ? `Saved ${data.changes.length} change(s) and logged them to Audit Logs.` : 'System configurations saved successfully.');
     } catch (error) {
       console.error('Failed to save settings:', error);
-      setSettingsSaveMessage('Could not reach the backend. Changes were not persisted.');
+      setSettingsSaveMessage(error.message || 'Could not reach the backend. Changes were not persisted.');
+    } finally {
+      setSettingsLoading(false);
     }
 
     window.setTimeout(() => setSettingsSaveMessage(''), 3000);
@@ -4902,6 +4881,29 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                   {toggleCard('Allow Student Reports', moderationSettings.allowStudentReports, () => setModerationSettings({ ...moderationSettings, allowStudentReports: !moderationSettings.allowStudentReports }))}
                 </div>
               </div>
+
+              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                <h3 className="text-lg font-black text-slate-950">Chat</h3>
+                <div className="mt-4 space-y-4">
+                  {toggleCard('Enable Chat', chatSettings.enabled, () => setChatSettings({ ...chatSettings, enabled: !chatSettings.enabled }))}
+                  {toggleCard('Allow Attachments', chatSettings.allowAttachments, () => setChatSettings({ ...chatSettings, allowAttachments: !chatSettings.allowAttachments }))}
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Max Message Length</label>
+                    <input type="number" min="1" value={chatSettings.maxMessageLength} onChange={(e) => setChatSettings({ ...chatSettings, maxMessageLength: Number(e.target.value) || 1 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-[32px] border border-amber-200 bg-amber-50/50 p-6 shadow-sm">
+                <h3 className="text-lg font-black text-slate-950">Maintenance</h3>
+                <div className="mt-4 space-y-4">
+                  {toggleCard('Maintenance Mode', maintenanceSettings.maintenanceMode, () => setMaintenanceSettings({ ...maintenanceSettings, maintenanceMode: !maintenanceSettings.maintenanceMode }))}
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Maintenance Message</label>
+                    <textarea rows="3" value={maintenanceSettings.maintenanceMessage} onChange={(e) => setMaintenanceSettings({ ...maintenanceSettings, maintenanceMessage: e.target.value })} className="mt-2 block w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 text-sm" />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -4913,9 +4915,10 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                 <button
                   type="button"
                   onClick={handleSaveSystemSettings}
-                  className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-600"
+                  disabled={settingsLoading}
+                  className="rounded-full bg-emerald-500 px-6 py-3 text-sm font-bold text-white shadow-sm hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  Save System Configurations
+                  {settingsLoading ? 'Saving...' : 'Save System Configurations'}
                 </button>
               </div>
               {settingsSaveMessage && (

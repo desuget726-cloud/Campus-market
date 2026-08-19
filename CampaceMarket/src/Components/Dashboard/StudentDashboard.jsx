@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
+import SellerOperationsCenter from './SellerOperationsCenter';
+import NotificationCenter from './NotificationCenter';
+import SettingsCenter from './SettingsCenter';
 
 const universityStructure = {
   "College of Computing and Informatics (CCI)": [
@@ -49,6 +52,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState(initialTab); // የጎን መቆጣጠሪያ ታብ
   const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
+  const [settingsTab, setSettingsTab] = useState('account');
 
   const [notifications, setNotifications] = useState([]);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
@@ -479,7 +483,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         if (!response.ok) return;
 
         const notifData = await response.json();
-        setNotifications(notifData);
+        const notificationItems = Array.isArray(notifData)
+          ? notifData
+          : notifData.notifications || notifData.allNotifications || [];
+        setNotifications(notificationItems.map((notification) => ({
+          ...notification,
+          read: Boolean(notification.read ?? notification.is_read),
+          type: notification.type || notification.category || 'system',
+        })));
       } catch (err) {
         console.error('Error fetching notifications:', err);
       }
@@ -1414,8 +1425,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const res = await fetch(`http://127.0.0.1:8000/api/student/messages/chat-history?sender_id=${user.studentId}&receiver_id=${selectedConversation.studentId}`);
         if (res.ok) {
           const data = await res.json();
-          if (data.messages && Array.isArray(data.messages)) {
-            const formattedMessages = data.messages.map((msg) => ({
+          const messages = Array.isArray(data) ? data : data.messages;
+          if (Array.isArray(messages)) {
+            const formattedMessages = messages.map((msg) => ({
               id: msg.id,
               sender: msg.sender_id === user.studentId ? 'me' : 'them',
               text: msg.message_text,
@@ -2575,7 +2587,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
 
             {/* 3. ገጽ 3፦ የሻጭ ሰሌዳ - አዲስ ምርት መለጠፊያ (Seller Hub) */}
-            {activeTab === 'seller' && (() => {
+            {activeTab === 'seller' && (
+              <SellerOperationsCenter
+                sellerData={sellerData}
+                myListings={myListings}
+                setMyListings={setMyListings}
+                setSellerData={setSellerData}
+                onAddProduct={() => setShowProductModal(true)}
+                onNavigate={onTabChange}
+              />
+            )}
+
+            {false && activeTab === 'seller' && (() => {
               const sellerFallbackStats = {
                 totalListings: 8,
                 receivedOrders: 12,
@@ -3470,6 +3493,20 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
 
             {activeTab === 'notifications' && (
+              <NotificationCenter
+                notifications={safeNotifications}
+                unreadCount={unreadCount}
+                isMarkingRead={isMarkingRead}
+                onMarkAllRead={handleMarkAllNotificationsRead}
+                onNavigate={(tab) => setActiveTab(tab)}
+                onBuyerOrders={() => {
+                  setBuyerTab('orders');
+                  setActiveTab('buyer');
+                }}
+              />
+            )}
+
+            {false && activeTab === 'notifications' && (
               <div className="mx-auto max-w-5xl px-4 py-6">
                 <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -3559,6 +3596,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   )}
                 </div>
               </div>
+            )}
+
+            {activeTab === 'settings' && (
+              <SettingsCenter
+                settingsTab={settingsTab}
+                setSettingsTab={setSettingsTab}
+                profileForm={profileForm}
+                handleProfileFieldChange={handleProfileFieldChange}
+                handleProfileSubmit={handleProfileSubmit}
+                profileMessage={profileMessage}
+                profileSaving={profileSaving}
+                currentWalletBalance={currentWalletBalance}
+                transactionLedger={transactionLedger}
+                onNavigate={setActiveTab}
+              />
             )}
 
           </section>

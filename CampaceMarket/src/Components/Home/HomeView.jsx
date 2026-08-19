@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import ProductDetails from './ProductDetails';
 import laptop_586 from '../../assets/laptop_586.webp';
 import phone2 from '../../assets/phone2.jpg';
@@ -15,6 +15,17 @@ const bannerImages = [
   c6,
   c7
 ];
+
+const formatEtb = (value) => {
+  if (value === null || value === undefined || value === '') return 'Price unavailable';
+
+  const numericValue = Number(String(value).replace(/[$,\s]|ETB/gi, ''));
+  if (Number.isFinite(numericValue)) {
+    return `${numericValue.toLocaleString('en-ET')} ETB`;
+  }
+
+  return `${String(value).replace(/\$/g, '').replace(/\s*ETB\s*/gi, '').trim()} ETB`;
+};
 
 
 const defaultCategories = [
@@ -394,6 +405,8 @@ function HomeView({ onAction, user }) {
   const [searchedTitle, setSearchedTitle] = useState('All Products');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
+  const [aiRecommendations, setAiRecommendations] = useState([]);
+  const aiScrollRef = useRef(null);
 
   const visibleCategories = showAllCategories ? categories : categories.slice(0, 8);
 
@@ -472,6 +485,43 @@ function HomeView({ onAction, user }) {
     };
     loadInitialData();
   }, [user?.department, user?.college, user?.departmentName]);
+
+  useEffect(() => {
+    const fetchRecommendations = async () => {
+      if (!user?.studentId) {
+        setAiRecommendations([]);
+        return;
+      }
+
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:8000/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`
+        );
+        if (!response.ok) throw new Error('Failed to load AI recommendations');
+
+        const data = await response.json();
+        const recommendations = Array.isArray(data)
+          ? data
+          : data.recommendations || data.items || [];
+        setAiRecommendations(Array.isArray(recommendations) ? recommendations : []);
+      } catch (error) {
+        console.error('Recommendation fetch error:', error);
+        setAiRecommendations([]);
+      }
+    };
+
+    fetchRecommendations();
+  }, [user?.studentId]);
+
+  const scrollAiRecommendations = (direction) => {
+    const container = aiScrollRef.current;
+    if (!container) return;
+
+    container.scrollBy({
+      left: direction * (container.clientWidth / (window.innerWidth >= 1024 ? 4 : 2)),
+      behavior: 'smooth',
+    });
+  };
 
   const handleSearch = async (e) => {
     e?.preventDefault();
@@ -668,10 +718,40 @@ function HomeView({ onAction, user }) {
               </div>
             </aside>
 
-            <div>
+            <div className="min-w-0 space-y-8">
+              {user?.studentId && aiRecommendations.length > 0 && (
+                <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Personalized for you</p>
+                      <h3 className="mt-1 text-2xl font-black text-slate-950">AI Recommendations</h3>
+                      <p className="mt-1 text-sm text-slate-500">Relevant products selected from your campus marketplace activity.</p>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button type="button" onClick={() => scrollAiRecommendations(-1)} aria-label="Previous AI recommendations" className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">&lt;</button>
+                      <button type="button" onClick={() => scrollAiRecommendations(1)} aria-label="Next AI recommendations" className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-lg font-bold text-white transition hover:bg-emerald-600">&gt;</button>
+                    </div>
+                  </div>
+
+                  <div ref={aiScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {aiRecommendations.map((product, index) => (
+                      <article key={product.id ?? `${product.title}-${index}`} className="w-[calc(50%-0.5rem)] shrink-0 snap-start overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md lg:w-[calc(25%_-_0.75rem)]">
+                        <img src={product.image || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=700&q=80'} alt={product.title || 'Recommended product'} className="h-32 w-full object-cover" />
+                        <div className="p-4">
+                          <p className="truncate text-xs font-bold text-emerald-600">{product.category || 'Marketplace pick'}</p>
+                          <h4 className="mt-1 truncate font-black text-slate-950">{product.title || 'Recommended product'}</h4>
+                          <p className="mt-2 text-sm font-bold text-slate-700">{formatEtb(product.price)}</p>
+                          <button type="button" onClick={() => { setSelectedProduct(product); onAction && onAction(product); }} className="mt-3 w-full rounded-full border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-50">View Details</button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-xl font-bold text-slate-900">{searchedTitle}</h3>
-                <span className="text-sm text-slate-500">{searchResults.length} items found</span>
+                <span className="text-sm text-slate-500">{Math.min(searchResults.length, 20)} items found</span>
               </div>
 
               {searchResults.length === 0 ? (
@@ -682,7 +762,7 @@ function HomeView({ onAction, user }) {
                 </div>
               ) : (
                 <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
-                  {searchResults.map((product, idx) => (
+                  {searchResults.slice(0, 20).map((product, idx) => (
                     <article key={idx} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col justify-between">
                       <div>
                         <img src={product.image} alt={product.title} className="h-44 w-full object-cover" />
@@ -697,7 +777,7 @@ function HomeView({ onAction, user }) {
                       </div>
                       <div className="p-4 pt-0">
                         <div className="flex items-center justify-between border-t border-slate-50 pt-3">
-                          <span className="text-lg font-bold text-slate-900">{product.price}</span>
+                          <span className="text-lg font-bold text-slate-900">{formatEtb(product.price)}</span>
                           <button
                             onClick={() => {
                               setSelectedProduct(product);

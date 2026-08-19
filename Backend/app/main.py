@@ -693,6 +693,100 @@ DEFAULT_SYSTEM_SETTINGS = {
     "allowStudentReports": True,
 }
 
+DEFAULT_SETTINGS_BLOCKS = {
+    "general": {
+        "marketplaceName": DEFAULT_SYSTEM_SETTINGS["marketplaceName"],
+        "description": DEFAULT_SYSTEM_SETTINGS["description"],
+        "supportEmail": DEFAULT_SYSTEM_SETTINGS["supportEmail"],
+        "currency": DEFAULT_SYSTEM_SETTINGS["currency"],
+        "timezone": DEFAULT_SYSTEM_SETTINGS["timezone"],
+    },
+    "user": {
+        "requireStudentVerification": DEFAULT_SYSTEM_SETTINGS["requireStudentVerification"],
+        "allowedEmailDomain": DEFAULT_SYSTEM_SETTINGS["allowedEmailDomain"],
+        "requireUniversityEmail": DEFAULT_SYSTEM_SETTINGS["requireUniversityEmail"],
+        "autoApproveStudents": DEFAULT_SYSTEM_SETTINGS["autoApproveStudents"],
+    },
+    "marketplace": {
+        "maxImageSize": DEFAULT_SYSTEM_SETTINGS["maxImageSize"],
+        "maxImagesPerProduct": DEFAULT_SYSTEM_SETTINGS["maxImagesPerProduct"],
+        "requireApproval": DEFAULT_SYSTEM_SETTINGS["requireApproval"],
+        "allowEditing": DEFAULT_SYSTEM_SETTINGS["allowEditing"],
+        "autoHideSold": DEFAULT_SYSTEM_SETTINGS["autoHideSold"],
+        "autoHideReported": DEFAULT_SYSTEM_SETTINGS["autoHideReported"],
+        "requireAdminApproval": DEFAULT_SYSTEM_SETTINGS["requireAdminApproval"],
+        "maxReportsBeforeReview": DEFAULT_SYSTEM_SETTINGS["maxReportsBeforeReview"],
+        "allowStudentReports": DEFAULT_SYSTEM_SETTINGS["allowStudentReports"],
+    },
+    "payment": {
+        "paymentProvider": DEFAULT_SYSTEM_SETTINGS["paymentProvider"],
+        "currency": DEFAULT_SYSTEM_SETTINGS["currency"],
+        "enableOnlinePayment": DEFAULT_SYSTEM_SETTINGS["enableOnlinePayment"],
+        "paymentVerification": DEFAULT_SYSTEM_SETTINGS["paymentVerification"],
+        "refundsEnabled": DEFAULT_SYSTEM_SETTINGS["refundsEnabled"],
+    },
+    "ai": {
+        "recommendationEngine": DEFAULT_SYSTEM_SETTINGS["recommendationEngine"],
+        "numRecommendations": DEFAULT_SYSTEM_SETTINGS["numRecommendations"],
+        "minSimilarityScore": DEFAULT_SYSTEM_SETTINGS["minSimilarityScore"],
+        "enableAI": DEFAULT_SYSTEM_SETTINGS["enableAI"],
+    },
+    "notification": {
+        "emailNotifs": DEFAULT_SYSTEM_SETTINGS["emailNotifs"],
+        "orderNotifs": DEFAULT_SYSTEM_SETTINGS["orderNotifs"],
+        "messageNotifs": DEFAULT_SYSTEM_SETTINGS["messageNotifs"],
+        "approvalNotifs": DEFAULT_SYSTEM_SETTINGS["approvalNotifs"],
+        "paymentNotifs": DEFAULT_SYSTEM_SETTINGS["paymentNotifs"],
+        "announcementNotifs": DEFAULT_SYSTEM_SETTINGS["announcementNotifs"],
+    },
+    "chat": {"enabled": True, "allowAttachments": True, "maxMessageLength": 1000},
+    "security": {
+        "admin2FA": DEFAULT_SYSTEM_SETTINGS["admin2FA"],
+        "maxLoginAttempts": DEFAULT_SYSTEM_SETTINGS["maxLoginAttempts"],
+        "sessionTimeout": DEFAULT_SYSTEM_SETTINGS["sessionTimeout"],
+        "minPasswordLength": DEFAULT_SYSTEM_SETTINGS["minPasswordLength"],
+        "auditLogging": DEFAULT_SYSTEM_SETTINGS["auditLogging"],
+    },
+    "maintenance": {
+        "maintenanceMode": False,
+        "maintenanceMessage": "The marketplace is temporarily unavailable for maintenance.",
+    },
+}
+
+
+def _parse_setting_value(value):
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _get_setting_value(db: Session, block: str, key: str, default=None):
+    block_record = db.query(SystemSetting).filter(SystemSetting.key == block).first()
+    if block_record:
+        block_value = _parse_setting_value(block_record.value)
+        if isinstance(block_value, dict) and key in block_value:
+            return block_value[key]
+
+    legacy_record = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+    if legacy_record:
+        return _parse_setting_value(legacy_record.value)
+    return default
+
+
+def _settings_change_details(previous, current, prefix=""):
+    changes = []
+    keys = sorted(set(previous or {}) | set(current or {}))
+    for key in keys:
+        label = f"{prefix} {key}".strip()
+        old_value = (previous or {}).get(key)
+        new_value = (current or {}).get(key)
+        if isinstance(old_value, dict) and isinstance(new_value, dict):
+            changes.extend(_settings_change_details(old_value, new_value, label))
+        elif old_value != new_value:
+            changes.append(f"{label} changed from {old_value!r} to {new_value!r}")
+    return changes
+
 
 def _seed_default_system_settings(db: Session) -> None:
     existing = db.query(SystemSetting).count()
@@ -995,14 +1089,16 @@ async def upload_admin_avatar(
 
 @app.get("/api/admin/settings")
 def get_admin_settings(db: Session = Depends(get_db)):
-    settings = db.query(SystemSetting).all()
-    response = {}
-    for item in settings:
-        try:
-            parsed = json.loads(item.value)
-        except (TypeError, ValueError):
-            parsed = item.value
-        response[item.key] = parsed
+    response = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
+    for item in db.query(SystemSetting).all():
+        parsed = _parse_setting_value(item.value)
+        if item.key in response and isinstance(parsed, dict):
+            response[item.key].update(parsed)
+        else:
+            for block in response.values():
+                if item.key in block:
+                    block[item.key] = parsed
+                    break
     return response
 
 
@@ -1011,7 +1107,22 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Settings payload must be a JSON object.")
 
-    for key, value in payload.items():
+    current = get_admin_settings(db)
+    normalized = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
+    for block, values in payload.items():
+        if block in normalized:
+            if not isinstance(values, dict):
+                raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
+            normalized[block].update(values)
+        else:
+            for target in normalized.values():
+                if block in target:
+                    target[block] = values
+                    break
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown settings block or key: {block}")
+
+    for key, value in normalized.items():
         existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
         serialized = json.dumps(value, ensure_ascii=False)
         if existing:
@@ -1019,22 +1130,21 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         else:
             db.add(SystemSetting(key=key, value=serialized))
 
-    db.commit()
-
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
-    if admin:
+    changes = _settings_change_details(current, normalized)
+    if admin and changes:
         db.add(AuditLog(
             admin_id=admin.id,
             action="System Settings Updated",
             entity_type="Settings",
             entity_id=1,
-            description="Admin changed platform configuration settings through the dashboard.",
+            description="Admin updated system settings: " + "; ".join(changes),
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
     db.commit()
 
-    return {"message": "Settings saved successfully", "settings": payload}
+    return {"success": True, "message": "Settings saved successfully", "settings": normalized, "changes": changes}
 
 
 @app.patch("/api/admin/settings/{id}")
@@ -1356,6 +1466,17 @@ def get_products(
 ):
     from sqlalchemy import case, or_
 
+    if _get_setting_value(db, "maintenance", "maintenanceMode", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_get_setting_value(
+                db,
+                "maintenance",
+                "maintenanceMessage",
+                "Marketplace maintenance in progress.",
+            ),
+        )
+
     query = db.query(Product).filter(Product.status == "Approved")
 
     manual_filters_active = bool(category or subcategory or search)
@@ -1431,6 +1552,7 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
 
 
 # 4.1. አዲስ ተለጠፈ እቃ በተማሪ ወይም ሻጭ የሚፈጠር ኤፒአይ (POST /api/products)
+# 4.1. አዲስ ተለጠፈ እቃ በተማሪ ወይም ሻጭ የሚፈጠር ኤፒአይ (POST /api/products)
 @app.post("/api/products", status_code=status.HTTP_201_CREATED)
 def create_product(
     title: str = Form(...),
@@ -1439,10 +1561,14 @@ def create_product(
     price: str = Form(...),
     description: Optional[str] = Form(None),
     seller: Optional[str] = Form(None),
+    student_id: Optional[str] = Form(None),  # <-- ADDED: Capture student_id from frontend Form
     image: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
-    """ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።"""
+    """
+    ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
+    ሁሉም ምርቶች በ "Pending" ሁኔታ ይጀምራሉ - ተግባር ሰው እና ይጠብቅ።
+    """
     try:
         image_url = None
         
@@ -1455,7 +1581,7 @@ def create_product(
                 raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp")
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
-            unique_filename = timestamp + image.filename.replace(" ", "_")
+            unique_filename = timestamp + image.filename
             file_path = os.path.join(STATIC_DIR, unique_filename)
             
             with open(file_path, "wb") as buffer:
@@ -1463,6 +1589,28 @@ def create_product(
             
             image_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
         
+        # Resolve the seller's identity properly (የሻጩን ማንነት መፍታት)
+        seller_value = str(seller).strip() if seller else ""
+        normalized_student_id = str(student_id).strip() if student_id else ""
+        if not seller_value and normalized_student_id:
+            try:
+                resolved_student_id = _validate_student_id(
+                    db,
+                    normalized_student_id,
+                    field_name="student_id",
+                )
+                student = db.query(Student).filter(
+                    Student.student_id == resolved_student_id
+                ).first()
+                if student:
+                    seller_value = student.student_id
+            except HTTPException:
+                seller_value = ""
+        
+        # Fallback if no seller resolved
+        if not seller_value:
+            seller_value = "Unknown"
+
         # ምርት ወደ ዳታቤዝ ያስቀምጡ (Save product to database)
         db_product = Product(
             title=title,
@@ -1471,9 +1619,10 @@ def create_product(
             price=price,
             image=image_url,
             description=description,
-            seller=seller,
+            seller=seller_value,  # <-- Use resolved seller identity
             status="Pending"
         )
+        db_product.location = "Addis Ababa"
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
@@ -1494,8 +1643,7 @@ def create_product(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create product: {str(e)}")
-
-
+    
 @app.post("/api/student/chat/initiate")
 def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
     buyer_id = _validate_student_id(db, request.buyer_id, field_name="buyer_id")
@@ -2346,42 +2494,28 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/student/messages/chat-history")
 def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Depends(get_db)):
-    """Retrieve all messages between two students with product details."""
+    """Return the chronological direct-message history for two students."""
+    sender_id = _validate_student_id(db, sender_id, field_name="sender_id")
+    receiver_id = _validate_student_id(db, receiver_id, field_name="receiver_id")
+    if sender_id == receiver_id:
+        raise HTTPException(status_code=400, detail="sender_id and receiver_id must be different.")
+
     sender = db.query(Student).filter(Student.student_id == sender_id).first()
     receiver = db.query(Student).filter(Student.student_id == receiver_id).first()
     if not sender or not receiver:
         raise HTTPException(status_code=404, detail="Student not found.")
 
     try:
-        chat_messages = (
-            db.query(
-                Message.id,
-                Message.sender_id,
-                Message.receiver_id,
-                Message.product_id,
-                Message.message_text,
-                Message.is_read,
-                Message.created_at,
-                Product.id.label("product_id_actual"),
-                Product.title.label("product_title"),
-                Product.price.label("product_price"),
-                Product.image.label("product_image"),
-                Product.category.label("product_category")
+        chat_messages = db.query(Message).filter(
+            or_(
+                (Message.sender_id == sender_id) & (Message.receiver_id == receiver_id),
+                (Message.sender_id == receiver_id) & (Message.receiver_id == sender_id),
             )
-            .outerjoin(Product, Message.product_id == Product.id)
-            .filter(
-                or_(
-                    (Message.sender_id == sender_id) & (Message.receiver_id == receiver_id),
-                    (Message.sender_id == receiver_id) & (Message.receiver_id == sender_id)
-                )
-            )
-            .order_by(Message.created_at.asc())
-            .all()
-        )
+        ).order_by(Message.created_at.asc()).all()
 
         unread_message_ids = [
-            msg[0] for msg in chat_messages
-            if msg[2] == sender_id and not msg[5]
+            message.id for message in chat_messages
+            if message.sender_id == receiver_id and not message.is_read
         ]
         if unread_message_ids:
             db.query(Message).filter(Message.id.in_(unread_message_ids)).update(
@@ -2391,36 +2525,20 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
             db.commit()
 
         formatted_messages = []
-        for msg in chat_messages:
-            formatted_msg = {
-                "id": msg[0],
-                "sender_id": msg[1],
-                "receiver_id": msg[2],
-                "product_id": msg[3],
-                "message_text": msg[4],
-                "is_read": msg[5],
-                "created_at": msg[6].isoformat() if msg[6] else None,
-            }
-            
-            if msg[3] and msg[8]:
-                formatted_msg["product"] = {
-                    "id": msg[3],
-                    "title": msg[8],
-                    "price": str(msg[9]),
-                    "image": msg[10],
-                    "category": msg[11],
-                }
-            
-            formatted_messages.append(formatted_msg)
+        for message in chat_messages:
+            formatted_messages.append({
+                "id": message.id,
+                "sender_id": message.sender_id,
+                "receiver_id": message.receiver_id,
+                "product_id": message.product_id,
+                "message_text": message.message_text,
+                "is_read": bool(message.is_read),
+                "created_at": message.created_at.isoformat() if message.created_at else None,
+            })
 
-        return {
-            "sender_id": sender_id,
-            "receiver_id": receiver_id,
-            "messages": formatted_messages,
-            "total": len(formatted_messages),
-            "unread_marked_read": len(unread_message_ids),
-        }
+        return formatted_messages
     except Exception as e:
+        db.rollback()
         logging.error(f"Error fetching chat history {sender_id}-{receiver_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch chat history.")
 
@@ -2551,32 +2669,35 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
     if not sender or not receiver:
         raise HTTPException(status_code=404, detail="Student not found.")
 
+    if validated_sender_id == validated_receiver_id:
+        raise HTTPException(status_code=400, detail="Cannot send a message to yourself.")
+
     if not request.message_text or not request.message_text.strip():
         raise HTTPException(status_code=400, detail="Message text is required.")
+
+    if len(request.message_text.strip()) > 5000:
+        raise HTTPException(status_code=400, detail="Message exceeds the 5000 character limit.")
 
     if request.product_id is not None:
         product = db.query(Product).filter(Product.id == request.product_id).first()
         if not product:
             raise HTTPException(status_code=404, detail="Product not found.")
 
-    existing_incoming_messages = db.query(Message).filter(
-        Message.sender_id == request.receiver_id,
-        Message.receiver_id == request.sender_id,
-        Message.is_read.is_(False),
-    ).all()
-    for message in existing_incoming_messages:
-        message.is_read = True
-
-    chat_message = Message(
-        sender_id=request.sender_id,
-        receiver_id=request.receiver_id,
-        product_id=request.product_id,
-        message_text=request.message_text.strip(),
-        is_read=False,
-    )
-    db.add(chat_message)
-    db.commit()
-    db.refresh(chat_message)
+    try:
+        chat_message = Message(
+            sender_id=validated_sender_id,
+            receiver_id=validated_receiver_id,
+            product_id=request.product_id,
+            message_text=request.message_text.strip(),
+            is_read=False,
+        )
+        db.add(chat_message)
+        db.commit()
+        db.refresh(chat_message)
+    except Exception:
+        db.rollback()
+        logging.exception("Failed to save message transaction")
+        raise HTTPException(status_code=500, detail="Failed to save message.")
 
     return {
         "success": True,
@@ -2588,10 +2709,10 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
             "product_id": chat_message.product_id,
             "message_text": chat_message.message_text,
             "is_read": chat_message.is_read,
-            "created_at": chat_message.created_at,
+            "created_at": chat_message.created_at.isoformat() if chat_message.created_at else None,
         },
-        "readReceiptUpdated": len(existing_incoming_messages),
-        "read_receipt_updated": len(existing_incoming_messages),
+        "readReceiptUpdated": 0,
+        "read_receipt_updated": 0,
     }
 
 
