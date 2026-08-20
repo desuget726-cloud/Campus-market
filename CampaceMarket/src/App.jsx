@@ -61,6 +61,7 @@ function App() {
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingView, setPendingView] = useState('home');
   const [pendingUsername, setPendingUsername] = useState('');
+  const [pendingProductId, setPendingProductId] = useState(null);
 
   const activeRole = userRole || user?.role || null;
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
@@ -167,7 +168,13 @@ function App() {
 
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
 
-  const handleNavigate = (view) => {
+  const handleNavigate = (view, params = {}) => {
+    if (view === 'product-details' || view === 'ProductDetails') {
+      setPendingProductId(params.productId ?? params.product_id ?? null);
+      setCurrentView('home');
+      return;
+    }
+
     if (activeRole === 'admin') {
       if (view === 'student-dashboard' || view === 'student-dashboard-profile') {
         setCurrentView('admin-dashboard');
@@ -278,6 +285,7 @@ function App() {
         {currentView === 'home' && (
           <HomeView
             user={user}
+            initialProductId={pendingProductId}
             onAction={(product) => console.log('view', product)}
             onUserUpdate={setUser}
             onNavigate={handleNavigate}

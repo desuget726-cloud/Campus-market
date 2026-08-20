@@ -27,6 +27,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     fetchProductDetails();
   }, [product?.id]);
 
+  useEffect(() => {
+    const productTitle = String(detailedProduct?.title || product?.title || '').trim();
+    if (!productTitle) return;
+
+    setMessageText((previousMessage) => previousMessage || `Hi, I am interested in buying your ${productTitle}. Is it still available?`);
+  }, [product?.id, product?.title, detailedProduct?.title]);
+
   const handleGoogleLogin = () => {
     const mockUser = {
       studentId: 'MAU1600002',

@@ -395,7 +395,7 @@ const defaultCategories = [
   }
 ];
 
-function HomeView({ onAction, user, onUserUpdate, onNavigate, onNavigateToMessages }) {
+function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, onNavigateToMessages }) {
   const [categories, setCategories] = useState(defaultCategories);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -485,6 +485,28 @@ function HomeView({ onAction, user, onUserUpdate, onNavigate, onNavigateToMessag
     };
     loadInitialData();
   }, [user?.department, user?.college, user?.departmentName]);
+
+  useEffect(() => {
+    if (!initialProductId) return;
+
+    const productFromResults = searchResults.find((item) => String(item.id) === String(initialProductId));
+    if (productFromResults) {
+      setSelectedProduct(productFromResults);
+      return;
+    }
+
+    const fetchSelectedProduct = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/products/${initialProductId}`);
+        if (!response.ok) throw new Error('Failed to load selected product');
+        setSelectedProduct(await response.json());
+      } catch (error) {
+        console.error('Selected product fetch error:', error);
+      }
+    };
+
+    fetchSelectedProduct();
+  }, [initialProductId, searchResults]);
 
   useEffect(() => {
     const fetchRecommendations = async () => {

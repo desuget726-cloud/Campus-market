@@ -29,6 +29,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
 from dotenv import load_dotenv
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
 from .models import (
@@ -122,6 +124,21 @@ class ConnectionManager:
                 await self.disconnect(student_id)
                 return False
         return False
+
+    async def broadcast(self, message: dict, exclude_student_id: Optional[str] = None):
+        """Broadcast a payload to all connected students except the sender."""
+        async with self._lock:
+            recipients = [
+                (student_id, websocket)
+                for student_id, websocket in self.active_connections.items()
+                if student_id != exclude_student_id
+            ]
+
+        for student_id, websocket in recipients:
+            try:
+                await websocket.send_json(message)
+            except Exception as exc:
+                self.logger.error(f"[CHAT BROADCAST ERROR] Failed to notify {student_id}: {str(exc)}")
 
     def is_online(self, student_id: str) -> bool:
         """Check if a student is currently online."""
@@ -1904,7 +1921,7 @@ def detect_intent(message: str) -> str:
         return 'general'
 
 
-def extract_keywords(message: str) -> List[str]:
+def extract_search_keywords(message: str) -> List[str]:
     stopwords = {'the', 'a', 'an', 'and', 'or', 'is', 'are', 'for', 'to', 'from', 
                  'in', 'on', 'under', 'over', 'should', 'i', 'me', 'my', 'etb', 
                  'birr', 'how', 'much', 'sell', 'buy', 'find', 'show', 'list'}
@@ -1913,23 +1930,22 @@ def extract_keywords(message: str) -> List[str]:
     return keywords
 
 
+def extract_keywords(message: str) -> List[str]:
+    """Backward-compatible alias for existing advisor helpers."""
+    return extract_search_keywords(message)
+
+
 def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tuple[Product, float]]:
-    """Calculate TF-IDF cosine similarity using pure Python standard library."""
+    """Rank products by TF-IDF cosine similarity against the user's query."""
     if not products:
         return []
     
     product_texts = [f"{p.title or ''} {p.description or ''} {p.category or ''} {p.subcategory or ''}" for p in products]
     
     try:
-        corpus = [query] + product_texts
-        vectors, _ = _build_tfidf_vectors(corpus)
-        if not vectors or len(vectors) < 2:
-            return [(p, 0.5) for p in products]
-        
-        query_vec = vectors[0]
-        product_vecs = vectors[1:]
-        
-        similarities = [_cosine_similarity(query_vec, p_vec) for p_vec in product_vecs]
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+        vectors = vectorizer.fit_transform([query] + product_texts)
+        similarities = cosine_similarity(vectors[0:1], vectors[1:]).flatten()
         scored_products = list(zip(products, similarities))
         scored_products.sort(key=lambda x: x[1], reverse=True)
         return scored_products
@@ -1940,7 +1956,7 @@ def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tup
 
 def search_products_by_intent(db: Session, message: str, intent: str, department: str = None) -> List[Product]:
     try:
-        keywords = extract_keywords(message)
+        keywords = extract_search_keywords(message)
         query = db.query(Product).filter(Product.status == 'Approved')
         
         if keywords:
@@ -2034,9 +2050,72 @@ def format_products_for_response(products: List[Product]) -> str:
     return "\n".join(product_cards)
 
 
+def _openai_advisor_response(
+    request: AIAdvisorRequest,
+    message: str,
+    intent: str,
+    products: List[Product],
+    price_data: Optional[Dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """Ask OpenAI for a response when configured; return None to use the local fallback."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        from openai import OpenAI
+
+        product_context = "\n".join(
+            f"id={product.id}; title={product.title}; category={product.category}; "
+            f"price={product.price}; description={product.description or ''}"
+            for product in products
+        ) or "No approved products matched the request."
+        pricing_context = json.dumps(price_data or {}, default=str)
+        system_prompt = (
+            "You are Campus AI Advisor for a student marketplace. Use only the supplied "
+            "database context for product facts and prices. Be concise and helpful. "
+            "For buying requests, include one exact marker per matching listing in the "
+            "format [PRODUCT:id:title:price]. For selling requests, explain the market "
+            "average and recommended range using the supplied pricing context."
+        )
+        user_prompt = (
+            f"Student department: {request.department or 'Not provided'}\n"
+            f"Intent: {intent}\n"
+            f"User message: {message}\n\n"
+            f"Approved product context:\n{product_context}\n\n"
+            f"Local pricing context:\n{pricing_context}"
+        )
+        client = OpenAI(api_key=api_key)
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        reply = (completion.choices[0].message.content or "").strip()
+        if not reply:
+            return None
+
+        if intent == "buy" and products and "[PRODUCT:" not in reply:
+            reply = f"{format_products_for_response(products)}\n\n{reply}"
+
+        return {
+            "reply": reply,
+            "products": [{"id": product.id, "title": product.title, "price": product.price} for product in products],
+            "intent": intent,
+            "message_type": "openai_advisor",
+            "provider": "openai",
+        }
+    except Exception as error:
+        logging.getLogger("ai_advisor").warning("OpenAI advisor unavailable; using local fallback: %s", error)
+        return None
+
+
 @app.post("/api/ai/advisor")
 def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
-    """Academic Defense AI Advisor endpoint."""
+    """Return database-backed product search or pricing guidance for the AI Advisor."""
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required.")
@@ -2046,7 +2125,12 @@ def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
     
     try:
         intent = detect_intent(message)
-        keywords = extract_keywords(message)
+        keywords = extract_search_keywords(message)
+        cloud_products = search_products_by_intent(db, message, intent, request.department) if intent == "buy" else db.query(Product).filter(Product.status == "Approved").order_by(Product.created_at.desc()).limit(30).all()
+        local_price_data = calculate_price_recommendation(db, keywords) if intent == "sell" else None
+        cloud_response = _openai_advisor_response(request, message, intent, cloud_products, local_price_data)
+        if cloud_response:
+            return cloud_response
         
         if intent == 'buy':
             products = search_products_by_intent(
@@ -2627,6 +2711,11 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
 
         await manager.connect(student_id, websocket, student_name=student.name)
         logger.info(f"[WS CONNECT] {student_id} ({student.name}) connected. Online: {manager.get_online_count()}")
+        await manager.broadcast({
+            "type": "online_status",
+            "student_id": student_id,
+            "status": "online",
+        }, exclude_student_id=student_id)
 
         while True:
             raw_payload = await websocket.receive_text()
@@ -2639,6 +2728,16 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                     "success": False,
                     "error": "Invalid JSON. Required: receiver_id, message_text. Optional: product_id"
                 })
+                continue
+
+            if payload.get("type") in {"typing", "user_typing"}:
+                receiver_id = str(payload.get("receiver_id", "")).strip()
+                if receiver_id and receiver_id != student_id:
+                    await manager.send_personal_message(receiver_id, {
+                        "type": "typing",
+                        "sender_id": student_id,
+                        "is_typing": payload.get("is_typing", payload.get("typing", False)) is not False,
+                    })
                 continue
 
             receiver_id = payload.get("receiver_id", "").strip()
@@ -2717,6 +2816,11 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
     except WebSocketDisconnect:
         logger.info(f"[WS DISCONNECT] {student_id} closed connection")
         await manager.disconnect(student_id)
+        await manager.broadcast({
+            "type": "online_status",
+            "student_id": student_id,
+            "status": "offline",
+        }, exclude_student_id=student_id)
     except Exception as exc:
         logger.error(f"[WS FATAL ERROR] {student_id}: {str(exc)}", exc_info=True)
         try:
@@ -2724,6 +2828,11 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
         except Exception:
             pass
         await manager.disconnect(student_id)
+        await manager.broadcast({
+            "type": "online_status",
+            "student_id": student_id,
+            "status": "offline",
+        }, exclude_student_id=student_id)
     finally:
         if db:
             db.close()

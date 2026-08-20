@@ -46,6 +46,12 @@ const universityStructure = {
   ]
 };
 
+const getStudentAvatar = (studentId) => (
+  studentId
+    ? `http://127.0.0.1:8000/static/uploads/avatars/${encodeURIComponent(studentId)}.jpg`
+    : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80'
+);
+
 
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
@@ -121,8 +127,32 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
   const [typingInput, setTypingInput] = useState('');
+  const [peerIsTyping, setPeerIsTyping] = useState(false);
+  const [showChatDropdown, setShowChatDropdown] = useState(false);
+  const [conversationSearch, setConversationSearch] = useState('');
+  const [mobileChatView, setMobileChatView] = useState('list');
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showAddChatModal, setShowAddChatModal] = useState(false);
+  const [showProfileDetailsModal, setShowProfileDetailsModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportReason, setReportReason] = useState('');
+  const [reportStatus, setReportStatus] = useState('');
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
+  const [blockedConversations, setBlockedConversations] = useState({});
+  const [blockedUsers, setBlockedUsers] = useState(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const savedBlockedUsers = JSON.parse(window.localStorage.getItem('campaceBlockedUsers') || '[]');
+      return Array.isArray(savedBlockedUsers) ? savedBlockedUsers.map(String) : [];
+    } catch (error) {
+      console.warn('Unable to load blocked users:', error);
+      return [];
+    }
+  });
   const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
   const socketRef = useRef(null);
+  const activePeerIdRef = useRef('');
+  const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const walletBalanceRef = useRef(walletBalance);
   const [loading, setLoading] = useState(false);
@@ -137,6 +167,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [aiInput, setAiInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const aiScrollRef = useRef(null);
+  const aiAbortControllerRef = useRef(null);
   const suggestedPrompts = [
     '🔍 Laptops under 25k ETB',
     '📖 CCI Textbooks',
@@ -388,26 +419,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const fetchMyListings = async () => {
     if (!user?.studentId) {
       setMyListings([]);
-      return;
-    }
-
-    try {
-      const res = await fetch(`http://127.0.0.1:8000/api/student/listings?student_id=${encodeURIComponent(user.studentId)}`);
-      if (!res.ok) throw new Error('Failed to load your listings');
-      const listingData = await res.json();
-      setMyListings(Array.isArray(listingData) ? listingData : []);
-    } catch (err) {
-      console.error('Error fetching student listings:', err);
-      setMyListings([]);
-    }
-  };
-
-  const fetchSellerDashboardData = async () => {
-    if (!user?.studentId) {
       setSellerData({
         totalListings: 0,
-        receivedOrders: 0,
-        totalRevenue: 0,
         pendingOrders: 0,
         incomingOrders: [],
         activeListings: []
@@ -659,10 +672,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   useEffect(() => {
     const requestedTab = initialTab === 'profile' ? 'settings' : initialTab;
-    if (requestedTab && requestedTab !== activeTab) {
-      setActiveTab(requestedTab);
+    if (requestedTab) {
+      setActiveTab((currentTab) => currentTab === requestedTab ? currentTab : requestedTab);
     }
-  }, [initialTab, activeTab]);
+  }, [initialTab]);
 
   const lastSyncedTabRef = useRef(null);
 
@@ -1307,6 +1320,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setIsTyping(true);
     setChatHistory((prev) => [...prev, { role: 'user', text: trimmed }]);
     setAiInput('');
+    const abortController = new AbortController();
+    aiAbortControllerRef.current = abortController;
 
     try {
       // Send to Academic Defense AI Advisor endpoint
@@ -1320,7 +1335,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const res = await fetch('http://127.0.0.1:8000/api/ai/advisor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: abortController.signal
       });
 
       const data = await res.json();
@@ -1338,17 +1354,29 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setChatHistory((prev) => [...prev, { role: 'assistant', text: errorMsg }]);
       }
     } catch (err) {
+      if (err.name === 'AbortError') {
+        setChatHistory((prev) => [...prev, { role: 'assistant', text: '⚠️ AI Generation stopped by the user.' }]);
+        return;
+      }
       console.error('AI advisor error:', err);
       setChatHistory((prev) => [...prev, {
         role: 'assistant',
         text: '⚠️ Connection error. Please try again in a moment. Ensure the backend server is running at http://127.0.0.1:8000'
       }]);
     } finally {
+      if (aiAbortControllerRef.current === abortController) {
+        aiAbortControllerRef.current = null;
+      }
       setIsTyping(false);
     }
   };
 
+  const handleStopAiGeneration = () => {
+    aiAbortControllerRef.current?.abort();
+  };
+
   const handleClearChat = () => {
+    aiAbortControllerRef.current?.abort();
     setChatHistory([
       {
         role: 'assistant',
@@ -1482,10 +1510,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           if (Array.isArray(messages)) {
             const formattedMessages = messages.map((msg) => ({
               id: msg.id,
+              sender_id: msg.sender_id,
               sender: msg.sender_id === user.studentId ? 'me' : 'them',
               text: msg.message_text,
-              time: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              created_at: msg.created_at,
               productId: msg.product_id,
+              is_read: Boolean(msg.is_read),
             }));
             setActiveChatMessages(formattedMessages);
           }
@@ -1523,6 +1553,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   }, [activeChatMessages]);
 
   const activeConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0] || null;
+  const isActiveConversationBlocked = Boolean(activeConversation?.id && blockedConversations[activeConversation.id]);
+  const filteredConversations = conversationsList.filter((conversation) => {
+    const partnerId = String(conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, ''));
+    return !blockedUsers.includes(partnerId) && String(conversation.name || '').toLowerCase().includes(conversationSearch.trim().toLowerCase());
+  });
+
+  useEffect(() => {
+    activePeerIdRef.current = String(activeConversation?.studentId || String(activeConversationId || '').replace(/^conv-/, ''));
+    setPeerIsTyping(false);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+  }, [activeConversation, activeConversationId]);
 
   useEffect(() => {
     if (!user?.studentId || typeof window === 'undefined') return undefined;
@@ -1539,6 +1580,34 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       try {
         const packet = JSON.parse(event.data);
         const incoming = packet?.data || packet;
+        const eventType = incoming?.type || incoming?.event;
+        if (eventType === 'online_status') {
+          const presenceStudentId = String(incoming.student_id || '');
+          const presenceStatus = incoming.status === 'online' ? 'online' : 'offline';
+          if (presenceStudentId) {
+            setConversationsList((previousConversations) => previousConversations.map((conversation) => {
+              const conversationStudentId = String(
+                conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, '')
+              );
+              return conversationStudentId === presenceStudentId
+                ? { ...conversation, status: presenceStatus }
+                : conversation;
+            }));
+          }
+          return;
+        }
+        if (eventType === 'typing' || eventType === 'user_typing') {
+          const typingSenderId = String(incoming.sender_id || incoming.user_id || incoming.student_id || '');
+          if (typingSenderId && typingSenderId === activePeerIdRef.current) {
+            const isTypingFromPeer = incoming.is_typing !== false && incoming.typing !== false;
+            setPeerIsTyping(isTypingFromPeer);
+            if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+            if (isTypingFromPeer) {
+              typingTimeoutRef.current = setTimeout(() => setPeerIsTyping(false), 3000);
+            }
+          }
+          return;
+        }
         const message = incoming?.type === 'incoming_message' ? incoming : null;
         if (!message) return;
 
@@ -1551,10 +1620,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             ...prev,
             {
               id: message.id,
+              sender_id: message.sender_id,
               sender: message.sender_id === user.studentId ? 'me' : 'them',
               text: message.message_text,
-              time: new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              created_at: message.created_at,
               productId: message.product_id,
+              is_read: Boolean(message.is_read),
             }
           ]);
         }
@@ -1608,7 +1679,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const sendChatMessage = () => {
     const safeMessage = typingInput.trim();
-    if (!safeMessage || !activeConversation) return;
+    if (!safeMessage || !activeConversation || isActiveConversationBlocked) return;
 
     const receiverId = activeConversation.studentId || (String(activeConversation.id || '').replace(/^conv-/, '') || null);
     if (!receiverId) {
@@ -1619,9 +1690,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const now = new Date();
     const newMessage = {
       id: `msg-${Date.now()}`,
+      sender_id: user?.studentId,
       sender: 'me',
       text: safeMessage,
-      time: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      created_at: now.toISOString(),
       productId: activeConversation?.product?.id || null,
     };
 
@@ -1643,6 +1715,125 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       socketRef.current.send(JSON.stringify(payload));
     } else {
       console.log('WebSocket transmit fallback:', payload);
+    }
+  };
+
+  const persistBlockedUsers = (nextBlockedUsers) => {
+    setBlockedUsers(nextBlockedUsers);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('campaceBlockedUsers', JSON.stringify(nextBlockedUsers));
+    }
+  };
+
+  const handleViewProductFromChat = (productId) => {
+    if (!productId) return;
+    setActiveTab('buyer');
+    setBuyerTab('search');
+    onNavigate?.('product-details', { productId });
+  };
+
+  const handleBlockUser = (partnerId, partnerName) => {
+    const normalizedPartnerId = String(partnerId || '').trim();
+    if (!normalizedPartnerId || blockedUsers.includes(normalizedPartnerId)) return;
+    const shouldBlock = typeof window === 'undefined' || window.confirm(`Block ${partnerName || normalizedPartnerId}?`);
+    if (!shouldBlock) return;
+
+    persistBlockedUsers([...blockedUsers, normalizedPartnerId]);
+    setBlockedConversations((previous) => ({ ...previous, [`conv-${normalizedPartnerId}`]: true }));
+    setTypingInput('');
+    setShowChatDropdown(false);
+    setMobileChatView('list');
+    setActiveChatMessages([]);
+    setActiveConversationId('');
+  };
+
+  const handleUnblockUser = (partnerId, partnerName) => {
+    const normalizedPartnerId = String(partnerId || '').trim();
+    const shouldUnblock = typeof window === 'undefined' || window.confirm(`Unblock ${partnerName || normalizedPartnerId}?`);
+    if (!shouldUnblock) return;
+
+    persistBlockedUsers(blockedUsers.filter((blockedUserId) => blockedUserId !== normalizedPartnerId));
+    setBlockedConversations((previous) => {
+      const nextBlockedConversations = { ...previous };
+      delete nextBlockedConversations[`conv-${normalizedPartnerId}`];
+      return nextBlockedConversations;
+    });
+  };
+
+  const handleReportSubmit = async (event) => {
+    event.preventDefault();
+    const reason = reportReason.trim();
+    const partnerId = activeConversation?.studentId || String(activeConversation?.id || '').replace(/^conv-/, '');
+    if (!reason || !partnerId || !user?.studentId) return;
+
+    setIsSubmittingReport(true);
+    setReportStatus('');
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/student/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          student_id: user.studentId,
+          student_name: user.name,
+          issue: `Report against ${partnerId}: ${reason}`
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Report request failed');
+      }
+
+      setReportReason('');
+      setReportStatus('Your complaint was submitted for Admin review.');
+      setTimeout(() => {
+        setShowReportModal(false);
+        setReportStatus('');
+      }, 1500);
+    } catch (error) {
+      console.error('Unable to submit chat report:', error);
+      setReportStatus('Unable to submit the complaint. Please try again.');
+    } finally {
+      setIsSubmittingReport(false);
+    }
+  };
+
+  const handleChatMenuAction = (action) => {
+    setShowChatDropdown(false);
+
+    if (action === 'profile') {
+      setShowProfileDetailsModal(true);
+      return;
+    }
+
+    if (action === 'product') {
+      if (activeConversation?.product?.id) {
+        handleViewProductFromChat(activeConversation.product.id);
+      } else {
+        setReportStatus('No product is attached to this conversation.');
+      }
+      return;
+    }
+
+    if (action === 'report') {
+      setReportReason('');
+      setReportStatus('');
+      setShowReportModal(true);
+      return;
+    }
+
+    if (action === 'block') {
+      const partnerId = activeConversation?.studentId || activeConversation?.student_id || String(activeConversation?.id || '').replace(/^conv-/, '');
+      handleBlockUser(partnerId, activeConversation?.name);
+    }
+
+    if (action === 'delete') {
+      if (activeConversation?.id) {
+        const remainingConversations = conversationsList.filter((conversation) => conversation.id !== activeConversation.id);
+        setConversationsList(remainingConversations);
+        setActiveConversationId(remainingConversations[0]?.id || '');
+        setActiveChatMessages([]);
+        setMobileChatView('list');
+      }
     }
   };
 
@@ -1815,47 +2006,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className="flex-1 min-w-0 transition-all duration-300 pt-0 lg:h-full lg:overflow-y-scroll lg:pr-2 lg:pt-1">
-
-          {/* የላይኛው የእንኳን ደህና መጣህ ባር */}
-          <div className="mb-6 flex flex-col gap-4 rounded-[32px] bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-4">
-
-              {/* ዴስክቶፕ ላይ ማውጫው ከተዘጋ በኋላ ለመክፈቻ የሚሆን የ [|] ቁልፍ (ምስል 2 - Sidebar Toggle Open Button) */}
-              {!isSidebarOpen && (
-                <button
-                  onClick={() => setIsSidebarOpen(true)}
-                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer hidden lg:flex"
-                  title="Open sidebar"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4v16" />
-                  </svg>
-                </button>
-              )}
-
-              {/* በሞባይል ስልኮች ላይ የሚታየው የሜኑ መክፈቻ ቁልፍ (Mobile Hamburger Menu) */}
-              <button
-                onClick={() => setIsSidebarOpen(prev => !prev)}
-                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer lg:hidden"
-                title="Menu"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
-
-              <div>
-                <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Student Experience</p>
-                <h2 className="mt-2 text-3xl font-semibold text-slate-950">Unified buyer + seller dashboard</h2>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => setActiveTab('notifications')} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 cursor-pointer">Notifications</button>
-              <button onClick={() => setShowSupportModal(true)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow hover:bg-emerald-600 cursor-pointer">Support</button>
-            </div>
-          </div>
+        <main className="min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 lg:h-full lg:overflow-y-scroll lg:pr-2 lg:pt-1">
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
@@ -1907,28 +2058,42 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
               <div className="space-y-6">
-                <div className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
-                  <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Welcome back,</p>
-                  <h3 className="mt-2 text-3xl font-bold text-slate-950">{user?.name || 'Student'}, here are your campus highlights</h3>
+                <div className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-4">
 
-                  {/* Highlights Grid */}
-                  <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
-                      <p className="text-xs font-semibold text-sky-600 uppercase">AI Picks</p>
-                      <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.aiPicks || 0}</p>
+                    {/* ዴስክቶፕ ላይ ማውጫው ከተዘጋ በኋላ ለመክፈቻ የሚሆን የ [|] ቁልፍ (ምስል 2 - Sidebar Toggle Open Button) */}
+                    {!isSidebarOpen && (
+                      <button
+                        onClick={() => setIsSidebarOpen(true)}
+                        className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer hidden lg:flex"
+                        title="Open sidebar"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4v16" />
+                        </svg>
+                      </button>
+                    )}
+
+                    {/* በሞባይል ስልኮች ላይ የሚታየው የሜኑ መክፈቻ ቁልፍ (Mobile Hamburger Menu) */}
+                    <button
+                      onClick={() => setIsSidebarOpen(prev => !prev)}
+                      className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer lg:hidden"
+                      title="Menu"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                      </svg>
+                    </button>
+
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Student Experience</p>
+                      <h2 className="mt-2 text-3xl font-semibold text-slate-950">Unified buyer + seller dashboard</h2>
                     </div>
-                    <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
-                      <p className="text-xs font-semibold text-sky-600 uppercase">Latest Listings</p>
-                      <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.latestListings || 0} items</p>
-                    </div>
-                    <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
-                      <p className="text-xs font-semibold text-sky-600 uppercase">Cart Value</p>
-                      <p className="mt-2 text-2xl font-bold text-slate-900">{formatETB(highlights.cartValue)}</p>
-                    </div>
-                    <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-6">
-                      <p className="text-xs font-semibold text-sky-600 uppercase">Pending Messages</p>
-                      <p className="mt-2 text-2xl font-bold text-slate-900">{highlights.pendingMessages || 0}</p>
-                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => setActiveTab('notifications')} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 cursor-pointer">Notifications</button>
+                    <button onClick={() => setShowSupportModal(true)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow hover:bg-emerald-600 cursor-pointer">Support</button>
                   </div>
                 </div>
 
@@ -1944,6 +2109,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       {recommendedProducts.length ? (
                         recommendedProducts.map((item) => (
                           <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
+                            <div className="mb-4 h-32 w-full overflow-hidden rounded-[18px] bg-slate-200">
+                              <img
+                                src={item.image || 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80'}
+                                alt={item.title || 'Recommended marketplace product'}
+                                onError={(event) => {
+                                  event.currentTarget.onerror = null;
+                                  event.currentTarget.src = 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80';
+                                }}
+                                className="h-full w-full object-cover"
+                              />
+                            </div>
                             <div className="flex items-center justify-between gap-3">
                               <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">
                                 {item.category || 'Recommended'}
@@ -2418,7 +2594,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <div key={order.id} className="rounded-[28px] border border-slate-200 bg-slate-50 p-5 shadow-sm">
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Order #{order.id}</p>
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Order #{order.id}</p>
                                   <h4 className="mt-2 text-xl font-bold text-slate-900">{order.title || order.product_title || 'Campus Purchase'}</h4>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2">
@@ -2924,12 +3100,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           </div>
                         ) : (
                           topProducts.map((item, index) => (
-                            <div key={item.id ?? `${item.title}-${index}`} className="flex items-center gap-4 rounded-[20px] bg-slate-50 p-3">
+                            <div key={item.id ?? `${item.title}-${index}`} className="flex items-center gap-4 rounded-[20px] border border-slate-200 bg-gradient-to-br from-white to-emerald-50 p-3">
                               <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sm font-bold text-sky-700">
                                 #{index + 1}
                               </div>
                               <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm font-bold text-slate-900">{item.title || item.name || 'Product'}</p>
+                                <p className="truncate text-sm font-bold text-slate-900">{item.title}</p>
                                 <p className="text-xs text-slate-500">{item.views ?? 0} views · {item.orders ?? 0} sales</p>
                               </div>
                               <span className="text-sm font-bold text-emerald-600">{Number(item.price ?? 0).toLocaleString('en-US')} ETB</span>
@@ -3030,6 +3206,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <div className={`max-w-[85%] rounded-3xl px-5 py-4 text-sm leading-6 shadow-md ${message.role === 'assistant' ? 'bg-gradient-to-br from-white to-slate-50 text-slate-900 border border-slate-200' : 'bg-emerald-500 text-white'}`}>
                                 {renderedText && <div className="whitespace-pre-wrap font-medium">{renderedText}</div>}
 
+                                {message.product_id && message.product && (
+                                  <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-slate-900">
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Discussing Item</p>
+                                    <p className="mt-1 text-sm font-bold">{message.product.title}</p>
+                                    {message.product.price !== undefined && (
+                                      <p className="mt-1 text-xs font-semibold text-emerald-700">{message.product.price} ETB</p>
+                                    )}
+                                  </div>
+                                )}
+
                                 {/* Dynamic Product Cards */}
                                 {productMatches.length > 0 && (
                                   <div className="mt-4 space-y-3">
@@ -3070,7 +3256,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                             </button>
                                             <button
                                               type="button"
-                                              onClick={() => onNavigate('product-details', { productId: product.id })}
+                                              onClick={() => handleViewProductFromChat(message.product_id || product.id)}
                                               className="flex-1 rounded-full border-2 border-sky-300 bg-sky-50 hover:bg-sky-100 px-3 py-2.5 text-xs font-semibold text-sky-700 transition-all"
                                             >
                                               👁️ View
@@ -3119,26 +3305,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             }
                           }}
                         />
-                        <button
-                          type="button"
-                          onClick={() => handleAiSend()}
-                          className="inline-flex items-center justify-center rounded-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 px-6 py-2.5 text-sm font-semibold text-white shadow-md hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                          disabled={isTyping}
-                        >
-                          {isTyping ? (
-                            <>
-                              <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-r-transparent mr-1.5" />
-                              Sending…
-                            </>
-                          ) : (
-                            <>
-                              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1.5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 L4.13399899,1.16027068 C3.50612381,-0.1 2.40999899,0.0570974055 1.77946707,0.4870386 C0.994623095,1.11 0.8376543,2.20 1.15159189,3.1 L3.03521743,9.5 C3.03521743,9.68012422 3.34915502,9.83721169 3.50612381,9.83721169 L16.6915026,10.6227347 C16.6915026,10.6227347 17.1624089,10.6227347 17.1624089,11.0526759 C17.1624089,11.4860699 16.6915026,11.4860699 16.6915026,12.4744748 Z" />
-                              </svg>
-                              Send
-                            </>
-                          )}
-                        </button>
+                        {isTyping ? (
+                          <button type="button" onClick={handleStopAiGeneration} className="inline-flex items-center justify-center rounded-full bg-red-500 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-red-600">Stop</button>
+                        ) : (
+                          <button type="button" onClick={() => handleAiSend()} disabled={!aiInput.trim()} className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="mr-1.5 h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 L4.13399899,1.16027068 C3.50612381,-0.1 2.40999899,0.0570974055 1.77946707,0.4870386 C0.994623095,1.11 0.8376543,2.20 1.15159189,3.1 L3.03521743,9.5 C3.03521743,9.68012422 3.34915502,9.83721169 3.50612381,9.83721169 L16.6915026,10.6227347 C16.6915026,10.6227347 17.1624089,10.6227347 17.1624089,11.0526759 C17.1624089,11.4860699 16.6915026,11.4860699 16.6915026,12.4744748 Z" /></svg>
+                            Send
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -3191,142 +3365,169 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
 
             {activeTab === 'messages' && (
-              <div className="mx-auto max-w-7xl px-2 py-2">
-                <div className="grid h-[760px] overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm lg:grid-cols-[360px_minmax(0,1fr)]">
-                  <aside className="border-r border-slate-200 bg-slate-50/80">
-                    <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-                      <div>
-                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Peer chat</p>
-                        <h3 className="mt-1 text-xl font-bold text-slate-900">Messages</h3>
+              <div className="mx-auto w-full max-w-[1300px] px-0 py-2 sm:px-2">
+                <div className="flex h-auto min-h-[620px] w-full flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white sm:rounded-[32px] lg:h-[620px] lg:flex-row">
+                  <aside className={`max-h-[360px] min-h-[280px] w-full shrink-0 flex-col justify-between border-b border-slate-100 p-4 sm:p-6 lg:flex lg:h-full lg:max-h-none lg:min-h-0 lg:w-[360px] lg:border-b-0 lg:border-r ${mobileChatView === 'list' ? 'flex' : 'hidden'}`}>
+                    <div>
+                      <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Peer chat</p>
+                          <h3 className="mt-1 text-xl font-bold text-slate-900">Messages</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddChatModal(true)}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100"
+                          aria-label="New chat"
+                        >
+                          +
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100"
-                        aria-label="New chat"
-                      >
-                        +
-                      </button>
-                    </div>
 
-                    <div className="space-y-3 p-4">
-                      {conversationsList.map((conversation) => {
-                        const isActive = conversation.id === activeConversationId;
-                        const participantOnline = conversation.status === 'online';
+                      <label className="relative mt-4 block">
+                        <span className="sr-only">Search conversations</span>
+                        <input
+                          type="search"
+                          value={conversationSearch}
+                          onChange={(event) => setConversationSearch(event.target.value)}
+                          placeholder="Search conversations..."
+                          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-10 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-sky-400"
+                        />
+                        <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true">⌕</span>
+                      </label>
 
-                        return (
-                          <button
-                            key={conversation.id}
-                            type="button"
-                            onClick={() => {
-                              setActiveConversationId(conversation.id);
-                              // Clear messages while loading new conversation history
-                              setActiveChatMessages([]);
-                            }}
-                            className={`flex w-full items-center gap-3 rounded-[24px] border px-3 py-3 text-left transition ${isActive ? 'border-sky-200 bg-sky-50 shadow-sm' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-100'}`}
-                          >
-                            <div className="relative shrink-0">
-                              <img
-                                src={conversation.avatar}
-                                alt={conversation.name}
-                                className="h-12 w-12 rounded-full object-cover ring-2 ring-white"
-                              />
-                              <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${participantOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                            </div>
+                      <div className="mt-4 max-h-[190px] space-y-3 overflow-y-auto lg:max-h-none">
+                        {filteredConversations.length > 0 ? filteredConversations.map((conversation) => {
+                          const isActive = conversation.id === activeConversationId;
+                          const participantOnline = conversation.status === 'online';
 
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="truncate text-sm font-bold text-slate-900">{conversation.name}</p>
-                                <span className="text-[10px] text-slate-400">{conversation.timestamp}</span>
+                          return (
+                            <button
+                              key={conversation.id}
+                              type="button"
+                              onClick={() => {
+                                setActiveConversationId(conversation.id);
+                                setActiveChatMessages([]);
+                                setMobileChatView('chat');
+                              }}
+                              className={`relative flex w-full items-center gap-3 rounded-[24px] border px-3 py-3 text-left transition ${isActive ? 'border-sky-200 bg-sky-50 shadow-sm' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-100'}`}
+                            >
+                              <div className="relative shrink-0">
+                                <img
+                                  src={getStudentAvatar(conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, ''))}
+                                  alt={conversation.name}
+                                  className="h-12 w-12 rounded-full object-cover ring-2 ring-white"
+                                />
+                                <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${participantOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                               </div>
-                              <div className="mt-1 flex items-center justify-between gap-3">
-                                <p className="truncate text-xs text-slate-500">{conversation.lastMessage}</p>
-                                {conversation.unread > 0 && (
-                                  <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white ring-2 ring-slate-50">
-                                    {conversation.unread}
-                                  </span>
-                                )}
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="truncate text-sm font-bold text-slate-900">{conversation.name}</p>
+                                  <span className="shrink-0 text-[10px] text-slate-400">{conversation.timestamp}</span>
+                                </div>
+                                <p className="mt-1 truncate pr-7 text-xs text-slate-500">{conversation.lastMessage}</p>
                               </div>
-                            </div>
-                          </button>
-                        );
-                      })}
+                              {Number(conversation.unread) > 0 && (
+                                <span className="absolute right-3 top-1/2 inline-flex h-5 min-w-[20px] -translate-y-1/2 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white ring-2 ring-white">
+                                  {conversation.unread}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        }) : (
+                          <p className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500">No conversations found.</p>
+                        )}
+                      </div>
                     </div>
                   </aside>
 
-                  <section className="flex min-w-0 flex-col bg-white">
-                    <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="relative">
+                  <section className={`relative h-[600px] min-w-0 flex-1 flex-col justify-between bg-slate-50/25 p-4 sm:p-6 lg:flex ${mobileChatView === 'chat' ? 'flex' : 'hidden'}`}>
+                    <header className="flex shrink-0 items-center justify-between border-b border-slate-200 pb-4">
+                      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                        <button type="button" onClick={() => setMobileChatView('list')} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 lg:hidden" aria-label="Back to conversations">←</button>
+                        <div className="relative shrink-0">
                           <img
-                            src={activeConversation?.avatar || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80'}
+                            src={getStudentAvatar(activeConversation?.studentId || activeConversation?.student_id || String(activeConversation?.id || '').replace(/^conv-/, ''))}
                             alt={activeConversation?.name || 'Student'}
                             className="h-11 w-11 rounded-full object-cover"
                           />
-                          <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${activeConversation?.status === 'online' ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${activeConversation?.status === 'online' ? 'animate-pulse bg-emerald-500' : 'bg-slate-300'}`} />
                         </div>
-                        <div>
-                          <p className="text-base font-bold text-slate-900">{activeConversation?.name || 'Student'}</p>
-                          <p className="text-xs text-slate-500">{activeConversation?.status === 'online' ? 'Online now' : 'Offline'}</p>
+                        <div className="min-w-0">
+                          <p className="truncate text-base font-bold text-slate-900">{activeConversation?.name || 'Student'}</p>
+                          {peerIsTyping ? (
+                            <p className="text-xs font-semibold text-sky-600 animate-pulse">{activeConversation?.name || 'Student'} is typing...</p>
+                          ) : (
+                            <p className="text-xs text-slate-500">{activeConversation?.status === 'online' ? '🟢 Online' : '⚪ Offline'}</p>
+                          )}
                         </div>
                       </div>
 
-                      <div className="relative">
+                      <div className="relative shrink-0">
                         <button
                           type="button"
+                          onClick={() => setShowChatDropdown((visible) => !visible)}
                           className="rounded-full border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-100"
                           aria-label="Conversation actions"
                         >
                           ⋮
                         </button>
-                        <div className="absolute right-0 top-12 z-10 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
-                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Profile</button>
-                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Product</button>
-                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Report User</button>
-                          <button type="button" className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Block User</button>
-                        </div>
+                        {showChatDropdown && (
+                          <div className="absolute right-0 top-12 z-10 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
+                            <button type="button" onClick={() => handleChatMenuAction('profile')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Profile</button>
+                            <button type="button" onClick={() => handleChatMenuAction('product')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Product</button>
+                            <button type="button" onClick={() => handleChatMenuAction('report')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Report User</button>
+                            <button type="button" onClick={() => handleChatMenuAction('block')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Block User</button>
+                            <button type="button" onClick={() => handleChatMenuAction('delete')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50">Delete Conversation</button>
+                          </div>
+                        )}
                       </div>
                     </header>
 
-                    <div className="flex-1 overflow-y-auto bg-gradient-to-b from-slate-50 to-white px-5 py-4">
+                    <div className="min-h-0 flex flex-1 flex-col overflow-y-auto bg-gradient-to-b from-slate-50 to-white px-2 py-4 pb-24">
                       {activeChatMessages.map((message) => {
-                        const isMine = message.sender === 'me';
+                        const isOwnMessage = message.sender_id
+                          ? String(message.sender_id) === String(user?.studentId)
+                          : message.sender === 'me';
+                        const messageDate = new Date(message.created_at || message.time);
+                        const messageTime = Number.isNaN(messageDate.getTime())
+                          ? message.time || 'Unknown time'
+                          : messageDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                         const product = message.productId ? productDetails[message.productId] : null;
 
                         return (
                           <div key={message.id}>
-                            <div className={`mb-4 flex ${isMine ? 'justify-end' : 'justify-start'}`}>
-                              <div className={`max-w-[78%] rounded-[22px] px-4 py-3 shadow-sm ${isMine ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800'}`}>
+                            <div className={`mb-4 flex items-end gap-2 ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
+                              {!isOwnMessage && (
+                                <img src={getStudentAvatar(message.sender_id || activeConversation?.studentId)} alt={activeConversation?.name || 'Student'} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                              )}
+                              <div className={`max-w-[78%] rounded-[22px] px-4 py-3 shadow-sm ${isOwnMessage ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800'}`}>
                                 <p className="text-sm leading-6">{message.text}</p>
-                                <div className={`mt-2 text-[10px] ${isMine ? 'text-blue-100' : 'text-slate-500'}`}>{message.time}</div>
+                                <div className={`mt-2 flex items-center gap-1 text-[10px] ${isOwnMessage ? 'text-blue-100' : 'text-slate-500'}`}>
+                                  <span>{messageTime}</span>
+                                  {isOwnMessage && <span>{message.is_read ? '✓✓' : '✓'}</span>}
+                                </div>
                               </div>
+                              {isOwnMessage && (
+                                <img src={getStudentAvatar(user?.studentId)} alt={user?.name || 'You'} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                              )}
                             </div>
 
                             {product && (
-                              <div className={`mb-4 flex ${isMine ? 'justify-end' : 'justify-start'}`}>
-                                <div className="w-full max-w-xs rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm text-slate-900">
-                                  <div className="space-y-2">
-                                    {product.image && (
-                                      <img
-                                        src={product.image}
-                                        alt={product.title}
-                                        className="h-28 w-full rounded-2xl object-cover"
-                                      />
-                                    )}
-                                    <p className="text-sm font-semibold text-slate-900">{product.title}</p>
-                                    <div className="flex items-center justify-between gap-3">
-                                      <span className="text-sm font-bold text-emerald-600">{product.price} ETB</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          if (onNavigate) {
-                                            onNavigate('ProductDetails', { productId: message.productId });
-                                          }
-                                        }}
-                                        className="rounded-full bg-sky-600 px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-sky-700"
-                                      >
-                                        View Product
-                                      </button>
-                                    </div>
+                              <div className={`mb-4 flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
+                                <div className="w-full max-w-xs rounded-[24px] border border-slate-200 bg-white p-3 text-slate-900 shadow-sm">
+                                  {product.image && <img src={product.image} alt={product.title} className="h-28 w-full rounded-2xl object-cover" />}
+                                  <p className="mt-2 text-sm font-semibold">{product.title}</p>
+                                  <p className="mt-1 text-xs text-slate-500">{product.category || 'Campus marketplace item'}</p>
+                                  <div className="mt-2 flex items-center justify-between gap-3">
+                                    <span className="text-sm font-bold text-emerald-600">{product.price} ETB</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleViewProductFromChat(message.productId)}
+                                      className="rounded-full bg-sky-600 px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-sky-700"
+                                    >
+                                      View Product
+                                    </button>
                                   </div>
                                 </div>
                               </div>
@@ -3336,46 +3537,164 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       })}
 
                       {activeConversation?.product && (
-                        <div className="mb-5 rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
+                        <div className="order-first mb-5 rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
                           <div className="flex items-center gap-3">
                             <img src={activeConversation.product.image} alt={activeConversation.product.title} className="h-16 w-16 rounded-2xl object-cover" />
                             <div className="min-w-0 flex-1">
                               <p className="truncate text-sm font-bold text-slate-900">{activeConversation.product.title}</p>
+                              <p className="mt-1 text-xs text-slate-500">{activeConversation.product.category || productDetails[activeConversation.product.id]?.category || 'Campus marketplace item'}</p>
                               <p className="mt-1 text-sm font-bold text-emerald-600">{Number(activeConversation.product.price).toLocaleString('en-US')} ETB</p>
                             </div>
-                            <button type="button" className="rounded-full bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700">View Product</button>
+                            <button type="button" onClick={() => handleViewProductFromChat(activeConversation.product.id)} className="shrink-0 rounded-full bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700">View Product</button>
                           </div>
                         </div>
                       )}
                     </div>
 
-                    <div className="border-t border-slate-200 bg-white p-4">
-                      <div className="flex items-center gap-3 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white">
-                        <button type="button" className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100">📎</button>
-                        <input
-                          type="text"
-                          value={typingInput}
-                          onChange={(e) => setTypingInput(e.target.value)}
-                          placeholder="Type a message…"
-                          className="flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              sendChatMessage();
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={sendChatMessage}
-                          className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-600 text-lg font-bold text-white shadow-sm hover:bg-sky-700"
-                          aria-label="Send message"
-                        >
-                          ➤
-                        </button>
-                      </div>
+                    <div className="absolute bottom-0 left-0 right-0 border-t border-slate-200 bg-white p-3 sm:p-4">
+                      {isActiveConversationBlocked ? (
+                        <div className="flex items-center justify-center rounded-2xl border border-slate-300 bg-slate-200 px-4 py-4 text-sm font-semibold text-slate-500" role="status">
+                          This conversation is blocked
+                        </div>
+                      ) : (
+                        <div className="flex min-w-0 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white sm:gap-3 sm:px-3">
+                          <label className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Attach file">
+                            📎
+                            <input type="file" className="sr-only" />
+                          </label>
+                          <div className="relative shrink-0">
+                            <button type="button" onClick={() => setShowEmojiPicker((visible) => !visible)} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Open emoji picker">😊</button>
+                            {showEmojiPicker && (
+                              <div className="absolute bottom-12 left-0 z-20 flex gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
+                                {['😀', '😂', '👍', '❤️', '🎉', '🙏'].map((emoji) => (
+                                  <button key={emoji} type="button" onClick={() => { setTypingInput((value) => `${value}${emoji}`); setShowEmojiPicker(false); }} className="rounded-lg p-1.5 text-lg hover:bg-slate-100" aria-label={`Insert ${emoji}`}>{emoji}</button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={typingInput}
+                            onChange={(e) => {
+                              const nextValue = e.target.value;
+                              setTypingInput(nextValue);
+                              const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
+                              if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
+                                socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: Boolean(nextValue.trim()) }));
+                              }
+                            }}
+                            onBlur={() => {
+                              const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
+                              if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
+                                socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: false }));
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                sendChatMessage();
+                              }
+                            }}
+                            placeholder="Type a message..."
+                            className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                          />
+                          <button type="button" onClick={sendChatMessage} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-600 text-lg font-bold text-white shadow-sm hover:bg-sky-700" aria-label="Send message">➤</button>
+                        </div>
+                      )}
                     </div>
                   </section>
+                </div>
+              </div>
+            )}
+
+            {showProfileDetailsModal && activeConversation && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="profile-details-title">
+                <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
+                  <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <img src={getStudentAvatar(activeConversation.studentId)} alt={activeConversation.name} className="h-14 w-14 shrink-0 rounded-full object-cover" />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold uppercase tracking-[0.18em] text-sky-600">Verified student</p>
+                        <h3 id="profile-details-title" className="mt-1 truncate text-xl font-bold text-slate-900">{activeConversation.name}</h3>
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => setShowProfileDetailsModal(false)} className="rounded-full p-2 text-slate-500 hover:bg-slate-100" aria-label="Close profile details">✕</button>
+                  </div>
+                  <dl className="mt-5 space-y-3">
+                    <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">Full Name</dt><dd className="text-right text-sm font-semibold text-slate-900">{activeConversation.name || 'Not provided'}</dd></div>
+                    <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">College</dt><dd className="max-w-[65%] text-right text-sm font-semibold text-slate-900">{activeConversation.college || 'Not provided'}</dd></div>
+                    <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">Department</dt><dd className="max-w-[65%] text-right text-sm font-semibold text-slate-900">{activeConversation.department || 'Not provided'}</dd></div>
+                    <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">Student ID</dt><dd className="text-right text-sm font-semibold text-slate-900">{activeConversation.studentId || 'Not provided'}</dd></div>
+                    <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">Verification Status</dt><dd className="text-right text-sm font-semibold text-emerald-600">Verified campus student</dd></div>
+                  </dl>
+                  <button type="button" onClick={() => setShowProfileDetailsModal(false)} className="mt-6 w-full rounded-full bg-sky-600 py-3 text-sm font-semibold text-white hover:bg-sky-700">Done</button>
+                </div>
+              </div>
+            )}
+
+            {showReportModal && activeConversation && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="report-user-title">
+                <form onSubmit={handleReportSubmit} className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
+                  <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-600">Safety report</p>
+                      <h3 id="report-user-title" className="mt-1 text-xl font-bold text-slate-900">Submit Complaint</h3>
+                      <p className="mt-1 text-sm text-slate-500">Report your concern about {activeConversation.name}.</p>
+                    </div>
+                    <button type="button" onClick={() => setShowReportModal(false)} className="rounded-full p-2 text-slate-500 hover:bg-slate-100" aria-label="Close complaint form">✕</button>
+                  </div>
+                  <label htmlFor="chat-report-reason" className="mt-5 block text-sm font-semibold text-slate-700">Reason for reporting</label>
+                  <textarea
+                    id="chat-report-reason"
+                    rows="5"
+                    value={reportReason}
+                    onChange={(event) => setReportReason(event.target.value)}
+                    placeholder="Explain what happened..."
+                    className="mt-2 block w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none focus:border-sky-500 focus:bg-white"
+                    required
+                  />
+                  {reportStatus && <p className={`mt-3 rounded-xl px-3 py-2 text-sm ${reportStatus.startsWith('Your') ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{reportStatus}</p>}
+                  <div className="mt-5 flex gap-3">
+                    <button type="button" onClick={() => setShowReportModal(false)} className="flex-1 rounded-full border border-slate-200 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
+                    <button type="submit" disabled={isSubmittingReport || !reportReason.trim()} className="flex-1 rounded-full bg-rose-600 py-3 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-300">{isSubmittingReport ? 'Submitting...' : 'Submit Complaint'}</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {showAddChatModal && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-label="Verified campus students">
+                <div className="w-full max-w-lg rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">New conversation</p>
+                      <h3 className="mt-1 text-xl font-black text-slate-950">Verified campus students</h3>
+                    </div>
+                    <button type="button" onClick={() => setShowAddChatModal(false)} className="rounded-full p-2 text-slate-500 hover:bg-slate-100" aria-label="Close student directory">✕</button>
+                  </div>
+                  <div className="mt-5 max-h-[420px] space-y-2 overflow-y-auto">
+                    {conversationsList.map((conversation) => {
+                      const studentId = conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, '');
+                      return (
+                        <button
+                          key={conversation.id}
+                          type="button"
+                          onClick={() => {
+                            setActiveConversationId(conversation.id);
+                            setActiveChatMessages([]);
+                            setShowAddChatModal(false);
+                          }}
+                          className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 p-3 text-left transition hover:border-sky-200 hover:bg-sky-50"
+                        >
+                          <img src={getStudentAvatar(studentId)} alt={conversation.name} className="h-11 w-11 rounded-full object-cover" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-bold text-slate-900">{conversation.name}</span>
+                            <span className="mt-1 block text-xs text-emerald-600">✓ Verified campus student</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -3506,6 +3825,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 currentWalletBalance={currentWalletBalance}
                 transactionLedger={transactionLedger}
                 onNavigate={setActiveTab}
+                blockedUsers={blockedUsers}
+                onUnblockUser={handleUnblockUser}
               />
             )}
 

@@ -5,3 +5,5 @@ pymysql
 pydantic
 cryptography
 python-dotenv
+scikit-learn
+openai
