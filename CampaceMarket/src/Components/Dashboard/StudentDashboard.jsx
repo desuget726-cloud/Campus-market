@@ -118,11 +118,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   ];
   const [activeConversationId, setActiveConversationId] = useState(initialConversations[0]?.id || '');
   const [conversationsList, setConversationsList] = useState(initialConversations);
+  const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
   const [typingInput, setTypingInput] = useState('');
   const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
   const socketRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
+  const walletBalanceRef = useRef(walletBalance);
   const [loading, setLoading] = useState(false);
   const [isMarkingRead, setIsMarkingRead] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
@@ -449,6 +451,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     loadSellerAnalytics();
   }, [user?.studentId]);
 
+  useEffect(() => {
+    if (activeTab === 'profile') {
+      setActiveTab('settings');
+      setSettingsTab('account');
+    }
+  }, [activeTab]);
+
   const resetSearchFilters = () => {
     setSearchCategory('');
     setSearchSubcategory('');
@@ -486,11 +495,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const notificationItems = Array.isArray(notifData)
           ? notifData
           : notifData.notifications || notifData.allNotifications || [];
-        setNotifications(notificationItems.map((notification) => ({
+        const normalizedNotifications = notificationItems.map((notification) => ({
           ...notification,
           read: Boolean(notification.read ?? notification.is_read),
           type: notification.type || notification.category || 'system',
-        })));
+        }));
+        setNotifications((previousNotifications) => (
+          JSON.stringify(previousNotifications) === JSON.stringify(normalizedNotifications)
+            ? previousNotifications
+            : normalizedNotifications
+        ));
       } catch (err) {
         console.error('Error fetching notifications:', err);
       }
@@ -541,9 +555,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             transactions: normalizedTransactions,
           });
 
-          setWalletBalance(normalizedBalance);
+          const balanceChanged = normalizedBalance !== walletBalanceRef.current;
+          if (balanceChanged) {
+            walletBalanceRef.current = normalizedBalance;
+            setWalletBalance(normalizedBalance);
+          }
 
-          if (onUserUpdate) {
+          if (balanceChanged && onUserUpdate) {
             onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
           }
         }
@@ -553,7 +571,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
 
     fetchBuyerDashboardData();
-  }, [activeTab, studentId, onUserUpdate]);
+    // onUserUpdate is intentionally excluded because the parent recreates it on render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, studentId]);
 
   useEffect(() => {
     if (!studentId) return;
@@ -617,6 +637,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     if (activeTab !== 'buyer' || buyerTab !== 'search') return;
     loadSearchDefaults();
+    // loadSearchDefaults is recreated on render; these state values control when it runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, buyerTab, user?.department]);
 
   // Load personalized recommendations for AI Advisor tab
@@ -636,8 +658,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   }, [activeTab, user?.department]);
 
   useEffect(() => {
-    if (initialTab && initialTab !== activeTab) {
-      setActiveTab(initialTab);
+    const requestedTab = initialTab === 'profile' ? 'settings' : initialTab;
+    if (requestedTab && requestedTab !== activeTab) {
+      setActiveTab(requestedTab);
     }
   }, [initialTab, activeTab]);
 
@@ -648,7 +671,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       lastSyncedTabRef.current = activeTab;
       onTabChange(activeTab);
     }
-  }, [activeTab, onTabChange]);
+    // The parent recreates onTabChange; activeTab is the only value that controls this sync.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   useEffect(() => {
     if (!user?.studentId) return;
@@ -681,14 +706,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const normalizedTransactions = Array.isArray(data?.transactions) ? data.transactions : [];
 
         if (isMounted) {
-          setWalletBalance(normalizedBalance);
+          const balanceChanged = normalizedBalance !== walletBalanceRef.current;
+          if (balanceChanged) {
+            walletBalanceRef.current = normalizedBalance;
+            setWalletBalance(normalizedBalance);
+          }
           setPaymentInfo((prev) => ({
             balance: normalizedBalance,
             recentTx: data?.recentTx || data?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : prev?.recentTx || 'No transactions yet'),
             transactions: normalizedTransactions.length ? normalizedTransactions : prev?.transactions || [],
           }));
 
-          if (onUserUpdate) {
+          if (balanceChanged && onUserUpdate) {
             onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
           }
         }
@@ -710,7 +739,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       isMounted = false;
       window.removeEventListener('focus', handleRefreshOnFocus);
     };
-  }, [user?.studentId, onUserUpdate]);
+    // onUserUpdate and getTransactionSummaryText are intentionally excluded from this
+    // student-scoped fetch to prevent parent callback identity changes from refetching.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.studentId]);
 
   useEffect(() => {
     const safeNotifications = Array.isArray(notifications) ? notifications : [];
@@ -790,6 +822,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const sep = returnedUrl.includes('?') ? '&' : '?';
         const urlWithTs = `${returnedUrl}${sep}t=${new Date().getTime()}`;
         setAvatarUrl(urlWithTs);
+
+        if (onUserUpdate) {
+          onUserUpdate((currentUser) => {
+            const updatedUser = { ...(currentUser || user), avatarUrl: urlWithTs };
+
+            if (typeof window !== 'undefined') {
+              const saved = window.localStorage.getItem('campaceSession');
+              const session = saved ? JSON.parse(saved) : {};
+              window.localStorage.setItem('campaceSession', JSON.stringify({
+                ...session,
+                user: updatedUser,
+              }));
+            }
+
+            return updatedUser;
+          });
+        }
       }
       setAvatarUploadMessage('Avatar uploaded successfully.');
     } catch (err) {
@@ -1394,13 +1443,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           const data = await res.json();
           if (data.conversations && Array.isArray(data.conversations)) {
             setConversationsList(data.conversations);
-            if (data.conversations.length > 0 && !activeConversationId) {
-              setActiveConversationId(data.conversations[0].id);
-            }
+            setActiveConversationId(data.conversations[0]?.id || '');
+            setActiveChatMessages(data.conversations[0]?.messages || []);
           }
         }
       } catch (error) {
         console.error('Error fetching conversations:', error);
+        setConversationsList([]);
+        setActiveConversationId('');
+        setActiveChatMessages([]);
+      } finally {
+        setConversationsLoaded(true);
       }
     };
 
@@ -1415,7 +1468,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   // Fetch chat history when conversation is selected
   useEffect(() => {
-    if (!user?.studentId || !activeConversationId) return;
+    if (!conversationsLoaded || !user?.studentId || !activeConversationId) return;
 
     const selectedConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0];
     if (!selectedConversation || !selectedConversation.studentId) return;
@@ -1443,7 +1496,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
 
     fetchChatHistory();
-  }, [activeConversationId, user?.studentId, conversationsList]);
+  }, [activeConversationId, user?.studentId, conversationsList, conversationsLoaded]);
 
   // Fetch product details for messages with product attachments
   useEffect(() => {
@@ -1679,7 +1732,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               { key: 'messages', label: 'Messages', badge: unreadCount || unreadMessageCount },
               { key: 'ai-advisor', label: 'AI Advisor' },
               { key: 'notifications', label: 'Notifications', badge: unreadNotificationCount },
-              { key: 'profile', label: 'Profile' },
               { key: 'settings', label: 'Settings' },
             ].map((item) => {
               const isActive = activeTab === item.key;
@@ -1692,7 +1744,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       onTabChange(item.key);
                     }
                   }}
-                  className={`group rounded-2xl px-3 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-all duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20 scale-[1.01]' : 'text-slate-300 hover:bg-white/10 hover:text-white hover:translate-x-0.5'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
+                  className={`group rounded-2xl px-3 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-300 hover:bg-white/10 hover:text-white'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
                   title={item.label}
                 >
                   <span className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
@@ -1763,7 +1815,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className="flex-1 min-w-0 transition-all duration-300 pt-0 lg:h-full lg:overflow-y-auto lg:pr-2 lg:pt-1">
+        <main className="flex-1 min-w-0 transition-all duration-300 pt-0 lg:h-full lg:overflow-y-scroll lg:pr-2 lg:pt-1">
 
           {/* የላይኛው የእንኳን ደህና መጣህ ባር */}
           <div className="mb-6 flex flex-col gap-4 rounded-[32px] bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
@@ -3328,170 +3380,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               </div>
             )}
 
-            {activeTab === 'profile' && (
-              <div className="mx-auto max-w-5xl px-4 py-6">
-                <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="text-center">
-                    <h3 className="text-2xl font-bold text-slate-900">Profile</h3>
-                    <p className="mt-2 text-sm text-slate-500">Edit your student profile details and save your changes.</p>
-                  </div>
-
-                  <div className="mt-8 grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-8">
-                    <div className="space-y-6 rounded-[24px] border border-slate-200 bg-slate-50 p-6">
-                      <div className="flex flex-col items-center gap-4 text-center">
-                        <img
-                          src={user?.studentId ? `http://127.0.0.1:8000/static/uploads/avatars/${user.studentId}.jpg` : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=280&q=80'}
-                          alt="Profile avatar"
-                          onError={(e) => {
-                            e.currentTarget.onerror = null;
-                            e.currentTarget.src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=280&q=80';
-                          }}
-                          className="h-32 w-32 rounded-full object-cover border border-slate-200"
-                        />
-                        <div>
-                          <p className="text-sm font-semibold text-slate-900">Profile Avatar</p>
-                          <p className="text-xs text-slate-500">Upload a new photo from your computer.</p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-3">
-                        <label className="block text-sm font-semibold text-slate-700">Choose Image</label>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => setAvatarFile(e.target.files?.[0] || null)}
-                          className="block w-full text-sm text-slate-700 file:mr-4 file:rounded-full file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-slate-700"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleAvatarUploadSubmit}
-                          disabled={!avatarFile || avatarUploading}
-                          className="w-full rounded-full bg-sky-600 py-3 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-400"
-                        >
-                          {avatarUploading ? 'Uploading...' : 'Upload Avatar'}
-                        </button>
-                        {avatarUploadMessage && (
-                          <p className={`text-sm ${avatarUploadMessage.includes('failed') ? 'text-rose-600' : 'text-emerald-600'}`}>
-                            {avatarUploadMessage}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-6">
-                      <form onSubmit={handleProfileSubmit} className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Full Name</label>
-                          <input
-                            type="text"
-                            value={profileForm.name}
-                            onChange={(e) => handleProfileFieldChange('name', e.target.value)}
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Student ID</label>
-                          <input
-                            type="text"
-                            value={profileForm.studentId}
-                            disabled
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-500 focus:border-sky-500 focus:outline-none transition"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Campus Email</label>
-                          <input
-                            type="email"
-                            value={profileForm.email}
-                            disabled
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-500 focus:border-sky-500 focus:outline-none transition"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Phone Number</label>
-                          <input
-                            type="tel"
-                            placeholder="0962714305"
-                            value={profileForm.phone}
-                            onChange={(e) => handleProfileFieldChange('phone', e.target.value)}
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Select College</label>
-                          <select
-                            value={profileForm.college}
-                            onChange={(e) => handleProfileFieldChange('college', e.target.value)}
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition"
-                          >
-                            <option value="">Select College</option>
-                            {Object.keys(universityStructure).map((college) => (
-                              <option key={college} value={college}>{college}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Select Department</label>
-                          <select
-                            value={profileForm.department}
-                            onChange={(e) => handleProfileFieldChange('department', e.target.value)}
-                            disabled={!profileForm.college}
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <option value="">Select Department</option>
-                            {profileForm.college && universityStructure[profileForm.college]?.map((department) => (
-                              <option key={department} value={department}>{department}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">New Password</label>
-                          <input
-                            type="password"
-                            placeholder="••••••••"
-                            value={profileForm.password}
-                            onChange={(e) => handleProfileFieldChange('password', e.target.value)}
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-sm font-semibold text-slate-700">Confirm New Password</label>
-                          <input
-                            type="password"
-                            placeholder="••••••••"
-                            value={profileForm.confirmPassword}
-                            onChange={(e) => handleProfileFieldChange('confirmPassword', e.target.value)}
-                            className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition"
-                          />
-                        </div>
-
-                        {profileMessage && (
-                          <p className={`text-sm ${profileMessage.includes('successfully') ? 'text-emerald-600' : 'text-red-600'}`}>
-                            {profileMessage}
-                          </p>
-                        )}
-
-                        <button
-                          type="submit"
-                          disabled={profileSaving}
-                          className="w-full rounded-full bg-emerald-500 py-3.5 font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-400"
-                        >
-                          {profileSaving ? 'Saving...' : 'Save Profile'}
-                        </button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
             {activeTab === 'notifications' && (
               <NotificationCenter
                 notifications={safeNotifications}
@@ -3607,6 +3495,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 handleProfileSubmit={handleProfileSubmit}
                 profileMessage={profileMessage}
                 profileSaving={profileSaving}
+                user={user}
+                avatarUrl={avatarUrl}
+                avatarFile={avatarFile}
+                setAvatarFile={setAvatarFile}
+                handleAvatarUploadSubmit={handleAvatarUploadSubmit}
+                avatarUploadMessage={avatarUploadMessage}
+                avatarUploading={avatarUploading}
+                universityStructure={universityStructure}
                 currentWalletBalance={currentWalletBalance}
                 transactionLedger={transactionLedger}
                 onNavigate={setActiveTab}

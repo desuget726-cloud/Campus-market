@@ -8,9 +8,9 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const isAdmin = effectiveRole === 'admin';
   const displayName = isAdmin ? (user?.username || user?.name || 'mau9999') : (user?.name || user?.studentId || 'Student');
   const displayEmail = user?.email || 'student@campus.edu';
-  const avatarSrc = isAdmin
-    ? null
-    : (user?.avatarUrl || (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : ''));
+  const avatarSrc = user?.avatarUrl || (isAdmin
+    ? `http://127.0.0.1:8000/static/uploads/avatars/${user?.username || 'mau9999'}.jpg`
+    : (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : ''));
 
   return (
     <header className="bg-blue-600 text-white border-b border-blue-700 sticky top-0 z-[999]">

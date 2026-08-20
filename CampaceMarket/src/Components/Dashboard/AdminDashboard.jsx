@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+const ADMIN_AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='64' fill='%230f766e'/%3E%3Ccircle cx='64' cy='48' r='22' fill='white'/%3E%3Cpath d='M25 108c4-24 19-36 39-36s35 12 39 36' fill='white'/%3E%3C/svg%3E";
+
 const adminTabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'M4 6h16M4 12h16M4 18h16' },
   { id: 'user-management', label: 'User Management', icon: 'M12 14l9-5-9-5-9 5 9 5z M12 14l6.16-3.422M12 14L5.84 10.578' },
@@ -17,7 +19,7 @@ const adminTabs = [
   { id: 'logout', label: 'Logout', icon: 'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1' }
 ];
 
-function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
+function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isReady, setIsReady] = useState(false);
@@ -33,6 +35,9 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
   });
   const [profileMsg, setProfileMsg] = useState('');
   const [profileLoading, setProfileLoading] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [adminProfile, setAdminProfile] = useState({
     username: 'mau9999',
     email: 'admin@campace.edu',
@@ -40,7 +45,7 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
     status: 'Active',
     last_login: '2026-08-13T08:10:00',
     total_actions: 148,
-    avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
+    avatarUrl: ADMIN_AVATAR_PLACEHOLDER,
     sessionIp: '192.168.10.24',
   });
 
@@ -278,6 +283,18 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
         }
 
         const data = await response.json();
+        if (data.avatarUrl && typeof onUserUpdate === 'function') {
+          onUserUpdate((currentUser) => {
+            const updatedUser = { ...(currentUser || user || {}), avatarUrl: data.avatarUrl };
+            const savedSession = window.localStorage.getItem('campaceSession');
+            const session = savedSession ? JSON.parse(savedSession) : {};
+            window.localStorage.setItem('campaceSession', JSON.stringify({
+              ...session,
+              user: updatedUser,
+            }));
+            return updatedUser;
+          });
+        }
         if (data && data.username) {
           const nextProfile = {
             username: data.username || 'mau9999',
@@ -286,7 +303,7 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
             status: data.status || 'Active',
             last_login: data.last_login || new Date().toISOString(),
             total_actions: Number(data.total_actions ?? data.totalActions ?? 0),
-            avatarUrl: data.avatarUrl || data.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80',
+            avatarUrl: data.avatarUrl || data.avatar_url || ADMIN_AVATAR_PLACEHOLDER,
             sessionIp: data.session_ip || data.sessionIp || '192.168.10.24',
           };
           setAdminProfile(nextProfile);
@@ -440,6 +457,8 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
             category: product.category ?? 'General',
             condition: product.condition ?? (index % 2 === 0 ? 'New' : 'Gently Used'),
             status: product.status ?? 'Pending',
+            moderation_reason: product.moderation_reason ?? '',
+            rejection_reason: product.rejection_reason ?? '',
             image: product.image ?? 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80',
             description: product.description ?? 'No product description provided by the seller yet.',
             seller_verified: product.seller_verified ?? product.is_verified ?? true,
@@ -1076,6 +1095,30 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
     ));
   };
 
+  const handleProductApproval = async (productId) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/products/${productId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Approved' }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to approve product');
+      }
+
+      setProductsList(prev => prev.map(product =>
+        product.id === productId
+          ? { ...product, status: 'Approved', moderation_reason: '', rejection_reason: '' }
+          : product
+      ));
+      window.alert('Product approved successfully.');
+    } catch (error) {
+      console.error('Failed to approve product:', error);
+      window.alert('Unable to approve the product. Please try again.');
+    }
+  };
+
   const handleOpenRejectModal = (product) => {
     setPendingRejectProduct(product);
     setRejectReason('Inappropriate Image');
@@ -1639,11 +1682,21 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
 
   const handleProfileAvatarUpload = async (event) => {
     const file = event.target.files?.[0];
+    console.log('[AdminAvatar] File input changed:', file ? {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+    } : 'No file selected');
     if (!file) return;
 
     const formData = new FormData();
-    formData.append('username', profileForm.username || adminProfile.username || 'mau9999');
+    const username = profileForm.username || adminProfile.username || 'mau9999';
+    formData.append('username', username);
     formData.append('image', file);
+    console.log('[AdminAvatar] Starting upload:', {
+      username,
+      endpoint: 'http://127.0.0.1:8000/api/admin/upload-avatar',
+    });
 
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', {
@@ -1652,12 +1705,51 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
       });
 
       const data = await response.json().catch(() => ({}));
+      console.log('[AdminAvatar] Upload response:', {
+        status: response.status,
+        ok: response.ok,
+        data,
+      });
       if (!response.ok) {
         throw new Error(data.detail || 'Avatar upload failed');
       }
 
-      const avatarUrl = `${data.imageUrl || data.avatarUrl || 'http://127.0.0.1:8000/static/uploads/avatars/admin_mau9999.jpg'}?t=${Date.now()}`;
-      setAdminProfile((prev) => ({ ...prev, avatarUrl }));
+      const baseAvatarUrl = data.imageUrl || data.avatarUrl || 'http://127.0.0.1:8000/static/uploads/avatars/admin_mau9999.jpg';
+      const urlWithTs = `${baseAvatarUrl}${baseAvatarUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      console.log('[AdminAvatar] Cache-busted avatar URL:', urlWithTs);
+      setAdminProfile((prev) => ({ ...prev, avatarUrl: urlWithTs }));
+
+      console.log('[AdminAvatar] onUserUpdate prop:', {
+        provided: typeof onUserUpdate === 'function',
+        user,
+      });
+
+      if (typeof onUserUpdate === 'function') {
+        onUserUpdate((currentUser) => {
+          const updatedUser = { ...(currentUser || user || {}), avatarUrl: urlWithTs };
+          console.log('[AdminAvatar] Updating global user state:', updatedUser);
+          const savedSession = window.localStorage.getItem('campaceSession');
+          const session = savedSession ? JSON.parse(savedSession) : {};
+          window.localStorage.setItem('campaceSession', JSON.stringify({
+            ...session,
+            user: updatedUser,
+          }));
+          console.log('[AdminAvatar] Saved updated user to campaceSession.');
+          return updatedUser;
+        });
+      } else {
+        console.error('[AdminAvatar] onUserUpdate is undefined. Pass user={user} and onUserUpdate={setUser} from App.jsx to AdminDashboard.');
+        const savedSession = window.localStorage.getItem('campaceSession');
+        const session = savedSession ? JSON.parse(savedSession) : {};
+        window.localStorage.setItem('campaceSession', JSON.stringify({
+          ...session,
+          user: { ...(session.user || user || {}), avatarUrl: urlWithTs },
+        }));
+        console.log('[AdminAvatar] Saved fallback session update without onUserUpdate.');
+      }
+      window.dispatchEvent(new Event('storage'));
+      console.log('[AdminAvatar] Dispatched storage event for navbar synchronization.');
+
       setProfileMsg('Avatar uploaded successfully.');
       window.setTimeout(() => setProfileMsg(''), 2500);
     } catch (error) {
@@ -1687,19 +1779,28 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
             <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="flex items-center gap-4 border-b border-slate-200 pb-5">
-                  <img
-                    src="http://127.0.0.1:8000/static/uploads/avatars/mau9999.jpg"
-                    alt="Admin avatar"
-                    className="h-16 w-16 rounded-full border-4 border-emerald-200 object-cover shadow-md"
-                    onError={(e) => {
-                      e.currentTarget.onerror = null;
-                      e.currentTarget.src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80';
-                    }}
-                  />
+                  <div className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-full border-4 border-emerald-200 shadow-md">
+                    <img
+                      src={adminProfile.avatarUrl}
+                      alt="Admin avatar"
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = ADMIN_AVATAR_PLACEHOLDER;
+                      }}
+                    />
+                    <span className="absolute inset-0 flex items-center justify-center bg-slate-950/65 text-xs font-bold text-white opacity-0 transition-opacity group-hover:opacity-100">
+                      Change
+                    </span>
+                  </div>
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Primary Account</p>
                     <h3 className="mt-2 text-2xl font-black text-slate-950">{profileForm.username || 'mau9999'}</h3>
                     <p className="text-sm text-slate-500">{adminProfile.role || 'Primary Super Admin'}</p>
+                    <label className="mt-3 inline-flex cursor-pointer items-center rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-600">
+                      Choose Photo
+                      <input type="file" accept="image/*" className="hidden" onChange={handleProfileAvatarUpload} />
+                    </label>
                   </div>
                 </div>
 
@@ -1727,36 +1828,81 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                   <div className="grid gap-4 md:grid-cols-2">
                     <div>
                       <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Current Password</label>
-                      <input
-                        type="password"
-                        value={profileForm.currentPassword}
-                        onChange={(e) => handleProfileFieldChange('currentPassword', e.target.value)}
-                        placeholder="Enter current password"
-                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
-                      />
+                      <div className="relative">
+                        <input
+                          type={showCurrentPassword ? 'text' : 'password'}
+                          autoComplete="new-password"
+                          value={profileForm.currentPassword}
+                          onChange={(e) => handleProfileFieldChange('currentPassword', e.target.value)}
+                          placeholder="Enter current password"
+                          className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-12 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowCurrentPassword((previous) => !previous)}
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 transition hover:text-emerald-600"
+                          aria-label={showCurrentPassword ? 'Hide current password' : 'Show current password'}
+                        >
+                          {showCurrentPassword ? (
+                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18M10.58 10.58a2 2 0 002.84 2.84M9.88 4.24A10.94 10.94 0 0112 4c5 0 8.27 4.11 9.5 8a11.8 11.8 0 01-3.17 5.06M6.23 6.23C4.16 7.64 2.77 9.75 2.5 12c.45 1.43 1.3 2.96 2.59 4.25" /></svg>
+                          ) : (
+                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M2.5 12S6 4 12 4s9.5 8 9.5 8-3.5 8-9.5 8-9.5-8-9.5-8z" /><circle cx="12" cy="12" r="2.5" /></svg>
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     <div>
                       <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">New Password</label>
-                      <input
-                        type="password"
-                        value={profileForm.newPassword}
-                        onChange={(e) => handleProfileFieldChange('newPassword', e.target.value)}
-                        placeholder="Enter new password"
-                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
-                      />
+                      <div className="relative">
+                        <input
+                          type={showNewPassword ? 'text' : 'password'}
+                          autoComplete="new-password"
+                          value={profileForm.newPassword}
+                          onChange={(e) => handleProfileFieldChange('newPassword', e.target.value)}
+                          placeholder="Enter new password"
+                          className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-12 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowNewPassword((previous) => !previous)}
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 transition hover:text-emerald-600"
+                          aria-label={showNewPassword ? 'Hide new password' : 'Show new password'}
+                        >
+                          {showNewPassword ? (
+                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18M10.58 10.58a2 2 0 002.84 2.84M9.88 4.24A10.94 10.94 0 0112 4c5 0 8.27 4.11 9.5 8a11.8 11.8 0 01-3.17 5.06M6.23 6.23C4.16 7.64 2.77 9.75 2.5 12c.45 1.43 1.3 2.96 2.59 4.25" /></svg>
+                          ) : (
+                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M2.5 12S6 4 12 4s9.5 8 9.5 8-3.5 8-9.5 8-9.5-8-9.5-8z" /><circle cx="12" cy="12" r="2.5" /></svg>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
 
                   <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Confirm New Password</label>
-                    <input
-                      type="password"
-                      value={profileForm.confirmPassword}
-                      onChange={(e) => handleProfileFieldChange('confirmPassword', e.target.value)}
-                      placeholder="Confirm new password"
-                      className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showConfirmPassword ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        value={profileForm.confirmPassword}
+                        onChange={(e) => handleProfileFieldChange('confirmPassword', e.target.value)}
+                        placeholder="Confirm new password"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 pr-12 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword((previous) => !previous)}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-500 transition hover:text-emerald-600"
+                        aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
+                      >
+                        {showConfirmPassword ? (
+                          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18M10.58 10.58a2 2 0 002.84 2.84M9.88 4.24A10.94 10.94 0 0112 4c5 0 8.27 4.11 9.5 8a11.8 11.8 0 01-3.17 5.06M6.23 6.23C4.16 7.64 2.77 9.75 2.5 12c.45 1.43 1.3 2.96 2.59 4.25" /></svg>
+                        ) : (
+                          <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M2.5 12S6 4 12 4s9.5 8 9.5 8-3.5 8-9.5 8-9.5-8-9.5-8z" /><circle cx="12" cy="12" r="2.5" /></svg>
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-end pt-2">
@@ -2557,7 +2703,14 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                             <div>
                               <div className="font-bold text-slate-900">{product.title}</div>
                               <div className="text-xs text-slate-500 mt-0.5">{product.category}</div>
-                              <div className="text-xs text-emerald-600 mt-1 font-bold">{product.price}</div>
+                              <div className="text-xs text-emerald-600 mt-1 font-bold">
+                                {(() => {
+                                  const numericPrice = Number.parseFloat(String(product.price ?? '').replace(/[^\d.-]/g, ''));
+                                  return Number.isFinite(numericPrice)
+                                    ? `${new Intl.NumberFormat('en-US').format(numericPrice)} ETB`
+                                    : `${product.price || '0'} ETB`;
+                                })()}
+                              </div>
                             </div>
                           </div>
                         </td>
@@ -2571,9 +2724,16 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                           </span>
                         </td>
                         <td className="px-4 py-4 text-center">
-                          <span className={`rounded-full px-3 py-1 text-xs font-bold border ${product.status === 'Approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : product.status === 'Flagged' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
-                            {product.status || 'Pending'}
-                          </span>
+                          <div className="flex flex-col items-center">
+                            <span className={`rounded-full px-3 py-1 text-xs font-bold border ${product.status === 'Approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : product.status === 'Flagged' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
+                              {product.status || 'Pending'}
+                            </span>
+                            {product.status === 'Flagged' && (product.moderation_reason || product.rejection_reason) && (
+                              <span className="mt-1 max-w-[180px] text-xs italic text-gray-500">
+                                {product.moderation_reason || product.rejection_reason}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-4 text-center">
                           <div className="flex items-center justify-center gap-2">
@@ -2591,6 +2751,15 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                             >
                               Reject/Flag
                             </button>
+                            {product.status !== 'Approved' && (
+                              <button
+                                type="button"
+                                onClick={() => handleProductApproval(product.id)}
+                                className="rounded-full bg-emerald-500 hover:bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition"
+                              >
+                                Approve
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -5044,7 +5213,7 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
               <div className="space-y-6 rounded-[28px] border border-slate-700 bg-slate-900/80 p-5 shadow-inner">
                 <div className="flex items-center gap-4 border-b border-slate-700 pb-5">
                   <img
-                    src={adminProfile.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80'}
+                    src={adminProfile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER}
                     alt="Admin avatar"
                     className="h-20 w-20 rounded-full border-4 border-sky-400 object-cover shadow-lg shadow-sky-500/20"
                   />
@@ -5125,6 +5294,7 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                       <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Current Password</label>
                       <input
                         type="password"
+                        autoComplete="new-password"
                         value={profileForm.currentPassword}
                         onChange={(e) => handleProfileFieldChange('currentPassword', e.target.value)}
                         className="mt-2 w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
@@ -5134,6 +5304,7 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                       <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">New Password</label>
                       <input
                         type="password"
+                        autoComplete="new-password"
                         value={profileForm.newPassword}
                         onChange={(e) => handleProfileFieldChange('newPassword', e.target.value)}
                         className="mt-2 w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
@@ -5143,6 +5314,7 @@ function AdminDashboard({ onLogout, initialTab = 'dashboard', onTabChange }) {
                       <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Confirm Password</label>
                       <input
                         type="password"
+                        autoComplete="new-password"
                         value={profileForm.confirmPassword}
                         onChange={(e) => handleProfileFieldChange('confirmPassword', e.target.value)}
                         className="mt-2 w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm text-white placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"

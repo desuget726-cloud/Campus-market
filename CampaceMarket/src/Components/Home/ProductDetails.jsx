@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 
-function ProductDetails({ product, onBack, onStartChat }) {
+function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [chatStatus, setChatStatus] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [messageText, setMessageText] = useState('');
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
 
   useEffect(() => {
@@ -26,13 +27,34 @@ function ProductDetails({ product, onBack, onStartChat }) {
     fetchProductDetails();
   }, [product?.id]);
 
-  const handleStartChat = async () => {
-    const savedSession = typeof window !== 'undefined' ? window.localStorage.getItem('campaceSession') : null;
-    const session = savedSession ? JSON.parse(savedSession) : null;
-    const buyerId = session?.user?.studentId;
+  const handleGoogleLogin = () => {
+    const mockUser = {
+      studentId: 'MAU1600002',
+      name: 'Campus Student',
+      email: 'student@campace.edu.et',
+      role: 'student',
+      department: 'Department of Software Engineering',
+    };
+    const session = {
+      user: mockUser,
+      currentView: 'home',
+      studentTab: 'home',
+      userRole: 'student',
+    };
 
-    if (!buyerId || !product?.id) {
-      setChatStatus('Please sign in to start a chat.');
+    window.localStorage.setItem('campaceSession', JSON.stringify(session));
+    if (typeof onUserUpdate === 'function') {
+      onUserUpdate(mockUser);
+    }
+    setChatStatus('Google login successful. You can now message the seller.');
+  };
+
+  const handleStartChat = async () => {
+    const buyerId = currentUser?.studentId;
+    const sellerId = item?.seller_id || item?.seller;
+
+    if (!buyerId || !product?.id || !messageText.trim() || !sellerId) {
+      setChatStatus('Enter a message before starting the chat.');
       return;
     }
 
@@ -40,10 +62,15 @@ function ProductDetails({ product, onBack, onStartChat }) {
     setChatStatus('');
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/student/chat/initiate', {
+      const response = await fetch('http://127.0.0.1:8000/api/student/messages/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ buyer_id: buyerId, product_id: product.id }),
+        body: JSON.stringify({
+          sender_id: buyerId,
+          receiver_id: sellerId,
+          product_id: product.id,
+          message_text: messageText.trim(),
+        }),
       });
 
       const data = await response.json();
@@ -51,9 +78,15 @@ function ProductDetails({ product, onBack, onStartChat }) {
         throw new Error(data.detail || 'Unable to send chat request.');
       }
 
-      setChatStatus(data.message || 'Chat request sent successfully.');
+      setMessageText('');
+      setChatStatus(data.message || 'Message sent successfully.');
       if (typeof onStartChat === 'function') {
         onStartChat();
+      }
+      if (typeof onNavigateToMessages === 'function') {
+        onNavigateToMessages();
+      } else if (typeof onNavigate === 'function') {
+        onNavigate('student-dashboard');
       }
     } catch (error) {
       setChatStatus(error.message || 'Unable to send chat request.');
@@ -192,7 +225,7 @@ function ProductDetails({ product, onBack, onStartChat }) {
             </div>
             <h4 className="mt-4 text-xl font-bold text-slate-900">{item.seller_name || item.seller || 'Verified Seller'}</h4>
             <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
-              <p className="text-sm text-slate-500">Department: {item.department || item.seller_department || 'Software Engineering'}</p>
+              <p className="text-sm text-slate-500">Department: {item.seller_dept || item.department || item.seller_department || 'Software Engineering'}</p>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700">✓ Verified Student</span>
             </div>
 
@@ -203,18 +236,37 @@ function ProductDetails({ product, onBack, onStartChat }) {
                 className="w-full rounded-full bg-white border border-slate-800 py-3.5 text-sm font-semibold text-slate-900 hover:bg-slate-50 transition flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>📞</span>
-                <span>{showPhone ? item.seller_phone : 'Show Contact'}</span>
+                <span>{showPhone ? (item.seller_phone || 'Phone unavailable') : 'Show Contact'}</span>
               </button>
 
-              {/* አረንጓዴ የቻት መክፈቻ ቁልፍ (Start Chat Button) */}
-              <button
-                onClick={handleStartChat}
-                disabled={chatLoading}
-                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white hover:bg-emerald-600 transition flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed disabled:bg-emerald-300"
-              >
-                <span>💬</span>
-                <span>{chatLoading ? 'Sending...' : 'Start Chat'}</span>
-              </button>
+              {!currentUser ? (
+                <button
+                  type="button"
+                  onClick={handleGoogleLogin}
+                  className="w-full rounded-full bg-slate-900 py-3.5 text-sm font-semibold text-white transition hover:bg-slate-800"
+                >
+                  ⚡ One-Click Google Login
+                </button>
+              ) : (
+                <>
+                  <textarea
+                    value={messageText}
+                    onChange={(event) => setMessageText(event.target.value)}
+                    placeholder="Write a message to the seller..."
+                    rows={4}
+                    className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:bg-white"
+                  />
+                  {/* አረንጓዴ የቻት መክፈቻ ቁልፍ (Start Chat Button) */}
+                  <button
+                    onClick={handleStartChat}
+                    disabled={chatLoading || !messageText.trim()}
+                    className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white hover:bg-emerald-600 transition flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed disabled:bg-emerald-300"
+                  >
+                    <span>💬</span>
+                    <span>{chatLoading ? 'Sending...' : 'Send Message & Start Chat'}</span>
+                  </button>
+                </>
+              )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
               )}

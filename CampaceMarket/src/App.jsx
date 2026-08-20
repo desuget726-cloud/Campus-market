@@ -72,6 +72,21 @@ function App() {
   }, [currentView, dashboardTab, adminTab, studentTab, user, activeRole]);
 
   useEffect(() => {
+    const syncUserFromSession = () => {
+      try {
+        const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+        const session = saved ? JSON.parse(saved) : null;
+        if (session?.user) setUser(session.user);
+      } catch (error) {
+        console.error('Failed to synchronize user session:', error);
+      }
+    };
+
+    window.addEventListener('storage', syncUserFromSession);
+    return () => window.removeEventListener('storage', syncUserFromSession);
+  }, []);
+
+  useEffect(() => {
     if (!user || !activeRole || !expectedDashboardView) return;
 
     const dashboardViews = new Set(['student-dashboard', 'admin-dashboard', 'student-dashboard-profile']);
@@ -260,7 +275,18 @@ function App() {
           </div>
         )}
 
-        {currentView === 'home' && <HomeView user={user} onAction={(product) => console.log('view', product)} />}
+        {currentView === 'home' && (
+          <HomeView
+            user={user}
+            onAction={(product) => console.log('view', product)}
+            onUserUpdate={setUser}
+            onNavigate={handleNavigate}
+            onNavigateToMessages={() => {
+              setStudentTab('messages');
+              setCurrentView('student-dashboard');
+            }}
+          />
+        )}
 
         {showSuccessModal && (
           <SuccessModal
@@ -277,6 +303,8 @@ function App() {
         {activeRole === 'admin' && currentView === 'admin-dashboard' && (
           <AdminDashboard
             onLogout={handleLogout}
+            user={user}
+            onUserUpdate={setUser}
             initialTab={adminTab}
             onTabChange={(tab) => setAdminTab(tab)}
           />

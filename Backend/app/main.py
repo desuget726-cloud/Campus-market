@@ -28,6 +28,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
+from dotenv import load_dotenv
 
 # ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
 from .models import (
@@ -373,9 +374,10 @@ def _compute_chapa_signature(secret: str, payload: dict) -> str:
     return hmac.new(secret.encode('utf-8'), raw.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
-# Read Gmail SMTP credentials from environment (preferred) with sensible defaults
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "your-gmail-address@gmail.com")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "abcdefghijklmnop")
+# Read Gmail SMTP credentials from Backend/.env or the process environment.
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "desu5392@gmail.com")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "yzekmnucvxcbnzni")
 
 # Configure a simple file logger for email/SMTP errors
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -394,6 +396,12 @@ if not email_logger.handlers:
 def send_otp_email(receiver_email: str, otp: str) -> bool:
     """Send ONLY the raw 6-digit OTP number as a plain-text email body."""
     try:
+        if not SENDER_EMAIL or not SENDER_PASSWORD:
+            email_logger.error("OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.")
+            return False
+        if any(char.isspace() for char in SENDER_PASSWORD):
+            email_logger.warning("SENDER_PASSWORD contains whitespace; verify the Google App Password is configured without spaces.")
+
         body = str(otp)
 
         msg = MIMEMultipart()
@@ -402,12 +410,14 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
         msg["To"] = receiver_email
         msg.attach(MIMEText(body, "plain"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, receiver_email, msg.as_string())
 
         return True
+    except smtplib.SMTPException as e:
+        email_logger.exception(f"SMTP error while sending raw OTP email to {receiver_email}: {e}")
+        return False
     except Exception as e:
         email_logger.exception(f"Failed to send raw OTP email to {receiver_email}: {e}")
         return False
@@ -509,6 +519,11 @@ class LoginRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: str
+
+
+class VerifyResetCodeRequest(BaseModel):
+    email: str
+    otp_code: str
 
 
 class ResetPasswordRequest(BaseModel):
@@ -877,7 +892,11 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     ).first()
     
     if admin and verify_password(data.password, admin.password_hash):
-        return {"role": "admin", "user": {"name": admin.username, "email": admin.email}}
+        avatar_filename = f"{admin.username}.jpg"
+        avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
+        if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
+            avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+        return {"role": "admin", "user": {"name": admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
 
     # 2.2 ካልሆነ በተማሪዎች ሰንጠረዥ ይፈትሻል
     student = db.query(Student).filter(
@@ -885,7 +904,11 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     ).first()
     
     if student and verify_password(data.password, student.password):
-        return {"role": "student", "user": {"name": student.name, "studentId": student.student_id}}
+        avatar_filename = f"{student.student_id}.jpg"
+        avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
+        if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
+            avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+        return {"role": "student", "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url}}
 
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
@@ -895,8 +918,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
 def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     email = request.email.strip().lower()
     student = db.query(Student).filter(Student.email.ilike(email)).first()
-    admin = db.query(Admin).filter(Admin.email.ilike(email)).first()
-    if not student and not admin:
+    if not student:
         raise HTTPException(status_code=404, detail="Email not found.")
 
     otp = f"{random.randint(100000, 999999)}"
@@ -909,21 +931,58 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         is_used=False
     )
     db.add(reset_entry)
-    db.commit()
+    try:
+        email_sent = send_otp_email(email, otp)
+        if not email_sent:
+            print(f"[DEV BYPASS] SMTP Connection failed! Captured OTP for {email}: {otp}", flush=True)
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create password reset request.")
+    return {
+        "message": "Verification code has been sent to your email." if email_sent else "SMTP unavailable. Use the captured development OTP in the server console.",
+        "success": True,
+        "dev_mode": not email_sent,
+    }
 
-    send_otp_email(email, otp)
-    return {"message": "Verification code has been sent to your email.", "success": True}
+
+@app.post("/api/auth/verify-reset-code")
+def verify_reset_code(request: VerifyResetCodeRequest, db: Session = Depends(get_db)):
+    email = request.email.strip().lower()
+    otp = request.otp_code.strip()
+    if not otp.isdigit() or len(otp) != 6:
+        raise HTTPException(status_code=400, detail="Invalid OTP format.")
+
+    reset_record = (
+        db.query(PasswordReset)
+        .filter(
+            PasswordReset.email.ilike(email),
+            PasswordReset.otp_code == otp,
+            PasswordReset.is_used == False,
+            PasswordReset.expires_at >= datetime.utcnow(),
+        )
+        .order_by(PasswordReset.id.desc())
+        .first()
+    )
+    if not reset_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
+
+    return {"message": "Verification code is valid.", "success": True}
 
 
-# 2.4 አዲስ የይለፍ ቃል መቀየሪያ (POST /api/auth/reset-password)
+# 2.5 አዲስ የይለፍ ቃል መቀየሪያ (POST /api/auth/reset-password)
 @app.post("/api/auth/reset-password")
 def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     email = request.email.strip().lower()
     otp = request.otp_code.strip()
     new_password = request.new_password
 
-    if not otp or len(otp) != 6:
+    if not otp.isdigit() or len(otp) != 6:
         raise HTTPException(status_code=400, detail="Invalid OTP format.")
+    if len(new_password) < 8 or not re.search(r"[A-Z]", new_password) or not re.search(r"\d", new_password):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters and include an uppercase letter and a number.")
 
     reset_record = (
         db.query(PasswordReset)
@@ -940,17 +999,17 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
     if not reset_record:
         raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
 
-    hashed = hash_password(new_password)
     student = db.query(Student).filter(Student.email.ilike(email)).first()
-    if student:
-        student.password = hashed
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
 
-    admin = db.query(Admin).filter(Admin.email.ilike(email)).first()
-    if admin:
-        admin.password_hash = hashed
-
-    reset_record.is_used = True
-    db.commit()
+    try:
+        student.password = hash_password(new_password)
+        reset_record.is_used = True
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reset password.")
 
     return {"message": "Password reset successful! You can now log in.", "success": True}
 
@@ -990,6 +1049,7 @@ def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_
 
 @app.put("/api/admin/profile")
 def update_admin_profile(payload: dict, db: Session = Depends(get_db)):
+    print(f"DEBUG update_admin_profile payload: {payload}", flush=True)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Profile payload must be a JSON object.")
 
@@ -1069,7 +1129,7 @@ async def upload_admin_avatar(
         raise HTTPException(status_code=404, detail="Admin not found.")
 
     os.makedirs(AVATAR_DIR, exist_ok=True)
-    avatar_name = f"{admin.username}{extension or '.jpg'}"
+    avatar_name = f"{admin.username}.jpg"
     avatar_path = os.path.join(AVATAR_DIR, avatar_name)
 
     try:
@@ -1537,6 +1597,12 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
 
+    seller = None
+    if product.seller:
+        seller = db.query(Student).filter(
+            or_(Student.student_id == product.seller, Student.name == product.seller)
+        ).first()
+
     return {
         "id": product.id,
         "title": product.title,
@@ -1546,6 +1612,9 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
         "image": product.image,
         "description": product.description,
         "seller": product.seller,
+        "seller_phone": seller.phone if seller else None,
+        "seller_name": seller.name if seller else product.seller,
+        "seller_dept": seller.department if seller else None,
         "status": product.status,
         "created_at": product.created_at,
     }
@@ -3631,9 +3700,20 @@ def delete_user(id: int, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.id == id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-    db.delete(student)
-    db.commit()
-    return {"message": "User deleted successfully"}
+
+    try:
+        db.query(Product).filter(
+            or_(
+                Product.seller == student.student_id,
+                Product.seller == student.name,
+            )
+        ).delete(synchronize_session=False)
+        db.delete(student)
+        db.commit()
+        return {"message": "User deleted successfully"}
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete user and associated products.")
 
 
 @app.get("/api/admin/verifications")

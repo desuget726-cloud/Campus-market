@@ -395,7 +395,7 @@ const defaultCategories = [
   }
 ];
 
-function HomeView({ onAction, user }) {
+function HomeView({ onAction, user, onUserUpdate, onNavigate, onNavigateToMessages }) {
   const [categories, setCategories] = useState(defaultCategories);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -562,14 +562,17 @@ function HomeView({ onAction, user }) {
       ) : selectedProduct ? (
         <ProductDetails
           product={selectedProduct}
-          user={user}
+          currentUser={user}
+          onUserUpdate={onUserUpdate}
+          onNavigate={onNavigate}
+          onNavigateToMessages={onNavigateToMessages}
           onBack={() => setSelectedProduct(null)}
           onStartChat={() => {
             console.log('Start chat with seller', selectedProduct);
           }}
         />
       ) : (
-        <div className="space-y-6 pt-20">
+        <div className="space-y-6 pt-1">
           <section className="group w-screen relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
             {bannerImages.map((src, index) => (
               <img
