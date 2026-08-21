@@ -776,7 +776,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
 
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-xl font-bold text-slate-900">{searchedTitle}</h3>
-                <span className="text-sm text-slate-500">{Math.min(searchResults.length, 20)} items found</span>
+                <span className="text-sm text-slate-500">{searchResults.length} items found</span>
               </div>
 
               {searchResults.length === 0 ? (
@@ -787,7 +787,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                 </div>
               ) : (
                 <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
-                  {searchResults.slice(0, 20).map((product, idx) => (
+                  {searchResults.map((product, idx) => (
                     <article key={idx} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col justify-between">
                       <div>
                         <img src={product.image} alt={product.title} className="h-44 w-full object-cover" />

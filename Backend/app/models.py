@@ -210,6 +210,9 @@ class Message(Base):
     receiver_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True)
     message_text = Column(Text, nullable=False)
+    attachment_url = Column(String(500), nullable=True)
+    attachment_type = Column(String(20), nullable=True)
+    reply_to_id = Column(Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

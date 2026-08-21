@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import re
 import math
+import mimetypes
 from decimal import Decimal
 from collections import Counter
 from datetime import datetime, timedelta
@@ -66,6 +67,8 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(STATIC_DIR, exist_ok=True)
 AVATAR_DIR = os.path.join(STATIC_DIR, "avatars")
 os.makedirs(AVATAR_DIR, exist_ok=True)
+ATTACHMENT_DIR = os.path.join(STATIC_DIR, "attachments")
+os.makedirs(ATTACHMENT_DIR, exist_ok=True)
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
@@ -652,6 +655,16 @@ class ProductStatusUpdate(BaseModel):
     reason: Optional[str] = None
 
 
+class StudentProductUpdate(BaseModel):
+    student_id: str
+    title: Optional[str] = None
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    price: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+
+
 class DepositRequest(BaseModel):
     student_id: str
     amount: float
@@ -846,6 +859,15 @@ def ensure_database_compatibility(db: Session) -> None:
             column = db.execute(text(f"SHOW COLUMNS FROM orders LIKE '{column_name}'"))
             if column.fetchone() is None:
                 db.execute(text(f"ALTER TABLE orders ADD COLUMN {column_name} {definition}"))
+
+        for column_name, definition in {
+            "attachment_url": "VARCHAR(500) NULL",
+            "attachment_type": "VARCHAR(20) NULL",
+            "reply_to_id": "INT NULL",
+        }.items():
+            column = db.execute(text(f"SHOW COLUMNS FROM messages LIKE '{column_name}'"))
+            if column.fetchone() is None:
+                db.execute(text(f"ALTER TABLE messages ADD COLUMN {column_name} {definition}"))
 
         db.commit()
     except Exception:
@@ -1134,12 +1156,12 @@ async def upload_admin_avatar(
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp", ".jfif"}
     filename = image.filename or ""
     extension = os.path.splitext(filename)[1].lower()
 
     if extension not in allowed_extensions:
-        raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp.")
+        raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp, jfif.")
 
     admin = db.query(Admin).filter(Admin.username == username).first()
     if not admin:
@@ -1338,12 +1360,12 @@ async def upload_student_avatar(
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp", ".jfif"}
     filename = image.filename or ""
     extension = os.path.splitext(filename)[1].lower()
 
     if extension not in allowed_extensions:
-        raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp.")
+        raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp, jfif.")
 
     validated_student_id = _validate_student_id(db, student_id)
     student = db.query(Student).filter(Student.student_id == validated_student_id).first()
@@ -1554,7 +1576,7 @@ def get_products(
             ),
         )
 
-    query = db.query(Product).filter(Product.status == "Approved")
+    query = db.query(Product).filter(Product.status.ilike("Approved"))
 
     manual_filters_active = bool(category or subcategory or search)
 
@@ -1729,6 +1751,44 @@ def create_product(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create product: {str(e)}")
+
+
+@app.put("/api/student/products/{product_id}")
+def update_student_product(product_id: int, payload: StudentProductUpdate, db: Session = Depends(get_db)):
+    """Update a seller's own product details or marketplace status."""
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if str(payload.student_id).strip() != str(product.seller or "").strip():
+        raise HTTPException(status_code=403, detail="You can only update your own products.")
+
+    update_fields = {
+        "title": payload.title,
+        "category": payload.category,
+        "subcategory": payload.subcategory,
+        "price": payload.price,
+        "description": payload.description,
+        "status": payload.status,
+    }
+    for field_name, value in update_fields.items():
+        if value is not None:
+            setattr(product, field_name, value)
+
+    db.commit()
+    db.refresh(product)
+    return {
+        "success": True,
+        "product": {
+            "id": product.id,
+            "title": product.title,
+            "category": product.category,
+            "subcategory": product.subcategory,
+            "price": product.price,
+            "description": product.description,
+            "status": product.status,
+            "image": product.image,
+        },
+    }
     
 @app.post("/api/student/chat/initiate")
 def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
@@ -1804,37 +1864,83 @@ def get_student_listings(student_id: str, db: Session = Depends(get_db)):
 # 21. የሻጭ ስታቲስቲክስ እና የደረሱ ትዕዛዞች መጥሪያ ኤፒአይ (GET /api/student/seller/dashboard-data) - Database-driven
 @app.get("/api/student/seller/dashboard-data")
 def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
-    """Calculates dynamic stats and fetches received orders on listings owned by the logged-in student."""
+    """Return database-backed seller KPIs, alerts, listings, and received orders."""
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student record not found.")
 
-    # 1. Query all listings owned by the seller
-    total_listings = db.query(Product).filter(
-        (Product.seller == student.student_id) | (Product.seller == student.name)
-    ).count()
+    seller_filter = (Product.seller == student.student_id) | (Product.seller == student.name)
 
-    # 2. Query received orders by joining Order and Product tables
+    listings = db.query(Product).filter(seller_filter).order_by(Product.created_at.desc()).all()
     received_orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
         (Product.seller == student.student_id) | (Product.seller == student.name)
     ).order_by(Order.created_at.desc()).all()
 
-    # 3. Calculate earnings
-    earnings = 0.00
-    for order in received_orders:
-        cleaned_price = str(order.price).replace('$', '').replace('ETB', '').replace(',', '').strip()
-        try:
-            earnings += float(cleaned_price)
-        except ValueError:
-            pass
+    listing_statuses = [str(listing.status or "Pending").strip().lower() for listing in listings]
+    active_listings = sum(status in {"approved", "active"} for status in listing_statuses)
+    pending_listings = sum(status in {"pending", "under review", "under_review"} for status in listing_statuses)
+    sold_listings = sum(status == "sold" for status in listing_statuses)
+    pending_orders = sum(str(order.status or "").strip().lower() in {"pending", "processing"} for order in received_orders)
+    completed_orders = [
+        order for order in received_orders
+        if str(order.status or "").strip().lower() in {"completed", "successful", "delivered", "sold"}
+    ]
+    completed_revenue = sum(
+        float(re.sub(r"[^0-9.]", "", str(order.price or "0")) or 0)
+        for order in completed_orders
+    )
+    review_average = db.query(func.avg(Review.rating)).join(
+        Order, Review.order_id == Order.id
+    ).join(
+        Product, Order.product_id == Product.id
+    ).filter(
+        seller_filter
+    ).scalar()
+    cancelled_orders = [
+        order for order in received_orders
+        if str(order.status or "").strip().lower() in {"cancelled", "canceled", "rejected"}
+    ]
+    resolved_orders = len(completed_orders) + len(cancelled_orders)
+    order_completion = (len(completed_orders) / resolved_orders * 100) if resolved_orders else 0
+    response_rate = (
+        (len(received_orders) - len(cancelled_orders)) / len(received_orders) * 100
+        if received_orders else 0
+    )
+    on_time_pickup = (len(completed_orders) / len(received_orders) * 100) if received_orders else 0
 
     return {
         "stats": {
-            "total_listings": total_listings,
-            "total_orders": len(received_orders),
-            "earnings": f"${earnings:.2f}",
-            "pending_orders": len([o for o in received_orders if o.status.lower() == "processing"])
+            "total_listings": len(listings),
+            "active_listings": active_listings,
+            "pending_listings": pending_listings,
+            "sold_listings": sold_listings,
+            "received_orders": len(received_orders),
+            "completed_revenue": completed_revenue,
+            "pending_orders": pending_orders,
+            "unapproved_products": pending_listings,
         },
+        "alerts": {
+            "pending_orders": pending_orders,
+            "unapproved_products": pending_listings,
+        },
+        "performance": {
+            "rating": round(float(review_average or 0), 1),
+            "response_rate": round(response_rate, 1),
+            "order_completion": round(order_completion, 1),
+            "on_time_pickup": round(on_time_pickup, 1),
+        },
+        "my_listings": [
+            {
+                "id": listing.id,
+                "title": listing.title,
+                "category": listing.category,
+                "price": listing.price,
+                "image": listing.image,
+                "status": listing.status,
+                "created_at": listing.created_at,
+            }
+            for listing in listings
+        ],
         "received_orders": [
             {
                 "id": o.id,
@@ -2684,7 +2790,10 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
                 "sender_id": message.sender_id,
                 "receiver_id": message.receiver_id,
                 "product_id": message.product_id,
+                "reply_to_id": message.reply_to_id,
                 "message_text": message.message_text,
+                "attachment_url": message.attachment_url,
+                "attachment_type": message.attachment_type,
                 "is_read": bool(message.is_read),
                 "created_at": message.created_at.isoformat() if message.created_at else None,
             })
@@ -2694,6 +2803,52 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
         db.rollback()
         logging.error(f"Error fetching chat history {sender_id}-{receiver_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch chat history.")
+
+
+@app.delete("/api/student/messages/{message_id}")
+def delete_student_message(message_id: int, student_id: str, db: Session = Depends(get_db)):
+    """Delete a message only when the requesting student sent it."""
+    validated_student_id = _validate_student_id(db, student_id, field_name="student_id")
+    message = db.query(Message).filter(Message.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    if message.sender_id != validated_student_id:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages.")
+
+    db.delete(message)
+    db.commit()
+    return {"success": True, "message": "Message deleted successfully."}
+
+
+@app.post("/api/student/chat/upload-attachment")
+async def upload_chat_attachment(file: UploadFile = File(...)):
+    """Store a chat attachment and return its public static URL."""
+    content_type = (file.content_type or "").lower()
+    media_type = next((kind for kind in ("image", "audio", "video") if content_type.startswith(f"{kind}/")), None)
+    if not media_type:
+        guessed_type = mimetypes.guess_type(file.filename or "")[0] or ""
+        media_type = next((kind for kind in ("image", "audio", "video") if guessed_type.startswith(f"{kind}/")), None)
+    if not media_type:
+        raise HTTPException(status_code=400, detail="Only image, audio, and video attachments are supported.")
+
+    extension = os.path.splitext(file.filename or "")[1].lower()
+    if not extension:
+        extension = mimetypes.guess_extension(content_type) or ""
+    attachment_name = f"{uuid.uuid4().hex}{extension}"
+    attachment_path = os.path.join(ATTACHMENT_DIR, attachment_name)
+    try:
+        with open(attachment_path, "wb") as output_file:
+            shutil.copyfileobj(file.file, output_file)
+    except OSError as exc:
+        logging.error("Failed to save chat attachment: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to save attachment.")
+    finally:
+        await file.close()
+
+    return {
+        "attachment_url": f"http://127.0.0.1:8000/static/uploads/attachments/{attachment_name}",
+        "attachment_type": media_type,
+    }
 
 
 @app.websocket("/api/student/chat/ws/{student_id}")
@@ -2742,14 +2897,23 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
 
             receiver_id = payload.get("receiver_id", "").strip()
             message_text = payload.get("message_text", "").strip()
+            attachment_url = str(payload.get("attachment_url") or "").strip() or None
+            attachment_type = str(payload.get("attachment_type") or "").strip().lower() or None
+            reply_to_id = payload.get("reply_to_id")
+            if attachment_type not in {"image", "audio", "video"}:
+                attachment_type = None
             product_id = payload.get("product_id")
 
             if not receiver_id:
                 await websocket.send_json({"success": False, "error": "receiver_id is required."})
                 continue
             
-            if not message_text or len(message_text) == 0:
+            if not message_text and not attachment_url:
                 await websocket.send_json({"success": False, "error": "message_text cannot be empty."})
+                continue
+
+            if attachment_url and not attachment_type:
+                await websocket.send_json({"success": False, "error": "attachment_type is required for attachments."})
                 continue
             
             if len(message_text) > 5000:
@@ -2776,12 +2940,28 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 except (ValueError, TypeError):
                     product_id = None
 
+            if reply_to_id is not None:
+                try:
+                    reply_to_id = int(reply_to_id)
+                    parent_message = db.query(Message).filter(Message.id == reply_to_id).first()
+                    if not parent_message or not (
+                        (parent_message.sender_id == student_id and parent_message.receiver_id == receiver_id)
+                        or (parent_message.sender_id == receiver_id and parent_message.receiver_id == student_id)
+                    ):
+                        await websocket.send_json({"success": False, "error": "Reply target not found in this conversation."})
+                        continue
+                except (ValueError, TypeError):
+                    reply_to_id = None
+
             try:
                 db_message = Message(
                     sender_id=student_id,
                     receiver_id=receiver_id,
                     product_id=product_id,
-                    message_text=message_text,
+                    message_text=message_text or "[Attachment]",
+                    attachment_url=attachment_url,
+                    attachment_type=attachment_type,
+                    reply_to_id=reply_to_id,
                     is_read=False,
                 )
                 db.add(db_message)
@@ -2800,6 +2980,9 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 "receiver_id": db_message.receiver_id,
                 "product_id": db_message.product_id,
                 "message_text": db_message.message_text,
+                "attachment_url": db_message.attachment_url,
+                "attachment_type": db_message.attachment_type,
+                "reply_to_id": db_message.reply_to_id,
                 "is_read": db_message.is_read,
                 "created_at": db_message.created_at.isoformat() if hasattr(db_message.created_at, "isoformat") else str(db_message.created_at),
             }

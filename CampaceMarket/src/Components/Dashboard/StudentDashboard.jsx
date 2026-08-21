@@ -126,12 +126,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [conversationsList, setConversationsList] = useState(initialConversations);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
+  const [replyToMessage, setReplyToMessage] = useState(null);
   const [typingInput, setTypingInput] = useState('');
   const [peerIsTyping, setPeerIsTyping] = useState(false);
   const [showChatDropdown, setShowChatDropdown] = useState(false);
   const [conversationSearch, setConversationSearch] = useState('');
   const [mobileChatView, setMobileChatView] = useState('list');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isVoiceRecording, setIsVoiceRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const voiceChunksRef = useRef([]);
+  const attachmentInputRef = useRef(null);
   const [showAddChatModal, setShowAddChatModal] = useState(false);
   const [showProfileDetailsModal, setShowProfileDetailsModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
@@ -208,6 +213,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
   const [showProductModal, setShowProductModal] = useState(false);
+  const [editingProduct, setEditingProduct] = useState(null);
   const [productForm, setProductForm] = useState({
     name: '',
     title: '',
@@ -237,6 +243,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [cartMessage, setCartMessage] = useState('');
   const [reviewOrderId, setReviewOrderId] = useState(null);
   const [myListings, setMyListings] = useState([]);
+  const [sellerDashboardData, setSellerDashboardData] = useState({
+    stats: {
+      total_listings: 0,
+      active_listings: 0,
+      pending_listings: 0,
+      sold_listings: 0,
+      received_orders: 0,
+      completed_revenue: 0,
+      pending_orders: 0,
+      unapproved_products: 0
+    },
+    alerts: { pending_orders: 0, unapproved_products: 0 },
+    performance: { rating: 0, response_rate: 0, order_completion: 0, on_time_pickup: 0 },
+    my_listings: [],
+    received_orders: []
+  });
   const [sellerData, setSellerData] = useState({
     totalListings: 0,
     receivedOrders: 0,
@@ -416,15 +438,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
-  const fetchMyListings = async () => {
+  const fetchSellerDashboardData = async () => {
     if (!user?.studentId) {
       setMyListings([]);
-      setSellerData({
-        totalListings: 0,
-        pendingOrders: 0,
-        incomingOrders: [],
-        activeListings: []
-      });
+      setSellerDashboardData((previous) => ({ ...previous, my_listings: [], received_orders: [] }));
       return;
     }
 
@@ -432,24 +449,25 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const response = await fetch(`http://127.0.0.1:8000/api/student/seller/dashboard-data?student_id=${encodeURIComponent(user.studentId)}`);
       if (!response.ok) throw new Error('Failed to load seller dashboard data');
       const data = await response.json();
+      const listings = Array.isArray(data.my_listings) ? data.my_listings : [];
+      const orders = Array.isArray(data.received_orders) ? data.received_orders : [];
+      const stats = data.stats || {};
+      const alerts = data.alerts || {};
+      setSellerDashboardData({ stats, alerts, my_listings: listings, received_orders: orders });
+      setMyListings(listings);
       setSellerData({
-        totalListings: Number(data.totalListings ?? data.total_listings ?? myListings.length ?? 0) || 0,
-        receivedOrders: Number(data.receivedOrders ?? data.received_orders ?? 0) || 0,
-        totalRevenue: Number(data.totalRevenue ?? data.total_revenue ?? 8450) || 0,
-        pendingOrders: Number(data.pendingOrders ?? data.pending_orders ?? 3) || 0,
-        incomingOrders: Array.isArray(data.incomingOrders ?? data.incoming_orders) ? (data.incomingOrders ?? data.incoming_orders) : [],
-        activeListings: Array.isArray(data.activeListings ?? data.active_listings) ? (data.activeListings ?? data.active_listings) : []
+        totalListings: Number(stats.total_listings) || 0,
+        receivedOrders: Number(stats.received_orders) || 0,
+        totalRevenue: Number(stats.completed_revenue) || 0,
+        pendingOrders: Number(alerts.pending_orders) || 0,
+        incomingOrders: orders,
+        activeListings: listings
       });
     } catch (err) {
       console.error('Error fetching seller dashboard data:', err);
-      setSellerData({
-        totalListings: myListings.length || 8,
-        receivedOrders: 12,
-        totalRevenue: 8450,
-        pendingOrders: 3,
-        incomingOrders: [],
-        activeListings: []
-      });
+      setSellerDashboardData((previous) => ({ ...previous, my_listings: [], received_orders: [] }));
+      setMyListings([]);
+      setSellerData((previous) => ({ ...previous, totalListings: 0, receivedOrders: 0, totalRevenue: 0, pendingOrders: 0, incomingOrders: [], activeListings: [] }));
     }
   };
 
@@ -457,7 +475,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!user?.studentId) return;
 
     const loadSellerAnalytics = async () => {
-      await fetchMyListings();
       await fetchSellerDashboardData();
     };
 
@@ -1212,6 +1229,102 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
+  const resetProductForm = () => {
+    setProductForm({
+      name: '', title: '', category: '', subcategory: '', price: '', quantity: '1',
+      condition: 'New', pickupLocation: '', description: '', image: null
+    });
+    setEditingProduct(null);
+    setSelectedCategoryObj(null);
+  };
+
+  const handleEditProduct = (product) => {
+    setEditingProduct(product);
+    setProductForm({
+      name: product.title || product.name || '',
+      title: product.title || product.name || '',
+      category: product.category || '',
+      subcategory: product.subcategory || '',
+      price: product.price || '',
+      quantity: String(product.quantity || 1),
+      condition: product.condition || 'New',
+      pickupLocation: product.pickup_location || product.pickupLocation || '',
+      description: product.description || '',
+      image: product.image || null
+    });
+    setProductError('');
+    setProductSuccessMsg('');
+    setShowProductModal(true);
+  };
+
+  const handleAiApplyRecommendation = (product, discountPercentage = 3) => {
+    if (!product) return;
+    const currentPrice = Number(String(product.price || 0).replace(/[^0-9.]/g, '')) || 0;
+    const discountedPrice = (currentPrice * (1 - discountPercentage / 100)).toFixed(2);
+    setEditingProduct(product);
+    setProductForm({
+      name: product.title || product.name || '',
+      title: product.title || product.name || '',
+      category: product.category || '',
+      subcategory: product.subcategory || '',
+      price: discountedPrice,
+      quantity: String(product.quantity || 1),
+      condition: product.condition || 'New',
+      pickupLocation: product.pickup_location || product.pickupLocation || '',
+      description: product.description || '',
+      image: product.image || null
+    });
+    setProductError('');
+    setProductSuccessMsg('');
+    setShowProductModal(true);
+  };
+
+  const handleApplyPriceDropDirectly = async (product, percentage = 3) => {
+    if (!product?.id) return;
+    const currentPrice = Number(String(product.price || 0).replace(/[^0-9.]/g, '')) || 0;
+    const discountedPrice = (currentPrice * (1 - percentage / 100)).toFixed(2);
+    try {
+      await updateSellerProduct(product, { price: discountedPrice });
+      setProductSuccessMsg(`${percentage}% price drop applied successfully.`);
+    } catch (error) {
+      setProductError(error.message);
+    }
+  };
+
+  const handleAdjustPriceClick = (product) => {
+    handleAiApplyRecommendation(product, 3);
+  };
+
+  const updateSellerProduct = async (product, updates) => {
+    const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ student_id: user?.studentId || '', ...updates })
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => null);
+      throw new Error(errorData?.detail || 'Could not update product.');
+    }
+    await fetchSellerDashboardData();
+  };
+
+  const handleTogglePause = async (product) => {
+    try {
+      const status = String(product.status || '').toLowerCase();
+      await updateSellerProduct(product, { status: status === 'paused' || status === 'sold' ? 'Approved' : 'Paused' });
+    } catch (error) {
+      setProductError(error.message);
+    }
+  };
+
+  const handleMarkAsSold = async (product) => {
+    try {
+      await updateSellerProduct(product, { status: 'Sold' });
+    } catch (error) {
+      setProductError(error.message);
+    }
+  };
+
   // 5. አዲስ ምርት (እቃ) መለጠፊያ (Post Product Handler)
   const handleAddProductSubmit = async (e) => {
     e.preventDefault();
@@ -1219,7 +1332,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setProductSuccessMsg('');
 
     const itemName = (productForm.name || productForm.title || '').trim();
-    if (!itemName || !productForm.category || !productForm.price || !productForm.image) {
+    if (!itemName || !productForm.category || !productForm.price || (!editingProduct && !productForm.image)) {
       setProductError('Please fill in Name, Category, Price and add an image.');
       return;
     }
@@ -1227,6 +1340,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setProductSubmitting(true);
 
     try {
+      if (editingProduct) {
+        await updateSellerProduct(editingProduct, {
+          title: itemName,
+          category: productForm.category,
+          subcategory: productForm.subcategory || null,
+          price: String(productForm.price),
+          description: productForm.description || null
+        });
+        setProductSuccessMsg('Product updated successfully.');
+        setTimeout(() => {
+          setShowProductModal(false);
+          setProductSuccessMsg('');
+          resetProductForm();
+        }, 800);
+        return;
+      }
+
       const formData = new FormData();
       formData.append('name', itemName);
       formData.append('title', itemName);
@@ -1255,20 +1385,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
 
       setProductSuccessMsg('Product submitted successfully and is awaiting admin approval.');
-      setProductForm({
-        name: '',
-        title: '',
-        category: '',
-        subcategory: '',
-        price: '',
-        quantity: '1',
-        condition: 'New',
-        pickupLocation: '',
-        description: '',
-        image: null
-      });
-      setSelectedCategoryObj(null);
-      await fetchMyListings();
+      resetProductForm();
       await fetchSellerDashboardData();
 
       setTimeout(() => {
@@ -1513,6 +1630,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               sender_id: msg.sender_id,
               sender: msg.sender_id === user.studentId ? 'me' : 'them',
               text: msg.message_text,
+              attachment_url: msg.attachment_url,
+              attachment_type: msg.attachment_type,
+              reply_to_id: msg.reply_to_id,
               created_at: msg.created_at,
               productId: msg.product_id,
               is_read: Boolean(msg.is_read),
@@ -1527,6 +1647,36 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     fetchChatHistory();
   }, [activeConversationId, user?.studentId, conversationsList, conversationsLoaded]);
+
+  const handleDeleteMessage = async (messageId) => {
+    if (!window.confirm('Are you sure you want to delete this message?')) return;
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/student/messages/${messageId}?student_id=${encodeURIComponent(user.studentId)}`,
+        { method: 'DELETE' }
+      );
+      if (!response.ok) {
+        throw new Error('Failed to delete message');
+      }
+
+      setActiveChatMessages((previousMessages) => previousMessages.filter((message) => message.id !== messageId));
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      window.alert('Unable to delete this message. Please try again.');
+    }
+  };
+
+  const handleReplyClick = (message) => {
+    setReplyToMessage(message);
+  };
+
+  const handleForwardClick = (message) => {
+    const forwardedText = message.text && message.text !== '[Attachment]'
+      ? `Forwarded message: ${message.text}`
+      : 'Forwarded attachment';
+    setTypingInput(forwardedText);
+  };
 
   // Fetch product details for messages with product attachments
   useEffect(() => {
@@ -1623,6 +1773,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               sender_id: message.sender_id,
               sender: message.sender_id === user.studentId ? 'me' : 'them',
               text: message.message_text,
+              attachment_url: message.attachment_url,
+              attachment_type: message.attachment_type,
+              reply_to_id: message.reply_to_id,
               created_at: message.created_at,
               productId: message.product_id,
               is_read: Boolean(message.is_read),
@@ -1677,6 +1830,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
   }, [user?.studentId]);
 
+  const sendWsMessage = (payload) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return false;
+    socketRef.current.send(JSON.stringify(payload));
+    return true;
+  };
+
   const sendChatMessage = () => {
     const safeMessage = typingInput.trim();
     if (!safeMessage || !activeConversation || isActiveConversationBlocked) return;
@@ -1695,10 +1854,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       text: safeMessage,
       created_at: now.toISOString(),
       productId: activeConversation?.product?.id || null,
+      reply_to_id: replyToMessage?.id || null,
     };
 
     setActiveChatMessages((prev) => [...prev, newMessage]);
     setTypingInput('');
+    setReplyToMessage(null);
     setConversationsList((prev) => prev.map((conversation) =>
       conversation.id === activeConversation.id
         ? { ...conversation, unread: 0, lastMessage: safeMessage, timestamp: 'just now' }
@@ -1709,12 +1870,80 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       receiver_id: receiverId,
       message_text: safeMessage,
       product_id: activeConversation?.product?.id ?? null,
+      reply_to_id: replyToMessage?.id ?? null,
     };
 
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(payload));
-    } else {
+    if (!sendWsMessage(payload)) {
       console.log('WebSocket transmit fallback:', payload);
+    }
+  };
+
+  const uploadChatAttachment = async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('http://127.0.0.1:8000/api/student/chat/upload-attachment', {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => null);
+      throw new Error(errorData?.detail || 'Could not upload attachment.');
+    }
+    return response.json();
+  };
+
+  const sendChatAttachment = async (file) => {
+    if (!file || !activeConversation || isActiveConversationBlocked) return;
+    const receiverId = activeConversation.studentId || (String(activeConversation.id || '').replace(/^conv-/, '') || null);
+    if (!receiverId || socketRef.current?.readyState !== WebSocket.OPEN) return;
+
+    try {
+      const uploaded = await uploadChatAttachment(file);
+      socketRef.current.send(JSON.stringify({
+        receiver_id: receiverId,
+        message_text: '',
+        attachment_url: uploaded.attachment_url,
+        attachment_type: uploaded.attachment_type,
+      }));
+    } catch (error) {
+      console.error('Chat attachment upload failed:', error);
+    }
+  };
+
+  const handleFileAttachmentSelect = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    await sendChatAttachment(file);
+  };
+
+  const handleStartVoiceRecording = async () => {
+    if (isVoiceRecording || !navigator.mediaDevices?.getUserMedia) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      voiceChunksRef.current = [];
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) voiceChunksRef.current.push(event.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const voiceBlob = new Blob(voiceChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        const extension = recorder.mimeType.includes('ogg') ? 'ogg' : 'webm';
+        await sendChatAttachment(new File([voiceBlob], `voice-note-${Date.now()}.${extension}`, { type: voiceBlob.type }));
+        mediaRecorderRef.current = null;
+      };
+      recorder.start();
+      setIsVoiceRecording(true);
+    } catch (error) {
+      console.error('Unable to start voice recording:', error);
+    }
+  };
+
+  const handleStopVoiceRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      setIsVoiceRecording(false);
     }
   };
 
@@ -2092,7 +2321,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={() => setActiveTab('notifications')} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 cursor-pointer">Notifications</button>
                     <button onClick={() => setShowSupportModal(true)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow hover:bg-emerald-600 cursor-pointer">Support</button>
                   </div>
                 </div>
@@ -2130,7 +2358,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <p className="mt-2 line-clamp-2 text-sm text-slate-600">{item.description || 'Popular campus item tailored to your department.'}</p>
                             <div className="mt-4 flex items-center justify-between">
                               <span className="text-lg font-black text-slate-950">{formatETB(item.price)}</span>
-                              <button type="button" className="rounded-full bg-slate-950 px-3 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition cursor-pointer">View</button>
+                              <button type="button" onClick={() => handleViewProductFromChat(item.id)} className="rounded-full bg-slate-950 px-3.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition">View Details →</button>
                             </div>
                           </div>
                         ))
@@ -2821,8 +3049,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 myListings={myListings}
                 setMyListings={setMyListings}
                 setSellerData={setSellerData}
-                onAddProduct={() => setShowProductModal(true)}
+                onAddProduct={() => {
+                  resetProductForm();
+                  setShowProductModal(true);
+                }}
                 onNavigate={onTabChange}
+                onViewProduct={handleViewProductFromChat}
+                sellerDashboardData={sellerDashboardData}
+                onEditProduct={handleEditProduct}
+                onTogglePause={handleTogglePause}
+                onMarkAsSold={handleMarkAsSold}
+                onApplyPriceDrop={handleApplyPriceDropDirectly}
+                onAdjustPrice={handleAdjustPriceClick}
+                onPaymentHistory={() => {
+                  setActiveTab('buyer');
+                  setBuyerTab('payments');
+                }}
               />
             )}
 
@@ -3494,19 +3736,50 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           ? message.time || 'Unknown time'
                           : messageDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                         const product = message.productId ? productDetails[message.productId] : null;
+                        const parentMessage = message.reply_to_id
+                          ? activeChatMessages.find((candidate) => String(candidate.id) === String(message.reply_to_id))
+                          : null;
 
                         return (
-                          <div key={message.id}>
+                          <div key={message.id} className="group">
                             <div className={`mb-4 flex items-end gap-2 ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
                               {!isOwnMessage && (
                                 <img src={getStudentAvatar(message.sender_id || activeConversation?.studentId)} alt={activeConversation?.name || 'Student'} className="h-8 w-8 shrink-0 rounded-full object-cover" />
                               )}
                               <div className={`max-w-[78%] rounded-[22px] px-4 py-3 shadow-sm ${isOwnMessage ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800'}`}>
-                                <p className="text-sm leading-6">{message.text}</p>
+                                {parentMessage && (
+                                  <div className={`mb-2 border-l-2 px-2 py-1 text-xs ${isOwnMessage ? 'border-blue-200 bg-blue-700/50 text-blue-100' : 'border-slate-400 bg-slate-300/60 text-slate-600'}`}>
+                                    <p className="font-semibold">{parentMessage.sender_id === user?.studentId ? 'You' : activeConversation?.name || 'Student'}</p>
+                                    <p className="truncate opacity-80">{parentMessage.text || '[Attachment]'}</p>
+                                  </div>
+                                )}
+                                {message.attachment_type === 'image' && message.attachment_url && (
+                                  <img src={message.attachment_url} alt="Chat attachment" className="mb-2 max-h-64 max-w-full rounded-2xl object-cover" />
+                                )}
+                                {message.attachment_type === 'audio' && message.attachment_url && (
+                                  <audio src={message.attachment_url} controls className="mb-2 max-w-full" />
+                                )}
+                                {message.attachment_type === 'video' && message.attachment_url && (
+                                  <video src={message.attachment_url} controls className="mb-2 max-h-64 max-w-full rounded-2xl" />
+                                )}
+                                {message.text && message.text !== '[Attachment]' && <p className="text-sm leading-6">{message.text}</p>}
                                 <div className={`mt-2 flex items-center gap-1 text-[10px] ${isOwnMessage ? 'text-blue-100' : 'text-slate-500'}`}>
                                   <span>{messageTime}</span>
                                   {isOwnMessage && <span>{message.is_read ? '✓✓' : '✓'}</span>}
                                 </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1 text-xs text-slate-400">
+                                {isOwnMessage ? (
+                                  <>
+                                    <button type="button" onClick={() => handleForwardClick(message)} className="cursor-pointer hover:text-sky-600">➡️ Forward</button>
+                                    <button type="button" onClick={() => handleDeleteMessage(message.id)} className="cursor-pointer hover:text-rose-600">🗑️ Delete</button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button type="button" onClick={() => handleReplyClick(message)} className="cursor-pointer hover:text-sky-600">↩️ Reply</button>
+                                    <button type="button" onClick={() => handleForwardClick(message)} className="cursor-pointer hover:text-sky-600">➡️ Forward</button>
+                                  </>
+                                )}
                               </div>
                               {isOwnMessage && (
                                 <img src={getStudentAvatar(user?.studentId)} alt={user?.name || 'You'} className="h-8 w-8 shrink-0 rounded-full object-cover" />
@@ -3557,48 +3830,67 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           This conversation is blocked
                         </div>
                       ) : (
-                        <div className="flex min-w-0 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white sm:gap-3 sm:px-3">
-                          <label className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Attach file">
-                            📎
-                            <input type="file" className="sr-only" />
-                          </label>
-                          <div className="relative shrink-0">
-                            <button type="button" onClick={() => setShowEmojiPicker((visible) => !visible)} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Open emoji picker">😊</button>
-                            {showEmojiPicker && (
-                              <div className="absolute bottom-12 left-0 z-20 flex gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
-                                {['😀', '😂', '👍', '❤️', '🎉', '🙏'].map((emoji) => (
-                                  <button key={emoji} type="button" onClick={() => { setTypingInput((value) => `${value}${emoji}`); setShowEmojiPicker(false); }} className="rounded-lg p-1.5 text-lg hover:bg-slate-100" aria-label={`Insert ${emoji}`}>{emoji}</button>
-                                ))}
+                        <div className="space-y-2">
+                          {replyToMessage && (
+                            <div className="flex items-center gap-2 border-l-4 border-sky-500 bg-sky-50 px-3 py-2 text-sm text-slate-700">
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-semibold text-sky-700">Replying to...</p>
+                                <p className="truncate text-xs text-slate-600">{replyToMessage.text || '[Attachment]'}</p>
                               </div>
-                            )}
+                              <button type="button" onClick={() => setReplyToMessage(null)} className="shrink-0 text-slate-400 hover:text-slate-700" aria-label="Cancel reply">✕</button>
+                            </div>
+                          )}
+                          <div className="flex min-w-0 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white sm:gap-3 sm:px-3">
+                            <label className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Attach file">
+                              📎
+                              <input ref={attachmentInputRef} type="file" accept="image/*,audio/*,video/*" onChange={handleFileAttachmentSelect} className="sr-only" />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={isVoiceRecording ? handleStopVoiceRecording : handleStartVoiceRecording}
+                              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg shadow-sm ${isVoiceRecording ? 'bg-rose-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
+                              aria-label={isVoiceRecording ? 'Stop voice recording' : 'Record voice note'}
+                            >
+                              {isVoiceRecording ? '■' : '🎙️'}
+                            </button>
+                            <div className="relative shrink-0">
+                              <button type="button" onClick={() => setShowEmojiPicker((visible) => !visible)} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Open emoji picker">😊</button>
+                              {showEmojiPicker && (
+                                <div className="absolute bottom-12 left-0 z-20 flex gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
+                                  {['😀', '😂', '👍', '❤️', '🎉', '🙏'].map((emoji) => (
+                                    <button key={emoji} type="button" onClick={() => { setTypingInput((value) => `${value}${emoji}`); setShowEmojiPicker(false); }} className="rounded-lg p-1.5 text-lg hover:bg-slate-100" aria-label={`Insert ${emoji}`}>{emoji}</button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <input
+                              type="text"
+                              value={typingInput}
+                              onChange={(e) => {
+                                const nextValue = e.target.value;
+                                setTypingInput(nextValue);
+                                const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
+                                if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
+                                  socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: Boolean(nextValue.trim()) }));
+                                }
+                              }}
+                              onBlur={() => {
+                                const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
+                                if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
+                                  socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: false }));
+                                }
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  sendChatMessage();
+                                }
+                              }}
+                              placeholder="Type a message..."
+                              className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                            />
+                            <button type="button" onClick={sendChatMessage} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-600 text-lg font-bold text-white shadow-sm hover:bg-sky-700" aria-label="Send message">➤</button>
                           </div>
-                          <input
-                            type="text"
-                            value={typingInput}
-                            onChange={(e) => {
-                              const nextValue = e.target.value;
-                              setTypingInput(nextValue);
-                              const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
-                              if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
-                                socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: Boolean(nextValue.trim()) }));
-                              }
-                            }}
-                            onBlur={() => {
-                              const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
-                              if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
-                                socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: false }));
-                              }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                sendChatMessage();
-                              }
-                            }}
-                            placeholder="Type a message..."
-                            className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
-                          />
-                          <button type="button" onClick={sendChatMessage} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-600 text-lg font-bold text-white shadow-sm hover:bg-sky-700" aria-label="Send message">➤</button>
                         </div>
                       )}
                     </div>
@@ -3839,12 +4131,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           <div className="w-full max-w-3xl overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
               <div>
-                <h2 className="text-xl font-bold text-slate-950">List a New Product</h2>
-                <p className="mt-1 text-sm text-slate-500">Fill in the details below to add your item to the campus marketplace.</p>
+                <h2 className="text-xl font-bold text-slate-950">{editingProduct ? 'Edit Product' : 'List a New Product'}</h2>
+                <p className="mt-1 text-sm text-slate-500">{editingProduct ? 'Update your listing details.' : 'Fill in the details below to add your item to the campus marketplace.'}</p>
               </div>
               <button
                 type="button"
-                onClick={() => setShowProductModal(false)}
+                onClick={() => {
+                  setShowProductModal(false);
+                  resetProductForm();
+                }}
                 className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-slate-700 transition hover:bg-slate-200"
               >
                 Close
@@ -3852,6 +4147,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             </div>
 
             <form onSubmit={handleAddProductSubmit} className="space-y-5 px-6 py-6">
+              {editingProduct && (
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="text-sm font-bold text-emerald-900">AI Seller Advisor Tip</p>
+                  <p className="mt-1 text-sm text-emerald-800">A 3% price reduction can improve conversion while keeping this listing competitive.</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const currentPrice = Number(String(productForm.price || editingProduct.price || 0).replace(/[^0-9.]/g, '')) || 0;
+                      setProductForm((previous) => ({ ...previous, price: (currentPrice * 0.97).toFixed(2) }));
+                    }}
+                    className="mt-3 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                  >
+                    Apply AI Price Suggestion
+                  </button>
+                </div>
+              )}
               <div className="grid gap-4 lg:grid-cols-2">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700">Title</label>
@@ -3942,11 +4253,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   disabled={productSubmitting}
                   className="inline-flex justify-center rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
-                  {productSubmitting ? 'Posting...' : 'Post Product'}
+                  {productSubmitting ? (editingProduct ? 'Updating...' : 'Posting...') : (editingProduct ? 'Update Product' : 'Post Product')}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowProductModal(false)}
+                  onClick={() => {
+                    setShowProductModal(false);
+                    resetProductForm();
+                  }}
                   className="inline-flex justify-center rounded-full border border-slate-200 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
                 >
                   Cancel
