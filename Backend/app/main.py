@@ -29,6 +29,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
+import  bcrypt
 from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -69,6 +70,8 @@ AVATAR_DIR = os.path.join(STATIC_DIR, "avatars")
 os.makedirs(AVATAR_DIR, exist_ok=True)
 ATTACHMENT_DIR = os.path.join(STATIC_DIR, "attachments")
 os.makedirs(ATTACHMENT_DIR, exist_ok=True)
+ID_CARD_DIR = os.path.join(STATIC_DIR, "id_cards")
+os.makedirs(ID_CARD_DIR, exist_ok=True)
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
@@ -1679,6 +1682,17 @@ def create_product(
     """
     try:
         image_url = None
+
+        normalized_student_id = str(student_id).strip() if student_id else ""
+        if normalized_student_id:
+            student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
+            if not student:
+                raise HTTPException(status_code=404, detail="Student not found.")
+            if not student.is_verified:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Unverified profiles are restricted from creating listings.",
+                )
         
         # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
         if image and image.filename:
@@ -1699,7 +1713,6 @@ def create_product(
         
         # Resolve the seller's identity properly (የሻጩን ማንነት መፍታት)
         seller_value = str(seller).strip() if seller else ""
-        normalized_student_id = str(student_id).strip() if student_id else ""
         if not seller_value and normalized_student_id:
             try:
                 resolved_student_id = _validate_student_id(
@@ -2863,6 +2876,10 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
             await websocket.close(code=1008, reason="Student not found")
             logger.warning(f"[WS SECURITY] Invalid student_id: {student_id}")
             return
+        if not student.is_verified:
+            await websocket.close(code=1008, reason="ID verification is required to start a chat")
+            logger.warning(f"[WS SECURITY] Unverified student chat blocked: {student_id}")
+            return
 
         await manager.connect(student_id, websocket, student_name=student.name)
         logger.info(f"[WS CONNECT] {student_id} ({student.name}) connected. Online: {manager.get_online_count()}")
@@ -3029,6 +3046,11 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
     receiver = db.query(Student).filter(Student.student_id == validated_receiver_id).first()
     if not sender or not receiver:
         raise HTTPException(status_code=404, detail="Student not found.")
+    if not sender.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Verification is required to start a chat with other students.",
+        )
 
     if validated_sender_id == validated_receiver_id:
         raise HTTPException(status_code=400, detail="Cannot send a message to yourself.")
@@ -3434,6 +3456,11 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == data.student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
+    if not student.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ID verification is required to complete purchases.",
+        )
 
     cart_items = db.query(CartItem).filter(CartItem.student_id == data.student_id).all()
     if not cart_items:
@@ -3725,17 +3752,23 @@ def get_admin_kpis(db: Session = Depends(get_db)):
 @app.get("/api/admin/analytics")
 def get_admin_analytics(db: Session = Depends(get_db)):
     total_students = db.query(Student).count()
+    active_students = db.query(Student).filter(Student.status.ilike("Active")).count()
     total_products = db.query(Product).count()
+    pending_products = db.query(Product).filter(Product.status.ilike("Pending")).count()
+    total_orders = db.query(Order).count()
+    completed_orders = db.query(Order).filter(Order.status.ilike("Completed")).count()
+    revenue_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+        Transaction.status.ilike("Successful")
+    ).scalar() or 0
+    revenue_total = float(revenue_total)
+    pending_reports = db.query(Report).filter(Report.status.ilike("Open")).count()
+
     product_status_rows = db.query(Product.status, func.count(Product.id)).group_by(Product.status).all()
     product_status_breakdown = {"Approved": 0, "Pending": 0, "Rejected": 0}
     for status_value, count in product_status_rows:
         normalized = (status_value or "").strip().title()
         if normalized in product_status_breakdown:
             product_status_breakdown[normalized] = int(count)
-
-    successful_orders = db.query(Order).filter(Order.status.in_(["Completed", "Successful"])).count()
-    revenue_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).scalar() or 0
-    revenue_total = float(revenue_total)
 
     def format_revenue(value: float) -> str:
         if value >= 1_000_000:
@@ -3777,28 +3810,18 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         func.count(Product.id).label("product_count")
     ).group_by(Product.category).order_by(func.count(Product.id).desc()).limit(5).all()
 
+    top_category_rows = category_rows[:4]
+    top_category_total = sum(int(product_count) for _, product_count in top_category_rows)
     categories = []
-    for category_name, product_count in category_rows:
+    category_colors = ["bg-blue-500", "bg-emerald-500", "bg-amber-500", "bg-rose-500"]
+    for index, (category_name, product_count) in enumerate(top_category_rows):
+        percentage = round((int(product_count) / top_category_total) * 100, 1) if top_category_total else 0
         categories.append({
             "name": category_name or "General",
-            "views": f"{int(product_count * 180):,}",
-            "likes": f"{int(product_count * 42):,}",
-            "sales": f"{int(product_count * 16):,}"
+            "product_count": int(product_count),
+            "percentage": percentage,
+            "color": category_colors[index]
         })
-
-    while len(categories) < 5:
-        fallback_categories = [
-            {"name": "Electronics", "views": "18.4K", "likes": "4.2K", "sales": "1,280"},
-            {"name": "Books", "views": "12.1K", "likes": "3.1K", "sales": "930"},
-            {"name": "Lab Equipment", "views": "9.6K", "likes": "2.7K", "sales": "760"},
-            {"name": "Accessories", "views": "8.3K", "likes": "2.2K", "sales": "640"},
-            {"name": "Stationery", "views": "6.7K", "likes": "1.8K", "sales": "490"}
-        ]
-        for fallback in fallback_categories:
-            if not any(item["name"] == fallback["name"] for item in categories):
-                categories.append(fallback)
-            if len(categories) >= 5:
-                break
 
     recent_rows = db.query(
         Transaction.type,
@@ -3815,30 +3838,74 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             "user": f"Student • {student_id}"
         })
 
-    if not recent_activity:
-        recent_activity = [
-            {"time": "08:42 AM", "action": "New electronics listing approved by admin", "user": "Student • MAU1602041"},
-            {"time": "09:15 AM", "action": "Engineering books category gained 18% more click-through", "user": "AI Recommendation Engine"},
-            {"time": "10:05 AM", "action": "Payment verified for a laptop order from IT department", "user": "Finance • TXN-11842"},
-            {"time": "12:20 PM", "action": "Three new student accounts were verified successfully", "user": "Admin Review Queue"},
-            {"time": "02:40 PM", "action": "Lab equipment recommendation campaign reached 1.2K impressions", "user": "Marketing Module"}
-        ]
-
+    status_counts = {
+        "Completed": completed_orders,
+        "Processing": db.query(Order).filter(Order.status.ilike("Processing")).count(),
+        "Pending": db.query(Order).filter(Order.status.ilike("Pending")).count(),
+    }
+    status_total = sum(status_counts.values())
+    status_colors = {"Completed": "#10b981", "Processing": "#3b82f6", "Pending": "#f59e0b"}
     status_distribution = [
-        {"label": "Completed", "value": 58, "color": "#10b981"},
-        {"label": "Pending", "value": 22, "color": "#f59e0b"},
-        {"label": "Processing", "value": 14, "color": "#3b82f6"},
-        {"label": "Cancelled", "value": 6, "color": "#ef4444"}
+        {
+            "label": label,
+            "count": count,
+            "value": round((count / status_total) * 100, 1) if status_total else 0,
+            "color": status_colors[label],
+        }
+        for label, count in status_counts.items()
     ]
 
+    trend_months = []
+    user_growth = []
+    product_uploads = []
+    revenue_trend = []
+    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    for month_offset in range(5, -1, -1):
+        month_index = current_month.month - month_offset
+        year = current_month.year + (month_index - 1) // 12
+        month = (month_index - 1) % 12 + 1
+        target_date = datetime(year, month, 1)
+        next_month = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
+
+        trend_months.append(target_date.strftime("%b %y"))
+        user_growth.append(0)
+        product_uploads.append(db.query(Product).filter(
+            Product.created_at >= target_date,
+            Product.created_at < next_month,
+        ).count())
+        monthly_revenue = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+            Transaction.created_at >= target_date,
+            Transaction.created_at < next_month,
+            Transaction.status.ilike("Successful"),
+        ).scalar() or 0
+        revenue_trend.append(float(monthly_revenue))
+
     return {
+        "total_students": total_students,
+        "active_students": active_students,
+        "total_products": total_products,
+        "pending_products": pending_products,
+        "total_orders": total_orders,
+        "completed_orders": completed_orders,
+        "total_revenue": revenue_total,
+        "pending_reports": pending_reports,
         "users": total_students,
+        "activeStudents": active_students,
         "products": total_products,
-        "orders": successful_orders,
+        "orders": total_orders,
+        "completedOrders": completed_orders,
+        "pendingProducts": pending_products,
+        "pendingReports": pending_reports,
         "revenue": format_revenue(revenue_total),
-        "salesTrend": [32, 50, 44, 68, 62, 81, 96],
-        "revenueTrend": [18, 26, 30, 49, 52, 64, 88],
-        "registrations": [12, 18, 16, 26, 24, 31, 39],
+        "trends": {
+            "months": trend_months,
+            "user_growth": user_growth,
+            "product_uploads": product_uploads,
+            "revenue": revenue_trend,
+        },
+        "salesTrend": product_uploads,
+        "revenueTrend": revenue_trend,
+        "registrations": user_growth,
         "orderStatus": status_distribution,
         "categories": categories,
         "departmentActivity": department_activity,
@@ -4011,6 +4078,7 @@ def delete_user(id: int, db: Session = Depends(get_db)):
 @app.get("/api/admin/verifications")
 def get_admin_verifications(
     search: Optional[str] = None,
+    college: Optional[str] = None,
     department: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
@@ -4026,6 +4094,9 @@ def get_admin_verifications(
             )
         )
 
+    if college and college.strip().lower() != "all":
+        query = query.filter(Student.college.ilike(college.strip()))
+
     if department and department.strip().lower() != "all":
         query = query.filter(Student.department.ilike(department.strip()))
 
@@ -4033,19 +4104,65 @@ def get_admin_verifications(
     results = []
     for student in students:
         status = "Rejected" if student.verification_reason else "Pending"
+        id_card_path = os.path.join(ID_CARD_DIR, f"{student.student_id}.jpg")
+        avatar_path = os.path.join(AVATAR_DIR, f"{student.student_id}.jpg")
+        if os.path.exists(id_card_path):
+            uploaded_id_card = f"http://127.0.0.1:8000/static/uploads/id_cards/{student.student_id}.jpg"
+        elif os.path.exists(avatar_path):
+            uploaded_id_card = f"http://127.0.0.1:8000/static/uploads/avatars/{student.student_id}.jpg"
+        else:
+            uploaded_id_card = None
         results.append({
             "id": student.id,
             "name": student.name,
             "student_id": student.student_id,
             "email": student.email,
+            "phone": student.phone,
+            "college": student.college,
             "department": student.department or "General Studies",
             "status": status,
-            "uploaded_id_card": student.id_card_url or "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=600&q=80",
+            "uploaded_id_card": uploaded_id_card,
             "reason": student.verification_reason,
             "is_verified": student.is_verified,
         })
 
     return results
+
+
+@app.post("/api/student/upload-id")
+async def upload_student_id(
+    student_id: str = Form(...),
+    id_photo: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    student = db.query(Student).filter(Student.student_id == student_id.strip()).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    content_type = (id_photo.content_type or "").lower()
+    allowed_types = {"image/jpeg", "image/png", "image/webp"}
+    if content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="ID photo must be a JPEG, PNG, or WebP image.")
+
+    destination = os.path.join(ID_CARD_DIR, f"{student.student_id}.jpg")
+    try:
+        with open(destination, "wb") as output_file:
+            shutil.copyfileobj(id_photo.file, output_file)
+    except OSError:
+        raise HTTPException(status_code=500, detail="Failed to save student ID photo.")
+    finally:
+        await id_photo.close()
+
+    student.id_card_url = f"http://127.0.0.1:8000/static/uploads/id_cards/{student.student_id}.jpg"
+    student.verification_reason = None
+    db.commit()
+    db.refresh(student)
+
+    return {
+        "message": "Student ID uploaded successfully.",
+        "student_id": student.student_id,
+        "id_card_url": student.id_card_url,
+    }
 
 
 @app.put("/api/admin/verifications/{id}")
@@ -4064,9 +4181,6 @@ def update_student_verification(
 
     approved = normalized_status in {"approved", "verified"}
     rejection_reason = (payload.reason or "").strip() if not approved else None
-
-    if not approved and not rejection_reason:
-        raise HTTPException(status_code=400, detail="A rejection reason is required when rejecting a student verification request.")
 
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
 
@@ -4134,6 +4248,7 @@ def get_admin_products(
     status: Optional[str] = None,
     search: Optional[str] = None,
     category: Optional[str] = None,
+    subcategory: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     query = db.query(Product)
@@ -4143,6 +4258,9 @@ def get_admin_products(
 
     if category and category.strip().lower() != "all":
         query = query.filter(Product.category.ilike(category.strip()))
+
+    if subcategory and subcategory.strip().lower() != "all":
+        query = query.filter(Product.subcategory.ilike(subcategory.strip()))
 
     if search and search.strip():
         term = f"%{search.strip()}%"
@@ -4180,6 +4298,7 @@ def get_admin_products(
             "price": p.price,
             "image": p.image,
             "description": p.description or "No description provided yet.",
+            "subcategory": p.subcategory,
             "condition": condition,
             "seller_verified": bool(student_record),
             "moderation_reason": p.moderation_reason,

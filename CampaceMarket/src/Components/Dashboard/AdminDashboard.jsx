@@ -1,5 +1,36 @@
 import { useEffect, useState } from 'react';
 
+const generateLinePath = (data, maxVal, width = 100, height = 100) => {
+  if (!Array.isArray(data) || data.length === 0) return '';
+
+  const safeMax = Math.max(Number(maxVal) || 0, 1);
+  const horizontalStep = data.length > 1 ? width / (data.length - 1) : 0;
+
+  return data
+    .map((value, index) => {
+      const x = index * horizontalStep;
+      const y = height - ((Number(value) || 0) / safeMax) * (height - 10) - 5;
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)},${Math.max(5, Math.min(height - 5, y)).toFixed(2)}`;
+    })
+    .join(' ');
+};
+
+const getDynamicMonths = () => Array.from({ length: 6 }, (_, index) => {
+  const targetDate = new Date();
+  targetDate.setDate(1);
+  targetDate.setMonth(targetDate.getMonth() - (5 - index));
+  return targetDate.toLocaleString('en-US', { month: 'short', year: '2-digit' });
+});
+
+const UNIVERSITY_STRUCTURE = {
+  'College of Computing and Informatics (CCI)': ['Department of Computer Science', 'Department of Information Technology (IT)', 'Department of Software Engineering'],
+  'College of Natural and Computational Sciences (CNCS)': ['Department of Biology', 'Department of Chemistry', 'Department of Geology', 'Department of Mathematics', 'Department of Physics', 'Department of Statistics', 'Department of Sport Science'],
+  'College of Agriculture and Natural Resource': ['Department of Agro-Economics', 'Department of Agribusiness and Value Chain Management', 'Department of Animal Science', 'Department of Forestry', 'Department of Horticulture', 'Department of Natural Resource Management', 'Department of Plant Science', 'Department of Rural Development and Agricultural Extension'],
+  'College of Business and Economics': ['Department of Accounting and Finance', 'Department of Economics', 'Department of Management', 'Department of Marketing Management'],
+  'College of Social Sciences and Humanities': ['Department of Amharic Language and Literature', 'Department of English Language and Literature', 'Department of Geography and Environmental Studies', 'Department of History and Heritage Management', 'Department of Political Science and International Relations'],
+  'College of Law': ['Department of Law (LLB)'],
+};
+
 const ADMIN_AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='64' fill='%230f766e'/%3E%3Ccircle cx='64' cy='48' r='22' fill='white'/%3E%3Cpath d='M25 108c4-24 19-36 39-36s35 12 39 36' fill='white'/%3E%3C/svg%3E";
 
 const adminTabs = [
@@ -72,25 +103,38 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     { id: 1, student_id: "MAU1600002", name: "Tefesayiku", email: "desu5392@gmail.com", phone: "0962714305", college: "CCI", department: "Software Engineering", year: "Year 3", is_verified: true, status: "Active", rating: "4.8 ★", activity: [{ action: "Logged in", time: "10m ago" }] },
     { id: 2, student_id: "IT2026-001", name: "Abebe Kebede", email: "student@university.edu", phone: "0911223344", college: "CCI", department: "Information Technology", year: "Year 2", is_verified: false, status: "Active", rating: "No ratings", activity: [{ action: "Updated Profile", time: "3h ago" }] }
   ]);
+  const [showAddStudentModal, setShowAddStudentModal] = useState(false);
+  const [addStudentForm, setAddStudentForm] = useState({
+    name: '', student_id: '', email: '', phone: '', college: '', department: '', password: '',
+  });
+  const [addStudentError, setAddStudentError] = useState('');
+  const [addStudentLoading, setAddStudentLoading] = useState(false);
 
   // 2. Student Verification States
   const [selectedIDPhoto, setSelectedIDPhoto] = useState(null);
   const [verificationSearchTerm, setVerificationSearchTerm] = useState('');
   const [verificationFilterDept, setVerificationFilterDept] = useState('All');
+  const [verificationFilterCollege, setVerificationFilterCollege] = useState('All');
+  const [verificationColleges, setVerificationColleges] = useState([]);
+  const [verificationDepartments, setVerificationDepartments] = useState([]);
   const [showRejectReasonModal, setShowRejectReasonModal] = useState(false);
   const [selectedVerificationRequest, setSelectedVerificationRequest] = useState(null);
   const [verificationRejectReason, setVerificationRejectReason] = useState('Blurry Image');
   const [verificationZoom, setVerificationZoom] = useState(1);
   const [verificationRotation, setVerificationRotation] = useState(0);
   const [verifications, setVerifications] = useState([
-    { id: 1, name: "Abebe Kebede", student_id: "IT2026-001", email: "student@university.edu", department: "Information Technology", status: "Pending", uploaded_id_card: "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=600&q=80" },
-    { id: 2, name: "Tefesayiku", student_id: "MAU1600002", email: "desu5392@gmail.com", department: "Software Engineering", status: "Verified", uploaded_id_card: "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=600&q=80" }
+    { id: 1, name: "Abebe Kebede", student_id: "IT2026-001", email: "student@university.edu", department: "Information Technology", status: "Pending", uploaded_id_card: null },
+    { id: 2, name: "Tefesayiku", student_id: "MAU1600002", email: "desu5392@gmail.com", department: "Software Engineering", status: "Verified", uploaded_id_card: null }
   ]);
 
   // 3. Product Management States
   const [prodSearch, setProdSearch] = useState('');
   const [prodStatusFilter, setProdStatusFilter] = useState('');
   const [productCategoryFilter, setProductCategoryFilter] = useState('All');
+  const [productSubcategoryFilter, setProductSubcategoryFilter] = useState('All');
+  const [dbCategories, setDbCategories] = useState([]);
+  const [dbSubcategories, setDbSubcategories] = useState([]);
+  const [productStats, setProductStats] = useState({ total: 0, approved: 0, pending: 0, flagged: 0 });
   const [productsList, setProductsList] = useState([
     { id: 1, title: "HP Pavilion Laptop", price: "24,000 ETB", seller: "Tefesayiku", category: "Electronics", condition: "New", status: "Pending", image: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?auto=format&fit=crop&w=900&q=80", description: "Premium lightweight laptop with 16GB RAM and a 512GB SSD for student productivity.", seller_verified: true },
     { id: 2, title: "Calculus II Textbook", price: "450 ETB", seller: "Abebe Kebede", category: "Books", condition: "Gently Used", status: "Approved", image: "https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=900&q=80", description: "Well-maintained calculus reference book with highlighted notes and exercise solutions.", seller_verified: true }
@@ -101,21 +145,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [pendingRejectProduct, setPendingRejectProduct] = useState(null);
 
   // 4. Category Management States
-  const [categoriesList, setCategoriesList] = useState([
-    {
-      id: 1, name: "Electronics", icon: "🔌", ads: "45 ads", status: "Active", subcategories: [
-        { id: 11, name: "Laptops", icon: "💻", category_id: 1, ads: "12 ads" },
-        { id: 12, name: "Mobile Phones", icon: "📱", category_id: 1, ads: "18 ads" }
-      ]
-    },
-    {
-      id: 2, name: "Academic Books", icon: "📚", ads: "120 ads", status: "Active", subcategories: [
-        { id: 21, name: "Textbooks", icon: "📖", category_id: 2, ads: "80 ads" },
-        { id: 22, name: "Reference Books", icon: "📕", category_id: 2, ads: "40 ads" }
-      ]
-    },
-    { id: 3, name: "Laboratory Equipment", icon: "🔬", ads: "28 ads", status: "Active", subcategories: [] }
-  ]);
+  const [categoriesList, setCategoriesList] = useState([]);
+  const [expandedCategoryId, setExpandedCategoryId] = useState(null);
   const [newCatName, setNewCatName] = useState('');
   const [newCatIcon, setNewCatIcon] = useState('');
   const [newSubName, setNewSubName] = useState('');
@@ -356,122 +387,206 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   }, []);
 
   useEffect(() => {
-    const fetchVerifications = async () => {
+    const fetchVerificationColleges = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/verifications');
-        if (!response.ok) {
-          throw new Error('Verification endpoint unavailable');
-        }
-
-        const data = await response.json();
-        const payload = Array.isArray(data) ? data : (data.verifications || data.items || []);
-
-        if (Array.isArray(payload) && payload.length > 0) {
-          const mappedVerifications = payload.map((request, index) => ({
-            id: request.id ?? request.student_id ?? index + 1,
-            name: request.name ?? request.student_name ?? request.full_name ?? 'Unknown Student',
-            student_id: request.student_id ?? request.studentId ?? `STU-${index + 1}`,
-            email: request.email ?? request.student_email ?? 'student@campus.edu.et',
-            department: request.department ?? request.college_department ?? 'General Studies',
-            status: request.status ?? 'Pending',
-            uploaded_id_card: request.uploaded_id_card ?? request.id_card_url ?? request.image_url ?? 'https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=600&q=80',
-            uploaded_at: request.uploaded_at ?? request.created_at ?? new Date().toISOString(),
-            reason: request.reason ?? ''
-          }));
-
-          setVerifications(mappedVerifications);
-        }
+        const response = await fetch('http://127.0.0.1:8000/api/admin/colleges');
+        if (!response.ok) throw new Error('College endpoint unavailable');
+        const colleges = await response.json();
+        setVerificationColleges(Array.isArray(colleges) ? colleges : []);
       } catch (error) {
-        console.error('Failed to fetch verification requests:', error);
+        console.error('Failed to fetch verification colleges:', error);
+        setVerificationColleges([]);
       }
     };
 
-    fetchVerifications();
+    fetchVerificationColleges();
   }, []);
 
   useEffect(() => {
-    const fetchUsersData = async () => {
+    const fetchVerificationDepartments = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/users');
-        if (!response.ok) {
-          throw new Error('Users endpoint unavailable');
-        }
-
-        const data = await response.json();
-        if (Array.isArray(data) && data.length > 0) {
-          const mappedUsers = data.map((student, index) => ({
-            id: student.id ?? index + 1,
-            student_id: student.student_id ?? `STU-${index + 1}`,
-            name: student.name ?? `Student ${index + 1}`,
-            email: student.email ?? `student${index + 1}@campus.edu.et`,
-            phone: student.phone ?? 'N/A',
-            college: student.college ?? 'CCI',
-            department: student.department ?? 'Software Engineering',
-            year: student.year ?? 'Year 1',
-            is_verified: Boolean(student.is_verified),
-            status: student.status ?? 'Active',
-            rating: student.rating ?? 'No ratings',
-            wallet_balance: student.wallet_balance ?? 0,
-            active_listings: student.active_listings ?? 0,
-            activity: student.activity ?? [{ action: 'Account synced', time: 'Recently' }],
-          }));
-
-          setStudentUsers(mappedUsers);
-
-          const totalStudents = mappedUsers.length;
-          const activeSellers = mappedUsers.filter(user => user.is_verified && (user.active_listings ?? 0) > 0).length;
-          const activeBuyers = Math.max(totalStudents - activeSellers, 0);
-          const suspendedAccounts = mappedUsers.filter(user => user.status === 'Suspended' || user.status === 'Deactivated').length;
-
-          setUserManagementStats({
-            totalStudents,
-            activeSellers,
-            activeBuyers,
-            suspendedAccounts,
-          });
-        }
+        const url = verificationFilterCollege !== 'All'
+          ? `http://127.0.0.1:8000/api/admin/departments?college=${encodeURIComponent(verificationFilterCollege)}`
+          : 'http://127.0.0.1:8000/api/admin/departments';
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Department endpoint unavailable');
+        const departments = await response.json();
+        setVerificationDepartments(Array.isArray(departments) ? departments : []);
       } catch (error) {
-        console.error('Failed to fetch user metrics:', error);
+        console.error('Failed to fetch verification departments:', error);
+        setVerificationDepartments([]);
       }
     };
 
+    fetchVerificationDepartments();
+    setVerificationFilterDept('All');
+  }, [verificationFilterCollege]);
+
+  const fetchFilteredVerifications = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (verificationSearchTerm.trim()) params.set('search', verificationSearchTerm.trim());
+      if (verificationFilterCollege !== 'All') params.set('college', verificationFilterCollege);
+      if (verificationFilterDept !== 'All') params.set('department', verificationFilterDept);
+
+      const query = params.toString();
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/verifications${query ? `?${query}` : ''}`);
+      if (!response.ok) throw new Error('Verification endpoint unavailable');
+
+      const data = await response.json();
+      const payload = Array.isArray(data) ? data : (data.verifications || data.items || []);
+      const mappedVerifications = (Array.isArray(payload) ? payload : []).map((request, index) => ({
+        id: request.id ?? request.student_id ?? index + 1,
+        name: request.name ?? request.student_name ?? request.full_name ?? 'Unknown Student',
+        student_id: request.student_id ?? request.studentId ?? `STU-${index + 1}`,
+        email: request.email ?? request.student_email ?? 'student@campus.edu.et',
+        phone: request.phone ?? request.phone_number ?? '',
+        college: request.college ?? '',
+        department: request.department ?? request.college_department ?? 'General Studies',
+        status: request.status ?? 'Pending',
+        uploaded_id_card: request.uploaded_id_card ?? request.id_card_url ?? request.image_url ?? null,
+        uploaded_at: request.uploaded_at ?? request.created_at ?? new Date().toISOString(),
+        reason: request.reason ?? '',
+      }));
+
+      setVerifications(mappedVerifications);
+    } catch (error) {
+      console.error('Failed to fetch filtered verification requests:', error);
+      setVerifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchFilteredVerifications();
+  }, []);
+
+  const fetchUsersData = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/users');
+      if (!response.ok) {
+        throw new Error('Users endpoint unavailable');
+      }
+
+      const data = await response.json();
+      if (Array.isArray(data) && data.length > 0) {
+        const mappedUsers = data.map((student, index) => ({
+          id: student.id ?? index + 1,
+          student_id: student.student_id ?? `STU-${index + 1}`,
+          name: student.name ?? `Student ${index + 1}`,
+          email: student.email ?? `student${index + 1}@campus.edu.et`,
+          phone: student.phone ?? 'N/A',
+          college: student.college ?? 'CCI',
+          department: student.department ?? 'Software Engineering',
+          year: student.year ?? 'Year 1',
+          is_verified: Boolean(student.is_verified),
+          status: student.status ?? 'Active',
+          rating: student.rating ?? 'No ratings',
+          wallet_balance: student.wallet_balance ?? 0,
+          active_listings: student.active_listings ?? 0,
+          activity: student.activity ?? [{ action: 'Account synced', time: 'Recently' }],
+        }));
+
+        setStudentUsers(mappedUsers);
+
+        const totalStudents = mappedUsers.length;
+        const activeSellers = mappedUsers.filter(user => user.is_verified && (user.active_listings ?? 0) > 0).length;
+        const activeBuyers = Math.max(totalStudents - activeSellers, 0);
+        const suspendedAccounts = mappedUsers.filter(user => user.status === 'Suspended' || user.status === 'Deactivated').length;
+
+        setUserManagementStats({
+          totalStudents,
+          activeSellers,
+          activeBuyers,
+          suspendedAccounts,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to fetch user metrics:', error);
+    }
+  };
+
+  useEffect(() => {
     fetchUsersData();
   }, []);
 
-  useEffect(() => {
-    const fetchCatalogProducts = async () => {
-      try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/products');
-        if (!response.ok) {
-          throw new Error('Catalog products endpoint unavailable');
-        }
+  const fetchDbCategories = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/categories');
+      if (!response.ok) throw new Error('Categories endpoint unavailable');
+      const data = await response.json();
+      setDbCategories(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Failed to fetch database categories:', error);
+      setDbCategories([]);
+    }
+  };
 
-        const data = await response.json();
-        if (Array.isArray(data) && data.length > 0) {
-          const mappedProducts = data.map((product, index) => ({
-            id: product.id ?? index + 1,
-            title: product.title ?? `Product ${index + 1}`,
-            price: product.price ?? `${Math.floor(Math.random() * 9000) + 500} ETB`,
-            seller: product.seller ?? 'Unknown Student',
-            seller_id: product.seller_id ?? product.seller ?? 'Unknown Student',
-            category: product.category ?? 'General',
-            condition: product.condition ?? (index % 2 === 0 ? 'New' : 'Gently Used'),
-            status: product.status ?? 'Pending',
-            moderation_reason: product.moderation_reason ?? '',
-            rejection_reason: product.rejection_reason ?? '',
-            image: product.image ?? 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80',
-            description: product.description ?? 'No product description provided by the seller yet.',
-            seller_verified: product.seller_verified ?? product.is_verified ?? true,
-          }));
-          setProductsList(mappedProducts);
-        }
-      } catch (error) {
-        console.error('Failed to fetch admin catalog products:', error);
+  const fetchCatalogProducts = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (productCategoryFilter && productCategoryFilter !== 'All') {
+        params.set('category', productCategoryFilter);
       }
-    };
+      if (productSubcategoryFilter && productSubcategoryFilter !== 'All') {
+        params.set('subcategory', productSubcategoryFilter);
+      }
+      const query = params.toString();
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/products${query ? `?${query}` : ''}`);
+      if (!response.ok) {
+        throw new Error('Catalog products endpoint unavailable');
+      }
 
-    fetchCatalogProducts();
+      const data = await response.json();
+      if (Array.isArray(data)) {
+        const mappedProducts = data.map((product, index) => ({
+          id: product.id ?? index + 1,
+          title: product.title ?? `Product ${index + 1}`,
+          price: product.price ?? `${Math.floor(Math.random() * 9000) + 500} ETB`,
+          seller: product.seller ?? 'Unknown Student',
+          seller_id: product.seller_id ?? product.seller ?? 'Unknown Student',
+          category: product.category ?? 'General',
+          subcategory: product.subcategory ?? '',
+          condition: product.condition ?? (index % 2 === 0 ? 'New' : 'Gently Used'),
+          status: product.status ?? 'Pending',
+          moderation_reason: product.moderation_reason ?? '',
+          rejection_reason: product.rejection_reason ?? '',
+          image: product.image ?? 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80',
+          description: product.description ?? 'No product description provided by the seller yet.',
+          seller_verified: product.seller_verified ?? product.is_verified ?? true,
+        }));
+        const statusCounts = mappedProducts.reduce((counts, product) => {
+          const normalizedStatus = String(product.status || '').trim().toLowerCase();
+          if (normalizedStatus === 'approved') counts.approved += 1;
+          if (normalizedStatus === 'pending') counts.pending += 1;
+          if (normalizedStatus === 'flagged') counts.flagged += 1;
+          return counts;
+        }, { approved: 0, pending: 0, flagged: 0 });
+
+        setProductStats({
+          total: mappedProducts.length,
+          ...statusCounts,
+        });
+        setProductsList(mappedProducts);
+      }
+    } catch (error) {
+      console.error('Failed to fetch admin catalog products:', error);
+      setProductStats({ total: 0, approved: 0, pending: 0, flagged: 0 });
+    }
+  };
+
+  useEffect(() => {
+    fetchDbCategories();
   }, []);
+
+  useEffect(() => {
+    const selectedCategory = dbCategories.find((category) => category.name === productCategoryFilter);
+    setDbSubcategories(selectedCategory?.subcategories || selectedCategory?.items || []);
+    setProductSubcategoryFilter('All');
+  }, [productCategoryFilter, dbCategories]);
+
+  useEffect(() => {
+    fetchCatalogProducts();
+  }, [productCategoryFilter, productSubcategoryFilter]);
 
   // 9. System Settings Fields
   const [generalSettings, setGeneralSettings] = useState({
@@ -550,6 +665,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     completedOrders: 0,
     totalRevenue: '0 ETB',
     pendingReports: 0,
+    trends: {
+      months: getDynamicMonths(),
+      user_growth: [0, 0, 0, 0, 0, 0],
+      product_uploads: [0, 0, 0, 0, 0, 0],
+      revenue: [0, 0, 0, 0, 0, 0],
+    },
+    order_status_breakdown: [],
+    popular_categories: [],
+    department_activity: [],
+    recent_activity: [],
   });
 
   const fetchDashboardOverview = async () => {
@@ -561,20 +686,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
       const data = await response.json();
       const productBreakdown = data?.productStatusBreakdown ?? data?.product_status_breakdown ?? {};
-      const pendingProducts = Number(
-        data?.pendingProducts ?? data?.pending_products ?? productBreakdown.Pending ?? productBreakdown['Pending'] ?? 0,
-      );
-      const totalStudents = Number(data?.users ?? data?.totalStudents ?? data?.total_students ?? 0);
-      const totalProducts = Number(data?.products ?? data?.totalProducts ?? data?.total_products ?? 0);
-      const totalOrders = Number(data?.orders ?? data?.totalOrders ?? data?.total_orders ?? 0);
-      const completedOrders = Number(
-        data?.completedOrders ?? data?.completed_orders ?? Math.max(totalOrders - (data?.pendingOrders ?? 0), 0),
-      );
-      const totalRevenue = data?.revenue ?? data?.totalRevenue ?? data?.total_revenue ?? '0 ETB';
-      const pendingReports = Number(data?.pendingReports ?? data?.pending_reports ?? 0);
-      const activeStudents = Number(
-        data?.activeStudents ?? data?.active_students ?? Math.max(Math.round(totalStudents * 0.9), 0),
-      );
+      const totalStudents = Number(data?.total_students ?? data?.users ?? 0);
+      const activeStudents = Number(data?.active_students ?? data?.activeStudents ?? 0);
+      const totalProducts = Number(data?.total_products ?? data?.products ?? 0);
+      const pendingProducts = Number(data?.pending_products ?? data?.pendingProducts ?? productBreakdown.Pending ?? 0);
+      const totalOrders = Number(data?.total_orders ?? data?.orders ?? 0);
+      const completedOrders = Number(data?.completed_orders ?? data?.completedOrders ?? 0);
+      const totalRevenue = data?.revenue ?? `${Number(data?.total_revenue ?? 0).toLocaleString()} ETB`;
+      const pendingReports = Number(data?.pending_reports ?? data?.pendingReports ?? 0);
+      const trends = data?.trends ?? {};
+      const orderStatusBreakdown = data?.order_status_breakdown ?? data?.orderStatus ?? [];
+      const popularCategories = data?.popular_categories ?? data?.categories ?? [];
+      const hasDatabaseActivity = totalStudents > 0 || totalProducts > 0 || totalOrders > 0 || Number(data?.total_revenue ?? 0) > 0;
+      const emptyTrends = [0, 0, 0, 0, 0, 0];
 
       setMetrics({
         totalStudents,
@@ -585,72 +709,57 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         completedOrders,
         totalRevenue,
         pendingReports,
+        trends: {
+          months: trends.months ?? data?.months ?? getDynamicMonths(),
+          user_growth: hasDatabaseActivity ? (trends.user_growth ?? data?.userGrowth ?? data?.registrations ?? emptyTrends) : emptyTrends,
+          product_uploads: hasDatabaseActivity ? (trends.product_uploads ?? data?.productUploads ?? data?.salesTrend ?? emptyTrends) : emptyTrends,
+          revenue: hasDatabaseActivity ? (trends.revenue ?? data?.revenueTrend ?? emptyTrends) : emptyTrends,
+        },
+        order_status_breakdown: Array.isArray(orderStatusBreakdown) ? orderStatusBreakdown : [],
+        popular_categories: Array.isArray(popularCategories) ? popularCategories : [],
+        department_activity: Array.isArray(data?.departmentActivity) ? data.departmentActivity : [],
+        recent_activity: Array.isArray(data?.recentActivity) ? data.recentActivity : [],
       });
     } catch (error) {
       console.error('Failed to fetch dashboard overview metrics:', error);
-      setMetrics((prev) => ({
-        ...prev,
-        totalStudents: prev.totalStudents || 0,
-        activeStudents: prev.activeStudents || 0,
-        totalProducts: prev.totalProducts || 0,
-        pendingProducts: prev.pendingProducts || 0,
-        totalOrders: prev.totalOrders || 0,
-        completedOrders: prev.completedOrders || 0,
-        totalRevenue: prev.totalRevenue || '0 ETB',
-        pendingReports: prev.pendingReports || 0,
-      }));
+      setMetrics({
+        totalStudents: 0,
+        activeStudents: 0,
+        totalProducts: 0,
+        pendingProducts: 0,
+        totalOrders: 0,
+        completedOrders: 0,
+        totalRevenue: '0 ETB',
+        pendingReports: 0,
+        trends: {
+          months: getDynamicMonths(),
+          user_growth: [0, 0, 0, 0, 0, 0],
+          product_uploads: [0, 0, 0, 0, 0, 0],
+          revenue: [0, 0, 0, 0, 0, 0],
+        },
+        order_status_breakdown: [],
+        popular_categories: [],
+        department_activity: [],
+        recent_activity: [],
+      });
     }
   };
 
-  const mockAnalyticsData = {
-    users: 5240,
-    products: 12450,
-    orders: 8920,
-    revenue: '2.4M ETB',
-    salesTrend: [32, 50, 44, 68, 62, 81, 96],
-    revenueTrend: [18, 26, 30, 49, 52, 64, 88],
-    registrations: [12, 18, 16, 26, 24, 31, 39],
-    orderStatus: [
-      { label: 'Completed', value: 58, color: '#10b981' },
-      { label: 'Pending', value: 22, color: '#f59e0b' },
-      { label: 'Processing', value: 14, color: '#3b82f6' },
-      { label: 'Cancelled', value: 6, color: '#ef4444' }
-    ],
-    categories: [
-      { name: 'Electronics', views: '18.4K', likes: '4.2K', sales: '1,280' },
-      { name: 'Books', views: '12.1K', likes: '3.1K', sales: '930' },
-      { name: 'Lab Equipment', views: '9.6K', likes: '2.7K', sales: '760' },
-      { name: 'Accessories', views: '8.3K', likes: '2.2K', sales: '640' },
-      { name: 'Stationery', views: '6.7K', likes: '1.8K', sales: '490' }
-    ],
-    departmentActivity: [
-      { name: 'Information Technology', value: 32, color: 'bg-blue-500' },
-      { name: 'Engineering', value: 26, color: 'bg-violet-500' },
-      { name: 'Medicine', value: 19, color: 'bg-emerald-500' },
-      { name: 'Business', value: 14, color: 'bg-amber-500' },
-      { name: 'Social Science', value: 9, color: 'bg-slate-500' }
-    ],
-    recentActivity: [
-      { time: '08:42 AM', action: 'New electronics listing approved by admin', user: 'Student • MAU1602041' },
-      { time: '09:15 AM', action: 'Engineering books category gained 18% more click-through', user: 'AI Recommendation Engine' },
-      { time: '10:05 AM', action: 'Payment verified for a laptop order from IT department', user: 'Finance • TXN-11842' },
-      { time: '12:20 PM', action: 'Three new student accounts were verified successfully', user: 'Admin Review Queue' },
-      { time: '02:40 PM', action: 'Lab equipment recommendation campaign reached 1.2K impressions', user: 'Marketing Module' }
-    ]
-  };
-
-  const [analyticsData, setAnalyticsData] = useState(mockAnalyticsData);
-
   const analyticsSummaryCards = [
-    { label: 'Users', value: analyticsData.users ?? 0, trend: '+12.8%' },
-    { label: 'Products', value: analyticsData.products ?? 0, trend: '+9.4%' },
-    { label: 'Orders', value: analyticsData.orders ?? 0, trend: '+17.1%' },
-    { label: 'Revenue', value: analyticsData.revenue ?? '0 ETB', trend: '+23.6%' },
+    { label: 'Users', value: metrics.totalStudents, trend: '0%' },
+    { label: 'Products', value: metrics.totalProducts, trend: '0%' },
+    { label: 'Orders', value: metrics.totalOrders, trend: '0%' },
+    { label: 'Revenue', value: metrics.totalRevenue, trend: '0%' },
   ];
 
-  const analyticsOrderStatus = Array.isArray(analyticsData.orderStatus) && analyticsData.orderStatus.length > 0
-    ? analyticsData.orderStatus
-    : mockAnalyticsData.orderStatus;
+  const userGrowthTrend = metrics.trends?.user_growth ?? [];
+  const productUploadsTrend = metrics.trends?.product_uploads ?? [];
+  const revenueTrend = (metrics.trends?.revenue ?? []).slice(-6);
+  const lineMaxValue = Math.max(...userGrowthTrend, ...productUploadsTrend, 1);
+  const maxRevenue = Math.max(...revenueTrend.map((value) => Number(value) || 0), 1);
+  const overviewOrderStatus = metrics.order_status_breakdown ?? [];
+  const overviewCategories = metrics.popular_categories ?? [];
+  const trendMonths = metrics.trends?.months ?? getDynamicMonths();
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -663,22 +772,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     const timer = window.setTimeout(() => setIsReady(true), 250);
     return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    const fetchAnalytics = async () => {
-      try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/analytics');
-        if (!response.ok) throw new Error('Analytics endpoint unavailable');
-        const data = await response.json();
-        setAnalyticsData({ ...mockAnalyticsData, ...data });
-      } catch (error) {
-        console.error('Failed to fetch analytics data:', error);
-        setAnalyticsData(mockAnalyticsData);
-      }
-    };
-
-    fetchAnalytics();
   }, []);
 
   // Fetch colleges list on component mount
@@ -735,6 +828,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     if (activeTab === 'orders') {
       fetchOrdersData();
+    }
+  }, [activeTab]);
+
+  const fetchCategories = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/categories/all');
+      if (!response.ok) throw new Error('Categories endpoint unavailable');
+
+      const categories = await response.json();
+      setCategoriesList(categories || []);
+    } catch (err) {
+      console.error('Failed to fetch categories:', err);
+      setCategoriesList([]);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'categories') {
+      fetchCategories();
     }
   }, [activeTab]);
 
@@ -931,11 +1043,64 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     onTabChange?.(tabId);
   };
 
+  const handleAddStudentSubmit = async (event) => {
+    event.preventDefault();
+    const requiredFields = ['name', 'student_id', 'email', 'college', 'department', 'password'];
+    if (requiredFields.some((field) => !String(addStudentForm[field] || '').trim())) {
+      setAddStudentError('Please complete all required fields.');
+      return;
+    }
+
+    setAddStudentLoading(true);
+    setAddStudentError('');
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(addStudentForm),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || 'Unable to register student.');
+      }
+
+      await fetchUsersData();
+      setAddStudentForm({ name: '', student_id: '', email: '', phone: '', college: '', department: '', password: '' });
+      setShowAddStudentModal(false);
+    } catch (error) {
+      setAddStudentError(error.message || 'Unable to register student.');
+    } finally {
+      setAddStudentLoading(false);
+    }
+  };
+
   // State manipulation handlers
-  const toggleVerification = (userId) => {
-    setStudentUsers(prev => prev.map(u =>
-      u.id === userId ? { ...u, is_verified: !u.is_verified } : u
-    ));
+  const toggleVerification = async (student) => {
+    if (!student?.id) return;
+
+    const nextStatus = student.is_verified ? 'Rejected' : 'Verified';
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/verifications/${student.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus, reason: '' }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Verification update failed with status ${response.status}`);
+      }
+
+      const payload = await response.json().catch(() => ({}));
+      setStudentUsers(prev => prev.map(user =>
+        user.id === student.id
+          ? { ...user, is_verified: payload.is_verified ?? nextStatus === 'Verified', verification_reason: payload.reason ?? '' }
+          : user
+      ));
+      window.alert(`${student.name} verification status updated to ${nextStatus}.`);
+    } catch (error) {
+      console.error('Failed to update student verification:', error);
+      window.alert('Failed to update student verification. Please try again.');
+    }
   };
 
   const applyAccountStatusChange = async (userId, newStatus, reason = '') => {
@@ -1173,20 +1338,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       });
 
       if (response.ok) {
-        const newCategory = await response.json();
-
-        // Update local state
-        setCategoriesList(prev => [
-          ...prev,
-          {
-            id: newCategory.id,
-            name: newCategory.name,
-            icon: newCategory.icon,
-            ads: "0 ads",
-            status: "Active",
-            subcategories: []
-          }
-        ]);
+        await fetchCategories();
 
         // Show success message
         setCatMsg('Category added successfully!');
@@ -1233,26 +1385,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       });
 
       if (response.ok) {
-        const newSubcategory = await response.json();
-
-        // Update local state - add subcategory to parent category
-        setCategoriesList(prev => prev.map(cat =>
-          cat.id === parseInt(newSubParentId)
-            ? {
-              ...cat,
-              subcategories: [
-                ...(cat.subcategories || []),
-                {
-                  id: newSubcategory.id,
-                  name: newSubcategory.name,
-                  icon: newSubcategory.icon,
-                  category_id: newSubcategory.category_id,
-                  ads: "0 ads"
-                }
-              ]
-            }
-            : cat
-        ));
+        await fetchCategories();
 
         // Show success message
         setCatMsg('Subcategory added successfully!');
@@ -1281,6 +1414,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   // Handle category deletion with confirmation
+  const toggleCategoryExpand = (catId) => {
+    setExpandedCategoryId((currentId) => currentId === catId ? null : catId);
+  };
+
   const handleDeleteCategory = async (id) => {
     if (!window.confirm('Are you sure you want to delete this category? This action cannot be undone.')) {
       return;
@@ -2001,9 +2138,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
                       </linearGradient>
                     </defs>
-                    <path d="M 0,90 Q 25,60 50,45 T 100,15 L 100,100 L 0,100 Z" fill="url(#growthGrad)" />
-                    <path d="M 0,90 Q 25,60 50,45 T 100,15" fill="none" stroke="#3b82f6" strokeWidth="2.5" />
-                    <path d="M 0,80 Q 25,75 50,60 T 100,30" fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="3,3" />
+                    <path
+                      d={`${generateLinePath(userGrowthTrend, lineMaxValue)} L 100,100 L 0,100 Z`}
+                      fill="url(#growthGrad)"
+                    />
+                    <path d={generateLinePath(userGrowthTrend, lineMaxValue)} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+                    <path d={generateLinePath(productUploadsTrend, lineMaxValue)} fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="3,3" />
                   </svg>
                 </div>
                 <div className="mt-4 flex items-center justify-between text-xs text-slate-500 font-semibold px-1">
@@ -2015,38 +2155,30 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">Sales & Revenue Trend</h3>
                 <div className="h-44 w-full flex items-end justify-between gap-3 px-2 mt-2">
-                  {[
-                    { m: "Sep", h: "h-[30%]" },
-                    { m: "Oct", h: "h-[45%]" },
-                    { m: "Nov", h: "h-[65%]" },
-                    { m: "Dec", h: "h-[50%]" },
-                    { m: "Jan", h: "h-[85%]" },
-                    { m: "Feb", h: "h-[95%]" }
-                  ].map((bar, i) => (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
-                      <div className={`w-full rounded-t-lg bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all duration-300 ${bar.h}`} />
-                      <span className="text-[10px] text-slate-500 font-bold">{bar.m}</span>
-                    </div>
-                  ))}
+                  {revenueTrend.map((value, index) => {
+                    const numericValue = Number(value) || 0;
+                    const height = (numericValue / maxRevenue) * 100;
+                    return (
+                      <div key={`revenue-${index}`} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
+                        <div className="w-full rounded-t-lg bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all duration-300" style={{ height: `${height}%` }} />
+                        <span className="text-[10px] text-slate-500 font-bold">{trendMonths[index]}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">Popular Directory Categories</h3>
                 <div className="space-y-4 py-2">
-                  {[
-                    { label: "Electronics", val: "45%", color: "bg-blue-500" },
-                    { label: "Academic Books", val: "30%", color: "bg-emerald-500" },
-                    { label: "Stationery", val: "15%", color: "bg-amber-500" },
-                    { label: "Laboratory Equipment", val: "10%", color: "bg-rose-500" }
-                  ].map((cat, i) => (
-                    <div key={i} className="space-y-1 text-xs font-semibold text-slate-700">
+                  {overviewCategories.map((category) => (
+                    <div key={category.name} className="space-y-1 text-xs font-semibold text-slate-700">
                       <div className="flex items-center justify-between">
-                        <span>{cat.label}</span>
-                        <span>{cat.val}</span>
+                        <span>{category.name}</span>
+                        <span>{category.percentage ?? category.value ?? 0}%</span>
                       </div>
                       <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full ${cat.color}`} style={{ width: cat.val }} />
+                        <div className={`h-full rounded-full ${category.color ?? 'bg-blue-500'}`} style={{ width: `${category.percentage ?? category.value ?? 0}%` }} />
                       </div>
                     </div>
                   ))}
@@ -2059,15 +2191,41 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="relative h-28 w-28 shrink-0">
                     <svg className="h-full w-full rotate-[-90deg]" viewBox="0 0 36 36">
                       <circle cx="18" cy="16" r="15.915" fill="none" stroke="#e2e8f0" strokeWidth="4" />
-                      <circle cx="18" cy="16" r="15.915" fill="none" stroke="#10b981" strokeWidth="4" strokeDasharray="80 20" strokeDashoffset="0" />
-                      <circle cx="18" cy="16" r="15.915" fill="none" stroke="#3b82f6" strokeWidth="4" strokeDasharray="15 85" strokeDashoffset="-80" />
-                      <circle cx="18" cy="16" r="15.915" fill="none" stroke="#f59e0b" strokeWidth="4" strokeDasharray="5 95" strokeDashoffset="-95" />
+                      {metrics.totalOrders === 0 ? (
+                        <>
+                          <circle cx="18" cy="16" r="15.915" fill="none" stroke="#e2e8f0" strokeWidth="4" strokeDasharray="100 0" />
+                          <text x="18" y="17" textAnchor="middle" fill="#94a3b8" fontSize="3.5" fontWeight="600">No Orders</text>
+                        </>
+                      ) : (
+                        overviewOrderStatus.map((status, index) => {
+                          const offset = overviewOrderStatus
+                            .slice(0, index)
+                            .reduce((total, item) => total + Number(item.percentage ?? item.value ?? 0), 0);
+                          const value = Number(status.percentage ?? status.value ?? 0);
+                          return (
+                            <circle
+                              key={status.label}
+                              cx="18"
+                              cy="16"
+                              r="15.915"
+                              fill="none"
+                              stroke={status.color ?? '#64748b'}
+                              strokeWidth="4"
+                              strokeDasharray={`${value} ${100 - value}`}
+                              strokeDashoffset={`${-offset}`}
+                            />
+                          );
+                        })
+                      )}
                     </svg>
                   </div>
                   <div className="space-y-2 text-xs font-semibold text-slate-600">
-                    <div className="flex items-center gap-2"><span className="h-3 w-3 bg-emerald-500 rounded-full" /> Completed (80%)</div>
-                    <div className="flex items-center gap-2"><span className="h-3 w-3 bg-blue-500 rounded-full" /> Processing (15%)</div>
-                    <div className="flex items-center gap-2"><span className="h-3 w-3 bg-amber-500 rounded-full" /> Pending (5%)</div>
+                    {overviewOrderStatus.map((status) => (
+                      <div key={status.label} className="flex items-center gap-2">
+                        <span className="h-3 w-3 rounded-full" style={{ backgroundColor: status.color ?? '#64748b' }} />
+                        {status.label} ({status.percentage ?? status.value ?? 0}%)
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -2094,9 +2252,21 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-2xl font-black text-slate-950">User Management</h2>
-              <p className="mt-1 text-slate-500 text-sm font-semibold">Monitor student profiles, enforce restrictions, and verify academic IDs.</p>
+            <div className="flex flex-col gap-4 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-black text-slate-950">User Management</h2>
+                <p className="mt-1 text-slate-500 text-sm font-semibold">Monitor student profiles, enforce restrictions, and verify academic IDs.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAddStudentError('');
+                  setShowAddStudentModal(true);
+                }}
+                className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-600"
+              >
+                + Add Student
+              </button>
             </div>
 
             <div className="grid gap-4 md:grid-cols-4">
@@ -2185,7 +2355,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <td className="px-4 py-4 text-center">
                           <button
                             type="button"
-                            onClick={() => toggleVerification(student.id)}
+                            onClick={() => toggleVerification(student)}
                             className={`rounded-full px-3 py-1 text-xs font-bold border transition cursor-pointer ${student.is_verified
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                               : 'bg-slate-100 text-slate-500 border-slate-200'
@@ -2366,21 +2536,91 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
             )}
 
+            {showAddStudentModal && (
+              <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+                <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-slate-100 bg-white p-6 shadow-2xl">
+                  <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-600">User Management</p>
+                      <h3 className="mt-1 text-2xl font-black text-slate-950">Add Student</h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAddStudentModal(false)}
+                      className="rounded-full bg-slate-100 px-3 py-2 font-bold text-slate-500 transition hover:bg-slate-200"
+                      aria-label="Close add student modal"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleAddStudentSubmit} className="mt-5 space-y-4">
+                    {addStudentError && (
+                      <p className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{addStudentError}</p>
+                    )}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {[
+                        ['name', 'Full Name', 'text'],
+                        ['student_id', 'Student ID', 'text'],
+                        ['email', 'Email', 'email'],
+                        ['phone', 'Phone', 'tel'],
+                        ['password', 'Temporary Password', 'password'],
+                      ].map(([field, label, type]) => (
+                        <label key={field} className="block text-sm font-semibold text-slate-700">
+                          {label}{field !== 'phone' && <span className="text-rose-500"> *</span>}
+                          <input
+                            type={type}
+                            required={field !== 'phone'}
+                            value={addStudentForm[field]}
+                            onChange={(event) => setAddStudentForm((previous) => ({ ...previous, [field]: event.target.value }))}
+                            className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                          />
+                        </label>
+                      ))}
+                      <label className="block text-sm font-semibold text-slate-700">
+                        College <span className="text-rose-500">*</span>
+                        <select
+                          required
+                          value={addStudentForm.college}
+                          onChange={(event) => setAddStudentForm((previous) => ({ ...previous, college: event.target.value, department: '' }))}
+                          className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
+                        >
+                          <option value="">Select college</option>
+                          {Object.keys(UNIVERSITY_STRUCTURE).map((college) => <option key={college} value={college}>{college}</option>)}
+                        </select>
+                      </label>
+                      <label className="block text-sm font-semibold text-slate-700">
+                        Department <span className="text-rose-500">*</span>
+                        <select
+                          required
+                          value={addStudentForm.department}
+                          onChange={(event) => setAddStudentForm((previous) => ({ ...previous, department: event.target.value }))}
+                          disabled={!addStudentForm.college}
+                          className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <option value="">Select department</option>
+                          {(UNIVERSITY_STRUCTURE[addStudentForm.college] || []).map((department) => <option key={department} value={department}>{department}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:justify-end">
+                      <button type="button" onClick={() => setShowAddStudentModal(false)} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50">Cancel</button>
+                      <button type="submit" disabled={addStudentLoading} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">
+                        {addStudentLoading ? 'Creating...' : 'Create Student'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
           </div>
         );
       }
       case 'student-verification': {
-        const departments = ['All', ...new Set(verifications.map(v => v.department).filter(Boolean))];
-        const filteredVerifications = verifications.filter((verification) => {
-          const matchesSearch =
-            verification.name?.toLowerCase().includes(verificationSearchTerm.toLowerCase()) ||
-            verification.student_id?.toLowerCase().includes(verificationSearchTerm.toLowerCase());
-          const matchesDepartment = verificationFilterDept === 'All' || verification.department === verificationFilterDept;
-          return matchesSearch && matchesDepartment;
-        });
-        const pendingVerifications = filteredVerifications.filter(v => v.status === 'Pending');
-        const verifiedVerifications = filteredVerifications.filter(v => v.status === 'Verified');
-        const rejectedVerifications = filteredVerifications.filter(v => v.status === 'Rejected');
+        const pendingVerifications = verifications.filter(v => v.status === 'Pending');
+        const verifiedVerifications = verifications.filter(v => v.status === 'Verified');
+        const rejectedVerifications = verifications.filter(v => v.status === 'Rejected');
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -2405,7 +2645,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-4">
                 <div>
                   <label className="mb-2 block text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">Search student</label>
                   <input
@@ -2417,16 +2657,37 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   />
                 </div>
                 <div>
+                  <label className="mb-2 block text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">College</label>
+                  <select
+                    value={verificationFilterCollege}
+                    onChange={(e) => setVerificationFilterCollege(e.target.value)}
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
+                  >
+                    <option value="All">All Colleges</option>
+                    {verificationColleges.map((college) => <option key={college} value={college}>{college}</option>)}
+                  </select>
+                </div>
+                <div>
                   <label className="mb-2 block text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">Department</label>
                   <select
                     value={verificationFilterDept}
                     onChange={(e) => setVerificationFilterDept(e.target.value)}
                     className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
                   >
-                    {departments.map((dept) => (
+                    <option value="All">All Departments</option>
+                    {verificationDepartments.map((dept) => (
                       <option key={dept} value={dept}>{dept === 'All' ? 'All Departments' : dept}</option>
                     ))}
                   </select>
+                </div>
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={fetchFilteredVerifications}
+                    className="w-full rounded-2xl bg-[#111c3a] hover:bg-[#1a2d5e] py-3 text-sm font-bold text-white transition"
+                  >
+                    🔍 Search
+                  </button>
                 </div>
               </div>
             </div>
@@ -2453,6 +2714,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <button
                           type="button"
                           onClick={() => {
+                            setSelectedVerificationRequest(req);
                             setSelectedIDPhoto(req.uploaded_id_card);
                             setVerificationZoom(1);
                             setVerificationRotation(0);
@@ -2472,8 +2734,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           type="button"
                           onClick={() => {
                             setSelectedVerificationRequest(req);
-                            setVerificationRejectReason('Blurry Image');
-                            setShowRejectReasonModal(true);
+                            setSelectedIDPhoto(req.uploaded_id_card);
+                            setVerificationZoom(1);
+                            setVerificationRotation(0);
                           }}
                           className="rounded-full border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
                         >
@@ -2486,15 +2749,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               )}
             </div>
 
-            {selectedIDPhoto && (
+            {selectedVerificationRequest && (
               <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1000] flex items-center justify-center p-4">
-                <div className="relative bg-white rounded-[28px] p-6 max-w-2xl w-full shadow-2xl border border-slate-100 animate-fade-in">
-                  <div className="flex items-center justify-between border-b pb-3 mb-4">
-                    <h4 className="text-lg font-bold text-slate-900">Student ID Card Preview</h4>
+                <div className="relative grid max-h-[90vh] w-full max-w-5xl grid-cols-1 overflow-y-auto rounded-[28px] bg-white shadow-2xl border border-slate-100 animate-fade-in lg:grid-cols-[1fr_1.3fr]">
+                  <div className="col-span-full flex items-center justify-between border-b p-6 pb-3">
+                    <h4 className="text-lg font-bold text-slate-900">Student Verification Review</h4>
                     <button
                       type="button"
                       onClick={() => {
                         setSelectedIDPhoto(null);
+                        setSelectedVerificationRequest(null);
                         setVerificationZoom(1);
                         setVerificationRotation(0);
                       }}
@@ -2504,39 +2768,87 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </button>
                   </div>
 
-                  <div className="mb-4 flex items-center justify-center gap-2">
-                    <button type="button" onClick={() => setVerificationZoom(prev => Math.max(1, Number((prev - 0.2).toFixed(1))))} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100">−</button>
-                    <button type="button" onClick={() => setVerificationZoom(prev => Number((prev + 0.2).toFixed(1)))} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100">+</button>
-                    <button type="button" onClick={() => setVerificationRotation(prev => (prev + 90) % 360)} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100">Rotate</button>
+                  <div className="border-b border-slate-200 p-6 lg:border-b-0 lg:border-r">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Student Profile</p>
+                    <dl className="mt-5 space-y-4">
+                      {[
+                        ['Full Name', selectedVerificationRequest.name],
+                        ['Student ID', selectedVerificationRequest.student_id],
+                        ['Email', selectedVerificationRequest.email],
+                        ['Phone', selectedVerificationRequest.phone || 'Not provided'],
+                        ['College', selectedVerificationRequest.college || 'Not provided'],
+                        ['Department', selectedVerificationRequest.department || 'Not provided'],
+                      ].map(([label, value]) => (
+                        <div key={label}>
+                          <dt className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">{label}</dt>
+                          <dd className="mt-1 break-words text-sm font-semibold text-slate-900">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
                   </div>
 
-                  <div className="overflow-hidden rounded-2xl border bg-slate-50 p-2 flex items-center justify-center h-[26rem] shadow-xs">
-                    <img
-                      src={selectedIDPhoto}
-                      alt="Student ID Card"
-                      className="max-h-full max-w-full rounded-xl object-contain border border-slate-200 transition-transform duration-200"
-                      style={{ transform: `scale(${verificationZoom}) rotate(${verificationRotation}deg)` }}
-                    />
-                  </div>
+                  <div className="p-6">
+                    {selectedIDPhoto && !selectedIDPhoto.includes('unsplash.com') ? (
+                      <>
+                        <div className="mb-4 flex items-center justify-between">
+                          <h5 className="text-sm font-bold text-slate-900">Uploaded ID Card</h5>
+                          <div className="flex items-center justify-center gap-2">
+                            <button type="button" onClick={() => setVerificationZoom(prev => Math.max(1, Number((prev - 0.2).toFixed(1))))} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100">−</button>
+                            <button type="button" onClick={() => setVerificationZoom(prev => Number((prev + 0.2).toFixed(1)))} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100">+</button>
+                            <button type="button" onClick={() => setVerificationRotation(prev => (prev + 90) % 360)} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100">Rotate</button>
+                          </div>
+                        </div>
+                        <div className="overflow-hidden rounded-2xl border bg-slate-50 p-2 flex items-center justify-center h-[26rem] shadow-xs">
+                          <img
+                            src={selectedIDPhoto}
+                            alt="Student ID Card"
+                            className="max-h-full max-w-full rounded-xl object-contain border border-slate-200 transition-transform duration-200"
+                            style={{ transform: `scale(${verificationZoom}) rotate(${verificationRotation}deg)` }}
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex h-[26rem] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+                        <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-200 text-3xl text-slate-500">ID</span>
+                        <p className="mt-5 text-base font-bold text-slate-800">No verification document uploaded yet</p>
+                        <p className="mt-2 text-sm text-slate-500">Student ID: {selectedVerificationRequest.student_id}</p>
+                      </div>
+                    )}
 
-                  <div className="mt-4 flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedIDPhoto(null);
-                        setVerificationZoom(1);
-                        setVerificationRotation(0);
-                      }}
-                      className="flex-1 rounded-full bg-slate-900 py-3 font-bold text-white hover:bg-slate-800 transition shadow-md"
-                    >
-                      Close Preview
-                    </button>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleVerifyAction(selectedVerificationRequest.id, 'Verified')}
+                        className="rounded-full bg-emerald-500 px-5 py-3 font-bold text-white hover:bg-emerald-600 transition shadow-md"
+                      >
+                        Verify Student ✓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleVerifyAction(selectedVerificationRequest.id, 'Rejected', '')}
+                        className="rounded-full bg-rose-500 px-5 py-3 font-bold text-white hover:bg-rose-600 transition shadow-md"
+                      >
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedIDPhoto(null);
+                          setSelectedVerificationRequest(null);
+                          setVerificationZoom(1);
+                          setVerificationRotation(0);
+                        }}
+                        className="ml-auto rounded-full border border-slate-200 bg-white px-5 py-3 font-bold text-slate-700 hover:bg-slate-50 transition"
+                      >
+                        Close
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {showRejectReasonModal && selectedVerificationRequest && (
+            {false && showRejectReasonModal && selectedVerificationRequest && (
               <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1001] flex items-center justify-center p-4">
                 <div className="bg-white rounded-[28px] p-6 max-w-md w-full shadow-2xl border border-slate-100 animate-fade-in">
                   <div className="flex items-center justify-between border-b pb-3 mb-4">
@@ -2608,7 +2920,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         );
       }
       case 'product-management': {
-        const productCategories = ['All', ...new Set(productsList.map(product => product.category).filter(Boolean))];
         const filteredProds = productsList.filter(product => {
           const matchesSearch =
             product.title?.toLowerCase().includes(prodSearch.toLowerCase()) ||
@@ -2616,7 +2927,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             product.seller_id?.toLowerCase().includes(prodSearch.toLowerCase());
           const matchesStatus = prodStatusFilter ? product.status === prodStatusFilter : true;
           const matchesCategory = productCategoryFilter === 'All' || product.category === productCategoryFilter;
-          return matchesSearch && matchesStatus && matchesCategory;
+          const matchesSubcategory = productSubcategoryFilter === 'All' || product.subcategory === productSubcategoryFilter;
+          return matchesSearch && matchesStatus && matchesCategory && matchesSubcategory;
         });
 
         return (
@@ -2628,10 +2940,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
             <div className="grid gap-4 md:grid-cols-4">
               {[
-                { label: 'Total Products', value: '12,450', tone: 'bg-sky-50 border-sky-200 text-sky-700' },
-                { label: 'Approved', value: '11,820', tone: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-                { label: 'Pending Review', value: '84', tone: 'bg-amber-50 border-amber-200 text-amber-700' },
-                { label: 'Flagged', value: '43', tone: 'bg-rose-50 border-rose-200 text-rose-700' },
+                { label: 'Total Products', value: productStats.total, tone: 'bg-sky-50 border-sky-200 text-sky-700' },
+                { label: 'Approved', value: productStats.approved, tone: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+                { label: 'Pending Review', value: productStats.pending, tone: 'bg-amber-50 border-amber-200 text-amber-700' },
+                { label: 'Flagged', value: productStats.flagged, tone: 'bg-rose-50 border-rose-200 text-rose-700' },
               ].map((metric) => (
                 <div key={metric.label} className={`rounded-[24px] border p-5 shadow-sm ${metric.tone}`}>
                   <p className="text-[10px] font-bold uppercase tracking-[0.16em]">{metric.label}</p>
@@ -2640,7 +2952,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               ))}
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="grid gap-4 md:grid-cols-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Search Products</label>
                 <input
@@ -2658,8 +2970,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   onChange={(e) => setProductCategoryFilter(e.target.value)}
                   className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
                 >
-                  {productCategories.map(category => (
-                    <option key={category} value={category}>{category === 'All' ? 'All Categories' : category}</option>
+                  <option value="All">All Categories</option>
+                  {dbCategories.map((category) => (
+                    <option key={category.id ?? category.name} value={category.name}>{category.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Filter by Subcategory</label>
+                <select
+                  value={productSubcategoryFilter}
+                  onChange={(e) => setProductSubcategoryFilter(e.target.value)}
+                  disabled={productCategoryFilter === 'All'}
+                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="All">All Subcategories</option>
+                  {dbSubcategories.map((subcategory) => (
+                    <option key={subcategory.id ?? subcategory.name} value={subcategory.name}>
+                      {subcategory.name}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -2906,40 +3235,76 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   {categoriesList.map((cat) => (
                     <div key={cat.id} className="rounded-2xl border border-slate-200/50 bg-slate-50/50 p-4 space-y-3">
                       {/* Main Category Header */}
-                      <div className="flex items-center justify-between">
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => toggleCategoryExpand(cat.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') toggleCategoryExpand(cat.id);
+                        }}
+                        className="flex items-center justify-between cursor-pointer"
+                      >
                         <div className="flex items-center gap-3">
                           <span className="text-2xl">{cat.icon || '📁'}</span>
                           <div>
-                            <div className="font-bold text-slate-900">{cat.name}</div>
+                            <div className="flex items-center gap-2 font-bold text-slate-900">
+                              <span>{cat.name}</span>
+                              <span className={`text-xs transition-transform ${expandedCategoryId === cat.id ? 'rotate-180' : ''}`}>
+                                ▼
+                              </span>
+                            </div>
                             <div className="text-xs text-slate-400">{cat.ads}</div>
                           </div>
                         </div>
-                        <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold border ${cat.status === 'Active'
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
-                          : 'bg-slate-100 text-slate-500 border-slate-200'
-                          }`}>
-                          {cat.status}
-                        </span>
+                        <div className="flex items-center gap-3">
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold border ${cat.status === 'Active'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                            : 'bg-slate-100 text-slate-500 border-slate-200'
+                            }`}>
+                            {cat.status}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteCategory(cat.id);
+                            }}
+                            className="text-xs font-bold text-rose-600 hover:text-rose-800 transition"
+                          >
+                            Delete 🗑️
+                          </button>
+                        </div>
                       </div>
 
                       {/* Nested Subcategories */}
-                      {cat.subcategories && cat.subcategories.length > 0 && (
-                        <div className="ml-8 space-y-2 border-l-2 border-slate-200 pl-4">
-                          {cat.subcategories.map((sub) => (
-                            <div key={sub.id} className="flex items-center justify-between py-2 px-3 rounded-lg bg-white border border-slate-100">
-                              <div className="flex items-center gap-2">
-                                <span className="text-lg">{sub.icon || '📂'}</span>
-                                <div>
-                                  <div className="text-sm font-semibold text-slate-800">{sub.name}</div>
-                                  <div className="text-xs text-slate-400">{sub.ads}</div>
+                      {expandedCategoryId === cat.id && (
+                        <>
+                          {cat.subcategories && cat.subcategories.length > 0 && (
+                            <div className="ml-8 space-y-2 border-l-2 border-slate-200 pl-4">
+                              {cat.subcategories.map((sub) => (
+                                <div key={sub.id} className="flex items-center justify-between py-2 px-3 rounded-lg bg-white border border-slate-100">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-lg">{sub.icon || '📂'}</span>
+                                    <div>
+                                      <div className="text-sm font-semibold text-slate-800">{sub.name}</div>
+                                      <div className="text-xs text-slate-400">{sub.ads}</div>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteSubcategory(cat.id, sub.id)}
+                                    className="text-xs font-bold text-rose-500 hover:text-rose-700 transition"
+                                  >
+                                    Remove ×
+                                  </button>
                                 </div>
-                              </div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      )}
-                      {(!cat.subcategories || cat.subcategories.length === 0) && (
-                        <div className="ml-8 text-xs text-slate-400 italic py-2">No subcategories yet</div>
+                          )}
+                          {(!cat.subcategories || cat.subcategories.length === 0) && (
+                            <div className="ml-8 text-xs text-slate-400 italic py-2">No subcategories yet</div>
+                          )}
+                        </>
                       )}
                     </div>
                   ))}
@@ -4167,17 +4532,35 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <div className="mt-5 flex items-center justify-center">
                   <svg viewBox="0 0 220 220" className="h-52 w-52">
                     <circle cx="110" cy="110" r="66" fill="none" stroke="#e2e8f0" strokeWidth="26" />
-                    <circle cx="110" cy="110" r="66" fill="none" stroke="#10b981" strokeWidth="26" strokeDasharray="154 198" strokeLinecap="round" strokeDashoffset="0" transform="rotate(-90 110 110)" />
-                    <circle cx="110" cy="110" r="66" fill="none" stroke="#f59e0b" strokeWidth="26" strokeDasharray="84 268" strokeLinecap="round" strokeDashoffset="-154" transform="rotate(-90 110 110)" />
-                    <circle cx="110" cy="110" r="66" fill="none" stroke="#3b82f6" strokeWidth="26" strokeDasharray="52 300" strokeLinecap="round" strokeDashoffset="-238" transform="rotate(-90 110 110)" />
-                    <circle cx="110" cy="110" r="66" fill="none" stroke="#ef4444" strokeWidth="26" strokeDasharray="23 329" strokeLinecap="round" strokeDashoffset="-290" transform="rotate(-90 110 110)" />
-                    <text x="110" y="108" textAnchor="middle" className="fill-slate-900 text-4xl font-black">8.9K</text>
+                    {overviewOrderStatus.map((status, index) => {
+                      const offset = overviewOrderStatus
+                        .slice(0, index)
+                        .reduce((total, item) => total + Number(item.value ?? 0), 0);
+                      const value = Number(status.value ?? 0);
+                      const circumference = 2 * Math.PI * 66;
+                      return (
+                        <circle
+                          key={status.label}
+                          cx="110"
+                          cy="110"
+                          r="66"
+                          fill="none"
+                          stroke={status.color ?? '#64748b'}
+                          strokeWidth="26"
+                          strokeDasharray={`${(value / 100) * circumference} ${circumference}`}
+                          strokeLinecap="round"
+                          strokeDashoffset={`${-(offset / 100) * circumference}`}
+                          transform="rotate(-90 110 110)"
+                        />
+                      );
+                    })}
+                    <text x="110" y="108" textAnchor="middle" className="fill-slate-900 text-4xl font-black">{metrics.totalOrders.toLocaleString()}</text>
                     <text x="110" y="128" textAnchor="middle" className="fill-slate-500 text-[10px] font-bold uppercase tracking-[0.2em]">Orders</text>
                   </svg>
                 </div>
 
                 <div className="mt-5 space-y-2">
-                  {analyticsOrderStatus.map((status) => (
+                  {overviewOrderStatus.map((status) => (
                     <div key={status.label} className="flex items-center justify-between text-sm font-semibold text-slate-700">
                       <div className="flex items-center gap-2">
                         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: status.color ?? '#64748b' }} />
@@ -4226,18 +4609,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     <thead className="bg-slate-100 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
                       <tr>
                         <th className="px-3 py-3">Category</th>
-                        <th className="px-3 py-3">Views</th>
-                        <th className="px-3 py-3">Likes</th>
-                        <th className="px-3 py-3">Sales</th>
+                        <th className="px-3 py-3">Products</th>
+                        <th className="px-3 py-3">Share</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {analyticsData.categories.map((category) => (
+                      {overviewCategories.map((category) => (
                         <tr key={category.name} className="border-t border-slate-200 bg-white">
                           <td className="px-3 py-3 font-semibold text-slate-800">{category.name}</td>
-                          <td className="px-3 py-3 text-slate-600">{category.views}</td>
-                          <td className="px-3 py-3 text-slate-600">{category.likes}</td>
-                          <td className="px-3 py-3 font-bold text-emerald-600">{category.sales}</td>
+                          <td className="px-3 py-3 text-slate-600">{category.product_count}</td>
+                          <td className="px-3 py-3 font-bold text-emerald-600">{category.percentage}%</td>
                         </tr>
                       ))}
                     </tbody>
@@ -4252,7 +4633,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <h3 className="mt-1 text-xl font-black text-slate-950">Marketplace Activity by Department</h3>
 
                 <div className="mt-5 space-y-5">
-                  {analyticsData.departmentActivity.map((department) => (
+                  {(metrics.department_activity ?? []).map((department) => (
                     <div key={department.name}>
                       <div className="mb-1 flex items-center justify-between text-sm font-semibold text-slate-700">
                         <span>{department.name}</span>
@@ -4298,7 +4679,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
 
               <div className="space-y-3">
-                {analyticsData.recentActivity.map((item, index) => (
+                {(metrics.recent_activity ?? []).map((item, index) => (
                   <div key={`${item.time}-${index}`} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 p-4">
                     <div className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
                     <div className="flex-1">

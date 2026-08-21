@@ -3,6 +3,8 @@ import SellerOperationsCenter from './SellerOperationsCenter';
 import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
 
+const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+
 const universityStructure = {
   "College of Computing and Informatics (CCI)": [
     "Department of Computer Science",
@@ -54,6 +56,7 @@ const getStudentAvatar = (studentId) => (
 
 
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
+  const verifiedStudent = isVerifiedStudent(user);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState(initialTab); // የጎን መቆጣጠሪያ ታብ
@@ -1505,6 +1508,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const handleCheckout = async () => {
+    if (!verifiedStudent) return;
     try {
       const res = await fetch('http://127.0.0.1:8000/api/student/cart/checkout', {
         method: 'POST',
@@ -1525,7 +1529,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const handleSecureCheckout = async () => {
-    if (!cart.length || !walletHasSufficientFunds) return;
+    if (!verifiedStudent || !cart.length || !walletHasSufficientFunds) return;
 
     const secureTotal = checkoutTotal;
     const nextWalletBalance = Math.max(currentWalletBalance - secureTotal, 0);
@@ -1567,6 +1571,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const walletShortfall = Math.max(0, checkoutTotal - currentWalletBalance);
 
   const handleTopUpFromCart = () => {
+    if (!verifiedStudent) return;
     const nextDeposit = Math.ceil(walletShortfall || 500);
     setBuyerTab('payments');
     setDepositAmount(String(nextDeposit));
@@ -2123,9 +2128,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               {!isSidebarCollapsed && (
                 <>
                   <h1 className="mt-3 text-2xl font-bold text-white">Campus Portal</h1>
-                  <span className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-300">
-                    <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-bold text-white">✓</span>
-                    Verified Student
+                  <span className={`mt-3 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${verifiedStudent ? 'border border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border border-amber-400/40 bg-amber-500/10 text-amber-300'}`}>
+                    <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white ${verifiedStudent ? 'bg-emerald-500' : 'bg-amber-500'}`}>{verifiedStudent ? '✓' : '!'}</span>
+                    {verifiedStudent ? 'Verified Student' : 'Unverified Profile'}
                   </span>
                 </>
               )}
@@ -2754,9 +2759,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           </div>
 
                           <div className="mt-5 space-y-3">
+                            {!verifiedStudent && (
+                              <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-800">
+                                ID verification is required to complete purchases.
+                              </p>
+                            )}
                             <button
                               onClick={handleSecureCheckout}
-                              disabled={!cart.length || !walletHasSufficientFunds}
+                              disabled={!verifiedStudent || !cart.length || !walletHasSufficientFunds}
                               className="w-full rounded-full bg-emerald-500 py-3.5 font-bold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-emerald-300"
                             >
                               {walletHasSufficientFunds ? 'Pay with Wallet' : 'Insufficient Wallet Balance'}
@@ -2764,7 +2774,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                             <button
                               onClick={handleTopUpFromCart}
-                              className="w-full rounded-full bg-sky-600 py-3.5 font-bold text-white hover:bg-sky-700 transition"
+                              disabled={!verifiedStudent}
+                              className="w-full rounded-full bg-sky-600 py-3.5 font-bold text-white hover:bg-sky-700 transition disabled:cursor-not-allowed disabled:bg-slate-300"
                             >
                               Top Up via Chapa
                             </button>
@@ -3153,10 +3164,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <h3 className="text-xl font-bold text-slate-950">My Listings</h3>
                           <p className="text-sm text-slate-500">Keep your stock current and ready for campus buyers.</p>
                         </div>
+                        {!verifiedStudent && (
+                          <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                            Please verify your profile by uploading your ID in Settings to list products.
+                          </p>
+                        )}
                         <button
                           type="button"
                           onClick={() => setShowProductModal(true)}
-                          className="inline-flex items-center rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-600 transition"
+                          disabled={!verifiedStudent}
+                          className="inline-flex items-center rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300"
                         >
                           + Add Product
                         </button>
@@ -3170,7 +3187,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <button
                             type="button"
                             onClick={() => setShowProductModal(true)}
-                            className="mt-5 inline-flex items-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition"
+                            disabled={!verifiedStudent}
+                            className="mt-5 inline-flex items-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300"
                           >
                             + Add Product
                           </button>

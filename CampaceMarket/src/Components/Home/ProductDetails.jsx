@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+
 function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
@@ -7,6 +9,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [chatLoading, setChatLoading] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  const verifiedCurrentUser = isVerifiedStudent(currentUser);
 
   useEffect(() => {
     if (!product?.id) return;
@@ -57,6 +60,11 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   };
 
   const handleStartChat = async () => {
+    if (!verifiedCurrentUser) {
+      setChatStatus('Verification is required to start a chat with other students.');
+      return;
+    }
+
     const buyerId = currentUser?.studentId;
     const sellerId = item?.seller_id || item?.seller;
 
@@ -261,12 +269,18 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                     onChange={(event) => setMessageText(event.target.value)}
                     placeholder="Write a message to the seller..."
                     rows={4}
+                    disabled={!verifiedCurrentUser || chatLoading}
                     className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:bg-white"
                   />
+                  {!verifiedCurrentUser && (
+                    <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                      Verification is required to start a chat with other students.
+                    </p>
+                  )}
                   {/* አረንጓዴ የቻት መክፈቻ ቁልፍ (Start Chat Button) */}
                   <button
                     onClick={handleStartChat}
-                    disabled={chatLoading || !messageText.trim()}
+                    disabled={!verifiedCurrentUser || chatLoading || !messageText.trim()}
                     className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white hover:bg-emerald-600 transition flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed disabled:bg-emerald-300"
                   >
                     <span>💬</span>
