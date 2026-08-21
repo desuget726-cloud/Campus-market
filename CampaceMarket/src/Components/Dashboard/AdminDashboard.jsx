@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const generateLinePath = (data, maxVal, width = 100, height = 100) => {
   if (!Array.isArray(data) || data.length === 0) return '';
@@ -32,6 +32,34 @@ const UNIVERSITY_STRUCTURE = {
 };
 
 const ADMIN_AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='64' fill='%230f766e'/%3E%3Ccircle cx='64' cy='48' r='22' fill='white'/%3E%3Cpath d='M25 108c4-24 19-36 39-36s35 12 39 36' fill='white'/%3E%3C/svg%3E";
+
+const getComplaintType = (issue = '') => {
+  const normalizedIssue = String(issue).toLowerCase();
+  if (/scam|fraud|iphone/.test(normalizedIssue)) return 'Fraud/Scam';
+  if (/abuse|insult/.test(normalizedIssue)) return 'Seller Misconduct';
+  if (/payment|transaction|deposit|refund|paid|money/.test(normalizedIssue)) return 'Payment Problem';
+  return 'Product Issue';
+};
+
+const getReportedSeller = (issue = '') => {
+  const match = String(issue).match(/report against\s+([A-Za-z0-9_-]+)(?:\s*:\s*([A-Za-z0-9\s_]+))?/i);
+  if (!match) return 'Not specified';
+
+  const sellerId = match[1];
+  const sellerName = match[2]?.trim();
+  return sellerName ? `${sellerId}: ${sellerName}` : sellerId;
+};
+
+const getReportPriority = (issue = '') => {
+  const normalizedIssue = String(issue).toLowerCase();
+  if (/scam|fraud|iphone|abuse|insult/.test(normalizedIssue)) {
+    return { label: 'High', className: 'bg-rose-100 text-rose-700 border border-rose-200' };
+  }
+  if (/payment|transaction|deposit|refund|paid|money/.test(normalizedIssue)) {
+    return { label: 'Medium', className: 'bg-amber-100 text-amber-700 border border-amber-200' };
+  }
+  return { label: 'Low', className: 'bg-emerald-100 text-emerald-700 border border-emerald-200' };
+};
 
 const adminTabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'M4 6h16M4 12h16M4 18h16' },
@@ -122,10 +150,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [verificationRejectReason, setVerificationRejectReason] = useState('Blurry Image');
   const [verificationZoom, setVerificationZoom] = useState(1);
   const [verificationRotation, setVerificationRotation] = useState(0);
-  const [verifications, setVerifications] = useState([
-    { id: 1, name: "Abebe Kebede", student_id: "IT2026-001", email: "student@university.edu", department: "Information Technology", status: "Pending", uploaded_id_card: null },
-    { id: 2, name: "Tefesayiku", student_id: "MAU1600002", email: "desu5392@gmail.com", department: "Software Engineering", status: "Verified", uploaded_id_card: null }
-  ]);
+  const [verifications, setVerifications] = useState([]);
 
   // 3. Product Management States
   const [prodSearch, setProdSearch] = useState('');
@@ -154,30 +179,31 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [catMsg, setCatMsg] = useState('');
 
   // 5. Order Management State
-  const [ordersList, setOrdersList] = useState([
-    { id: "ORD-9482", buyer_id: "MAU1600002", seller_id: "MAU1600031", buyer: "MAU1600002", seller: "Abebe K.", product_title: "Calculus Book", total_amount: 450, price: "450 ETB", order_status: "Processing", payment_status: "Successful", date: "2026-08-12T10:25:00", pickup_location: "Main Library" },
-    { id: "ORD-9483", buyer_id: "MAU1600009", seller_id: "MAU1600028", buyer: "MAU1600009", seller: "Tefesayiku", product_title: "Laptop", total_amount: 24000, price: "24,000 ETB", order_status: "Completed", payment_status: "Successful", date: "2026-08-11T15:15:00", pickup_location: "Student Center" },
-    { id: "ORD-9484", buyer_id: "IT2026-001", seller_id: "MAU1600040", buyer: "IT2026-001", seller: "Meron A.", product_title: "Chemistry Lab Kit", total_amount: 6800, price: "6,800 ETB", order_status: "Pending", payment_status: "Pending", date: "2026-08-10T09:42:00", pickup_location: "Science Block" },
-    { id: "ORD-9485", buyer_id: "MAU1600015", seller_id: "MAU1600062", buyer: "MAU1600015", seller: "Aster Solomon", product_title: "Desk Lamp", total_amount: 1850, price: "1,850 ETB", order_status: "Ready for Pickup", payment_status: "Successful", date: "2026-08-09T17:20:00", pickup_location: "Main Library" },
-    { id: "ORD-9486", buyer_id: "MAU1600054", seller_id: "MAU1600018", buyer: "MAU1600054", seller: "Hana Bekele", product_title: "Office Chair", total_amount: 3250, price: "3,250 ETB", order_status: "Out for Delivery", payment_status: "Failed", date: "2026-08-08T12:05:00", pickup_location: "Student Center" },
-    { id: "ORD-9487", buyer_id: "MAU1600011", seller_id: "MAU1600032", buyer: "MAU1600011", seller: "Liya Asrat", product_title: "Wireless Earbuds", total_amount: 2900, price: "2,900 ETB", order_status: "Cancelled", payment_status: "Refunded", date: "2026-08-07T08:10:00", pickup_location: "Main Library" }
-  ]);
+  const [ordersList, setOrdersList] = useState([]);
   const [orderSearch, setOrderSearch] = useState('');
   const [orderFilterStatus, setOrderFilterStatus] = useState('All');
   const [orderFilterPayment, setOrderFilterPayment] = useState('All');
   const [selectedOrderDetails, setSelectedOrderDetails] = useState(null);
 
+  const calculatedOrderMetrics = useMemo(() => {
+    const processingStatuses = new Set(['Processing', 'Pending', 'Ready for Pickup', 'Out for Delivery']);
+    const cancelledStatuses = new Set(['Cancelled', 'Returned']);
+    const processing = ordersList.filter((order) => processingStatuses.has(order.order_status)).length;
+    const completedOrders = ordersList.filter((order) => order.order_status === 'Completed');
+    const cancelled = ordersList.filter((order) => cancelledStatuses.has(order.order_status)).length;
+    const totalSalesAmount = completedOrders.reduce((total, order) => total + (Number(order.total_amount) || 0), 0);
+
+    return {
+      totalOrders: ordersList.length,
+      processing,
+      completed: completedOrders.length,
+      cancelled,
+      totalSales: `${totalSalesAmount.toLocaleString('en-US')} ETB`,
+    };
+  }, [ordersList]);
+
   // 6. Reports & Complaints States
-  const [reportsList, setReportsList] = useState([
-    { id: 1, report_id: "RPT-2048", complaint_type: "Fake Product", product_name: "HP Pavilion Laptop", reporter: "MAU1600004", student: "Mekdes Bekele", student_id: "MAU1600004", seller_id: "MAU1600031", seller_name: "Abebe Kebede", issue: "The product listing claimed 16GB RAM and a new battery, but the seller delivered a damaged unit with only 8GB RAM and worn battery health.", priority: "High", status: "Open", date: "2026-08-12T10:25:00" },
-    { id: 2, report_id: "RPT-2049", complaint_type: "Fraud/Scam", product_name: "Used iPhone 12", reporter: "MAU1600002", student: "Tefesayiku Tadesse", student_id: "MAU1600002", seller_id: "MAU1600044", seller_name: "Selam Worku", issue: "Buyer was asked to pay outside the app and the seller stopped responding after the deposit was made.", priority: "High", status: "Review", date: "2026-08-11T13:45:00" },
-    { id: 3, report_id: "RPT-2050", complaint_type: "Seller Misconduct", product_name: "Math Textbook Bundle", reporter: "IT2026-001", student: "Daniel Gebre", student_id: "IT2026-001", seller_id: "MAU1600028", seller_name: "Meron Alem", issue: "Seller repeatedly sent abusive messages and attempted to pressure the buyer into a price drop after order confirmation.", priority: "Medium", status: "Open", date: "2026-08-11T09:08:00" },
-    { id: 4, report_id: "RPT-2051", complaint_type: "Payment Problem", product_name: "Mechanical Pencil Set", reporter: "MAU1600015", student: "Nahom Yilma", student_id: "MAU1600015", seller_id: "MAU1600062", seller_name: "Aster Solomon", issue: "Transaction shows successful payment but item was never marked delivered or released to the buyer.", priority: "High", status: "Resolved", date: "2026-08-10T16:20:00" },
-    { id: 5, report_id: "RPT-2052", complaint_type: "Order Problem", product_name: "Office Chair", reporter: "MAU1600054", student: "Yared Tesfaye", student_id: "MAU1600054", seller_id: "MAU1600018", seller_name: "Hana Bekele", issue: "Product arrived in a different condition than the posted image and no return window was provided by the seller.", priority: "Medium", status: "Open", date: "2026-08-09T11:15:00" },
-    { id: 6, report_id: "RPT-2053", complaint_type: "Inappropriate Content", product_name: "Dorm Decor Catalog", reporter: "MAU1600023", student: "Ruth Alem", student_id: "MAU1600023", seller_id: "MAU1600078", seller_name: "Kidus Haftu", issue: "Marketplace listing includes explicit and inappropriate visual content violating community standards.", priority: "High", status: "Review", date: "2026-08-08T17:30:00" },
-    { id: 7, report_id: "RPT-2054", complaint_type: "Buyer Misconduct", product_name: "Wireless Earbuds", reporter: "MAU1600011", student: "Biniam Kebede", student_id: "MAU1600011", seller_id: "MAU1600032", seller_name: "Liya Asrat", issue: "Buyer repeatedly used abusive language and attempted to extort a refund after receiving the item.", priority: "Low", status: "Closed", date: "2026-08-07T08:10:00" },
-    { id: 8, report_id: "RPT-2055", complaint_type: "Other", product_name: "Study Desk", reporter: "MAU1600037", student: "Sofonias Hailu", student_id: "MAU1600037", seller_id: "MAU1600050", seller_name: "Biruk Dagnaw", issue: "The listing was duplicated multiple times and caused confusion in the marketplace feed.", priority: "Low", status: "Resolved", date: "2026-08-06T15:40:00" }
-  ]);
+  const [reportsList, setReportsList] = useState([]);
   const [reportSearchTerm, setReportSearchTerm] = useState('');
   const [reportTypeFilter, setReportTypeFilter] = useState('All');
   const [reportStatusFilter, setReportStatusFilter] = useState('All');
@@ -187,23 +213,41 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportActionLoading, setReportActionLoading] = useState(false);
 
+  const calculatedReportMetrics = useMemo(() => {
+    const openStatuses = new Set(['Open']);
+    const reviewStatuses = new Set(['Review', 'Under Review']);
+    const resolvedStatuses = new Set(['Resolved', 'Closed']);
+
+    return {
+      total: reportsList.length,
+      open: reportsList.filter((report) => openStatuses.has(report.status)).length,
+      underReview: reportsList.filter((report) => reviewStatuses.has(report.status)).length,
+      resolved: reportsList.filter((report) => resolvedStatuses.has(report.status)).length,
+      highPriority: reportsList.filter((report) => getReportPriority(report.issue).label === 'High').length,
+    };
+  }, [reportsList]);
+
   // 6.5 Payments Management States
-  const [paymentsList, setPaymentsList] = useState([
-    { id: "TXN-1045", transaction_id: "TX-1045", buyer_id: "MAU1600002", seller_id: "MAU1600031", order_id: "ORD-1045", amount: 2500, payment_type: "Product Purchase", payment_method: "Chapa", status: "Successful", date: "2026-08-12T10:25:00" },
-    { id: "TXN-1046", transaction_id: "TX-1046", buyer_id: "MAU1600009", seller_id: "MAU1600028", order_id: "ORD-1046", amount: 9500, payment_type: "Product Purchase", payment_method: "Wallet", status: "Successful", date: "2026-08-11T15:15:00" },
-    { id: "TXN-1047", transaction_id: "TX-1047", buyer_id: "MAU1600015", seller_id: "MAU1600040", order_id: "ORD-1047", amount: 3200, payment_type: "Wallet Deposit", payment_method: "SantimPay", status: "Pending", date: "2026-08-10T09:42:00" },
-    { id: "TXN-1048", transaction_id: "TX-1048", buyer_id: "IT2026-001", seller_id: "MAU1600039", order_id: "ORD-1048", amount: 5600, payment_type: "Seller Payout", payment_method: "Bank Transfer", status: "Failed", date: "2026-08-09T11:30:00" },
-    { id: "TXN-1049", transaction_id: "TX-1049", buyer_id: "MAU1600023", seller_id: "MAU1600062", order_id: "ORD-1049", amount: 18750, payment_type: "Product Purchase", payment_method: "Chapa", status: "Successful", date: "2026-08-08T13:05:00" },
-    { id: "TXN-1050", transaction_id: "TX-1050", buyer_id: "MAU1600005", seller_id: "MAU1600018", order_id: "ORD-1050", amount: 250, payment_type: "Refund", payment_method: "Wallet", status: "Pending", date: "2026-08-08T16:50:00" },
-    { id: "TXN-1051", transaction_id: "TX-1051", buyer_id: "MAU1600054", seller_id: "MAU1600078", order_id: "ORD-1051", amount: 3450, payment_type: "Wallet Deposit", payment_method: "SantimPay", status: "Successful", date: "2026-08-07T08:15:00" },
-    { id: "TXN-1052", transaction_id: "TX-1052", buyer_id: "MAU1600011", seller_id: "MAU1600032", order_id: "ORD-1052", amount: 6800, payment_type: "Seller Payout", payment_method: "Chapa", status: "Failed", date: "2026-08-06T18:30:00" }
-  ]);
+  const [paymentsList, setPaymentsList] = useState([]);
   const [paymentSearchTerm, setPaymentSearchTerm] = useState('');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('All');
   const [paymentTypeFilter, setPaymentTypeFilter] = useState('All');
   const [selectedPaymentDetail, setSelectedPaymentDetail] = useState(null);
   const [paymentStatusMessage, setPaymentStatusMessage] = useState('');
   const [paymentStatusMessageId, setPaymentStatusMessageId] = useState(null);
+
+  const calculatedPaymentMetrics = useMemo(() => {
+    const successfulPayments = paymentsList.filter((payment) => payment.status === 'Successful');
+    const totalRevenueAmount = successfulPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+
+    return {
+      totalTransactions: paymentsList.length,
+      successful: successfulPayments.length,
+      pending: paymentsList.filter((payment) => payment.status === 'Pending').length,
+      failed: paymentsList.filter((payment) => payment.status === 'Failed').length,
+      totalRevenue: `${totalRevenueAmount.toLocaleString('en-US')} ETB`,
+    };
+  }, [paymentsList]);
 
   // 7. System Notifications / Broadcast Dashboard States
   const [announcementForm, setAnnouncementForm] = useState({
@@ -435,19 +479,21 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
       const data = await response.json();
       const payload = Array.isArray(data) ? data : (data.verifications || data.items || []);
-      const mappedVerifications = (Array.isArray(payload) ? payload : []).map((request, index) => ({
-        id: request.id ?? request.student_id ?? index + 1,
-        name: request.name ?? request.student_name ?? request.full_name ?? 'Unknown Student',
-        student_id: request.student_id ?? request.studentId ?? `STU-${index + 1}`,
-        email: request.email ?? request.student_email ?? 'student@campus.edu.et',
-        phone: request.phone ?? request.phone_number ?? '',
-        college: request.college ?? '',
-        department: request.department ?? request.college_department ?? 'General Studies',
-        status: request.status ?? 'Pending',
-        uploaded_id_card: request.uploaded_id_card ?? request.id_card_url ?? request.image_url ?? null,
-        uploaded_at: request.uploaded_at ?? request.created_at ?? new Date().toISOString(),
-        reason: request.reason ?? '',
-      }));
+      const mappedVerifications = (Array.isArray(payload) ? payload : [])
+        .filter((request) => request.is_verified !== true)
+        .map((request, index) => ({
+          id: request.id ?? request.student_id ?? index + 1,
+          name: request.name ?? request.student_name ?? request.full_name ?? 'Unknown Student',
+          student_id: request.student_id ?? request.studentId ?? `STU-${index + 1}`,
+          email: request.email ?? request.student_email ?? 'student@campus.edu.et',
+          phone: request.phone ?? request.phone_number ?? '',
+          college: request.college ?? '',
+          department: request.department ?? request.college_department ?? 'General Studies',
+          status: request.status ?? 'Pending',
+          uploaded_id_card: request.uploaded_id_card ?? request.id_card_url ?? request.image_url ?? null,
+          uploaded_at: request.uploaded_at ?? request.created_at ?? new Date().toISOString(),
+          reason: request.reason ?? '',
+        }));
 
       setVerifications(mappedVerifications);
     } catch (error) {
@@ -676,6 +722,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     department_activity: [],
     recent_activity: [],
   });
+  const [aiMetrics, setAiMetrics] = useState({
+    requests: 0,
+    clicks: 0,
+    ctr: 0,
+    purchase_conversions: 0,
+    db_records: 0,
+    user_profiles: 0,
+    products_indexed: 0,
+    precision: 0,
+    recall: 0,
+    top_products: [],
+    category_performance: [],
+  });
 
   const fetchDashboardOverview = async () => {
     try {
@@ -768,6 +827,28 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     fetchDashboardOverview();
   }, []);
+
+  const fetchAiAnalytics = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/ai-analytics');
+      if (!response.ok) throw new Error('AI analytics endpoint unavailable');
+
+      const data = await response.json();
+      setAiMetrics((previous) => ({
+        ...previous,
+        ...data,
+        top_products: Array.isArray(data.top_products) ? data.top_products : [],
+        category_performance: Array.isArray(data.category_performance) ? data.category_performance : [],
+      }));
+    } catch (error) {
+      console.error('Failed to fetch AI analytics:', error);
+      setAiMetrics((previous) => ({ ...previous, top_products: [], category_performance: [] }));
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'ai-recommendations') fetchAiAnalytics();
+  }, [activeTab]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setIsReady(true), 250);
@@ -896,7 +977,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/reports');
       const reports = await response.json();
-      setReportsList(reports || []);
+      setReportsList(Array.isArray(reports) ? reports.map((report) => ({
+        ...report,
+        report_id: report.report_id || `RPT-${report.id}`,
+        student: report.student || report.student_name || 'Unknown Student',
+        student_id: report.student_id || 'Unknown',
+        product_name: report.product_name || 'Marketplace Report',
+        issue: report.issue || 'No issue details provided.',
+        status: report.status || 'Open',
+        date: report.date || new Date().toISOString(),
+      })) : []);
     } catch (err) {
       console.error('Failed to fetch reports:', err);
       // Fallback to default state already set
@@ -908,11 +998,43 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/payments');
       const payments = await response.json();
-      setPaymentsList(payments || []);
+      setPaymentsList(Array.isArray(payments) ? payments : []);
     } catch (err) {
       console.error('Failed to fetch payments:', err);
       // Fallback to default state already set
     }
+  };
+
+  const handleExportCSV = () => {
+    const columns = ['Transaction ID', 'Buyer ID', 'Seller ID', 'Order ID', 'Amount', 'Payment Type', 'Payment Method', 'Status', 'Date'];
+    const escapeCSVValue = (value) => {
+      const normalizedValue = value ?? '';
+      return `"${String(normalizedValue).replace(/"/g, '""')}"`;
+    };
+    const rows = paymentsList.map((payment) => [
+      payment.transaction_id,
+      payment.buyer_id,
+      payment.seller_id,
+      payment.order_id,
+      `${payment.amount ?? 0} ETB`,
+      payment.payment_type,
+      payment.payment_method,
+      payment.status,
+      payment.date,
+    ]);
+    const csvContent = [columns, ...rows].map((row) => row.map(escapeCSVValue).join(',')).join('\r\n');
+    const downloadUrl = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }));
+    const downloadLink = document.createElement('a');
+    downloadLink.href = downloadUrl;
+    downloadLink.download = `payment-transactions-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    URL.revokeObjectURL(downloadUrl);
+  };
+
+  const handleExportPDF = () => {
+    window.print();
   };
 
   // Fetch orders from backend
@@ -923,7 +1045,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         throw new Error('Orders endpoint unavailable');
       }
       const orders = await response.json();
-      if (Array.isArray(orders) && orders.length > 0) {
+      if (Array.isArray(orders)) {
         setOrdersList(orders.map((order) => ({
           ...order,
           buyer_id: order.buyer_id || order.buyer || 'Unknown',
@@ -3425,14 +3547,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           return matchesSearch && matchesStatus && matchesPayment;
         });
 
-        const orderMetrics = {
-          totalOrders: 1248,
-          processing: 32,
-          completed: 1180,
-          cancelled: 36,
-          totalSales: '2,450,000 ETB'
-        };
-
         const getOrderStatusBadge = (status) => {
           if (status === 'Completed') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
           if (status === 'Pending' || status === 'Processing') return 'bg-amber-100 text-amber-700 border border-amber-200';
@@ -3460,7 +3574,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
                 <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm font-bold text-emerald-200">
                   <span>💰</span>
-                  <span>{orderMetrics.totalSales}</span>
+                  <span>{calculatedOrderMetrics.totalSales}</span>
                 </div>
               </div>
             </div>
@@ -3468,25 +3582,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             <div className="grid gap-4 sm:grid-cols-4">
               <div className="rounded-[24px] border border-slate-200 bg-slate-100/70 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total Orders</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{orderMetrics.totalOrders.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.totalOrders.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-amber-100 bg-amber-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Processing / Pending</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{orderMetrics.processing.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.processing.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Completed</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{orderMetrics.completed.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.completed.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-rose-100 bg-rose-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-700">Cancelled</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{orderMetrics.cancelled.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.cancelled.toLocaleString()}</p>
               </div>
             </div>
 
             <div className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
               <p className="text-lg font-black text-slate-950">
-                Total Sales: <span className="text-sky-700">{orderMetrics.totalSales}</span>
+                Total Sales: <span className="text-sky-700">{calculatedOrderMetrics.totalSales}</span>
               </p>
             </div>
 
@@ -3709,14 +3823,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           return searchMatch && statusMatch && typeMatch;
         });
 
-        const paymentMetrics = {
-          totalTransactions: 1245,
-          successful: 1180,
-          pending: 45,
-          failed: 20,
-          totalRevenue: '2,450,000 ETB'
-        };
-
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-slate-950/95 p-6 text-white shadow-sm">
@@ -3727,25 +3833,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             <div className="grid gap-4 sm:grid-cols-4">
               <div className="rounded-[24px] border border-slate-200 bg-slate-100/70 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Transactions</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{paymentMetrics.totalTransactions.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.totalTransactions.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Successful</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{paymentMetrics.successful.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.successful.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-amber-100 bg-amber-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Pending</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{paymentMetrics.pending.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.pending.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-red-100 bg-red-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-red-700">Failed</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{paymentMetrics.failed.toLocaleString()}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.failed.toLocaleString()}</p>
               </div>
             </div>
 
             <div className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
               <p className="text-lg font-black text-slate-950">
-                Total Revenue: <span className="text-sky-700">{paymentMetrics.totalRevenue}</span>
+                Total Revenue: <span className="text-sky-700">{calculatedPaymentMetrics.totalRevenue}</span>
               </p>
             </div>
 
@@ -3756,8 +3862,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <p className="text-sm text-slate-500">Search and filter the latest marketplace payment records.</p>
                 </div>
                 <div className="flex flex-wrap gap-3">
-                  <button type="button" className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50">Export CSV</button>
-                  <button type="button" className="rounded-full border border-slate-200 bg-slate-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-slate-800">Export PDF</button>
+                  <button type="button" onClick={handleExportCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50">Export CSV</button>
+                  <button type="button" onClick={handleExportPDF} className="rounded-full border border-slate-200 bg-slate-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-slate-800">Export PDF</button>
                 </div>
               </div>
 
@@ -3815,7 +3921,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <tr key={payment.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4 font-mono font-black text-slate-900">{payment.transaction_id}</td>
                         <td className="px-4 py-4 font-semibold text-slate-700">{payment.buyer_id}</td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">{payment.seller_id}</td>
+                        <td className="px-4 py-4 font-semibold text-slate-700">
+                          {payment.payment_type === 'Wallet Deposit'
+                            ? (payment.seller_id === 'System (Chapa)' ? 'System (Chapa)' : 'Self')
+                            : payment.seller_id}
+                        </td>
                         <td className="px-4 py-4 font-semibold text-slate-700">{payment.order_id}</td>
                         <td className="px-4 py-4 font-black text-slate-950">{new Intl.NumberFormat('en-ET').format(payment.amount)} ETB</td>
                         <td className="px-4 py-4 text-slate-700">{payment.payment_type}</td>
@@ -3866,11 +3976,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <p className="text-base font-bold">No matching transactions found.</p>
                 </div>
               )}
-            </div>
-
-            <div className="flex flex-wrap gap-3 pt-2">
-              <button type="button" onClick={() => alert('CSV export is ready for download.')} className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800">Export CSV</button>
-              <button type="button" onClick={() => alert('PDF export is ready for download.')} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50">Export PDF</button>
             </div>
 
             {selectedPaymentDetail && (
@@ -3929,35 +4034,26 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'reports': {
-        const filteredReports = reportsList.filter((report) => {
+        const enrichedReports = reportsList.map((report) => ({
+          ...report,
+          inferredType: getComplaintType(report.issue),
+          priority: getReportPriority(report.issue),
+        }));
+        const filteredReports = enrichedReports.filter((report) => {
           const searchValue = reportSearchTerm.toLowerCase();
           const matchesSearch = !searchValue ||
             report.report_id.toLowerCase().includes(searchValue) ||
             report.student.toLowerCase().includes(searchValue) ||
             report.product_name.toLowerCase().includes(searchValue) ||
             report.issue.toLowerCase().includes(searchValue) ||
-            report.complaint_type.toLowerCase().includes(searchValue);
+            report.inferredType.toLowerCase().includes(searchValue);
 
-          const matchesType = reportTypeFilter === 'All' || report.complaint_type === reportTypeFilter;
+          const matchesType = reportTypeFilter === 'All' || report.inferredType === reportTypeFilter;
           const matchesStatus = reportStatusFilter === 'All' || report.status === reportStatusFilter;
-          const matchesPriority = reportPriorityFilter === 'All' || report.priority === reportPriorityFilter;
+          const matchesPriority = reportPriorityFilter === 'All' || report.priority.label === reportPriorityFilter;
 
           return matchesSearch && matchesType && matchesStatus && matchesPriority;
         });
-
-        const reportStats = {
-          total: 42,
-          open: 12,
-          underReview: 8,
-          resolved: 22,
-          highPriority: 3,
-        };
-
-        const getPriorityBadge = (priority) => {
-          if (priority === 'Low') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
-          if (priority === 'Medium') return 'bg-amber-100 text-amber-700 border border-amber-200';
-          return 'bg-rose-100 text-rose-700 border border-rose-200';
-        };
 
         const getStatusBadge = (status) => {
           if (status === 'Open') return 'bg-sky-100 text-sky-700 border border-sky-200';
@@ -3976,7 +4072,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
                 <div className="inline-flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-200">
                   <span>🚨</span>
-                  <span>High Priority: {reportStats.highPriority}</span>
+                  <span>High Priority: {calculatedReportMetrics.highPriority}</span>
                 </div>
               </div>
             </div>
@@ -3984,19 +4080,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             <div className="grid gap-4 sm:grid-cols-4">
               <div className="rounded-[24px] border border-slate-200 bg-slate-100/70 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total Reports</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{reportStats.total}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedReportMetrics.total}</p>
               </div>
               <div className="rounded-[24px] border border-sky-100 bg-sky-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Open Reports</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{reportStats.open}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedReportMetrics.open}</p>
               </div>
               <div className="rounded-[24px] border border-violet-100 bg-violet-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-violet-700">Under Review</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{reportStats.underReview}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedReportMetrics.underReview}</p>
               </div>
               <div className="rounded-[24px] border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Resolved Reports</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{reportStats.resolved}</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedReportMetrics.resolved}</p>
               </div>
             </div>
 
@@ -4071,7 +4167,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     {filteredReports.map((rep) => (
                       <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4 font-mono font-black text-slate-900">{rep.report_id}</td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">{rep.complaint_type}</td>
+                        <td className="px-4 py-4 font-semibold text-slate-700">{rep.inferredType}</td>
                         <td className="px-4 py-4 text-slate-700 max-w-md">
                           <div className="font-semibold text-slate-900">{rep.product_name}</div>
                           <div className="mt-1 text-xs leading-5 text-slate-600">{rep.issue}</div>
@@ -4081,11 +4177,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           <div className="text-xs text-slate-500 mt-0.5">{rep.student_id}</div>
                         </td>
                         <td className="px-4 py-4">
-                          <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${getPriorityBadge(rep.priority)}`}>
-                            {rep.priority === 'Low' && '🟢'}
-                            {rep.priority === 'Medium' && '🟡'}
-                            {rep.priority === 'High' && '🔴'}
-                            {rep.priority}
+                          <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${rep.priority.className}`}>
+                            {rep.priority.label === 'Low' && '🟢'}
+                            {rep.priority.label === 'Medium' && '🟡'}
+                            {rep.priority.label === 'High' && '🔴'}
+                            {rep.priority.label}
                           </span>
                         </td>
                         <td className="px-4 py-4">
@@ -4135,11 +4231,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Complaint Type</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.complaint_type}</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{getComplaintType(selectedReport.issue)}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Priority</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.priority}</p>
+                      <p className="mt-2 text-base font-black text-slate-900">
+                        {typeof selectedReport.priority === 'object' ? selectedReport.priority.label : selectedReport.priority}
+                      </p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Reporter</p>
@@ -4151,7 +4249,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Reported Seller</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.seller_name || selectedReport.seller_id}</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{getReportedSeller(selectedReport.issue)}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Product</p>
@@ -4232,10 +4330,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               {[
-                { label: 'Requests', value: '18,420', accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
-                { label: 'Clicks', value: '7,820', accent: 'bg-sky-50 border-sky-100 text-slate-950', small: 'text-sky-600' },
-                { label: 'CTR', value: '42.4%', accent: 'bg-emerald-50 border-emerald-100 text-emerald-600', small: 'text-emerald-600' },
-                { label: 'Purchase Conversion', value: '1,460', accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
+                { label: 'Requests', value: aiMetrics.requests.toLocaleString(), accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
+                { label: 'Clicks', value: aiMetrics.clicks.toLocaleString(), accent: 'bg-sky-50 border-sky-100 text-slate-950', small: 'text-sky-600' },
+                { label: 'CTR', value: `${aiMetrics.ctr}%`, accent: 'bg-emerald-50 border-emerald-100 text-emerald-600', small: 'text-emerald-600' },
+                { label: 'Purchase Conversion', value: aiMetrics.purchase_conversions.toLocaleString(), accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
               ].map((item) => (
                 <div key={item.label} className={`rounded-[24px] border p-5 shadow-sm ${item.accent}`}>
                   <p className={`text-[10px] font-bold uppercase tracking-[0.2em] ${item.small}`}>{item.label}</p>
@@ -4336,18 +4434,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       </tr>
                     </thead>
                     <tbody>
-                      {[
-                        ['Dell XPS 15 Laptop', '9,420', '2,420', '26.4%'],
-                        ['Chemistry Lab Kit', '7,860', '1,980', '21.7%'],
-                        ['Engineering Calculus Book', '6,310', '1,520', '19.9%'],
-                        ['USB-C Type C Dock', '5,880', '1,340', '18.8%'],
-                        ['Wireless Mechanical Mouse', '4,760', '1,120', '16.2%']
-                      ].map(([product, views, clicks, conversion]) => (
-                        <tr key={product} className="border-t border-slate-200 bg-white">
-                          <td className="px-4 py-3 font-semibold text-slate-800">{product}</td>
-                          <td className="px-4 py-3 text-slate-600">{views}</td>
-                          <td className="px-4 py-3 text-slate-600">{clicks}</td>
-                          <td className="px-4 py-3 font-bold text-emerald-600">{conversion}</td>
+                      {aiMetrics.top_products.map((product) => (
+                        <tr key={product.id} className="border-t border-slate-200 bg-white">
+                          <td className="px-4 py-3 font-semibold text-slate-800">{product.title || product.product}</td>
+                          <td className="px-4 py-3 text-slate-600">{Number(product.views || 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-slate-600">{Number(product.clicks || 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 font-bold text-emerald-600">{product.conversion}%</td>
                         </tr>
                       ))}
                     </tbody>
@@ -4360,23 +4452,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <h3 className="mt-2 text-xl font-black text-slate-950">Category Recommendation Performance</h3>
 
                 <div className="mt-5 space-y-5">
-                  {[
-                    ['Electronics', 88, 'bg-indigo-500'],
-                    ['Books & Materials', 76, 'bg-emerald-500'],
-                    ['Lab Equipment', 71, 'bg-sky-500'],
-                    ['Accessories', 62, 'bg-violet-500'],
-                    ['Stationery', 54, 'bg-amber-500']
-                  ].map(([label, value, color]) => (
-                    <div key={label}>
+                  {aiMetrics.category_performance.map((category, index) => {
+                    const colors = ['bg-indigo-500', 'bg-emerald-500', 'bg-sky-500', 'bg-violet-500', 'bg-amber-500'];
+                    const value = Number(category.value || 0);
+                    return (<div key={category.label}>
                       <div className="mb-1 flex items-center justify-between text-sm font-semibold text-slate-700">
-                        <span>{label}</span>
+                        <span>{category.label}</span>
                         <span>{value}%</span>
                       </div>
                       <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
-                        <div className={`h-full rounded-full ${color}`} style={{ width: `${value}%` }} />
+                        <div className={`h-full rounded-full ${colors[index % colors.length]}`} style={{ width: `${value}%` }} />
                       </div>
-                    </div>
-                  ))}
+                    </div>);
+                  })}
                 </div>
               </div>
             </div>
@@ -4397,26 +4485,26 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <div className="mt-5 grid gap-4 md:grid-cols-3">
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">DB Records</p>
-                    <p className="mt-2 text-2xl font-black text-slate-900">142k</p>
+                    <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.db_records.toLocaleString()}</p>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">User Profiles</p>
-                    <p className="mt-2 text-2xl font-black text-slate-900">18.4k</p>
+                    <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.user_profiles.toLocaleString()}</p>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Products Indexed</p>
-                    <p className="mt-2 text-2xl font-black text-slate-900">9.6k</p>
+                    <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.products_indexed.toLocaleString()}</p>
                   </div>
                 </div>
 
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
                   <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
                     <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Precision@5</div>
-                    <div className="mt-2 text-3xl font-black text-emerald-700">87.2%</div>
+                    <div className="mt-2 text-3xl font-black text-emerald-700">{aiMetrics.precision}%</div>
                   </div>
                   <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
                     <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Recall@5</div>
-                    <div className="mt-2 text-3xl font-black text-sky-700">81.4%</div>
+                    <div className="mt-2 text-3xl font-black text-sky-700">{aiMetrics.recall}%</div>
                   </div>
                 </div>
               </div>

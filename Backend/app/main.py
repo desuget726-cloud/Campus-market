@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import func, or_, text
+from sqlalchemy import func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
@@ -1696,11 +1696,11 @@ def create_product(
         
         # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
         if image and image.filename:
-            allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+            allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.jfif'}
             file_ext = os.path.splitext(image.filename)[1].lower()
             
             if file_ext not in allowed_extensions:
-                raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp")
+                raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp, jfif")
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
             unique_filename = timestamp + image.filename
@@ -3749,6 +3749,100 @@ def get_admin_kpis(db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/api/admin/ai-analytics")
+def get_admin_ai_analytics(db: Session = Depends(get_db)):
+    """Return live recommendation-model metrics and ranking insights."""
+    major_tables = (
+        Student, Category, SubCategory, Product, Admin, AuditLog, Report,
+        Notification, Message, WishlistItem, CartItem, Order, Transaction,
+        PasswordReset, SystemSetting, Review,
+    )
+    table_record_counts = {
+        model.__tablename__: db.query(model).count() for model in major_tables
+    }
+    db_records = sum(table_record_counts.values())
+    user_profiles = table_record_counts[Student.__tablename__]
+    products_indexed = table_record_counts[Product.__tablename__]
+
+    product_columns = {
+        column["name"] for column in inspect(db.get_bind()).get_columns(Product.__tablename__)
+    }
+    has_product_views = "views" in product_columns
+    clicks = 0
+    if has_product_views:
+        clicks = int(db.execute(text("SELECT COALESCE(SUM(views), 0) FROM products")).scalar() or 0)
+
+    request_count = user_profiles
+    ctr_percentage = round((clicks / request_count) * 100, 2) if request_count else 0
+    completed_orders = db.query(Order).filter(Order.status.ilike("Completed")).count()
+    precision_percentage = round((completed_orders / clicks) * 100, 2) if clicks else 0
+    recall_percentage = round((completed_orders / request_count) * 100, 2) if request_count else 0
+
+    approved_products = db.query(Product).filter(Product.status.ilike("Approved"))
+    order_counts = dict(
+        db.query(Order.product_id, func.count(Order.id))
+        .filter(Order.status.ilike("Completed"))
+        .group_by(Order.product_id)
+        .all()
+    )
+    if has_product_views:
+        approved_products = approved_products.order_by(text("views DESC"), Product.created_at.desc())
+    else:
+        approved_products = approved_products.order_by(Product.created_at.desc())
+
+    top_products = []
+    for product in approved_products.limit(5).all():
+        product_views = int(db.execute(
+            text("SELECT COALESCE(views, 0) FROM products WHERE id = :product_id"),
+            {"product_id": product.id},
+        ).scalar() or 0) if has_product_views else 0
+        product_clicks = product_views
+        product_conversions = int(order_counts.get(product.id, 0))
+        top_products.append({
+            "id": product.id,
+            "product": product.title,
+            "title": product.title,
+            "views": product_views,
+            "clicks": product_clicks,
+            "conversion": round((product_conversions / product_clicks) * 100, 2) if product_clicks else 0,
+        })
+
+    category_rows = (
+        db.query(Product.category, func.count(Product.id).label("product_count"))
+        .filter(Product.status.ilike("Approved"))
+        .group_by(Product.category)
+        .order_by(func.count(Product.id).desc())
+        .limit(5)
+        .all()
+    )
+    total_approved = sum(int(product_count) for _, product_count in category_rows)
+    category_performance = [
+        {
+            "label": category_name or "General",
+            "value": round((int(product_count) / total_approved) * 100, 2) if total_approved else 0,
+        }
+        for category_name, product_count in category_rows
+    ]
+
+    return {
+        "db_records": db_records,
+        "user_profiles": user_profiles,
+        "products_indexed": products_indexed,
+        "clicks": clicks,
+        "requests": request_count,
+        "request_count": request_count,
+        "ctr": ctr_percentage,
+        "ctr_percentage": ctr_percentage,
+        "purchase_conversions": completed_orders,
+        "completed_orders": completed_orders,
+        "precision": precision_percentage,
+        "recall": recall_percentage,
+        "top_products": top_products,
+        "category_performance": category_performance,
+        "table_record_counts": table_record_counts,
+    }
+
+
 @app.get("/api/admin/analytics")
 def get_admin_analytics(db: Session = Depends(get_db)):
     total_students = db.query(Student).count()
@@ -4456,12 +4550,20 @@ def get_admin_payments_endpoint(
                 else "SantimPay" if payment_type_value == "Seller Payout"
                 else "Wallet"
             )
+            payment_source = f"{tx.type or ''} {tx.description or ''}".lower()
+            seller_display = (
+                "System (Chapa)"
+                if payment_type_value == "Wallet Deposit" and "chapa" in payment_source
+                else "Self"
+                if payment_type_value == "Wallet Deposit"
+                else tx.student_id
+            )
 
             results.append({
                 "id": tx.id,
                 "transaction_id": tx.tx_id,
                 "buyer_id": tx.student_id,
-                "seller_id": tx.student_id,
+                "seller_id": seller_display,
                 "order_id": tx.tx_id,
                 "amount": float(tx.amount or 0),
                 "payment_type": payment_type_value,

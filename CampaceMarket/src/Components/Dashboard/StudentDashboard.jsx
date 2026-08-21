@@ -2076,10 +2076,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     setIsMarkingRead(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/notifications/mark-all-read', {
+      const res = await fetch(`http://127.0.0.1:8000/api/student/notifications/mark-all-read?student_id=${encodeURIComponent(user.studentId)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ student_id: user.studentId })
       });
 
       if (res.ok) {
@@ -4241,7 +4239,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <label className="block text-sm font-semibold text-slate-700">Product Image</label>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/*,.jfif"
                     onChange={(e) => setProductForm((prev) => ({ ...prev, image: e.target.files?.[0] || null }))}
                     className="mt-2 block w-full text-sm text-slate-700 file:mr-4 file:rounded-full file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-slate-700"
                   />
