@@ -7,6 +7,9 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
   const [isSuccess, setIsSuccess] = useState(false);
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+  const [requiresAdminOtp, setRequiresAdminOtp] = useState(false);
+  const [adminOtp, setAdminOtp] = useState('');
+  const [adminOtpEmail, setAdminOtpEmail] = useState('');
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -62,12 +65,41 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
         return;
       }
 
-      onLoginSuccess?.(data.user, data.role);
+      if (data.requires_2fa) {
+        setRequiresAdminOtp(true);
+        setAdminOtpEmail(data.otp_email || formData.studentId.trim());
+        setError('');
+        return;
+      }
+
+      onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
       setIsSuccess(true);
       setError('');
     } catch (err) {
       setError('Could not connect to server.');
       setIsSuccess(false);
+    }
+  };
+
+  const handleAdminOtpSubmit = async (event) => {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(adminOtp)) {
+      setError('Enter the 6-digit administrator verification code.');
+      return;
+    }
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/login/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: adminOtpEmail, otp_code: adminOtp }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Invalid verification code.');
+      onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
+      setIsSuccess(true);
+    } catch (err) {
+      setError(err.message || 'Could not verify administrator login.');
     }
   };
 
@@ -102,53 +134,69 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">
-                Student ID
-              </label>
+          {requiresAdminOtp ? (
+            <form onSubmit={handleAdminOtpSubmit} className="space-y-4">
+              <p className="text-sm text-slate-500">Enter the 6-digit code sent to the administrator email.</p>
               <input
-                id="studentId"
-                name="studentId"
                 type="text"
-                value={formData.studentId}
-                onChange={handleChange}
-                placeholder="Enter your student ID"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                inputMode="numeric"
+                maxLength={6}
+                value={adminOtp}
+                onChange={(e) => setAdminOtp(e.target.value.replace(/\D/g, ''))}
+                placeholder="000000"
+                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none"
               />
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
-                Password
-              </label>
-              <div className="relative">
+              <button type="submit" className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white">Verify Code</button>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">
+                  Student ID
+                </label>
                 <input
-                  id="password"
-                  name="password"
-                  type={showPasswordLogin ? 'text' : 'password'}
-                  value={formData.password}
+                  id="studentId"
+                  name="studentId"
+                  type="text"
+                  value={formData.studentId}
                   onChange={handleChange}
-                  placeholder="Enter your password"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 pr-20 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  placeholder="Enter your student ID"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPasswordLogin((s) => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-600"
-                >
-                  {showPasswordLogin ? 'Hide' : 'Show'}
-                </button>
               </div>
-            </div>
 
-            <button
-              type="submit"
-              className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
-            >
-              Login
-            </button>
-          </form>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
+                  Password
+                </label>
+                <div className="relative">
+                  <input
+                    id="password"
+                    name="password"
+                    type={showPasswordLogin ? 'text' : 'password'}
+                    value={formData.password}
+                    onChange={handleChange}
+                    placeholder="Enter your password"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 pr-20 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPasswordLogin((s) => !s)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-600"
+                  >
+                    {showPasswordLogin ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                Login
+              </button>
+            </form>
+          )}
 
           <div className="mt-6 flex items-center justify-between text-sm text-slate-500">
             <button type="button" onClick={onCancel} className="font-medium text-slate-600 hover:text-emerald-700">

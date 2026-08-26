@@ -62,6 +62,7 @@ function App() {
   const [pendingView, setPendingView] = useState('home');
   const [pendingUsername, setPendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
+  const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
 
   const activeRole = userRole || user?.role || null;
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
@@ -71,6 +72,26 @@ function App() {
     const session = { user, currentView, dashboardTab, adminTab, studentTab, userRole: activeRole };
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
   }, [currentView, dashboardTab, adminTab, studentTab, user, activeRole]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const loadSessionTimeout = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
+        if (!response.ok) return;
+        const data = await response.json();
+        const configuredTimeout = Number(data?.security?.sessionTimeout);
+        if (Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
+          setSessionTimeoutMinutes(configuredTimeout);
+        }
+      } catch (error) {
+        console.error('Failed to load session timeout:', error);
+      }
+    };
+
+    loadSessionTimeout();
+  }, [user]);
 
   useEffect(() => {
     const syncUserFromSession = () => {
@@ -165,6 +186,33 @@ function App() {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
     }
   };
+
+  useEffect(() => {
+    if (!user || !activeRole || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
+
+    let timeoutId;
+    const expireSession = () => {
+      window.localStorage.clear();
+      setUser(null);
+      setUserRole(null);
+      setUnreadCount(0);
+      setShowSuccessModal(false);
+      setCurrentView('login');
+    };
+    const resetTimeout = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(expireSession, sessionTimeoutMinutes * 60 * 1000);
+    };
+
+    const activityEvents = ['mousedown', 'keydown', 'scroll', 'touchstart'];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, resetTimeout, { passive: true }));
+    resetTimeout();
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetTimeout));
+    };
+  }, [activeRole, currentView, sessionTimeoutMinutes, user]);
 
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
 

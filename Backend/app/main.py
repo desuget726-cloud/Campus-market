@@ -22,6 +22,7 @@ import hmac
 import re
 import math
 import mimetypes
+import base64
 from decimal import Decimal
 from collections import Counter
 from datetime import datetime, timedelta
@@ -546,6 +547,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class AdminLoginOtpRequest(BaseModel):
+    email: str
+    otp_code: str
+
+
 class ForgotPasswordRequest(BaseModel):
     email: str
 
@@ -808,6 +814,50 @@ def _get_setting_value(db: Session, block: str, key: str, default=None):
     return default
 
 
+def _audit_logging_enabled(db: Session) -> bool:
+    return _setting_bool(
+        _get_setting_value(db, "security", "auditLogging", DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"]),
+        DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
+    )
+
+
+def _add_audit_log(db: Session, **values) -> None:
+    if _audit_logging_enabled(db):
+        db.add(AuditLog(**values))
+
+
+def _session_timeout_minutes(db: Session) -> int:
+    value = _get_setting_value(db, "security", "sessionTimeout", DEFAULT_SETTINGS_BLOCKS["security"]["sessionTimeout"])
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_SETTINGS_BLOCKS["security"]["sessionTimeout"]
+
+
+def _session_password_min_length(db: Session) -> int:
+    value = _get_setting_value(db, "security", "minPasswordLength", DEFAULT_SETTINGS_BLOCKS["security"]["minPasswordLength"])
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_SETTINGS_BLOCKS["security"]["minPasswordLength"]
+
+
+def _create_session_token(subject: str, role: str, timeout_minutes: int, secret: str) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "sub": subject,
+        "role": role,
+        "exp": int((datetime.utcnow() + timedelta(minutes=timeout_minutes)).timestamp()),
+    }
+
+    def encode(value):
+        return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=").decode()
+
+    unsigned_token = f"{encode(header)}.{encode(payload)}"
+    signature = hmac.new(secret.encode(), unsigned_token.encode(), hashlib.sha256).digest()
+    return f"{unsigned_token}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
 def _notifications_enabled(db: Optional[Session], key: str) -> bool:
     default = DEFAULT_SETTINGS_BLOCKS["notifications"].get(key, True)
     owns_session = db is None
@@ -918,6 +968,10 @@ def on_startup():
 # 1. የተማሪዎች ምዝገባ ኤፒአይ (POST /api/register)
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register_student(student_data: StudentRegister, db: Session = Depends(get_db)):
+    minimum_password_length = _session_password_min_length(db)
+    if len(student_data.password) < minimum_password_length:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {minimum_password_length} characters.")
+
     existing_id = db.query(Student).filter(Student.student_id == student_data.student_id).first()
     if existing_id:
         raise HTTPException(status_code=400, detail="Student ID is already registered.")
@@ -957,7 +1011,28 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
-        return {"role": "admin", "user": {"name": admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
+        if _setting_bool(_get_setting_value(db, "security", "admin2FA", True), True):
+            otp = f"{random.randint(100000, 999999)}"
+            db.add(PasswordReset(
+                email=admin.email,
+                otp_code=otp,
+                expires_at=datetime.utcnow() + timedelta(minutes=10),
+                is_used=False,
+            ))
+            db.commit()
+            email_sent = send_otp_email(admin.email, otp)
+            if not email_sent:
+                logging.getLogger(__name__).warning("Admin login OTP email could not be sent.")
+            return {
+                "role": "admin",
+                "requires_2fa": True,
+                "otp_email": admin.email,
+                "message": "A verification code was sent to the administrator email.",
+                "dev_mode": not email_sent,
+            }
+        session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
+        token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), session_secret)
+        return {"role": "admin", "access_token": token, "user": {"name": admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
 
     if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
         raise HTTPException(
@@ -980,10 +1055,35 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
-        return {"role": "student", "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified)}}
+        session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
+        token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), session_secret)
+        return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified)}}
 
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
+
+@app.post("/api/login/verify-otp")
+def verify_admin_login_otp(request: AdminLoginOtpRequest, db: Session = Depends(get_db)):
+    admin = db.query(Admin).filter(Admin.email.ilike(request.email.strip().lower())).first()
+    if not admin:
+        raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
+    otp_record = (
+        db.query(PasswordReset)
+        .filter(
+            PasswordReset.email.ilike(admin.email),
+            PasswordReset.otp_code == request.otp_code.strip(),
+            PasswordReset.is_used == False,
+            PasswordReset.expires_at >= datetime.utcnow(),
+        )
+        .order_by(PasswordReset.id.desc())
+        .first()
+    )
+    if not otp_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
+    otp_record.is_used = True
+    db.commit()
+    token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), os.getenv("SESSION_SECRET", "campace-session-secret"))
+    return {"role": "admin", "access_token": token, "user": {"name": admin.username, "username": admin.username, "email": admin.email}}
 
 # 2.3 የይለፍ ቃል መርሻ ኮድ መላኪያ (POST /api/auth/forgot-password)
 @app.post("/api/auth/forgot-password")
@@ -1053,8 +1153,9 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
 
     if not otp.isdigit() or len(otp) != 6:
         raise HTTPException(status_code=400, detail="Invalid OTP format.")
-    if len(new_password) < 8 or not re.search(r"[A-Z]", new_password) or not re.search(r"\d", new_password):
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters and include an uppercase letter and a number.")
+    minimum_password_length = _session_password_min_length(db)
+    if len(new_password) < minimum_password_length or not re.search(r"[A-Z]", new_password) or not re.search(r"\d", new_password):
+        raise HTTPException(status_code=400, detail=f"Password must be at least {minimum_password_length} characters and include an uppercase letter and a number.")
 
     reset_record = (
         db.query(PasswordReset)
@@ -1336,6 +1437,20 @@ def get_setting_by_id(id: int):
 
 @event.listens_for(Session, "before_flush")
 def enforce_audit_log_append_only(session, flush_context, instances):
+    new_audit_logs = [item for item in session.new if isinstance(item, AuditLog)]
+    if new_audit_logs:
+        setting_row = session.connection().execute(
+            text("SELECT value FROM system_settings WHERE `key` = 'security'")
+        ).scalar()
+        security_settings = _parse_setting_value(setting_row)
+        audit_logging_enabled = _setting_bool(
+            security_settings.get("auditLogging") if isinstance(security_settings, dict) else None,
+            DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
+        )
+        if not audit_logging_enabled:
+            for audit_log in new_audit_logs:
+                session.expunge(audit_log)
+
     deleted_logs = [item for item in session.deleted if isinstance(item, AuditLog)]
     updated_logs = [
         item for item in session.dirty
@@ -1856,6 +1971,10 @@ def create_product(
     ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
     """
     try:
+        require_student_verification = _setting_bool(
+            _get_setting_value(db, "security", "requireStudentVerification", True),
+            True,
+        )
         title_value = str(title or "").strip()
         price_value = str(price or "").strip()
         if not title_value:
@@ -1901,7 +2020,7 @@ def create_product(
             student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
             if not student:
                 raise HTTPException(status_code=404, detail="Student not found.")
-            if not student.is_verified:
+            if require_student_verification and not student.is_verified:
                 raise HTTPException(
                     status_code=403,
                     detail="Unverified profiles are restricted from creating listings.",
@@ -3704,7 +3823,11 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == data.student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
-    if not student.is_verified:
+    require_student_verification = _setting_bool(
+        _get_setting_value(db, "security", "requireStudentVerification", True),
+        True,
+    )
+    if require_student_verification and not student.is_verified:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="ID verification is required to complete purchases.",
