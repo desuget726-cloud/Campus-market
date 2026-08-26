@@ -2,6 +2,18 @@ import { useEffect, useState } from 'react';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 
+const parseProductImages = (image) => {
+  if (Array.isArray(image)) return image;
+  if (typeof image !== 'string' || !image.trim()) return [];
+
+  try {
+    const parsedImage = JSON.parse(image);
+    return Array.isArray(parsedImage) ? parsedImage : [image];
+  } catch {
+    return [image];
+  }
+};
+
 function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
@@ -129,7 +141,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     return item?.location || 'Student Center Pickup Point';
   })();
   const galleryImages = [
-    item?.image,
+    ...parseProductImages(item?.image),
     ...(Array.isArray(item?.images) ? item.images : []),
     ...(Array.isArray(item?.image_urls) ? item.image_urls : []),
   ].filter(Boolean).filter((image, index, images) => images.indexOf(image) === index);

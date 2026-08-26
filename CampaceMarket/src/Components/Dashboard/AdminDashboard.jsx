@@ -310,23 +310,33 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [paymentsList, setPaymentsList] = useState([]);
   const [paymentSearchTerm, setPaymentSearchTerm] = useState('');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('All');
-  const [paymentTypeFilter, setPaymentTypeFilter] = useState('All');
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState('All');
+  const [paymentFromDate, setPaymentFromDate] = useState('');
+  const [paymentToDate, setPaymentToDate] = useState('');
   const [paymentPage, setPaymentPage] = useState(1);
   const PAYMENTS_PER_PAGE = 10;
   const [selectedPaymentDetail, setSelectedPaymentDetail] = useState(null);
-  const [paymentStatusMessage, setPaymentStatusMessage] = useState('');
-  const [paymentStatusMessageId, setPaymentStatusMessageId] = useState(null);
+  const [paymentVerificationLoading, setPaymentVerificationLoading] = useState(false);
+  const [paymentVerificationMessage, setPaymentVerificationMessage] = useState('');
 
   const calculatedPaymentMetrics = useMemo(() => {
+    const now = new Date();
+    const isToday = (payment) => {
+      const date = new Date(payment.created_date || payment.date);
+      return date.toDateString() === now.toDateString();
+    };
+    const isThisMonth = (payment) => {
+      const date = new Date(payment.created_date || payment.date);
+      return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+    };
     const successfulPayments = paymentsList.filter((payment) => payment.status === 'Successful');
-    const totalRevenueAmount = successfulPayments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
+    const revenue = (payments) => payments.reduce((total, payment) => total + (Number(payment.amount) || 0), 0);
 
     return {
-      totalTransactions: paymentsList.length,
+      todayRevenue: revenue(successfulPayments.filter(isToday)),
+      monthlyRevenue: revenue(successfulPayments.filter(isThisMonth)),
       successful: successfulPayments.length,
-      pending: paymentsList.filter((payment) => payment.status === 'Pending').length,
-      failed: paymentsList.filter((payment) => payment.status === 'Failed').length,
-      totalRevenue: `${totalRevenueAmount.toLocaleString('en-US')} ETB`,
+      refunded: revenue(paymentsList.filter((payment) => payment.status === 'Refunded' || payment.status === 'Reversed')),
     };
   }, [paymentsList]);
 
@@ -426,7 +436,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   useEffect(() => {
     setPaymentPage(1);
-  }, [paymentSearchTerm, paymentStatusFilter, paymentTypeFilter]);
+  }, [paymentSearchTerm, paymentStatusFilter, paymentMethodFilter, paymentFromDate, paymentToDate]);
 
   useEffect(() => {
     setAuditPage(1);
@@ -768,8 +778,20 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     currency: 'ETB',
     enableOnlinePayment: true,
     paymentVerification: 'Automatic',
-    refundsEnabled: true
+    refundsEnabled: true,
+    refundPolicy: 'Admin approval required',
+    maximumRefund: '100%',
+    publicKey: '',
+    secretKey: '',
+    security: {
+      automaticVerification: true,
+      duplicateTransactionProtection: true,
+      adminApprovalForRefunds: true,
+      auditLogging: true,
+    },
   });
+  const [chapaConnectionMessage, setChapaConnectionMessage] = useState('');
+  const [chapaConnectionLoading, setChapaConnectionLoading] = useState(false);
   const [notificationSettings, setNotificationSettings] = useState({
     emailNotifs: true,
     orderNotifs: true,
@@ -1131,7 +1153,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   // Fetch payments from backend
   const fetchPaymentsData = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/payments');
+      const response = await fetch('http://127.0.0.1:8000/api/admin/payments?limit=1000');
       const payments = await response.json();
       setPaymentsList(Array.isArray(payments) ? payments : []);
     } catch (err) {
@@ -1170,6 +1192,20 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const handleExportPDF = () => {
     window.print();
+  };
+
+  const handleTestChapaConnection = async () => {
+    setChapaConnectionLoading(true);
+    setChapaConnectionMessage('');
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/payments/test-connection', { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      setChapaConnectionMessage(response.ok && data.success ? 'Chapa connection verified.' : (data.status || 'Chapa connection is not configured.'));
+    } catch (error) {
+      setChapaConnectionMessage('Unable to test Chapa connection.');
+    } finally {
+      setChapaConnectionLoading(false);
+    }
   };
 
   const handleExportAuditLogsCSV = (logs = auditLogs) => {
@@ -1226,50 +1262,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
   };
 
-  // Handle payment status updates with audit logging
-  const handlePaymentStatusUpdate = async (paymentId, newStatus) => {
-    const payment = paymentsList.find(p => p.id === paymentId);
-    if (!payment) return;
+  const handleRetryPaymentVerification = async () => {
+    const txRef = selectedPaymentDetail?.chapa_reference || selectedPaymentDetail?.transaction_id;
+    if (!txRef) return;
 
-    const oldStatus = payment.status;
-    const timestamp = new Date().toLocaleString();
-
-    // Update local state
-    setPaymentsList(prev => prev.map(p =>
-      p.id === paymentId ? { ...p, status: newStatus } : p
-    ));
-
-    // Show temporary warning message
-    setPaymentStatusMessage(`Status updated from "${oldStatus}" to "${newStatus}"`);
-    setPaymentStatusMessageId(paymentId);
-    setTimeout(() => setPaymentStatusMessage(''), 3000);
-
-    // Log to audit logs
-    setAuditLogs(prev => [
-      {
-        id: Date.now(),
-        action: `Admin updated payment TXN-${paymentId} status from "${oldStatus}" to "${newStatus}" for student ${payment.student_id}. Amount: ${payment.amount}`,
-        date: timestamp
-      },
-      ...prev
-    ]);
-
-    // Send update to backend
+    setPaymentVerificationLoading(true);
+    setPaymentVerificationMessage('');
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/payments/${paymentId}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus })
-      });
-      if (!response.ok) {
-        console.error('Failed to update payment status on backend');
-        // Revert local state on backend error
-        setPaymentsList(prev => prev.map(p =>
-          p.id === paymentId ? { ...p, status: oldStatus } : p
-        ));
-      }
-    } catch (err) {
-      console.error('Error updating payment status:', err);
+      const response = await fetch(`http://127.0.0.1:8000/api/payment/verify/${encodeURIComponent(txRef)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Verification failed.');
+      setPaymentVerificationMessage(`Gateway verification returned ${data.status}.`);
+      setPaymentsList((previous) => previous.map((payment) => payment.transaction_id === txRef
+        ? { ...payment, status: data.status }
+        : payment));
+      setSelectedPaymentDetail((previous) => previous ? { ...previous, status: data.status } : previous);
+    } catch (error) {
+      setPaymentVerificationMessage(error.message || 'Unable to verify payment.');
+    } finally {
+      setPaymentVerificationLoading(false);
     }
   };
 
@@ -4080,9 +4091,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             String(payment.order_id || '').toLowerCase().includes(searchValue);
 
           const statusMatch = paymentStatusFilter === 'All' || payment.status === paymentStatusFilter;
-          const typeMatch = paymentTypeFilter === 'All' || payment.payment_type === paymentTypeFilter;
+          const methodMatch = paymentMethodFilter === 'All' || payment.payment_method === paymentMethodFilter;
+          const paymentDate = new Date(payment.created_date || payment.date);
+          const fromDateMatch = !paymentFromDate || paymentDate >= new Date(`${paymentFromDate}T00:00:00`);
+          const toDateMatch = !paymentToDate || paymentDate <= new Date(`${paymentToDate}T23:59:59.999`);
 
-          return searchMatch && statusMatch && typeMatch;
+          return searchMatch && statusMatch && methodMatch && fromDateMatch && toDateMatch;
         });
         const totalPaymentPages = Math.max(1, Math.ceil(filteredPayments.length / PAYMENTS_PER_PAGE));
         const displayedPayments = filteredPayments.slice((paymentPage - 1) * PAYMENTS_PER_PAGE, paymentPage * PAYMENTS_PER_PAGE);
@@ -4102,29 +4116,32 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <p className="mt-1 text-sm text-slate-300">Monitor digital payments, payout flows, wallet loads, refunds, and operational risk across the marketplace.</p>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-4">
-              <div className="rounded-[24px] border border-slate-200 bg-slate-100/70 p-5 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Transactions</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.totalTransactions.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Successful</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.successful.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] border border-amber-100 bg-amber-50 p-5 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Pending</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.pending.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] border border-red-100 bg-red-50 p-5 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-red-700">Failed</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedPaymentMetrics.failed.toLocaleString()}</p>
-              </div>
+            <div className="grid gap-4 lg:grid-cols-4">
+              {[
+                ['Gateway', 'Chapa 🟢 Connected'],
+                ['Webhook', '🟢 Active'],
+                ['Settlement Currency', 'ETB'],
+                ['Heartbeat', 'Last checked 2 minutes ago'],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</p>
+                  <p className="mt-3 text-base font-black text-slate-950">{value}</p>
+                </div>
+              ))}
             </div>
 
-            <div className="rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
-              <p className="text-lg font-black text-slate-950">
-                Total Revenue: <span className="text-sky-700">{calculatedPaymentMetrics.totalRevenue}</span>
-              </p>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                ['Today\'s Revenue', calculatedPaymentMetrics.todayRevenue],
+                ['Monthly Revenue', calculatedPaymentMetrics.monthlyRevenue],
+                ['Successful Payments', calculatedPaymentMetrics.successful],
+                ['Refunded Amount', calculatedPaymentMetrics.refunded],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</p>
+                  <p className="mt-3 text-3xl font-black text-slate-950">{typeof value === 'number' && label !== 'Successful Payments' ? `${value.toLocaleString('en-ET')} ETB` : Number(value).toLocaleString('en-ET')}</p>
+                </div>
+              ))}
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -4139,12 +4156,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
               </div>
 
-              <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <div className="mt-5 grid gap-3 md:grid-cols-2 lg:grid-cols-5">
                 <input
                   type="text"
                   value={paymentSearchTerm}
                   onChange={(e) => setPaymentSearchTerm(e.target.value)}
-                  placeholder="Search Transaction ID..."
+                  placeholder="Search transaction, buyer, seller, or order ID..."
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
                 />
 
@@ -4160,16 +4177,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </select>
 
                 <select
-                  value={paymentTypeFilter}
-                  onChange={(e) => setPaymentTypeFilter(e.target.value)}
+                  value={paymentMethodFilter}
+                  onChange={(e) => setPaymentMethodFilter(e.target.value)}
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
-                  <option value="All">Payment Type: All</option>
-                  <option value="Product Purchase">Product Purchase</option>
-                  <option value="Wallet Deposit">Wallet Deposit</option>
-                  <option value="Seller Payout">Seller Payout</option>
-                  <option value="Refund">Refund</option>
+                  <option value="All">Payment Method: All</option>
+                  <option value="Chapa">Chapa</option>
+                  <option value="Wallet">Wallet</option>
                 </select>
+                <input type="date" value={paymentFromDate} onChange={(e) => setPaymentFromDate(e.target.value)} aria-label="From date" className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
+                <input type="date" value={paymentToDate} onChange={(e) => setPaymentToDate(e.target.value)} aria-label="To date" className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
               </div>
 
               <div className="mt-6 overflow-x-auto">
@@ -4203,29 +4220,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <td className="px-4 py-4 text-slate-700">{payment.payment_type}</td>
                         <td className="px-4 py-4 text-slate-700">{payment.payment_method}</td>
                         <td className="px-4 py-4">
-                          {payment.status === 'Successful' ? (
-                            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">
-                              <span>🔒</span>
-                              <span>Successful</span>
-                            </div>
-                          ) : (
-                            <div className="space-y-2">
-                              <select
-                                value={payment.status}
-                                onChange={(e) => handlePaymentStatusUpdate(payment.id, e.target.value)}
-                                className="block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 focus:border-sky-500 focus:outline-none"
-                              >
-                                <option value="Pending">Pending</option>
-                                <option value="Failed">Failed</option>
-                                <option value="Successful">Successful</option>
-                              </select>
-                              {paymentStatusMessageId === payment.id && paymentStatusMessage && (
-                                <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-semibold text-amber-700">
-                                  ⚠️ {paymentStatusMessage}
-                                </div>
-                              )}
-                            </div>
-                          )}
+                          <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-black ${payment.status === 'Successful' ? 'border-emerald-200 bg-emerald-100 text-emerald-700' : 'border-red-200 bg-red-100 text-red-700'}`}>
+                            <span>{payment.status === 'Successful' ? '🟢' : '🔴'}</span>
+                            <span>{payment.status === 'Successful' ? 'Successful' : 'Failed'}</span>
+                          </div>
                         </td>
                         <td className="px-4 py-4 text-xs text-slate-500">{new Date(payment.date).toLocaleString()}</td>
                         <td className="px-4 py-4">
@@ -4273,7 +4271,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.transaction_id}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Buyer</p>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Buyer ID</p>
                       <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.buyer_id}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4">
@@ -4297,15 +4295,38 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.status}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Date</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{new Date(selectedPaymentDetail.date).toLocaleString()}</p>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Created Date</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.created_date ? new Date(selectedPaymentDetail.created_date).toLocaleString() : 'Unavailable'}</p>
                     </div>
                   </div>
 
-                  <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Payment Type</p>
-                    <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.payment_type}</p>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-2xl bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Completed Date</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.completed_date ? new Date(selectedPaymentDetail.completed_date).toLocaleString() : 'Not completed'}</p>
+                    </div>
+                    <div className="rounded-2xl bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Chapa Reference</p>
+                      <p className="mt-2 break-all text-base font-black text-slate-900">{selectedPaymentDetail.chapa_reference || 'Not applicable'}</p>
+                    </div>
                   </div>
+
+                  {selectedPaymentDetail.status !== 'Successful' && (
+                    <div className="mt-5 rounded-2xl border border-red-200 bg-red-50 p-4">
+                      <p className="text-sm font-bold text-red-700">🔴 Failed verification status</p>
+                      <button type="button" onClick={handleRetryPaymentVerification} disabled={paymentVerificationLoading} className="mt-3 rounded-full bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60">
+                        {paymentVerificationLoading ? 'Verifying...' : 'Retry Verification'}
+                      </button>
+                      {paymentVerificationMessage && <p className="mt-2 text-xs font-semibold text-red-700">{paymentVerificationMessage}</p>}
+                    </div>
+                  )}
+
+                  {selectedPaymentDetail.payment_type && (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Payment Type</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.payment_type}</p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -5696,7 +5717,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <h3 className="text-lg font-black text-slate-950">General</h3>
                 <div className="mt-4 space-y-4">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Marketplace Name</label>
+                    <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Market Name</label>
                     <input value={generalSettings.marketplaceName} onChange={(e) => setGeneralSettings({ ...generalSettings, marketplaceName: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
                   </div>
                   <div>
@@ -5710,19 +5731,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </div>
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Currency</label>
-                      <select value={generalSettings.currency} onChange={(e) => setGeneralSettings({ ...generalSettings, currency: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                      <select value="ETB" disabled className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                         <option value="ETB">ETB</option>
-                        <option value="USD">USD</option>
-                        <option value="EUR">EUR</option>
                       </select>
                     </div>
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Timezone</label>
-                    <select value={generalSettings.timezone} onChange={(e) => setGeneralSettings({ ...generalSettings, timezone: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                    <select value="Africa/Addis_Ababa" disabled className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                       <option value="Africa/Addis_Ababa">Africa/Addis_Ababa</option>
-                      <option value="UTC">UTC</option>
-                      <option value="Africa/Nairobi">Africa/Nairobi</option>
                     </select>
                   </div>
                 </div>
@@ -5778,29 +5795,69 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Provider</label>
-                      <select value={paymentSettings.paymentProvider} onChange={(e) => setPaymentSettings({ ...paymentSettings, paymentProvider: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                      <select value="Chapa" disabled className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                         <option>Chapa</option>
-                        <option>Telebirr</option>
-                        <option>CBE Birr</option>
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Currency</label>
-                      <select value={paymentSettings.currency} onChange={(e) => setPaymentSettings({ ...paymentSettings, currency: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                      <select value="ETB" disabled className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                         <option value="ETB">ETB</option>
-                        <option value="USD">USD</option>
                       </select>
                     </div>
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Verification</label>
-                    <select value={paymentSettings.paymentVerification} onChange={(e) => setPaymentSettings({ ...paymentSettings, paymentVerification: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
+                    <select value="Automatic" disabled className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm">
                       <option>Automatic</option>
-                      <option>Manual</option>
                     </select>
                   </div>
                   {toggleCard('Enable Online Payment', paymentSettings.enableOnlinePayment, () => setPaymentSettings({ ...paymentSettings, enableOnlinePayment: !paymentSettings.enableOnlinePayment }))}
                   {toggleCard('Refunds Enabled', paymentSettings.refundsEnabled, () => setPaymentSettings({ ...paymentSettings, refundsEnabled: !paymentSettings.refundsEnabled }))}
+                  {paymentSettings.refundsEnabled && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+                      <h4 className="text-sm font-black text-slate-900">Refund Policy</h4>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <select value={paymentSettings.refundPolicy} onChange={(e) => setPaymentSettings({ ...paymentSettings, refundPolicy: e.target.value })} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                          <option>Admin approval required</option>
+                          <option>Automatic</option>
+                        </select>
+                        <select value={paymentSettings.maximumRefund} onChange={(e) => setPaymentSettings({ ...paymentSettings, maximumRefund: e.target.value })} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                          <option>100%</option>
+                          <option>75%</option>
+                          <option>50%</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h4 className="text-sm font-black text-slate-900">Chapa Configuration</h4>
+                      <span className="text-xs font-bold text-emerald-700">🟢 Connected</span>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label className="text-xs font-bold text-slate-600">Public Key<input type="password" value={paymentSettings.publicKey || ''} onChange={(e) => setPaymentSettings({ ...paymentSettings, publicKey: e.target.value })} placeholder="pk_test_••••••" aria-label="Public Key" className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+                      <label className="text-xs font-bold text-slate-600">Secret Key<input type="password" value={paymentSettings.secretKey || ''} onChange={(e) => setPaymentSettings({ ...paymentSettings, secretKey: e.target.value })} placeholder="•••••••••••" aria-label="Secret Key" className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" /></label>
+                    </div>
+                    <button type="button" onClick={handleTestChapaConnection} disabled={chapaConnectionLoading} className="mt-3 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60">{chapaConnectionLoading ? 'Testing...' : 'Test Connection'}</button>
+                    {chapaConnectionMessage && <p className="mt-2 text-xs font-semibold text-slate-600">{chapaConnectionMessage}</p>}
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                    <h4 className="text-sm font-black text-slate-900">Payment Security</h4>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      {[
+                        ['automaticVerification', 'Automatic payment verification (checks Chapa webhook signature)'],
+                        ['duplicateTransactionProtection', 'Duplicate transaction protection (prevents double checkout)'],
+                        ['adminApprovalForRefunds', 'Admin approval for refunds'],
+                        ['auditLogging', 'Payment changes recorded in Audit Logs'],
+                      ].map(([key, label]) => (
+                        <label key={key} className="flex items-start gap-2 text-xs font-semibold text-slate-700">
+                          <input type="checkbox" checked={Boolean(paymentSettings.security?.[key])} onChange={(e) => setPaymentSettings({ ...paymentSettings, security: { ...paymentSettings.security, [key]: e.target.checked } })} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600" />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
 

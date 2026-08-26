@@ -722,6 +722,14 @@ DEFAULT_SETTINGS_BLOCKS = {
         "enableOnlinePayment": True,
         "paymentVerification": "Automatic",
         "refundsEnabled": True,
+        "refundPolicy": "Admin approval required",
+        "maximumRefund": "100%",
+        "security": {
+            "automaticVerification": True,
+            "duplicateTransactionProtection": True,
+            "adminApprovalForRefunds": True,
+            "auditLogging": True,
+        },
     },
     "ai": {
         "recommendationEngine": "Content-Based Filtering (TF-IDF)",
@@ -792,6 +800,18 @@ def _get_setting_value(db: Session, block: str, key: str, default=None):
         if isinstance(block_value, dict) and key in block_value:
             return block_value[key]
     return default
+
+
+def _parse_size_bytes(value, default=5 * 1024 * 1024):
+    if isinstance(value, (int, float)) and value >= 0:
+        return int(value)
+
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)?\s*", str(value or ""), re.IGNORECASE)
+    if not match:
+        return default
+
+    units = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
+    return int(float(match.group(1)) * units.get((match.group(2) or "B").upper(), 1))
 
 
 def _settings_change_details(previous, current, prefix=""):
@@ -941,7 +961,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
-        return {"role": "student", "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url}}
+        return {"role": "student", "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified)}}
 
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
@@ -1188,6 +1208,10 @@ def get_admin_settings(db: Session = Depends(get_db)):
         parsed = _parse_setting_value(item.value)
         if isinstance(parsed, dict):
             response[item.key].update(parsed)
+            public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
+            secret_key = os.getenv("CHAPA_SECRET_KEY", "")
+            response["payment"]["publicKey"] = f"{public_key[:8]}••••••" if public_key else "Not configured"
+            response["payment"]["secretKey"] = "••••••••••••" if secret_key else "Not configured"
     return response
 
 
@@ -1205,6 +1229,29 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
         normalized[block].update(values)
 
+    payment_values = normalized["payment"]
+    if payment_values.get("paymentProvider") != "Chapa":
+        raise HTTPException(status_code=400, detail="Only Chapa is supported as a payment provider.")
+    if payment_values.get("currency") != "ETB":
+        raise HTTPException(status_code=400, detail="Payment currency must be ETB.")
+    if payment_values.get("paymentVerification") != "Automatic":
+        raise HTTPException(status_code=400, detail="Payment verification must be Automatic.")
+    if payment_values.get("refundPolicy") not in {"Admin approval required", "Automatic"}:
+        raise HTTPException(status_code=400, detail="Invalid refund policy.")
+    if payment_values.get("maximumRefund") not in {"100%", "75%", "50%"}:
+        raise HTTPException(status_code=400, detail="Invalid maximum refund value.")
+    if not isinstance(payment_values.get("enableOnlinePayment"), bool) or not isinstance(payment_values.get("refundsEnabled"), bool):
+        raise HTTPException(status_code=400, detail="Payment toggles must be boolean values.")
+    security_values = payment_values.get("security")
+    if not isinstance(security_values, dict) or any(not isinstance(value, bool) for value in security_values.values()):
+        raise HTTPException(status_code=400, detail="Payment security rules must be boolean values.")
+    payment_values.pop("publicKey", None)
+    payment_values.pop("secretKey", None)
+    normalized["payment"] = payment_values
+
+    normalized["general"]["currency"] = "ETB"
+    normalized["general"]["timezone"] = "Africa/Addis_Ababa"
+
     for key, value in normalized.items():
         existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
         serialized = json.dumps(value, ensure_ascii=False)
@@ -1215,15 +1262,23 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
 
     db.query(SystemSetting).filter(~SystemSetting.key.in_(normalized.keys())).delete(synchronize_session=False)
 
-    admin = db.query(Admin).order_by(Admin.id.asc()).first()
-    changes = _settings_change_details(current, normalized)
+    admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+    audit_current = json.loads(json.dumps(current))
+    audit_current.get("payment", {}).pop("publicKey", None)
+    audit_current.get("payment", {}).pop("secretKey", None)
+    changes = _settings_change_details(audit_current, normalized)
     if admin and changes:
         db.add(AuditLog(
             admin_id=admin.id,
             action="System Settings Updated",
             entity_type="Settings",
             entity_id=1,
-            description="Admin updated system settings: " + "; ".join(changes),
+            description=json.dumps({
+                "username": admin.username,
+                "old_values": audit_current,
+                "new_values": normalized,
+                "changes": changes,
+            }, ensure_ascii=False),
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
@@ -1235,6 +1290,27 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
 @app.patch("/api/admin/settings/{id}")
 def update_setting_patch(id: int, data: SettingUpdate):
     return {"message": "Setting updated successfully"}
+
+
+@app.post("/api/admin/payments/test-connection")
+def test_chapa_connection(db: Session = Depends(get_db)):
+    public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
+    secret_key = os.getenv("CHAPA_SECRET_KEY", "")
+    connected = bool(public_key and secret_key)
+    admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+    if admin:
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action="Payment Connection Tested",
+            entity_type="Payment Configuration",
+            entity_id=1,
+            description=f"Admin {admin.username} tested Chapa connection; result={'connected' if connected else 'not configured'}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.commit()
+
+    return {"success": connected, "provider": "Chapa", "status": "Connected" if connected else "Not configured"}
 
 
 @app.get("/api/admin/settings/{id}")
@@ -1445,6 +1521,26 @@ async def upload_student_avatar(
     return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
 
 
+@app.get("/api/student/profile")
+def get_student_profile(student_id: str, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    return {
+        "success": True,
+        "user": {
+            "name": student.name,
+            "studentId": student.student_id,
+            "email": student.email,
+            "phone": student.phone,
+            "college": student.college,
+            "department": student.department,
+            "is_verified": bool(student.is_verified),
+        },
+    }
+
+
 @app.put("/api/student/profile")
 def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == profile.student_id).first()
@@ -1471,6 +1567,7 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
             "phone": student.phone,
             "college": student.college,
             "department": student.department,
+            "is_verified": bool(student.is_verified),
         },
     }
 
@@ -1632,6 +1729,17 @@ def get_products(
         )
 
     query = db.query(Product).filter(Product.status.ilike("Approved"))
+    auto_hide_sold = _setting_bool(
+        _get_setting_value(
+            db,
+            "marketplace",
+            "autoHideSold",
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
+        ),
+        DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
+    )
+    if auto_hide_sold:
+        query = query.filter(Product.status != "Sold")
 
     manual_filters_active = bool(category or subcategory or search)
 
@@ -1725,15 +1833,45 @@ def create_product(
     description: Optional[str] = Form(None),
     seller: Optional[str] = Form(None),
     student_id: Optional[str] = Form(None),  # <-- ADDED: Capture student_id from frontend Form
-    image: Optional[UploadFile] = File(None),
+    images: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db)
 ):
     """
     ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
-    ሁሉም ምርቶች በ "Pending" ሁኔታ ይጀምራሉ - ተግባር ሰው እና ይጠብቅ።
     """
     try:
         image_url = None
+        max_images_per_product = _get_setting_value(
+            db,
+            "marketplace",
+            "maxImagesPerProduct",
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImagesPerProduct"],
+        )
+        try:
+            max_images_per_product = max(0, int(max_images_per_product))
+        except (TypeError, ValueError):
+            max_images_per_product = DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImagesPerProduct"]
+        max_image_size = _get_setting_value(
+            db,
+            "marketplace",
+            "maxImageSize",
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImageSize"],
+        )
+
+        if len(images) > max_images_per_product:
+            raise HTTPException(
+                status_code=400,
+                detail=f"You can upload a maximum of {max_images_per_product} images per product.",
+            )
+        require_approval = _setting_bool(
+            _get_setting_value(
+                db,
+                "marketplace",
+                "requireApproval",
+                DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
+            ),
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
+        )
 
         normalized_student_id = str(student_id).strip() if student_id else ""
         if normalized_student_id:
@@ -1747,12 +1885,26 @@ def create_product(
                 )
         
         # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
-        if image and image.filename:
+        image_urls = []
+        for image in images:
+            if not image.filename:
+                continue
+
             allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.jfif'}
             file_ext = os.path.splitext(image.filename)[1].lower()
             
             if file_ext not in allowed_extensions:
                 raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp, jfif")
+
+            image.file.seek(0, os.SEEK_END)
+            image_size = image.file.tell()
+            image.file.seek(0)
+            max_image_size_bytes = _parse_size_bytes(max_image_size)
+            if image_size > max_image_size_bytes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Image size must not exceed {max_image_size}.",
+                )
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
             unique_filename = timestamp + image.filename
@@ -1761,7 +1913,9 @@ def create_product(
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(image.file, buffer)
             
-            image_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
+            image_urls.append(f"http://127.0.0.1:8000/static/uploads/{unique_filename}")
+
+        image_url = json.dumps(image_urls, ensure_ascii=False) if image_urls else None
         
         # Resolve the seller's identity properly (የሻጩን ማንነት መፍታት)
         seller_value = str(seller).strip() if seller else ""
@@ -1793,7 +1947,7 @@ def create_product(
             image=image_url,
             description=description,
             seller=seller_value,  # <-- Use resolved seller identity
-            status="Pending"
+            status="Pending" if require_approval else "Approved"
         )
         db_product.location = "Addis Ababa"
         db.add(db_product)
@@ -1802,7 +1956,7 @@ def create_product(
         
         return {
             "success": True,
-            "message": "Product posted successfully! Awaiting admin approval.",
+            "message": "Product posted successfully! Awaiting admin approval." if require_approval else "Product posted successfully!",
             "product": {
                 "id": db_product.id,
                 "title": db_product.title,
@@ -2538,6 +2692,36 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
+    ai_enabled = _setting_bool(
+        _get_setting_value(db, "ai", "enableAI", DEFAULT_SETTINGS_BLOCKS["ai"]["enableAI"]),
+        DEFAULT_SETTINGS_BLOCKS["ai"]["enableAI"],
+    )
+    if not ai_enabled:
+        return []
+
+    try:
+        num_recommendations = max(0, int(_get_setting_value(
+            db,
+            "ai",
+            "numRecommendations",
+            DEFAULT_SETTINGS_BLOCKS["ai"]["numRecommendations"],
+        )))
+    except (TypeError, ValueError):
+        num_recommendations = DEFAULT_SETTINGS_BLOCKS["ai"]["numRecommendations"]
+
+    try:
+        min_similarity_score = float(_get_setting_value(
+            db,
+            "ai",
+            "minSimilarityScore",
+            DEFAULT_SETTINGS_BLOCKS["ai"]["minSimilarityScore"],
+        ))
+    except (TypeError, ValueError):
+        min_similarity_score = DEFAULT_SETTINGS_BLOCKS["ai"]["minSimilarityScore"]
+
+    if num_recommendations == 0:
+        return []
+
     approved_products = db.query(Product).filter(Product.status.ilike('%approved%')).all()
     if not approved_products:
         return []
@@ -2574,6 +2758,8 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     seen_ids = set()
     for item in scored_products:
         product = item["product"]
+        if item["score"] < min_similarity_score:
+            continue
         if product.id in seen_ids:
             continue
         seen_ids.add(product.id)
@@ -2587,21 +2773,8 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
             "match_score": round(item["score"], 4),
             "match": "High match" if item["score"] >= 0.15 else "Recommended",
         })
-        if len(best_matches) >= 3:
+        if len(best_matches) >= num_recommendations:
             break
-
-    if not best_matches:
-        for product in approved_products[:3]:
-            best_matches.append({
-                "id": product.id,
-                "title": product.title,
-                "description": product.description or 'Popular product recommended for your academic needs.',
-                "category": product.category or 'General',
-                "price": product.price,
-                "image": product.image,
-                "match_score": 0.0,
-                "match": "Recommended",
-            })
 
     return best_matches
 
@@ -3547,6 +3720,7 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
             price=product.price,
             status="Processing",
         )
+        product.status = "Sold"
         db.add(order)
         db.flush()
         order_payload.append({
@@ -4636,8 +4810,21 @@ def get_admin_payments_endpoint(
         for tx in transactions:
             payment_type_value = _normalize_payment_type(tx.type or tx.description or "Product Purchase")
             payment_status = _normalize_payment_status(tx.status or "Pending")
+            related_order = None
+            if payment_type_value == "Product Purchase":
+                related_order = (
+                    db.query(Order)
+                    .filter(Order.student_id == tx.student_id)
+                    .order_by(Order.created_at.desc())
+                    .first()
+                )
+            related_product = (
+                db.query(Product).filter(Product.id == related_order.product_id).first()
+                if related_order else None
+            )
             payment_method = (
-                "Chapa" if payment_type_value == "Product Purchase"
+                "Wallet" if payment_type_value == "Product Purchase"
+                else "Chapa" if payment_type_value == "Wallet Deposit" and "chapa" in f"{tx.type or ''} {tx.description or ''}".lower()
                 else "Wallet" if payment_type_value == "Wallet Deposit"
                 else "SantimPay" if payment_type_value == "Seller Payout"
                 else "Wallet"
@@ -4648,7 +4835,7 @@ def get_admin_payments_endpoint(
                 if payment_type_value == "Wallet Deposit" and "chapa" in payment_source
                 else "Self"
                 if payment_type_value == "Wallet Deposit"
-                else tx.student_id
+                else related_product.seller if related_product and related_product.seller else "Unknown"
             )
 
             results.append({
@@ -4656,12 +4843,15 @@ def get_admin_payments_endpoint(
                 "transaction_id": tx.tx_id,
                 "buyer_id": tx.student_id,
                 "seller_id": seller_display,
-                "order_id": tx.tx_id,
+                "order_id": related_order.id if related_order else tx.tx_id,
                 "amount": float(tx.amount or 0),
                 "payment_type": payment_type_value,
                 "payment_method": payment_method,
                 "status": payment_status,
                 "date": tx.created_at.isoformat() if tx.created_at else None,
+                "created_date": tx.created_at.isoformat() if tx.created_at else None,
+                "completed_date": tx.created_at.isoformat() if payment_status == "Successful" and tx.created_at else None,
+                "chapa_reference": tx.tx_id if payment_method == "Chapa" else None,
                 "student_id": tx.student_id,
                 "type": tx.type,
                 "description": tx.description,
@@ -4690,23 +4880,60 @@ def get_admin_payments_endpoint(
 
 @app.put("/api/admin/payments/{payment_id}/status")
 def update_admin_payment_status(payment_id: int, payload: dict, db: Session = Depends(get_db)):
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Payment status payload must be a JSON object.")
+    raise HTTPException(
+        status_code=403,
+        detail="Payment status can only be changed by a verified gateway webhook or verification.",
+    )
 
-    transaction = db.query(Transaction).filter(Transaction.id == payment_id).first()
+
+@app.get("/api/payment/verify/{tx_ref}")
+def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
+    transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Payment transaction not found.")
 
-    new_status = _normalize_payment_status(payload.get("status") or payload.get("payment_status") or transaction.status)
-    transaction.status = new_status
+    secret = os.getenv("CHAPA_SECRET_KEY")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Chapa verification is not configured.")
+
+    previous_status = _normalize_payment_status(transaction.status)
+    try:
+        response = httpx.get(
+            f"https://api.chapa.co/v1/transaction/verify/{tx_ref}",
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=15.0,
+        )
+        chapa_payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to verify payment with Chapa: {exc}")
+
+    gateway_data = chapa_payload.get("data") if isinstance(chapa_payload, dict) else {}
+    gateway_status = _normalize_payment_status(
+        (gateway_data or {}).get("status") if isinstance(gateway_data, dict) else None
+    )
+    if response.is_error and gateway_status == "Pending":
+        gateway_status = "Failed"
+
+    transaction.status = gateway_status
+    admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+    if admin:
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action="Payment Verification Retried",
+            entity_type="Payment",
+            entity_id=transaction.id,
+            description=f"Admin {admin.username} retried Chapa verification for {tx_ref}; status changed from {previous_status} to {gateway_status}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+
     db.commit()
     db.refresh(transaction)
-
     return {
-        "message": "Payment status updated successfully",
-        "id": transaction.id,
+        "success": not response.is_error,
         "transaction_id": transaction.tx_id,
-        "status": new_status,
+        "status": gateway_status,
+        "chapa_reference": transaction.tx_id,
     }
 
 

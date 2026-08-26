@@ -54,6 +54,14 @@ const getStudentAvatar = (studentId) => (
     : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80'
 );
 
+const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
+  const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)?$/i);
+  if (!match) return fallback;
+
+  const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 };
+  return Number(match[1]) * (units[(match[2] || 'B').toUpperCase()] || 1);
+};
+
 
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
   const verifiedStudent = isVerifiedStudent(user);
@@ -232,6 +240,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [productError, setProductError] = useState('');
   const [productSuccessMsg, setProductSuccessMsg] = useState('');
   const [productSubmitting, setProductSubmitting] = useState(false);
+  const [maxImageSize, setMaxImageSize] = useState('5MB');
+  const [maxImagesPerProduct, setMaxImagesPerProduct] = useState(5);
 
   // Dynamic categories from backend
   const [categories, setCategories] = useState([]);
@@ -500,6 +510,38 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const studentId = user?.studentId || '';
 
   useEffect(() => {
+    if (!studentId) return;
+
+    const fetchFreshProfile = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/student/profile?student_id=${encodeURIComponent(studentId)}`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        const freshUser = data?.user;
+        if (!freshUser) return;
+
+        if (onUserUpdate) {
+          onUserUpdate((currentUser) => currentUser ? { ...currentUser, ...freshUser } : currentUser);
+        }
+        setProfileForm((previous) => ({
+          ...previous,
+          name: freshUser.name || '',
+          studentId: freshUser.studentId || studentId,
+          email: freshUser.email || '',
+          phone: freshUser.phone || '',
+          college: freshUser.college || '',
+          department: freshUser.department || '',
+        }));
+      } catch (err) {
+        console.error('Error fetching fresh student profile:', err);
+      }
+    };
+
+    fetchFreshProfile();
+  }, [studentId]);
+
+  useEffect(() => {
     const fetchModalDropdownData = async () => {
       try {
         const response = await fetch('http://127.0.0.1:8000/api/categories');
@@ -514,6 +556,27 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
 
     fetchModalDropdownData();
+  }, []);
+
+  useEffect(() => {
+    const fetchMarketplaceSettings = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
+        if (!response.ok) return;
+
+        const settings = await response.json();
+        const configuredSize = settings?.marketplace?.maxImageSize;
+        if (configuredSize) setMaxImageSize(String(configuredSize));
+        const configuredImageCount = Number(settings?.marketplace?.maxImagesPerProduct);
+        if (Number.isFinite(configuredImageCount) && configuredImageCount >= 0) {
+          setMaxImagesPerProduct(configuredImageCount);
+        }
+      } catch (err) {
+        console.error('Error fetching marketplace settings:', err);
+      }
+    };
+
+    fetchMarketplaceSettings();
   }, []);
 
   useEffect(() => {
@@ -1335,8 +1398,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setProductSuccessMsg('');
 
     const itemName = (productForm.name || productForm.title || '').trim();
-    if (!itemName || !productForm.category || !productForm.price || (!editingProduct && !productForm.image)) {
+    const selectedImages = Array.isArray(productForm.image) ? productForm.image : (productForm.image ? [productForm.image] : []);
+    if (!itemName || !productForm.category || !productForm.price || (!editingProduct && selectedImages.length === 0)) {
       setProductError('Please fill in Name, Category, Price and add an image.');
+      return;
+    }
+
+    if (!editingProduct && selectedImages.length > maxImagesPerProduct) {
+      setProductError(`You can upload a maximum of ${maxImagesPerProduct} images per product.`);
       return;
     }
 
@@ -1372,9 +1441,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       formData.append('description', productForm.description || '');
       formData.append('student_id', user?.studentId || '');
       formData.append('status', 'Pending');
-      if (productForm.image) {
-        formData.append('image', productForm.image);
-      }
+      selectedImages.forEach((image) => {
+        formData.append('images', image);
+      });
 
       const response = await fetch('http://127.0.0.1:8000/api/products', {
         method: 'POST',
@@ -1401,6 +1470,33 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } finally {
       setProductSubmitting(false);
     }
+  };
+
+  const handleProductImageSelect = (e) => {
+    const selectedImages = Array.from(e.target.files || []);
+    if (!selectedImages.length) {
+      setProductForm((prev) => ({ ...prev, image: [] }));
+      return;
+    }
+
+    if (selectedImages.length > maxImagesPerProduct) {
+      setProductError(`You can upload a maximum of ${maxImagesPerProduct} images per product.`);
+      e.target.value = '';
+      setProductForm((prev) => ({ ...prev, image: [] }));
+      return;
+    }
+
+    const maxImageSizeBytes = parseImageSizeBytes(maxImageSize);
+    const oversizedImage = selectedImages.find((image) => image.size > maxImageSizeBytes);
+    if (oversizedImage) {
+      setProductError(`Image size must not exceed ${maxImageSize}.`);
+      e.target.value = '';
+      setProductForm((prev) => ({ ...prev, image: [] }));
+      return;
+    }
+
+    setProductError('');
+    setProductForm((prev) => ({ ...prev, image: selectedImages }));
   };
 
   const parseInlineProductCards = (text) => {
@@ -4239,8 +4335,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <label className="block text-sm font-semibold text-slate-700">Product Image</label>
                   <input
                     type="file"
+                    multiple
                     accept="image/*,.jfif"
-                    onChange={(e) => setProductForm((prev) => ({ ...prev, image: e.target.files?.[0] || null }))}
+                    onChange={handleProductImageSelect}
                     className="mt-2 block w-full text-sm text-slate-700 file:mr-4 file:rounded-full file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-slate-700"
                   />
                 </div>
