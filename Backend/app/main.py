@@ -419,6 +419,9 @@ if not email_logger.handlers:
 def send_otp_email(receiver_email: str, otp: str) -> bool:
     """Send ONLY the raw 6-digit OTP number as a plain-text email body."""
     try:
+        if not _notifications_enabled(None, "emailNotifs"):
+            email_logger.info("OTP email skipped because email notifications are disabled.")
+            return True
         if not SENDER_EMAIL or not SENDER_PASSWORD:
             email_logger.error("OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.")
             return False
@@ -449,6 +452,9 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
 def send_verification_status_email(receiver_email: str, status: str, reason: Optional[str] = None) -> bool:
     """Send a plain-text email summarizing the verification decision."""
     try:
+        if not _notifications_enabled(None, "emailNotifs"):
+            email_logger.info("Verification email skipped because email notifications are disabled.")
+            return True
         if not receiver_email:
             return False
 
@@ -800,6 +806,19 @@ def _get_setting_value(db: Session, block: str, key: str, default=None):
         if isinstance(block_value, dict) and key in block_value:
             return block_value[key]
     return default
+
+
+def _notifications_enabled(db: Optional[Session], key: str) -> bool:
+    default = DEFAULT_SETTINGS_BLOCKS["notifications"].get(key, True)
+    owns_session = db is None
+    settings_db = db or SessionLocal()
+    try:
+        return _setting_bool(_get_setting_value(settings_db, "notifications", key, default), default)
+    except SQLAlchemyError:
+        return default
+    finally:
+        if owns_session:
+            settings_db.close()
 
 
 def _parse_size_bytes(value, default=5 * 1024 * 1024):
@@ -1230,12 +1249,9 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         normalized[block].update(values)
 
     payment_values = normalized["payment"]
-    if payment_values.get("paymentProvider") != "Chapa":
-        raise HTTPException(status_code=400, detail="Only Chapa is supported as a payment provider.")
-    if payment_values.get("currency") != "ETB":
-        raise HTTPException(status_code=400, detail="Payment currency must be ETB.")
-    if payment_values.get("paymentVerification") != "Automatic":
-        raise HTTPException(status_code=400, detail="Payment verification must be Automatic.")
+    payment_values["paymentProvider"] = "Chapa"
+    payment_values["currency"] = "ETB"
+    payment_values["paymentVerification"] = "Automatic"
     if payment_values.get("refundPolicy") not in {"Admin approval required", "Automatic"}:
         raise HTTPException(status_code=400, detail="Invalid refund policy.")
     if payment_values.get("maximumRefund") not in {"100%", "75%", "50%"}:
@@ -1840,6 +1856,13 @@ def create_product(
     ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
     """
     try:
+        title_value = str(title or "").strip()
+        price_value = str(price or "").strip()
+        if not title_value:
+            raise HTTPException(status_code=422, detail="Product title is required.")
+        if not price_value:
+            raise HTTPException(status_code=422, detail="Product price is required.")
+
         image_url = None
         max_images_per_product = _get_setting_value(
             db,
@@ -1940,10 +1963,10 @@ def create_product(
 
         # ምርት ወደ ዳታቤዝ ያስቀምጡ (Save product to database)
         db_product = Product(
-            title=title,
+            title=title_value,
             category=category,
             subcategory=subcategory,
-            price=price,
+            price=price_value,
             image=image_url,
             description=description,
             seller=seller_value,  # <-- Use resolved seller identity
@@ -3458,7 +3481,7 @@ def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(ge
 def delete_wishlist_item(id: int, db: Session = Depends(get_db)):
     item = db.query(WishlistItem).filter(WishlistItem.id == id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Wishlist item not found.")
+        return
 
     db.delete(item)
     db.commit()
@@ -3723,6 +3746,25 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
         product.status = "Sold"
         db.add(order)
         db.flush()
+        if _notifications_enabled(db, "orderNotifs"):
+            db.add(Notification(
+                student_id=data.student_id,
+                title="Order Placed",
+                message=f"Your order for '{product.title}' has been placed successfully.",
+                type="order",
+                is_read=False,
+            ))
+            seller_student = db.query(Student).filter(
+                (Student.student_id == product.seller) | (Student.name == product.seller)
+            ).first() if product.seller else None
+            if seller_student and seller_student.student_id != data.student_id:
+                db.add(Notification(
+                    student_id=seller_student.student_id,
+                    title="New Order",
+                    message=f"You received a new order for '{product.title}'.",
+                    type="order",
+                    is_read=False,
+                ))
         order_payload.append({
             "id": order.id,
             "student_id": order.student_id,
@@ -3922,7 +3964,7 @@ def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/payment/initialize")
-def initialize_payment(request: DepositRequest, db: Session = Depends(get_db)):
+async def initialize_payment(request: DepositRequest, db: Session = Depends(get_db)):
     """Initialize a payment / deposit gateway session for student wallet."""
     student = db.query(Student).filter(Student.student_id == request.student_id).first()
     if not student:
@@ -3931,17 +3973,93 @@ def initialize_payment(request: DepositRequest, db: Session = Depends(get_db)):
     amount = float(request.amount)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
+
+    amount_value = Decimal(str(amount))
+    duplicate_cutoff = datetime.now() - timedelta(seconds=30)
+    existing_transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.student_id == student.student_id,
+            Transaction.type == "Wallet Deposit",
+            Transaction.status == "Pending",
+            Transaction.amount == amount_value,
+            Transaction.created_at >= duplicate_cutoff,
+        )
+        .order_by(Transaction.created_at.desc())
+        .first()
+    )
+    if existing_transaction:
+        return {
+            "status": "success",
+            "message": "A matching wallet deposit is already being processed.",
+            "checkout_url": None,
+            "tx_ref": existing_transaction.tx_id,
+            "transaction_id": existing_transaction.id,
+        }
     
     tx_ref = f"TX-{uuid.uuid4().hex[:8].upper()}"
-    
-    checkout_url = f"http://localhost:5173/?tx_ref={tx_ref}&status=success&amount={amount}"
-    
+
+    secret = os.getenv("CHAPA_SECRET_KEY")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Chapa payment is not configured.")
+
+    name_parts = (student.name or "Student").strip().split(maxsplit=1)
+    chapa_payload = {
+        "amount": f"{amount:.2f}",
+        "currency": "ETB",
+        "email": request.email or student.email,
+        "first_name": name_parts[0],
+        "last_name": name_parts[1] if len(name_parts) > 1 else name_parts[0],
+        "tx_ref": tx_ref,
+        "callback_url": os.getenv("CHAPA_CALLBACK_URL", "http://127.0.0.1:8000/api/payment/webhook"),
+        "return_url": os.getenv("CHAPA_RETURN_URL", "http://localhost:5173/"),
+        "customization": {"title": "Campus Market Wallet Deposit"},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://api.chapa.co/v1/transaction/initialize",
+                headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+                json=chapa_payload,
+            )
+            response_payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to initialize payment with Chapa: {exc}")
+
+    response_data = response_payload.get("data") if isinstance(response_payload, dict) else None
+    checkout_url = response_data.get("checkout_url") if isinstance(response_data, dict) else None
+    if response.is_error or not checkout_url:
+        detail = response_payload.get("message", "Chapa did not return a checkout URL.") if isinstance(response_payload, dict) else "Invalid Chapa response."
+        raise HTTPException(status_code=502, detail=f"Unable to initialize payment with Chapa: {detail}")
+
+    existing_transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.student_id == student.student_id,
+            Transaction.type == "Wallet Deposit",
+            Transaction.status == "Pending",
+            Transaction.amount == amount_value,
+            Transaction.created_at >= duplicate_cutoff,
+        )
+        .order_by(Transaction.created_at.desc())
+        .first()
+    )
+    if existing_transaction:
+        return {
+            "status": "success",
+            "message": "A matching wallet deposit is already being processed.",
+            "checkout_url": None,
+            "tx_ref": existing_transaction.tx_id,
+            "transaction_id": existing_transaction.id,
+        }
+
     transaction = Transaction(
         student_id=student.student_id,
         tx_id=tx_ref,
         type="Wallet Deposit",
         amount=Decimal(str(amount)),
-        description=f"Wallet deposit initiated for {student.student_id}",
+        description=f"Chapa wallet deposit initiated for {student.student_id}",
         status="Pending"
     )
     db.add(transaction)
@@ -4701,18 +4819,19 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
                 f"Your listing '{product.title}' was flagged by the admin moderation team. "
                 f"Reason: {reason_text}. Please review and update the listing before it is re-approved."
             )
-            if seller_student:
-                db.add(Notification(
-                    student_id=seller_student.student_id,
-                    message=notification_message,
-                    is_read=False,
-                ))
-            elif seller_id:
-                db.add(Notification(
-                    student_id=seller_id,
-                    message=notification_message,
-                    is_read=False,
-                ))
+            if _notifications_enabled(db, "approvalNotifs"):
+                if seller_student:
+                    db.add(Notification(
+                        student_id=seller_student.student_id,
+                        message=notification_message,
+                        is_read=False,
+                    ))
+                elif seller_id:
+                    db.add(Notification(
+                        student_id=seller_id,
+                        message=notification_message,
+                        is_read=False,
+                    ))
 
         admin = db.query(Admin).order_by(Admin.id.asc()).first()
         log_action = "Product Approved" if normalized_status.lower() == "approved" else "Product Flagged" if normalized_status.lower() in {"flagged", "flag"} else "Product Rejected" if normalized_status.lower() in {"rejected", "rejected_flagged"} else f"Product {normalized_status}"
@@ -4743,7 +4862,9 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
                 "status": product.status,
                 "reason": product.moderation_reason,
             },
-            "notification_created": bool(seller_student or seller_id),
+            "notification_created": bool(
+                (seller_student or seller_id) and _notifications_enabled(db, "approvalNotifs")
+            ),
         }
     except Exception:
         db.rollback()
@@ -4823,9 +4944,8 @@ def get_admin_payments_endpoint(
                 if related_order else None
             )
             payment_method = (
-                "Wallet" if payment_type_value == "Product Purchase"
-                else "Chapa" if payment_type_value == "Wallet Deposit" and "chapa" in f"{tx.type or ''} {tx.description or ''}".lower()
-                else "Wallet" if payment_type_value == "Wallet Deposit"
+                "Chapa" if payment_type_value == "Wallet Deposit"
+                else "Wallet" if payment_type_value == "Product Purchase"
                 else "SantimPay" if payment_type_value == "Seller Payout"
                 else "Wallet"
             )
@@ -4933,6 +5053,95 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
         "success": not response.is_error,
         "transaction_id": transaction.tx_id,
         "status": gateway_status,
+        "chapa_reference": transaction.tx_id,
+    }
+
+
+@app.post("/api/admin/payments/{payment_id}/verify")
+async def verify_admin_payment_with_chapa(payment_id: int, db: Session = Depends(get_db)):
+    transaction = db.query(Transaction).filter(Transaction.id == payment_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Payment transaction not found.")
+    if _normalize_payment_type(transaction.type) != "Wallet Deposit":
+        raise HTTPException(status_code=400, detail="Only wallet deposits can be verified through Chapa.")
+
+    secret = os.getenv("CHAPA_SECRET_KEY")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Chapa verification is not configured.")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"https://api.chapa.co/v1/transaction/verify/{transaction.tx_id}",
+                headers={"Authorization": f"Bearer {secret}"},
+            )
+            chapa_payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to verify payment with Chapa: {exc}")
+
+    gateway_data = chapa_payload.get("data") if isinstance(chapa_payload, dict) else None
+    gateway_status = str(
+        gateway_data.get("status") if isinstance(gateway_data, dict)
+        else chapa_payload.get("status", "") if isinstance(chapa_payload, dict)
+        else ""
+    ).lower()
+    if response.is_error or gateway_status != "success":
+        return {
+            "success": False,
+            "transaction_id": transaction.tx_id,
+            "status": _normalize_payment_status(gateway_status),
+            "chapa_reference": transaction.tx_id,
+        }
+
+    try:
+        transaction = (
+            db.query(Transaction)
+            .filter(Transaction.id == payment_id)
+            .with_for_update()
+            .first()
+        )
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Payment transaction no longer exists.")
+        student = (
+            db.query(Student)
+            .filter(Student.student_id == transaction.student_id)
+            .with_for_update()
+            .first()
+        )
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found.")
+
+        was_already_successful = _normalize_payment_status(transaction.status) == "Successful"
+        if not was_already_successful:
+            student.wallet_balance = Decimal(str(student.wallet_balance or 0)) + Decimal(str(transaction.amount))
+            transaction.status = "Successful"
+
+            admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+            db.add(AuditLog(
+                admin_id=admin.id if admin else None,
+                action="Payment Verified",
+                entity_type="Payment",
+                entity_id=transaction.id,
+                description=f"Admin {admin.username if admin else 'system'} verified Chapa payment {transaction.tx_id}; credited {transaction.amount} ETB to student {student.student_id}.",
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+
+        db.commit()
+        db.refresh(transaction)
+        db.refresh(student)
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Unable to settle payment safely: {exc}")
+
+    return {
+        "success": True,
+        "transaction_id": transaction.tx_id,
+        "status": transaction.status,
+        "wallet_balance": float(student.wallet_balance or 0),
         "chapa_reference": transaction.tx_id,
     }
 
@@ -5094,6 +5303,15 @@ def simulate_chapa_webhook(
         tx_record.status = "Successful"
         tx_record.description = tx_record.description or "Chapa webhook settlement captured via payment callback."
 
+    if _notifications_enabled(db, "paymentNotifs"):
+        db.add(Notification(
+            student_id=student.student_id,
+            title="Payment Successful",
+            message=f"Your Chapa wallet deposit of {amount} ETB was completed successfully.",
+            type="payment",
+            is_read=False,
+        ))
+
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
     if admin:
         db.add(AuditLog(
@@ -5175,6 +5393,21 @@ def resolve_report_patch(id: int, data: ReportUpdate, db: Session = Depends(get_
 def broadcast_notification(data: BroadcastNotificationRequest, db: Session = Depends(get_db)):
     if not data.title or not data.title.strip():
         raise HTTPException(status_code=400, detail="Broadcast title is required.")
+
+    announcement_notifications_enabled = _setting_bool(
+        _get_setting_value(
+            db,
+            "notifications",
+            "announcementNotifs",
+            DEFAULT_SETTINGS_BLOCKS["notifications"]["announcementNotifs"],
+        ),
+        DEFAULT_SETTINGS_BLOCKS["notifications"]["announcementNotifs"],
+    )
+    if not announcement_notifications_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Announcement notifications are globally disabled in System Settings",
+        )
 
     target = (data.target or "Everyone").strip()
     normalized_target = target.lower()

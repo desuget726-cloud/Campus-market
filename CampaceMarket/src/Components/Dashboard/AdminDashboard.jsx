@@ -1026,7 +1026,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         ...(data.moderation || {}),
       }));
       setAiSettings((prev) => ({ ...prev, ...(data.ai || {}) }));
-      setPaymentSettings((prev) => ({ ...prev, ...(data.payment || {}) }));
+      setPaymentSettings((prev) => ({
+        ...prev,
+        ...(data.payment || {}),
+        paymentProvider: 'Chapa',
+        currency: 'ETB',
+        paymentVerification: 'Automatic',
+      }));
       setNotificationSettings((prev) => ({ ...prev, ...(data.notifications || {}) }));
       setSecuritySettings((prev) => ({
         ...prev,
@@ -2026,7 +2032,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       general: generalSettings,
       marketplace: productSettings,
       ai: aiSettings,
-      payment: paymentSettings,
+      payment: {
+        ...paymentSettings,
+        paymentProvider: 'Chapa',
+        currency: 'ETB',
+        paymentVerification: 'Automatic',
+      },
       notifications: notificationSettings,
       security: securitySettings,
       studentVerification: studentVerificationSettings,
@@ -4255,8 +4266,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
 
             {selectedPaymentDetail && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-                <div className="w-full max-w-2xl rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
+              <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-950/50 p-4 backdrop-blur-sm md:items-center">
+                <div className="my-auto w-full max-w-2xl rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
                   <div className="flex items-center justify-between border-b border-slate-200 pb-4">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-sky-600">Transaction Detail</p>
@@ -4327,6 +4338,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <p className="mt-2 text-base font-black text-slate-900">{selectedPaymentDetail.payment_type}</p>
                     </div>
                   )}
+                  <div className="mt-6 flex justify-end border-t border-slate-100 pt-4">
+                    <button type="button" onClick={() => setSelectedPaymentDetail(null)} className="rounded-full bg-sky-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-sky-700">
+                      Back
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

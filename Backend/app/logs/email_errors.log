@@ -324,3 +324,4 @@ smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepte
 2026-08-20 01:19:56,323 ERROR OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.
 2026-08-20 01:33:12,734 ERROR OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.
 2026-08-20 01:33:26,694 ERROR OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.
+2026-08-26 06:47:38,592 INFO OTP email skipped because email notifications are disabled.

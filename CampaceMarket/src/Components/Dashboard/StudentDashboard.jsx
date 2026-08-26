@@ -406,6 +406,62 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     ? getTransactionSummaryText(paymentInfo.transactions[0])
     : paymentInfo?.recentTx || getTransactionSummaryText(latestTransaction) || 'No transactions yet';
 
+  const fetchBuyerDashboardData = async () => {
+    if (!studentId) return;
+
+    try {
+      const [wishRes, cartRes, orderRes, payRes] = await Promise.all([
+        fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${studentId}`),
+        fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${studentId}`),
+        fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${studentId}`),
+        fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`),
+      ]);
+
+      if (wishRes.ok) {
+        const wishData = await wishRes.json();
+        setWishlist(wishData);
+        setWishlistBadgeCount(Array.isArray(wishData) ? wishData.length : Number(wishData?.wishlist_count ?? wishData?.wishlist_item_count ?? 0));
+      }
+
+      if (cartRes.ok) {
+        const cartData = await cartRes.json();
+        setCart(cartData.items || []);
+        const nextCartCount = Number(cartData?.meta?.cart_count ?? cartData?.meta?.cart_item_count ?? cartData?.items?.reduce((sum, item) => sum + (item.quantity || 1), 0) ?? 0);
+        setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : 0);
+      }
+
+      if (orderRes.ok) {
+        const orderData = await orderRes.json();
+        setOrders(orderData);
+      }
+
+      if (payRes.ok) {
+        const payData = await payRes.json();
+        const nextBalance = Number(payData?.balance ?? payData?.walletBalance ?? payData?.wallet_balance ?? 0);
+        const normalizedBalance = Number.isFinite(nextBalance) ? nextBalance : 0;
+        const normalizedTransactions = Array.isArray(payData?.transactions) ? payData.transactions : [];
+
+        setPaymentInfo({
+          balance: normalizedBalance,
+          recentTx: payData?.recentTx || payData?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : 'No transactions yet'),
+          transactions: normalizedTransactions,
+        });
+
+        const balanceChanged = normalizedBalance !== walletBalanceRef.current;
+        if (balanceChanged) {
+          walletBalanceRef.current = normalizedBalance;
+          setWalletBalance(normalizedBalance);
+        }
+
+        if (balanceChanged && onUserUpdate) {
+          onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching buyer data:', err);
+    }
+  };
+
   const buyerSubTabs = [
     { id: 'search', label: 'Search / Browse', badge: 0 },
     { id: 'wishlist', label: 'Wishlist', badge: wishlistCount },
@@ -611,60 +667,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   useEffect(() => {
     if (!studentId || activeTab !== 'buyer') return;
-
-    const fetchBuyerDashboardData = async () => {
-      try {
-        const [wishRes, cartRes, orderRes, payRes] = await Promise.all([
-          fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${studentId}`),
-          fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${studentId}`),
-          fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${studentId}`),
-          fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`),
-        ]);
-
-        if (wishRes.ok) {
-          const wishData = await wishRes.json();
-          setWishlist(wishData);
-          setWishlistBadgeCount(Array.isArray(wishData) ? wishData.length : Number(wishData?.wishlist_count ?? wishData?.wishlist_item_count ?? 0));
-        }
-
-        if (cartRes.ok) {
-          const cartData = await cartRes.json();
-          setCart(cartData.items || []);
-          const nextCartCount = Number(cartData?.meta?.cart_count ?? cartData?.meta?.cart_item_count ?? cartData?.items?.reduce((sum, item) => sum + (item.quantity || 1), 0) ?? 0);
-          setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : 0);
-        }
-
-        if (orderRes.ok) {
-          const orderData = await orderRes.json();
-          setOrders(orderData);
-        }
-
-        if (payRes.ok) {
-          const payData = await payRes.json();
-          const nextBalance = Number(payData?.balance ?? payData?.walletBalance ?? payData?.wallet_balance ?? 0);
-          const normalizedBalance = Number.isFinite(nextBalance) ? nextBalance : 0;
-          const normalizedTransactions = Array.isArray(payData?.transactions) ? payData.transactions : [];
-
-          setPaymentInfo({
-            balance: normalizedBalance,
-            recentTx: payData?.recentTx || payData?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : 'No transactions yet'),
-            transactions: normalizedTransactions,
-          });
-
-          const balanceChanged = normalizedBalance !== walletBalanceRef.current;
-          if (balanceChanged) {
-            walletBalanceRef.current = normalizedBalance;
-            setWalletBalance(normalizedBalance);
-          }
-
-          if (balanceChanged && onUserUpdate) {
-            onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
-          }
-        }
-      } catch (err) {
-        console.error('Error fetching buyer data:', err);
-      }
-    };
 
     fetchBuyerDashboardData();
     // onUserUpdate is intentionally excluded because the parent recreates it on render.
@@ -1119,7 +1121,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const nextWishlistCount = Number(data.wishlist_count ?? data.wishlist_item_count ?? wishlistCount);
         setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : cartItemCount + 1);
         setWishlistBadgeCount(Number.isFinite(nextWishlistCount) ? nextWishlistCount : wishlistCount);
-        await fetchDashboardData();
+        await fetchBuyerDashboardData();
         setCartMessage('Added to cart.');
         setBuyerTab('cart');
       } else {
@@ -1229,6 +1231,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       if (data.checkout_url) {
         window.location.href = data.checkout_url;
+        return;
+      }
+
+      if (data.transaction_id) {
+        setDepositError(data.message || 'A matching deposit is already being processed.');
         return;
       }
 
@@ -1431,7 +1438,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       const formData = new FormData();
       formData.append('name', itemName);
-      formData.append('title', itemName);
+      formData.append('title', String(productForm.title || productForm.name || '').trim());
       formData.append('category', productForm.category);
       formData.append('subcategory', productForm.subcategory || '');
       formData.append('price', String(productForm.price));

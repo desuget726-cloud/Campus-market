@@ -7,3 +7,4 @@ cryptography
 python-dotenv
 scikit-learn
 openai
+httpx
