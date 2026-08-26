@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
-const generateLinePath = (data, maxVal, width = 100, height = 100) => {
+const generateLinePath = (data, maxVal) => {
   if (!Array.isArray(data) || data.length === 0) return '';
 
   const safeMax = Math.max(Number(maxVal) || 0, 1);
-  const horizontalStep = data.length > 1 ? width / (data.length - 1) : 0;
+  const isEmpty = data.every((value) => Number(value) === 0);
 
   return data
-    .map((value, index) => {
-      const x = index * horizontalStep;
-      const y = height - ((Number(value) || 0) / safeMax) * (height - 10) - 5;
-      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)},${Math.max(5, Math.min(height - 5, y)).toFixed(2)}`;
+    .map((value, idx) => {
+      const x = 40 + idx * 104;
+      const y = isEmpty ? 130 : 130 - ((Number(value) || 0) / safeMax) * 100;
+      return `${idx === 0 ? 'M' : 'L'} ${x},${Math.max(30, Math.min(130, y)).toFixed(2)}`;
     })
     .join(' ');
 };
@@ -48,6 +50,75 @@ const getReportedSeller = (issue = '') => {
   const sellerId = match[1];
   const sellerName = match[2]?.trim();
   return sellerName ? `${sellerId}: ${sellerName}` : sellerId;
+};
+
+const normalizeTarget = (target = '') => {
+  const normalizedTarget = String(target || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+  const aliases = {
+    all: 'All',
+    'all students': 'Everyone',
+    everyone: 'Everyone',
+    buyer: 'Buyers',
+    buyers: 'Buyers',
+    seller: 'Sellers',
+    sellers: 'Sellers',
+    'it department': 'Department of Information Technology (IT)',
+    'information technology': 'Department of Information Technology (IT)',
+    'department of information technology': 'Department of Information Technology (IT)',
+    'department of information technology (it)': 'Department of Information Technology (IT)',
+  };
+
+  if (normalizedTarget.startsWith('broadcast_')) {
+    return normalizeTarget(normalizedTarget.slice('broadcast_'.length));
+  }
+
+  if (normalizedTarget === 'broadcast') return 'Everyone';
+
+  return aliases[normalizedTarget] || normalizedTarget;
+};
+
+const parseAuditDescription = (description = '') => {
+  const match = String(description).match(/([A-Za-z][\w.]*)\s+changed\s+from\s+["']([^"']*)["']\s+to\s+["']([^"']*)["']/i);
+  if (!match) return null;
+
+  return { field: match[1], previousValue: match[2], newValue: match[3] };
+};
+
+const exportCSVFile = (fileName, columns, rows) => {
+  const sanitize = (value) => String(value || '').replace(/,/g, ';').replace(/"/g, '""');
+  const escape = (value) => `"${sanitize(value)}"`;
+  const csvContent = `\uFEFF${[columns, ...rows].map((row) => row.map(escape).join(',')).join('\r\n')}`;
+  const downloadUrl = URL.createObjectURL(new Blob([csvContent], { type: 'text/csv;charset=utf-8;' }));
+  const downloadLink = document.createElement('a');
+  downloadLink.href = downloadUrl;
+  downloadLink.download = fileName;
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+  URL.revokeObjectURL(downloadUrl);
+};
+
+const exportPDFFile = (fileName, reportName, columns, rows) => {
+  const pdfDocument = new jsPDF();
+  pdfDocument.setFontSize(18);
+  pdfDocument.setTextColor(15, 23, 42);
+  pdfDocument.text(`Campus Marketplace — ${reportName}`, 14, 18);
+  pdfDocument.setFontSize(9);
+  pdfDocument.setTextColor(100, 116, 139);
+  pdfDocument.text(`Generated: ${new Date().toLocaleString()} | Total records: ${rows.length}`, 14, 26);
+  autoTable(pdfDocument, {
+    startY: 33,
+    head: [columns],
+    body: rows,
+    styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
+    headStyles: { fillColor: [15, 118, 110], textColor: 255 },
+    alternateRowStyles: { fillColor: [241, 245, 249] },
+  });
+  pdfDocument.save(fileName);
 };
 
 const getReportPriority = (issue = '') => {
@@ -114,6 +185,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [userSearchTerm, setUserSearchTerm] = useState('');
   const [userCollegeFilter, setUserCollegeFilter] = useState('');
   const [userDeptFilter, setUserDeptFilter] = useState('');
+  const [userPage, setUserPage] = useState(1);
+  const USERS_PER_PAGE = 10;
   const [dbCollegesList, setDbCollegesList] = useState([]);
   const [dbDepartmentsList, setDbDepartmentsList] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
@@ -157,6 +230,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [prodStatusFilter, setProdStatusFilter] = useState('');
   const [productCategoryFilter, setProductCategoryFilter] = useState('All');
   const [productSubcategoryFilter, setProductSubcategoryFilter] = useState('All');
+  const [productPage, setProductPage] = useState(1);
+  const PRODUCTS_PER_PAGE = 10;
   const [dbCategories, setDbCategories] = useState([]);
   const [dbSubcategories, setDbSubcategories] = useState([]);
   const [productStats, setProductStats] = useState({ total: 0, approved: 0, pending: 0, flagged: 0 });
@@ -183,6 +258,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [orderSearch, setOrderSearch] = useState('');
   const [orderFilterStatus, setOrderFilterStatus] = useState('All');
   const [orderFilterPayment, setOrderFilterPayment] = useState('All');
+  const [orderPage, setOrderPage] = useState(1);
+  const ORDERS_PER_PAGE = 10;
   const [selectedOrderDetails, setSelectedOrderDetails] = useState(null);
 
   const calculatedOrderMetrics = useMemo(() => {
@@ -208,6 +285,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [reportTypeFilter, setReportTypeFilter] = useState('All');
   const [reportStatusFilter, setReportStatusFilter] = useState('All');
   const [reportPriorityFilter, setReportPriorityFilter] = useState('All');
+  const [reportPage, setReportPage] = useState(1);
+  const REPORTS_PER_PAGE = 10;
   const [reportDecision, setReportDecision] = useState('Warning');
   const [selectedReport, setSelectedReport] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
@@ -232,6 +311,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [paymentSearchTerm, setPaymentSearchTerm] = useState('');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('All');
   const [paymentTypeFilter, setPaymentTypeFilter] = useState('All');
+  const [paymentPage, setPaymentPage] = useState(1);
+  const PAYMENTS_PER_PAGE = 10;
   const [selectedPaymentDetail, setSelectedPaymentDetail] = useState(null);
   const [paymentStatusMessage, setPaymentStatusMessage] = useState('');
   const [paymentStatusMessageId, setPaymentStatusMessageId] = useState(null);
@@ -258,32 +339,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     scheduleDate: '',
     scheduleTime: ''
   });
-  const [announcementLog, setAnnouncementLog] = useState([
-    {
-      id: 1,
-      title: 'Campus marketplace update',
-      message: 'The new student marketplace categories have been activated for the current semester. Please review and update your listings before tomorrow.',
-      target: 'Everyone',
-      sendType: 'now',
-      status: 'Delivered',
-      delivered: 11980,
-      read: 9820,
-      unread: 2160,
-      date: '12 Aug 2026'
-    },
-    {
-      id: 2,
-      title: 'Seller verification reminder',
-      message: 'All verified sellers must complete account validation before listing premium items in the marketplace.',
-      target: 'Sellers',
-      sendType: 'now',
-      status: 'Delivered',
-      delivered: 680,
-      read: 540,
-      unread: 140,
-      date: '11 Aug 2026'
-    }
-  ]);
+  const [announcementLog, setAnnouncementLog] = useState([]);
+  const [verificationDeptsList, setVerificationDeptsList] = useState([]);
   const [notificationsSearch, setNotificationsSearch] = useState('');
   const [notificationsFilter, setNotificationsFilter] = useState('All');
   const [previewAnnouncement, setPreviewAnnouncement] = useState(null);
@@ -347,7 +404,33 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [auditLogSearch, setAuditLogSearch] = useState('');
   const [auditLogFilterAction, setAuditLogFilterAction] = useState('All');
   const [auditLogFilterStatus, setAuditLogFilterStatus] = useState('All');
+  const [auditLogFilterDate, setAuditLogFilterDate] = useState('All');
   const [selectedLogDetails, setSelectedLogDetails] = useState(null);
+  const [auditLogPage, setAuditLogPage] = useState(1);
+  const [auditLogTotal, setAuditLogTotal] = useState(0);
+  const auditLogPageSize = 50;
+  const [auditPage, setAuditPage] = useState(1);
+  const LOGS_PER_PAGE = 10;
+
+  useEffect(() => {
+    setUserPage(1);
+  }, [userSearchTerm, userCollegeFilter, userDeptFilter]);
+
+  useEffect(() => {
+    setProductPage(1);
+  }, [prodSearch, prodStatusFilter, productCategoryFilter, productSubcategoryFilter]);
+
+  useEffect(() => {
+    setOrderPage(1);
+  }, [orderSearch, orderFilterStatus, orderFilterPayment]);
+
+  useEffect(() => {
+    setPaymentPage(1);
+  }, [paymentSearchTerm, paymentStatusFilter, paymentTypeFilter]);
+
+  useEffect(() => {
+    setAuditPage(1);
+  }, [auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate]);
 
   useEffect(() => {
     const fetchAdminProfile = async () => {
@@ -400,14 +483,34 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     const fetchAuditLogs = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/audit-logs');
+        const params = new URLSearchParams({
+          limit: String(auditLogPageSize),
+          offset: String((auditLogPage - 1) * auditLogPageSize),
+        });
+        if (auditLogSearch.trim()) params.set('search', auditLogSearch.trim());
+        if (auditLogFilterAction !== 'All') params.set('action_type', auditLogFilterAction);
+        if (auditLogFilterStatus !== 'All') params.set('status', auditLogFilterStatus);
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const dateStarts = {
+          Today: startOfToday,
+          Yesterday: new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000),
+          'Last 7 Days': new Date(startOfToday.getTime() - 6 * 24 * 60 * 60 * 1000),
+        };
+        if (dateStarts[auditLogFilterDate]) {
+          params.set('start_date', dateStarts[auditLogFilterDate].toISOString());
+          params.set('end_date', now.toISOString());
+        }
+
+        const response = await fetch(`http://127.0.0.1:8000/api/admin/audit-logs?${params.toString()}`);
         if (!response.ok) {
           throw new Error('Audit logs endpoint unavailable');
         }
 
         const data = await response.json();
-        if (Array.isArray(data) && data.length > 0) {
-          const mappedLogs = data.map((log, index) => ({
+        const logs = Array.isArray(data) ? data : data.items;
+        if (Array.isArray(logs)) {
+          const mappedLogs = logs.map((log, index) => ({
             id: log.id ?? index + 1,
             action: log.action ?? 'System Event',
             actionType: log.actionType ?? 'Logins',
@@ -421,6 +524,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             severity: log.severity ?? 'success'
           }));
           setAuditLogs(mappedLogs);
+          setAuditLogTotal(Number(data.total ?? mappedLogs.length));
         }
       } catch (error) {
         console.error('Failed to fetch audit logs:', error);
@@ -428,7 +532,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     };
 
     fetchAuditLogs();
-  }, []);
+  }, [auditLogPage, auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate]);
+
+  useEffect(() => {
+    setAuditLogPage(1);
+  }, [auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate]);
 
   useEffect(() => {
     const fetchVerificationColleges = async () => {
@@ -636,9 +744,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   // 9. System Settings Fields
   const [generalSettings, setGeneralSettings] = useState({
-    marketplaceName: 'Campace Market',
+    marketplaceName: 'Campuse Market',
     description: 'A secure campus marketplace for buying and selling university essentials.',
-    supportEmail: 'support@campace.edu.et',
+    supportEmail: 'support@campuse.edu.et',
     currency: 'ETB',
     timezone: 'Africa/Addis_Ababa'
   });
@@ -700,6 +808,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
+  const [settingsMessageType, setSettingsMessageType] = useState('success');
 
   // KPI calculations
   const [metrics, setMetrics] = useState({
@@ -719,7 +828,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     },
     order_status_breakdown: [],
     popular_categories: [],
-    department_activity: [],
+    college_activity: [],
     recent_activity: [],
   });
   const [aiMetrics, setAiMetrics] = useState({
@@ -734,6 +843,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     recall: 0,
     top_products: [],
     category_performance: [],
+    alerts: [],
   });
 
   const fetchDashboardOverview = async () => {
@@ -776,7 +886,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         },
         order_status_breakdown: Array.isArray(orderStatusBreakdown) ? orderStatusBreakdown : [],
         popular_categories: Array.isArray(popularCategories) ? popularCategories : [],
-        department_activity: Array.isArray(data?.departmentActivity) ? data.departmentActivity : [],
+        college_activity: Array.isArray(data?.college_activity ?? data?.collegeActivity)
+          ? (data.college_activity ?? data.collegeActivity)
+          : [],
         recent_activity: Array.isArray(data?.recentActivity) ? data.recentActivity : [],
       });
     } catch (error) {
@@ -798,17 +910,17 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         },
         order_status_breakdown: [],
         popular_categories: [],
-        department_activity: [],
+        college_activity: [],
         recent_activity: [],
       });
     }
   };
 
   const analyticsSummaryCards = [
-    { label: 'Users', value: metrics.totalStudents, trend: '0%' },
-    { label: 'Products', value: metrics.totalProducts, trend: '0%' },
-    { label: 'Orders', value: metrics.totalOrders, trend: '0%' },
-    { label: 'Revenue', value: metrics.totalRevenue, trend: '0%' },
+    { label: 'Users', value: metrics.total_students ?? metrics.totalStudents, trend: '0%' },
+    { label: 'Products', value: metrics.total_products ?? metrics.totalProducts, trend: '0%' },
+    { label: 'Orders', value: metrics.total_orders ?? metrics.totalOrders, trend: '0%' },
+    { label: 'Revenue', value: metrics.total_revenue ?? metrics.totalRevenue, trend: '0%' },
   ];
 
   const userGrowthTrend = metrics.trends?.user_growth ?? [];
@@ -818,6 +930,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const maxRevenue = Math.max(...revenueTrend.map((value) => Number(value) || 0), 1);
   const overviewOrderStatus = metrics.order_status_breakdown ?? [];
   const overviewCategories = metrics.popular_categories ?? [];
+  const collegeActivity = metrics.college_activity ?? [];
   const trendMonths = metrics.trends?.months ?? getDynamicMonths();
 
   useEffect(() => {
@@ -827,6 +940,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     fetchDashboardOverview();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'analytics') fetchDashboardOverview();
+  }, [activeTab]);
 
   const fetchAiAnalytics = async () => {
     try {
@@ -839,6 +956,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         ...data,
         top_products: Array.isArray(data.top_products) ? data.top_products : [],
         category_performance: Array.isArray(data.category_performance) ? data.category_performance : [],
+        alerts: Array.isArray(data.alerts) ? data.alerts : [],
       }));
     } catch (error) {
       console.error('Failed to fetch AI analytics:', error);
@@ -860,35 +978,52 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     fetchCollegesData();
   }, []);
 
-  useEffect(() => {
-    if (activeTab === 'settings') {
-      const fetchSystemSettings = async () => {
-        setSettingsLoading(true);
-        try {
-          const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
-          if (!response.ok) throw new Error('Settings endpoint unavailable');
+  const loadSystemSettings = async () => {
+    setSettingsLoading(true);
+    setSettingsSaveMessage('');
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
+      if (!response.ok) throw new Error('Settings endpoint unavailable');
 
-          const data = await response.json();
-          if (data.general) setGeneralSettings((prev) => ({ ...prev, ...data.general }));
-          if (data.marketplace) setProductSettings((prev) => ({ ...prev, ...data.marketplace }));
-          if (data.ai) setAiSettings((prev) => ({ ...prev, ...data.ai }));
-          if (data.payment) setPaymentSettings((prev) => ({ ...prev, ...data.payment }));
-          if (data.notification) setNotificationSettings((prev) => ({ ...prev, ...data.notification }));
-          if (data.security) setSecuritySettings((prev) => ({ ...prev, ...data.security }));
-          if (data.user) setStudentVerificationSettings((prev) => ({ ...prev, ...data.user }));
-          if (data.marketplace) setModerationSettings((prev) => ({ ...prev, ...data.marketplace }));
-          if (data.chat) setChatSettings((prev) => ({ ...prev, ...data.chat }));
-          if (data.maintenance) setMaintenanceSettings((prev) => ({ ...prev, ...data.maintenance }));
-        } catch (error) {
-          console.error('Failed to fetch system settings:', error);
-          setSettingsSaveMessage('Could not load system settings from the backend.');
-        } finally {
-          setSettingsLoading(false);
-        }
-      };
+      const responseData = await response.json();
+      const data = responseData.settings || responseData;
+      const marketplaceSettings = data.marketplace || {};
+      const studentVerification = data.studentVerification || {};
 
-      fetchSystemSettings();
+      setGeneralSettings((prev) => ({ ...prev, ...(data.general || {}) }));
+      setProductSettings((prev) => ({
+        ...prev,
+        maxImageSize: marketplaceSettings.maxImageSize ?? prev.maxImageSize,
+        maxImagesPerProduct: marketplaceSettings.maxImagesPerProduct ?? prev.maxImagesPerProduct,
+        requireApproval: marketplaceSettings.requireApproval ?? prev.requireApproval,
+        allowEditing: marketplaceSettings.allowEditing ?? prev.allowEditing,
+        autoHideSold: marketplaceSettings.autoHideSold ?? prev.autoHideSold,
+      }));
+      setModerationSettings((prev) => ({
+        ...prev,
+        ...(data.moderation || {}),
+      }));
+      setAiSettings((prev) => ({ ...prev, ...(data.ai || {}) }));
+      setPaymentSettings((prev) => ({ ...prev, ...(data.payment || {}) }));
+      setNotificationSettings((prev) => ({ ...prev, ...(data.notifications || {}) }));
+      setSecuritySettings((prev) => ({
+        ...prev,
+        ...(data.security || {}),
+      }));
+      setStudentVerificationSettings((prev) => ({ ...prev, ...studentVerification }));
+      setChatSettings((prev) => ({ ...prev, ...(data.chat || {}) }));
+      setMaintenanceSettings((prev) => ({ ...prev, ...(data.maintenance || {}) }));
+    } catch (error) {
+      console.error('Failed to fetch system settings:', error);
+      setSettingsMessageType('error');
+      setSettingsSaveMessage('Could not load system settings from the backend.');
+    } finally {
+      setSettingsLoading(false);
     }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'settings') loadSystemSettings();
   }, [activeTab]);
 
   // Fetch reports when reports tab is active
@@ -1035,6 +1170,33 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const handleExportPDF = () => {
     window.print();
+  };
+
+  const handleExportAuditLogsCSV = (logs = auditLogs) => {
+    const columns = ['Event ID', 'Action', 'Action Type', 'Description', 'Performed By', 'Entity Type', 'Entity ID', 'IP Address', 'Date & Time', 'Status', 'Severity'];
+    const sanitizeCSVField = (value) => String(value || '').replace(/,/g, ';').replace(/"/g, '""');
+    const escapeCSVValue = (value) => `"${sanitizeCSVField(value)}"`;
+    const rows = logs.map((log) => [
+      String(log.id || ''),
+      String(log.action || ''),
+      String(log.actionType || ''),
+      String(log.description || ''),
+      String(log.performed_by || ''),
+      String(log.entity_type || ''),
+      String(log.entity_id || ''),
+      String(log.ip_address || ''),
+      String(log.date_time || ''),
+      String(log.status || ''),
+      String(log.severity || ''),
+    ].map(escapeCSVValue));
+
+    const csvContent = `\uFEFF${columns.map(escapeCSVValue).join(',')}\n${rows.map((row) => row.join(',')).join('\n')}`;
+    const downloadLink = document.createElement('a');
+    downloadLink.href = `data:text/csv;charset=utf-8,${encodeURIComponent(csvContent)}`;
+    downloadLink.download = 'admin-audit-logs.csv';
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
   };
 
   // Fetch orders from backend
@@ -1737,6 +1899,39 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
   };
 
+  const fetchBroadcastHistory = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/notifications/broadcasts');
+      if (!response.ok) throw new Error('Broadcast history endpoint unavailable');
+
+      const data = await response.json();
+      setAnnouncementLog(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Failed to fetch broadcast history:', error);
+      setAnnouncementLog([]);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'notifications') return;
+
+    fetchBroadcastHistory();
+
+    const fetchVerificationDeptsList = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/admin/departments');
+        if (!response.ok) throw new Error('Department endpoint unavailable');
+        const departments = await response.json();
+        setVerificationDeptsList(Array.isArray(departments) ? departments : []);
+      } catch (error) {
+        console.error('Failed to fetch notification departments:', error);
+        setVerificationDeptsList([]);
+      }
+    };
+
+    fetchVerificationDeptsList();
+  }, [activeTab]);
+
   const handlePreviewAnnouncement = (e) => {
     e.preventDefault();
 
@@ -1762,6 +1957,18 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setShowPreviewModal(true);
   };
 
+  const handleEditPreview = () => {
+    if (!previewAnnouncement) return;
+
+    setAnnouncementForm((previous) => ({
+      ...previous,
+      title: previewAnnouncement.title || '',
+      target: previewAnnouncement.target || 'Everyone',
+      message: previewAnnouncement.message || '',
+    }));
+    setShowPreviewModal(false);
+  };
+
   const handleConfirmBroadcast = async () => {
     if (!previewAnnouncement) return;
 
@@ -1785,40 +1992,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         throw new Error('Broadcast request failed');
       }
 
-      const createdEntry = {
-        id: previewAnnouncement.id,
-        title: previewAnnouncement.title,
-        message: previewAnnouncement.message,
-        target: previewAnnouncement.target,
-        sendType: previewAnnouncement.sendType,
-        status: previewAnnouncement.sendType === 'schedule' ? 'Scheduled' : 'Delivered',
-        delivered: previewAnnouncement.sendType === 'schedule' ? 0 : 12450,
-        read: previewAnnouncement.sendType === 'schedule' ? 0 : 9820,
-        unread: previewAnnouncement.sendType === 'schedule' ? 0 : 2160,
-        date: new Date().toLocaleString(),
-        scheduleDate: previewAnnouncement.scheduleDate,
-        scheduleTime: previewAnnouncement.scheduleTime
-      };
-
-      setAnnouncementLog(prev => [createdEntry, ...prev]);
+      await fetchBroadcastHistory();
     } catch (error) {
       console.error('Failed to send broadcast notification:', error);
-      const offlineEntry = {
-        id: previewAnnouncement.id,
-        title: previewAnnouncement.title,
-        message: previewAnnouncement.message,
-        target: previewAnnouncement.target,
-        sendType: previewAnnouncement.sendType,
-        status: previewAnnouncement.sendType === 'schedule' ? 'Scheduled' : 'Delivered',
-        delivered: previewAnnouncement.sendType === 'schedule' ? 0 : 12450,
-        read: previewAnnouncement.sendType === 'schedule' ? 0 : 9820,
-        unread: previewAnnouncement.sendType === 'schedule' ? 0 : 2160,
-        date: new Date().toLocaleString(),
-        scheduleDate: previewAnnouncement.scheduleDate,
-        scheduleTime: previewAnnouncement.scheduleTime
-      };
-      setAnnouncementLog(prev => [offlineEntry, ...prev]);
-      alert('The broadcast was queued locally because the server was unavailable. The record has been saved for later sync.');
+      alert('The broadcast could not be delivered. Please try again.');
     } finally {
       setAnnouncementForm({
         title: '',
@@ -1836,13 +2013,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const handleSaveSystemSettings = async () => {
     const payload = {
       general: generalSettings,
-      user: studentVerificationSettings,
-      marketplace: { ...productSettings, ...moderationSettings },
-      payment: paymentSettings,
+      marketplace: productSettings,
       ai: aiSettings,
-      notification: notificationSettings,
-      chat: chatSettings,
+      payment: paymentSettings,
+      notifications: notificationSettings,
       security: securitySettings,
+      studentVerification: studentVerificationSettings,
+      moderation: moderationSettings,
+      chat: chatSettings,
       maintenance: maintenanceSettings,
     };
 
@@ -1859,9 +2037,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         throw new Error(data.detail || 'Failed to save settings');
       }
 
+      await fetchDashboardOverview();
+      setSettingsMessageType('success');
       setSettingsSaveMessage(data.changes?.length ? `Saved ${data.changes.length} change(s) and logged them to Audit Logs.` : 'System configurations saved successfully.');
     } catch (error) {
       console.error('Failed to save settings:', error);
+      setSettingsMessageType('error');
       setSettingsSaveMessage(error.message || 'Could not reach the backend. Changes were not persisted.');
     } finally {
       setSettingsLoading(false);
@@ -2017,6 +2198,24 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       window.setTimeout(() => setProfileMsg(''), 2500);
     }
   };
+
+  const filteredAnnouncements = useMemo(() => {
+    const searchQuery = notificationsSearch.trim().toLowerCase();
+    const normalizedFilter = normalizeTarget(notificationsFilter);
+
+    return announcementLog.filter((item) => {
+      const title = String(item.title || '').trim().toLowerCase();
+      const message = String(item.message || '').trim().toLowerCase();
+      const normalizedItemTarget = normalizeTarget(item.target);
+      const matchesSearch = !searchQuery ||
+        title.includes(searchQuery) ||
+        message.includes(searchQuery) ||
+        normalizedItemTarget.includes(searchQuery);
+      const matchesFilter = normalizedFilter === 'All' || normalizedItemTarget === normalizedFilter;
+
+      return matchesSearch && matchesFilter;
+    });
+  }, [announcementLog, notificationsSearch, notificationsFilter]);
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -2371,6 +2570,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
           return matchesSearch && matchesCollege && matchesDept;
         });
+        const totalUserPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
+        const displayedUsers = filteredUsers.slice((userPage - 1) * USERS_PER_PAGE, userPage * USERS_PER_PAGE);
+        const handleExportUsersCSV = () => exportCSVFile('users.csv', ['ID', 'Name', 'Email', 'Phone', 'College', 'Department', 'Verified Status', 'Account Status'], filteredUsers.map((student) => [
+          String(student.id || ''), String(student.name || ''), String(student.email || ''), String(student.phone || ''),
+          String(student.college || ''), String(student.department || ''), String(student.is_verified || ''), String(student.status || ''),
+        ]));
+        const handleExportUsersPDF = () => exportPDFFile('users.pdf', 'User Management Report', ['ID', 'Name', 'Email', 'Phone', 'College', 'Department', 'Verified', 'Account Status'], filteredUsers.map((student) => [
+          String(student.id || ''), String(student.name || ''), String(student.email || ''), String(student.phone || ''),
+          String(student.college || ''), String(student.department || ''), String(student.is_verified || ''), String(student.status || ''),
+        ]));
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -2379,16 +2588,20 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <h2 className="text-2xl font-black text-slate-950">User Management</h2>
                 <p className="mt-1 text-slate-500 text-sm font-semibold">Monitor student profiles, enforce restrictions, and verify academic IDs.</p>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setAddStudentError('');
-                  setShowAddStudentModal(true);
-                }}
-                className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-600"
-              >
-                + Add Student
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={handleExportUsersCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
+                <button type="button" onClick={handleExportUsersPDF} className="rounded-full bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer">Export PDF</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddStudentError('');
+                    setShowAddStudentModal(true);
+                  }}
+                  className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-600"
+                >
+                  + Add Student
+                </button>
+              </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-4">
@@ -2459,7 +2672,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredUsers.map((student) => (
+                    {displayedUsers.map((student) => (
                       <tr key={student.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4">
                           <div className="font-bold text-slate-900">{student.name}</div>
@@ -2517,6 +2730,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                <button type="button" onClick={() => setUserPage((page) => Math.max(1, page - 1))} disabled={userPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+                <span className="text-sm font-semibold text-slate-500">Page {userPage} of {totalUserPages}</span>
+                <button type="button" onClick={() => setUserPage((page) => Math.min(totalUserPages, page + 1))} disabled={userPage === totalUserPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
               </div>
             </div>
 
@@ -3052,12 +3270,28 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           const matchesSubcategory = productSubcategoryFilter === 'All' || product.subcategory === productSubcategoryFilter;
           return matchesSearch && matchesStatus && matchesCategory && matchesSubcategory;
         });
+        const totalProductPages = Math.max(1, Math.ceil(filteredProds.length / PRODUCTS_PER_PAGE));
+        const displayedProducts = filteredProds.slice((productPage - 1) * PRODUCTS_PER_PAGE, productPage * PRODUCTS_PER_PAGE);
+        const handleExportProductsCSV = () => exportCSVFile('products.csv', ['ID', 'Product Title', 'Seller ID', 'Category', 'Subcategory', 'Price', 'Status'], filteredProds.map((product) => [
+          String(product.id || ''), String(product.title || ''), String(product.seller_id || product.seller || ''), String(product.category || ''),
+          String(product.subcategory || ''), String(product.price || ''), String(product.status || ''),
+        ]));
+        const handleExportProductsPDF = () => exportPDFFile('products.pdf', 'Product Management Report', ['ID', 'Product Title', 'Seller ID', 'Category', 'Subcategory', 'Price', 'Status'], filteredProds.map((product) => [
+          String(product.id || ''), String(product.title || ''), String(product.seller_id || product.seller || ''), String(product.category || ''),
+          String(product.subcategory || ''), String(product.price || ''), String(product.status || ''),
+        ]));
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-2xl font-black text-slate-950">Product Moderation</h2>
-              <p className="mt-1 text-slate-500 text-sm font-semibold">Curate the campus catalog, review listings, and enforce community standards.</p>
+            <div className="flex flex-col gap-4 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-black text-slate-950">Product Moderation</h2>
+                <p className="mt-1 text-slate-500 text-sm font-semibold">Curate the campus catalog, review listings, and enforce community standards.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={handleExportProductsCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
+                <button type="button" onClick={handleExportProductsPDF} className="rounded-full bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer">Export PDF</button>
+              </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-4">
@@ -3142,7 +3376,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredProds.map((product) => (
+                    {displayedProducts.map((product) => (
                       <tr key={product.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4">
                           <div className="flex items-center gap-3">
@@ -3217,6 +3451,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                <button type="button" onClick={() => setProductPage((page) => Math.max(1, page - 1))} disabled={productPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+                <span className="text-sm font-semibold text-slate-500">Page {productPage} of {totalProductPages}</span>
+                <button type="button" onClick={() => setProductPage((page) => Math.min(totalProductPages, page + 1))} disabled={productPage === totalProductPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
               </div>
             </div>
 
@@ -3546,6 +3785,18 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
           return matchesSearch && matchesStatus && matchesPayment;
         });
+        const totalOrderPages = Math.max(1, Math.ceil(filteredOrders.length / ORDERS_PER_PAGE));
+        const displayedOrders = filteredOrders.slice((orderPage - 1) * ORDERS_PER_PAGE, orderPage * ORDERS_PER_PAGE);
+        const handleExportOrdersCSV = () => exportCSVFile('orders.csv', ['Order ID', 'Buyer ID', 'Seller ID', 'Product Title', 'Total Amount', 'Order Status', 'Payment Status', 'Date'], filteredOrders.map((order) => [
+          String(order.id || ''), String(order.buyer_id || order.buyer || ''), String(order.seller_id || order.seller || ''),
+          String(order.product_title || order.item || ''), String(order.total_amount || order.price || ''), String(order.order_status || ''),
+          String(order.payment_status || order.pay_status || ''), String(order.date || ''),
+        ]));
+        const handleExportOrdersPDF = () => exportPDFFile('orders.pdf', 'Orders Report', ['Order ID', 'Buyer ID', 'Seller ID', 'Product Title', 'Total Amount', 'Order Status', 'Payment Status', 'Date'], filteredOrders.map((order) => [
+          String(order.id || ''), String(order.buyer_id || order.buyer || ''), String(order.seller_id || order.seller || ''),
+          String(order.product_title || order.item || ''), String(order.total_amount || order.price || ''), String(order.order_status || ''),
+          String(order.payment_status || order.pay_status || ''), String(order.date || ''),
+        ]));
 
         const getOrderStatusBadge = (status) => {
           if (status === 'Completed') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
@@ -3575,6 +3826,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm font-bold text-emerald-200">
                   <span>💰</span>
                   <span>{calculatedOrderMetrics.totalSales}</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={handleExportOrdersCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
+                  <button type="button" onClick={handleExportOrdersPDF} className="rounded-full bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer">Export PDF</button>
                 </div>
               </div>
             </div>
@@ -3656,7 +3911,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredOrders.map((order) => (
+                    {displayedOrders.map((order) => (
                       <tr key={order.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4 font-mono font-black text-slate-900">{order.id}</td>
                         <td className="px-4 py-4">
@@ -3693,6 +3948,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                <button type="button" onClick={() => setOrderPage((page) => Math.max(1, page - 1))} disabled={orderPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+                <span className="text-sm font-semibold text-slate-500">Page {orderPage} of {totalOrderPages}</span>
+                <button type="button" onClick={() => setOrderPage((page) => Math.min(totalOrderPages, page + 1))} disabled={orderPage === totalOrderPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
               </div>
 
               {filteredOrders.length === 0 && (
@@ -3811,17 +4072,28 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
       case 'payments':
         const filteredPayments = paymentsList.filter((payment) => {
-          const searchMatch = !paymentSearchTerm ||
-            payment.transaction_id.toLowerCase().includes(paymentSearchTerm.toLowerCase()) ||
-            payment.buyer_id.toLowerCase().includes(paymentSearchTerm.toLowerCase()) ||
-            payment.seller_id.toLowerCase().includes(paymentSearchTerm.toLowerCase()) ||
-            payment.order_id.toLowerCase().includes(paymentSearchTerm.toLowerCase());
+          const searchValue = paymentSearchTerm.toLowerCase();
+          const searchMatch = !searchValue ||
+            String(payment.transaction_id || '').toLowerCase().includes(searchValue) ||
+            String(payment.buyer_id || '').toLowerCase().includes(searchValue) ||
+            String(payment.seller_id || '').toLowerCase().includes(searchValue) ||
+            String(payment.order_id || '').toLowerCase().includes(searchValue);
 
           const statusMatch = paymentStatusFilter === 'All' || payment.status === paymentStatusFilter;
           const typeMatch = paymentTypeFilter === 'All' || payment.payment_type === paymentTypeFilter;
 
           return searchMatch && statusMatch && typeMatch;
         });
+        const totalPaymentPages = Math.max(1, Math.ceil(filteredPayments.length / PAYMENTS_PER_PAGE));
+        const displayedPayments = filteredPayments.slice((paymentPage - 1) * PAYMENTS_PER_PAGE, paymentPage * PAYMENTS_PER_PAGE);
+        const handleExportPaymentsCSV = () => exportCSVFile('payments.csv', ['Transaction ID', 'Buyer ID', 'Seller ID', 'Order ID', 'Amount', 'Payment Type', 'Payment Method', 'Status', 'Date'], filteredPayments.map((payment) => [
+          String(payment.transaction_id || ''), String(payment.buyer_id || ''), String(payment.seller_id || ''), String(payment.order_id || ''),
+          String(payment.amount || ''), String(payment.payment_type || ''), String(payment.payment_method || ''), String(payment.status || ''), String(payment.date || ''),
+        ]));
+        const handleExportPaymentsPDF = () => exportPDFFile('payments.pdf', 'Payments Report', ['Transaction ID', 'Buyer ID', 'Seller ID', 'Order ID', 'Amount', 'Payment Type', 'Payment Method', 'Status', 'Date'], filteredPayments.map((payment) => [
+          String(payment.transaction_id || ''), String(payment.buyer_id || ''), String(payment.seller_id || ''), String(payment.order_id || ''),
+          String(payment.amount || ''), String(payment.payment_type || ''), String(payment.payment_method || ''), String(payment.status || ''), String(payment.date || ''),
+        ]));
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -3862,8 +4134,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <p className="text-sm text-slate-500">Search and filter the latest marketplace payment records.</p>
                 </div>
                 <div className="flex flex-wrap gap-3">
-                  <button type="button" onClick={handleExportCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50">Export CSV</button>
-                  <button type="button" onClick={handleExportPDF} className="rounded-full border border-slate-200 bg-slate-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-slate-800">Export PDF</button>
+                  <button type="button" onClick={handleExportPaymentsCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
+                  <button type="button" onClick={handleExportPaymentsPDF} className="rounded-full bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer">Export PDF</button>
                 </div>
               </div>
 
@@ -3917,7 +4189,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredPayments.map((payment) => (
+                    {displayedPayments.map((payment) => (
                       <tr key={payment.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4 font-mono font-black text-slate-900">{payment.transaction_id}</td>
                         <td className="px-4 py-4 font-semibold text-slate-700">{payment.buyer_id}</td>
@@ -3969,6 +4241,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                <button type="button" onClick={() => setPaymentPage((page) => Math.max(1, page - 1))} disabled={paymentPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+                <span className="text-sm font-semibold text-slate-500">Page {paymentPage} of {totalPaymentPages}</span>
+                <button type="button" onClick={() => setPaymentPage((page) => Math.min(totalPaymentPages, page + 1))} disabled={paymentPage === totalPaymentPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
               </div>
 
               {filteredPayments.length === 0 && (
@@ -4054,6 +4332,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
           return matchesSearch && matchesType && matchesStatus && matchesPriority;
         });
+        const totalReportPages = Math.max(1, Math.ceil(filteredReports.length / REPORTS_PER_PAGE));
+        const displayedReports = filteredReports.slice((reportPage - 1) * REPORTS_PER_PAGE, reportPage * REPORTS_PER_PAGE);
 
         const getStatusBadge = (status) => {
           if (status === 'Open') return 'bg-sky-100 text-sky-700 border border-sky-200';
@@ -4101,14 +4381,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <input
                   type="text"
                   value={reportSearchTerm}
-                  onChange={(e) => setReportSearchTerm(e.target.value)}
+                  onChange={(e) => { setReportSearchTerm(e.target.value); setReportPage(1); }}
                   placeholder="Search report/student..."
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
                 />
 
                 <select
                   value={reportTypeFilter}
-                  onChange={(e) => setReportTypeFilter(e.target.value)}
+                  onChange={(e) => { setReportTypeFilter(e.target.value); setReportPage(1); }}
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Complaint Type: All</option>
@@ -4125,7 +4405,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
                 <select
                   value={reportStatusFilter}
-                  onChange={(e) => setReportStatusFilter(e.target.value)}
+                  onChange={(e) => { setReportStatusFilter(e.target.value); setReportPage(1); }}
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Status: All</option>
@@ -4137,7 +4417,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
                 <select
                   value={reportPriorityFilter}
-                  onChange={(e) => setReportPriorityFilter(e.target.value)}
+                  onChange={(e) => { setReportPriorityFilter(e.target.value); setReportPage(1); }}
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Priority: All</option>
@@ -4164,7 +4444,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredReports.map((rep) => (
+                    {displayedReports.map((rep) => (
                       <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4 font-mono font-black text-slate-900">{rep.report_id}</td>
                         <td className="px-4 py-4 font-semibold text-slate-700">{rep.inferredType}</td>
@@ -4203,6 +4483,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     ))}
                   </tbody>
                 </table>
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
+                <button type="button" onClick={() => setReportPage((page) => Math.max(1, page - 1))} disabled={reportPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+                <span className="text-sm font-semibold text-slate-500">Page {reportPage} of {totalReportPages}</span>
+                <button type="button" onClick={() => setReportPage((page) => Math.min(totalReportPages, page + 1))} disabled={reportPage === totalReportPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
               </div>
               {filteredReports.length === 0 && (
                 <div className="text-center py-8 text-slate-500">
@@ -4514,11 +4799,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <h3 className="mt-2 text-xl font-black text-slate-950">Alerts</h3>
 
                 <div className="mt-5 space-y-3">
-                  {[
-                    { type: 'success', title: 'Recommendation freshness', text: 'Model updated successfully with the latest product catalog and clickstream data.', badge: 'Stable' },
-                    { type: 'warning', title: 'Low confidence cluster', text: 'Electronics subcategory still needs more behavioral signals for better ranking.', badge: 'Check' },
-                    { type: 'info', title: 'Search relevance boosted', text: 'Cross-sell recommendations improved after the latest category weighting update.', badge: 'Improved' }
-                  ].map((alert) => (
+                  {aiMetrics.alerts.map((alert) => (
                     <div key={alert.title} className={`rounded-2xl border p-4 ${alert.type === 'success' ? 'border-emerald-200 bg-emerald-50' : alert.type === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-sky-200 bg-sky-50'}`}>
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
@@ -4526,10 +4807,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           <span className="text-sm font-bold text-slate-800">{alert.title}</span>
                         </div>
                         <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${alert.type === 'success' ? 'bg-emerald-100 text-emerald-700' : alert.type === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
-                          {alert.badge}
+                          {alert.status}
                         </span>
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-slate-700">{alert.text}</p>
+                      <p className="mt-2 text-sm leading-6 text-slate-700">{alert.description}</p>
                     </div>
                   ))}
                 </div>
@@ -4589,7 +4870,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </div>
                 </div>
 
-                <svg viewBox="0 0 640 260" className="h-64 w-full">
+                <svg viewBox="0 0 640 160" className="h-64 w-full" preserveAspectRatio="none">
                   <defs>
                     <linearGradient id="salesBg" x1="0" x2="0" y1="0" y2="1">
                       <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.18" />
@@ -4598,16 +4879,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </defs>
 
                   {[0, 1, 2, 3, 4].map((line) => (
-                    <line key={line} x1="30" x2="610" y1={30 + line * 46} y2={30 + line * 46} stroke="#e2e8f0" strokeDasharray="4 8" />
+                    <line key={line} x1="20" x2="600" y1={30 + line * 25} y2={30 + line * 25} stroke="#e2e8f0" strokeDasharray="4 8" />
                   ))}
 
-                  <path d="M30 210 C90 185, 140 150, 180 165 S260 120, 310 135 S400 80, 450 95 S510 60, 610 40 L610 235 L30 235 Z" fill="url(#salesBg)" opacity="0.7" />
-                  <path d="M30 210 C90 185, 140 150, 180 165 S260 120, 310 135 S400 80, 450 95 S510 60, 610 40" fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
+                  <path d={`${generateLinePath(revenueTrend, maxRevenue)} L 560,130 L 40,130 Z`} fill="url(#salesBg)" opacity="0.7" />
+                  <path d={generateLinePath(revenueTrend, maxRevenue)} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
 
-                  {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'].map((label, index) => (
+                  {trendMonths.map((label, index) => (
                     <g key={label}>
-                      <circle cx={30 + index * 82} cy={[210, 185, 150, 165, 120, 135, 40][index]} r="4" fill="#4f46e5" />
-                      <text x={30 + index * 82} y="245" fill="#64748b" fontSize="11" textAnchor="middle">{label}</text>
+                      <circle cx={40 + index * 104} cy={Number(revenueTrend[index]) === 0 && revenueTrend.every((value) => Number(value) === 0) ? 130 : Math.max(30, 130 - ((Number(revenueTrend[index]) || 0) / maxRevenue) * 100)} r="4" fill="#4f46e5" />
+                      <text x={40 + index * 104} y="155" fill="#64748b" fontSize="11" textAnchor="middle">{label}</text>
                     </g>
                   ))}
                 </svg>
@@ -4666,7 +4947,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Student Growth</p>
                 <h3 className="mt-1 text-xl font-black text-slate-950">New Student Registrations</h3>
 
-                <svg viewBox="0 0 640 220" className="mt-4 h-56 w-full">
+                <svg viewBox="0 0 640 160" className="mt-4 h-56 w-full" preserveAspectRatio="none">
                   <defs>
                     <linearGradient id="regBg" x1="0" x2="0" y1="0" y2="1">
                       <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.25" />
@@ -4674,15 +4955,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </linearGradient>
                   </defs>
                   {Array.from({ length: 5 }).map((_, index) => (
-                    <line key={index} x1="20" x2="610" y1={25 + index * 40} y2={25 + index * 40} stroke="#e2e8f0" strokeDasharray="4 8" />
+                    <line key={index} x1="20" x2="600" y1={30 + index * 25} y2={30 + index * 25} stroke="#e2e8f0" strokeDasharray="4 8" />
                   ))}
-                  <path d="M20 170 C80 150, 110 140, 160 120 S260 85, 320 100 S420 50, 480 75 S560 30, 610 40 L610 200 L20 200 Z" fill="url(#regBg)" />
-                  <path d="M20 170 C80 150, 110 140, 160 120 S260 85, 320 100 S420 50, 480 75 S560 30, 610 40" fill="none" stroke="#0ea5e9" strokeWidth="4" strokeLinecap="round" />
+                  <path d={`${generateLinePath(userGrowthTrend, lineMaxValue)} L 560,130 L 40,130 Z`} fill="url(#regBg)" />
+                  <path d={generateLinePath(userGrowthTrend, lineMaxValue)} fill="none" stroke="#0ea5e9" strokeWidth="4" strokeLinecap="round" />
 
-                  {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'].map((label, index) => (
+                  {trendMonths.map((label, index) => (
                     <g key={label}>
-                      <circle cx={20 + index * 82} cy={[170, 150, 140, 120, 100, 75, 40][index]} r="4" fill="#0ea5e9" />
-                      <text x={20 + index * 82} y="210" textAnchor="middle" fill="#64748b" fontSize="11">{label}</text>
+                      <circle cx={40 + index * 104} cy={Number(userGrowthTrend[index]) === 0 && userGrowthTrend.every((value) => Number(value) === 0) ? 130 : Math.max(30, 130 - ((Number(userGrowthTrend[index]) || 0) / lineMaxValue) * 100)} r="4" fill="#0ea5e9" />
+                      <text x={40 + index * 104} y="155" textAnchor="middle" fill="#64748b" fontSize="11">{label}</text>
                     </g>
                   ))}
                 </svg>
@@ -4718,17 +4999,17 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             <div className="grid gap-6 xl:grid-cols-[1.15fr_0.95fr]">
               <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">User Distribution</p>
-                <h3 className="mt-1 text-xl font-black text-slate-950">Marketplace Activity by Department</h3>
+                <h3 className="mt-1 text-xl font-black text-slate-950">Marketplace Activity by College</h3>
 
                 <div className="mt-5 space-y-5">
-                  {(metrics.department_activity ?? []).map((department) => (
-                    <div key={department.name}>
+                  {collegeActivity.map((college) => (
+                    <div key={college.name}>
                       <div className="mb-1 flex items-center justify-between text-sm font-semibold text-slate-700">
-                        <span>{department.name}</span>
-                        <span>{department.value}%</span>
+                        <span>{college.name}</span>
+                        <span>{college.percentage}%</span>
                       </div>
                       <div className="h-3 w-full overflow-hidden rounded-full bg-slate-100">
-                        <div className={`h-full rounded-full ${department.color}`} style={{ width: `${department.value}%` }} />
+                        <div className={`h-full rounded-full ${college.color}`} style={{ width: `${college.percentage}%` }} />
                       </div>
                     </div>
                   ))}
@@ -4741,15 +5022,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
                 <div className="mt-5 space-y-4">
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Recommendation Accuracy</div>
-                    <div className="mt-2 text-3xl font-black text-emerald-300">87.2%</div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Active Students</div>
+                    <div className="mt-2 text-3xl font-black text-emerald-300">{Number(metrics.active_students ?? metrics.activeStudents ?? 0).toLocaleString()}</div>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-slate-300">CTR Improvement</div>
-                    <div className="mt-2 text-3xl font-black text-sky-300">+19.6%</div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Completed Orders</div>
+                    <div className="mt-2 text-3xl font-black text-sky-300">{Number(metrics.completed_orders ?? metrics.completedOrders ?? 0).toLocaleString()}</div>
                   </div>
                   <p className="rounded-2xl border border-indigo-400/20 bg-indigo-500/10 px-4 py-3 text-sm leading-6 text-slate-200">
-                    The recommendation engine continues to improve discovery quality by analyzing product content, category relevance, and browsing behavior on the campus marketplace.
+                    Live overview of student activity and completed marketplace orders from the current database snapshot.
                   </p>
                 </div>
               </div>
@@ -4784,15 +5065,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'notifications':
-        const filteredAnnouncements = announcementLog.filter((item) => {
-          const searchQuery = notificationsSearch.trim().toLowerCase();
-          const matchesSearch = !searchQuery ||
-            item.title.toLowerCase().includes(searchQuery) ||
-            item.message.toLowerCase().includes(searchQuery) ||
-            item.target.toLowerCase().includes(searchQuery);
-          const matchesFilter = notificationsFilter === 'All' || item.target === notificationsFilter;
-          return matchesSearch && matchesFilter;
-        });
+        var broadcastTotals = announcementLog.reduce((totals, campaign) => ({
+          sent: totals.sent + 1,
+          delivered: totals.delivered + Number(campaign.delivered || 0),
+          read: totals.read + Number(campaign.read || 0),
+          unread: totals.unread + Number(campaign.unread || 0),
+        }), { sent: 0, delivered: 0, read: 0, unread: 0 });
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -4810,10 +5088,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {[
-                { label: 'Sent', value: '12,450', accent: 'bg-violet-50 text-violet-700', icon: '📣' },
-                { label: 'Delivered', value: '11,980', accent: 'bg-emerald-50 text-emerald-700', icon: '✅' },
-                { label: 'Read', value: '9,820', accent: 'bg-sky-50 text-sky-700', icon: '👁️' },
-                { label: 'Unread', value: '2,160', accent: 'bg-amber-50 text-amber-700', icon: '🔔' }
+                { label: 'Campaigns Sent', value: broadcastTotals.sent, accent: 'bg-violet-50 text-violet-700', icon: '📣' },
+                { label: 'Delivered', value: broadcastTotals.delivered, accent: 'bg-emerald-50 text-emerald-700', icon: '✅' },
+                { label: 'Read', value: broadcastTotals.read, accent: 'bg-sky-50 text-sky-700', icon: '👁️' },
+                { label: 'Unread', value: broadcastTotals.unread, accent: 'bg-amber-50 text-amber-700', icon: '🔔' }
               ].map((card) => (
                 <div key={card.label} className={`rounded-[28px] border border-slate-200 p-5 shadow-sm ${card.accent}`}>
                   <div className="flex items-start justify-between">
@@ -4851,10 +5129,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <option value="Everyone">Everyone</option>
                       <option value="Buyers">Buyers</option>
                       <option value="Sellers">Sellers</option>
-                      <option value="IT Department">IT Department</option>
-                      <option value="Engineering Department">Engineering Department</option>
-                      <option value="Medicine Department">Medicine Department</option>
-                      <option value="Business Department">Business Department</option>
+                      {Array.from(new Set(verificationDeptsList.filter(Boolean))).map((department) => (
+                        <option key={department} value={department}>{department}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -4871,7 +5148,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           <div className="max-w-[75%]">
                             <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.24em] text-violet-600">
                               <span>{log.target}</span>
-                              <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-emerald-700">{log.status}</span>
+                              <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-emerald-700">Delivered</span>
                             </div>
                             <h4 className="mt-2 text-base font-black text-slate-950">{log.title}</h4>
                             <p className="mt-2 text-sm leading-6 text-slate-600">{log.message}</p>
@@ -4880,7 +5157,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           <div className="flex gap-2 sm:flex-col">
                             <button
                               type="button"
-                              onClick={() => setPreviewAnnouncement(log)}
+                              onClick={() => {
+                                setPreviewAnnouncement(log);
+                                setShowPreviewModal(true);
+                              }}
                               className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:border-violet-200 hover:text-violet-700"
                             >
                               View
@@ -4910,8 +5190,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           </div>
                         </div>
                       </div>
-                    ))
-                  )}
+                    )))}
                 </div>
               </div>
 
@@ -4943,10 +5222,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <option value="Everyone">Everyone</option>
                       <option value="Buyers">Buyers</option>
                       <option value="Sellers">Sellers</option>
-                      <option value="IT Department">IT Department</option>
-                      <option value="Engineering Department">Engineering Department</option>
-                      <option value="Medicine Department">Medicine Department</option>
-                      <option value="Business Department">Business Department</option>
+                      {Array.from(new Set(verificationDeptsList.filter(Boolean))).map((department) => (
+                        <option key={department} value={department}>{department}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -5072,7 +5350,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="mt-5 flex gap-3">
                     <button
                       type="button"
-                      onClick={() => setShowPreviewModal(false)}
+                      onClick={handleEditPreview}
                       className="flex-1 rounded-full border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200"
                     >
                       Edit
@@ -5092,17 +5370,59 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'audit-logs':
-        const filteredAuditLogs = auditLogs.filter((log) => {
+        var filteredAuditLogs = auditLogs.filter((log) => {
+          const logDate = new Date(log.date_time);
+          const now = new Date();
+          const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const dateStarts = {
+            Today: startOfToday,
+            Yesterday: new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000),
+            'Last 7 Days': new Date(startOfToday.getTime() - 6 * 24 * 60 * 60 * 1000),
+          };
+          const selectedDateStart = dateStarts[auditLogFilterDate];
+          const matchesDate = auditLogFilterDate === 'All' || (
+            !Number.isNaN(logDate.getTime()) && logDate >= selectedDateStart && logDate < now
+          );
           const matchesSearch = !auditLogSearch.trim() ||
             `${log.action} ${log.description} ${log.performed_by} ${log.entity_type} ${log.entity_id}`
               .toLowerCase()
               .includes(auditLogSearch.trim().toLowerCase());
 
           const matchesAction = auditLogFilterAction === 'All' || log.actionType === auditLogFilterAction;
-          const matchesStatus = auditLogFilterStatus === 'All' || log.status === auditLogFilterStatus;
+          const normalizedStatus = String(log.status || '').trim().toUpperCase();
+          const matchesStatus = auditLogFilterStatus === 'All' || normalizedStatus === auditLogFilterStatus.toUpperCase();
 
-          return matchesSearch && matchesAction && matchesStatus;
+          return matchesSearch && matchesAction && matchesStatus && matchesDate;
         });
+
+        var auditLogMetrics = auditLogs.reduce((metrics, log) => {
+          const normalizedAction = String(log.action || '').toLowerCase();
+          const normalizedStatus = String(log.status || '').trim().toUpperCase();
+          const severity = normalizedStatus === 'FAILED'
+            ? 'critical'
+            : String(log.severity || '').toLowerCase() === 'warning'
+              ? 'warning'
+              : 'informational';
+
+          metrics.total += 1;
+          if (normalizedAction.includes('login') && normalizedStatus === 'SUCCESS') metrics.successfulLogins += 1;
+          if (normalizedAction.includes('login') && normalizedStatus === 'FAILED') metrics.failedLogins += 1;
+          metrics.alerts[severity] += 1;
+          return metrics;
+        }, { total: 0, successfulLogins: 0, failedLogins: 0, alerts: { critical: 0, warning: 0, informational: 0 } });
+        var totalAuditPages = Math.max(1, Math.ceil(filteredAuditLogs.length / LOGS_PER_PAGE));
+        var displayedAuditLogs = filteredAuditLogs.slice((auditPage - 1) * LOGS_PER_PAGE, auditPage * LOGS_PER_PAGE);
+        var selectedAuditContext = selectedLogDetails ? parseAuditDescription(selectedLogDetails.description) : null;
+        const handleExportAuditLogsPDF = () => exportPDFFile(
+          `audit-logs-${new Date().toISOString().slice(0, 10)}.pdf`,
+          'Security & Action Audit Report',
+          ['Action', 'Performed By', 'Entity', 'Status', 'Date & Time'],
+          filteredAuditLogs.map((log) => [
+            String(log.action || 'System'), String(log.performed_by || 'System'),
+            `${String(log.entity_type || 'Unknown')}: ${String(log.entity_id || '')}`,
+            String(log.status || 'Unknown'), String(log.date_time || ''),
+          ])
+        );
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -5112,24 +5432,29 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-sky-600">Security console</p>
                   <h2 className="mt-1 text-2xl font-black text-slate-950">Security & Action Audit Logs</h2>
                 </div>
-                <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">
-                  Defense ready
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold tracking-[0.12em] text-emerald-700">
+                  🟢 System Secure
                 </span>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => handleExportAuditLogsCSV(filteredAuditLogs)} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
+                  <button type="button" onClick={handleExportAuditLogsPDF} className="rounded-full bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer">Export PDF</button>
+                </div>
               </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {[
-                { label: 'Total Events', value: '2,450', accent: 'bg-slate-100 text-slate-800', icon: '📊' },
-                { label: 'Logins', value: '820', accent: 'bg-sky-50 text-sky-700', icon: '🔐' },
-                { label: 'Admin Actions', value: '1,420', accent: 'bg-violet-50 text-violet-700', icon: '🛡️' },
-                { label: 'Security Alerts', value: '18', accent: 'bg-rose-50 text-rose-700', icon: '🚨' }
+                { label: 'Total Events', value: auditLogMetrics.total, accent: 'bg-slate-100 text-slate-800', icon: '📊' },
+                { label: 'Logins', value: auditLogMetrics.successfulLogins + auditLogMetrics.failedLogins, detail: `${auditLogMetrics.successfulLogins} successful · ${auditLogMetrics.failedLogins} failed`, accent: 'bg-sky-50 text-sky-700', icon: '🔐' },
+                { label: 'Admin Actions', value: Math.max(auditLogMetrics.total - auditLogMetrics.successfulLogins - auditLogMetrics.failedLogins, 0), accent: 'bg-violet-50 text-violet-700', icon: '🛡️' },
+                { label: 'Security Alerts', value: auditLogMetrics.alerts.critical + auditLogMetrics.alerts.warning + auditLogMetrics.alerts.informational, detail: `${auditLogMetrics.alerts.critical} critical · ${auditLogMetrics.alerts.warning} warning · ${auditLogMetrics.alerts.informational} informational`, accent: 'bg-rose-50 text-rose-700', icon: '🚨' }
               ].map((card) => (
                 <div key={card.label} className={`rounded-[28px] border border-slate-200 p-5 shadow-sm ${card.accent}`}>
                   <div className="flex items-start justify-between">
                     <div>
                       <p className="text-[10px] font-bold uppercase tracking-[0.24em] opacity-70">{card.label}</p>
                       <p className="mt-3 text-3xl font-black">{card.value}</p>
+                      {card.detail && <p className="mt-2 text-[10px] font-bold leading-4 opacity-75">{card.detail}</p>}
                     </div>
                     <div className="text-2xl">{card.icon}</div>
                   </div>
@@ -5171,6 +5496,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     <option value="Success">Success</option>
                     <option value="Failed">Failed</option>
                   </select>
+                  <select
+                    value={auditLogFilterDate}
+                    onChange={(e) => setAuditLogFilterDate(e.target.value)}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="All">Date: All</option>
+                    <option value="Today">Today</option>
+                    <option value="Yesterday">Yesterday</option>
+                    <option value="Last 7 Days">Last 7 Days</option>
+                  </select>
                 </div>
               </div>
 
@@ -5180,31 +5515,37 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     No audit logs match the current search and filters.
                   </div>
                 ) : (
-                  filteredAuditLogs.map((log) => {
-                    const statusBadge =
-                      log.severity === 'success'
-                        ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
-                        : log.severity === 'warning'
-                          ? 'bg-amber-100 text-amber-700 border border-amber-200'
-                          : 'bg-rose-100 text-rose-700 border border-rose-200';
+                  displayedAuditLogs.map((log) => {
+                    const normalizedLogStatus = String(log.status || '').trim().toLowerCase();
+                    const isSuccessfulLog = normalizedLogStatus === 'success' || normalizedLogStatus === 'successful';
+                    const statusBadgeClass = isSuccessfulLog
+                      ? 'bg-emerald-500 text-white'
+                      : log.severity === 'warning'
+                        ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                        : 'bg-rose-100 text-rose-700 border border-rose-200';
 
                     const indicator =
                       log.severity === 'success'
                         ? '✓'
                         : log.severity === 'warning'
                           ? '⚠️'
-                          : '🔴';
+                          : '🟢';
+                    const circleColorClass = isSuccessfulLog
+                      ? 'bg-emerald-500 ring-4 ring-emerald-100'
+                      : log.severity === 'warning'
+                        ? 'bg-amber-100 text-amber-600'
+                        : 'bg-rose-100 text-rose-600';
 
                     return (
                       <div key={log.id} className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                           <div className="flex items-start gap-3">
-                            <div className={`flex h-10 w-10 items-center justify-center rounded-full text-lg ${statusBadge}`}>
+                            <div className={`flex h-10 w-10 items-center justify-center rounded-full text-lg ${circleColorClass}`}>
                               {indicator}
                             </div>
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-[0.2em] ${statusBadge}`}>
+                                <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-[0.2em] ${statusBadgeClass}`}>
                                   {log.status}
                                 </span>
                                 <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{log.actionType}</span>
@@ -5246,22 +5587,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => alert('CSV export is ready for download.')}
-                className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white shadow-sm hover:bg-slate-800"
-              >
-                Export CSV
-              </button>
-              <button
-                type="button"
-                onClick={() => alert('PDF export is ready for download.')}
-                className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm hover:bg-slate-50"
-              >
-                Export PDF
-              </button>
-            </div>
+            <nav className="flex items-center justify-between gap-3 border-t border-slate-200 pt-5" aria-label="Audit log pagination">
+              <button type="button" onClick={() => setAuditPage((page) => Math.max(1, page - 1))} disabled={auditPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+              <span className="text-sm font-semibold text-slate-500">Page {auditPage} of {totalAuditPages}</span>
+              <button type="button" onClick={() => setAuditPage((page) => Math.min(totalAuditPages, page + 1))} disabled={auditPage === totalAuditPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
+            </nav>
 
             {selectedLogDetails && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
@@ -5282,12 +5612,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
                   <div className="mt-5 space-y-3">
                     {[
+                      ['Event ID', selectedLogDetails.id],
                       ['Action', selectedLogDetails.action],
                       ['Performed By', selectedLogDetails.performed_by],
                       ['Entity Type', selectedLogDetails.entity_type],
                       ['Entity ID', selectedLogDetails.entity_id],
                       ['IP Address', selectedLogDetails.ip_address],
-                      ['Exact DateTime', new Date(selectedLogDetails.date_time).toLocaleString()],
+                      ['Date & Time', new Date(selectedLogDetails.date_time).toLocaleString()],
                       ['Status', selectedLogDetails.status]
                     ].map(([label, value]) => (
                       <div key={label} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -5296,6 +5627,26 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       </div>
                     ))}
                   </div>
+
+                  {selectedAuditContext && (
+                    <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Change Context</p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Field Changed</p>
+                          <p className="mt-1 break-words text-sm font-bold text-slate-900">{selectedAuditContext.field}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Previous Value</p>
+                          <p className="mt-1 break-words text-sm font-semibold text-slate-700">{selectedAuditContext.previousValue}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">New Value</p>
+                          <p className="mt-1 break-words text-sm font-semibold text-emerald-700">{selectedAuditContext.newValue}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="mt-5 flex justify-end">
                     <button
@@ -5313,7 +5664,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'settings':
-        const toggleCard = (label, checked, onChange) => (
+        var toggleCard = (label, checked, onChange) => (
           <label className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
             <span>{label}</span>
             <button
@@ -5560,10 +5911,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </button>
               </div>
               {settingsSaveMessage && (
-                <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+                <div className={`mt-4 rounded-2xl px-4 py-3 text-sm font-semibold ${settingsMessageType === 'success' ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'border border-rose-200 bg-rose-50 text-rose-700'}`}>
                   {settingsSaveMessage}
                 </div>
               )}
+
             </div>
           </div>
         );
@@ -5577,7 +5929,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       <div className="flex min-h-screen flex-col gap-2 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className={`
-          fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-[#111c3a] p-6 text-white shadow-xl transition-all duration-300 ease-in-out
+          fixed inset-y-0 left-0 z-50 flex w-[min(18rem,calc(100vw-1rem))] flex-col overflow-hidden bg-[#111c3a] p-4 text-white shadow-xl transition-all duration-300 ease-in-out sm:p-6
           lg:static lg:translate-x-0 lg:h-full lg:overflow-visible lg:shrink-0 lg:shadow-none lg:inset-auto lg:left-auto lg:inset-y-auto
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:w-72 lg:ml-0'}
         `}>
@@ -5593,6 +5945,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </p>
               </div>
             </div>
+            <button
+              type="button"
+              onClick={() => setIsSidebarOpen(false)}
+              className="rounded-lg p-2 text-slate-300 transition hover:bg-white/10 hover:text-white lg:hidden"
+              aria-label="Close admin navigation"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
           <nav className="flex max-h-[calc(100vh-180px)] flex-col overflow-y-auto pr-1 scrollbar-thin scrollbar-track-slate-900/20 scrollbar-thumb-slate-600/60">
@@ -5630,12 +5992,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         )}
 
         {/* Main Panel Content Area */}
-        <main className="flex-1 lg:h-full lg:overflow-y-auto lg:pr-2">
-          <div className="mb-6 flex flex-col gap-4 rounded-[32px] bg-white p-6 text-slate-950 shadow-sm border border-slate-200/40">
+        <main className="min-w-0 flex-1 lg:h-full lg:overflow-y-auto lg:pr-2">
+          <div className="mb-4 flex flex-col gap-4 rounded-[24px] border border-slate-200/40 bg-white p-4 text-slate-950 shadow-sm sm:mb-6 sm:rounded-[32px] sm:p-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-4">
                 {!isSidebarOpen && (
-                  <button onClick={() => setIsSidebarOpen(true)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer hidden lg:flex">
+                  <button onClick={() => setIsSidebarOpen(true)} className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 lg:flex cursor-pointer" aria-label="Open admin navigation">
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4v16" />
@@ -5643,15 +6005,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </button>
                 )}
                 <div>
-                  <p className="text-sm uppercase tracking-[0.24em] text-slate-500">Administrator</p>
-                  <h2 className="mt-2 text-3xl font-bold">Campus Marketplace Admin</h2>
+                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500 sm:text-sm sm:tracking-[0.24em]">Administrator</p>
+                  <h2 className="mt-2 text-2xl font-bold sm:text-3xl">Campus Marketplace Admin</h2>
                 </div>
               </div>
 
             </div>
           </div>
 
-          <section className="rounded-[32px] bg-slate-50 shadow-sm">
+          <section className="min-w-0 overflow-hidden rounded-[32px] bg-slate-50 shadow-sm">
             {isReady ? renderTabContent() : (
               <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm">
                 Loading admin tools...

@@ -170,6 +170,7 @@ class AuditLog(Base):
     entity_id = Column(Integer, nullable=True)
     description = Column(Text, nullable=True)
     status = Column(String(50), default="SUCCESS", nullable=False)
+    severity = Column(String(20), default="informational", nullable=False)
     ip_address = Column(String(50), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
@@ -195,6 +196,7 @@ class Notification(Base):
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
     title = Column(String(200), nullable=True)
     message = Column(String(500), nullable=False)
+    target = Column(String(150), nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     type = Column(String(50), nullable=False, default="system")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

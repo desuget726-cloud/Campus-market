@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import func, inspect, or_, text
+from sqlalchemy import event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ሁሉንም የዳታቤዝ ሰንጠረዦች (Models) እና ማገናኛዎችን ከሌሎቹ ፋይሎች እንጠራለን
+# ßêüßêëßèòßê¥ ßï¿ßï│ßë│ßëñßï¥ ßê░ßèòßîáßê¿ßïªßë╜ (Models) ßèÑßèô ßê¢ßîêßèôßè¢ßïÄßë╜ßèò ßè¿ßêîßêÄßë╣ ßìïßï¡ßêÄßë╜ ßèÑßèòßîáßê½ßêêßèò
 from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
@@ -45,10 +45,10 @@ from .database import get_db, init_db, SessionLocal, Base, engine
 
 app = FastAPI(title="Campace Backend")
 
-# React ግንኙነት መፍቀጃ (CORS)
+# React ßîìßèòßèÖßèÉßë╡ ßêÿßììßëÇßîâ (CORS)
 origins = [
-    "http://localhost:5173",      # ✓ React frontend (dev)
-    "http://127.0.0.1:5173",      # ✓ Alternative localhost
+    "http://localhost:5173",      # Γ£ô React frontend (dev)
+    "http://127.0.0.1:5173",      # Γ£ô Alternative localhost
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8000",
@@ -57,10 +57,10 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,        # ✓ Uses origins list
-    allow_credentials=True,       # ✓ Allow cookies/auth
-    allow_methods=["*"],          # ✓ All HTTP methods
-    allow_headers=["*"],          # ✓ All headers
+    allow_origins=origins,        # Γ£ô Uses origins list
+    allow_credentials=True,       # Γ£ô Allow cookies/auth
+    allow_methods=["*"],          # Γ£ô All HTTP methods
+    allow_headers=["*"],          # Γ£ô All headers
 )
 
 # Create static directory for uploads if it doesn't exist
@@ -701,100 +701,62 @@ class ChatInitiateRequest(BaseModel):
     product_id: int
 
 
-DEFAULT_SYSTEM_SETTINGS = {
-    "marketplaceName": "Campace Market",
-    "description": "A secure campus marketplace for buying and selling university essentials.",
-    "supportEmail": "support@campace.edu.et",
-    "currency": "ETB",
-    "timezone": "Africa/Addis_Ababa",
-    "maxImageSize": "5MB",
-    "maxImagesPerProduct": 5,
-    "requireApproval": True,
-    "allowEditing": True,
-    "autoHideSold": True,
-    "recommendationEngine": "Content-Based Filtering (TF-IDF)",
-    "numRecommendations": 5,
-    "minSimilarityScore": 0.20,
-    "enableAI": True,
-    "paymentProvider": "Chapa",
-    "enableOnlinePayment": True,
-    "paymentVerification": "Automatic",
-    "refundsEnabled": True,
-    "emailNotifs": True,
-    "orderNotifs": True,
-    "messageNotifs": True,
-    "approvalNotifs": True,
-    "paymentNotifs": True,
-    "announcementNotifs": True,
-    "requireStudentVerification": True,
-    "admin2FA": True,
-    "maxLoginAttempts": 5,
-    "sessionTimeout": 30,
-    "minPasswordLength": 8,
-    "auditLogging": True,
-    "allowedEmailDomain": "university.edu.et",
-    "requireUniversityEmail": True,
-    "autoApproveStudents": False,
-    "autoHideReported": True,
-    "requireAdminApproval": True,
-    "maxReportsBeforeReview": 3,
-    "allowStudentReports": True,
-}
-
 DEFAULT_SETTINGS_BLOCKS = {
     "general": {
-        "marketplaceName": DEFAULT_SYSTEM_SETTINGS["marketplaceName"],
-        "description": DEFAULT_SYSTEM_SETTINGS["description"],
-        "supportEmail": DEFAULT_SYSTEM_SETTINGS["supportEmail"],
-        "currency": DEFAULT_SYSTEM_SETTINGS["currency"],
-        "timezone": DEFAULT_SYSTEM_SETTINGS["timezone"],
-    },
-    "user": {
-        "requireStudentVerification": DEFAULT_SYSTEM_SETTINGS["requireStudentVerification"],
-        "allowedEmailDomain": DEFAULT_SYSTEM_SETTINGS["allowedEmailDomain"],
-        "requireUniversityEmail": DEFAULT_SYSTEM_SETTINGS["requireUniversityEmail"],
-        "autoApproveStudents": DEFAULT_SYSTEM_SETTINGS["autoApproveStudents"],
+        "marketplaceName": "Campace Market",
+        "description": "A secure campus marketplace for buying and selling university essentials.",
+        "supportEmail": "support@campace.edu.et",
+        "currency": "ETB",
+        "timezone": "Africa/Addis_Ababa",
     },
     "marketplace": {
-        "maxImageSize": DEFAULT_SYSTEM_SETTINGS["maxImageSize"],
-        "maxImagesPerProduct": DEFAULT_SYSTEM_SETTINGS["maxImagesPerProduct"],
-        "requireApproval": DEFAULT_SYSTEM_SETTINGS["requireApproval"],
-        "allowEditing": DEFAULT_SYSTEM_SETTINGS["allowEditing"],
-        "autoHideSold": DEFAULT_SYSTEM_SETTINGS["autoHideSold"],
-        "autoHideReported": DEFAULT_SYSTEM_SETTINGS["autoHideReported"],
-        "requireAdminApproval": DEFAULT_SYSTEM_SETTINGS["requireAdminApproval"],
-        "maxReportsBeforeReview": DEFAULT_SYSTEM_SETTINGS["maxReportsBeforeReview"],
-        "allowStudentReports": DEFAULT_SYSTEM_SETTINGS["allowStudentReports"],
+        "maxImageSize": "5MB",
+        "maxImagesPerProduct": 5,
+        "requireApproval": True,
+        "allowEditing": True,
+        "autoHideSold": True,
     },
     "payment": {
-        "paymentProvider": DEFAULT_SYSTEM_SETTINGS["paymentProvider"],
-        "currency": DEFAULT_SYSTEM_SETTINGS["currency"],
-        "enableOnlinePayment": DEFAULT_SYSTEM_SETTINGS["enableOnlinePayment"],
-        "paymentVerification": DEFAULT_SYSTEM_SETTINGS["paymentVerification"],
-        "refundsEnabled": DEFAULT_SYSTEM_SETTINGS["refundsEnabled"],
+        "paymentProvider": "Chapa",
+        "currency": "ETB",
+        "enableOnlinePayment": True,
+        "paymentVerification": "Automatic",
+        "refundsEnabled": True,
     },
     "ai": {
-        "recommendationEngine": DEFAULT_SYSTEM_SETTINGS["recommendationEngine"],
-        "numRecommendations": DEFAULT_SYSTEM_SETTINGS["numRecommendations"],
-        "minSimilarityScore": DEFAULT_SYSTEM_SETTINGS["minSimilarityScore"],
-        "enableAI": DEFAULT_SYSTEM_SETTINGS["enableAI"],
+        "recommendationEngine": "Content-Based Filtering (TF-IDF)",
+        "numRecommendations": 5,
+        "minSimilarityScore": 0.20,
+        "enableAI": True,
     },
-    "notification": {
-        "emailNotifs": DEFAULT_SYSTEM_SETTINGS["emailNotifs"],
-        "orderNotifs": DEFAULT_SYSTEM_SETTINGS["orderNotifs"],
-        "messageNotifs": DEFAULT_SYSTEM_SETTINGS["messageNotifs"],
-        "approvalNotifs": DEFAULT_SYSTEM_SETTINGS["approvalNotifs"],
-        "paymentNotifs": DEFAULT_SYSTEM_SETTINGS["paymentNotifs"],
-        "announcementNotifs": DEFAULT_SYSTEM_SETTINGS["announcementNotifs"],
+    "notifications": {
+        "emailNotifs": True,
+        "orderNotifs": True,
+        "messageNotifs": True,
+        "approvalNotifs": True,
+        "paymentNotifs": True,
+        "announcementNotifs": True,
+    },
+    "security": {
+        "requireStudentVerification": True,
+        "admin2FA": True,
+        "maxLoginAttempts": 5,
+        "sessionTimeout": 30,
+        "minPasswordLength": 8,
+        "auditLogging": True,
+    },
+    "studentVerification": {
+        "allowedEmailDomain": "university.edu.et",
+        "requireUniversityEmail": True,
+        "autoApproveStudents": False,
+    },
+    "moderation": {
+        "autoHideReported": True,
+        "requireAdminApproval": True,
+        "maxReportsBeforeReview": 3,
+        "allowStudentReports": True,
     },
     "chat": {"enabled": True, "allowAttachments": True, "maxMessageLength": 1000},
-    "security": {
-        "admin2FA": DEFAULT_SYSTEM_SETTINGS["admin2FA"],
-        "maxLoginAttempts": DEFAULT_SYSTEM_SETTINGS["maxLoginAttempts"],
-        "sessionTimeout": DEFAULT_SYSTEM_SETTINGS["sessionTimeout"],
-        "minPasswordLength": DEFAULT_SYSTEM_SETTINGS["minPasswordLength"],
-        "auditLogging": DEFAULT_SYSTEM_SETTINGS["auditLogging"],
-    },
     "maintenance": {
         "maintenanceMode": False,
         "maintenanceMessage": "The marketplace is temporarily unavailable for maintenance.",
@@ -809,16 +771,26 @@ def _parse_setting_value(value):
         return value
 
 
+def _setting_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def _get_setting_value(db: Session, block: str, key: str, default=None):
     block_record = db.query(SystemSetting).filter(SystemSetting.key == block).first()
     if block_record:
         block_value = _parse_setting_value(block_record.value)
         if isinstance(block_value, dict) and key in block_value:
             return block_value[key]
-
-    legacy_record = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-    if legacy_record:
-        return _parse_setting_value(legacy_record.value)
     return default
 
 
@@ -841,7 +813,7 @@ def _seed_default_system_settings(db: Session) -> None:
     if existing > 0:
         return
 
-    for key, value in DEFAULT_SYSTEM_SETTINGS.items():
+    for key, value in DEFAULT_SETTINGS_BLOCKS.items():
         db.add(SystemSetting(key=key, value=json.dumps(value, ensure_ascii=False)))
 
     db.commit()
@@ -871,6 +843,14 @@ def ensure_database_compatibility(db: Session) -> None:
             column = db.execute(text(f"SHOW COLUMNS FROM messages LIKE '{column_name}'"))
             if column.fetchone() is None:
                 db.execute(text(f"ALTER TABLE messages ADD COLUMN {column_name} {definition}"))
+
+        notification_target = db.execute(text("SHOW COLUMNS FROM notifications LIKE 'target'"))
+        if notification_target.fetchone() is None:
+            db.execute(text("ALTER TABLE notifications ADD COLUMN target VARCHAR(150) NULL"))
+
+        audit_severity = db.execute(text("SHOW COLUMNS FROM audit_logs LIKE 'severity'"))
+        if audit_severity.fetchone() is None:
+            db.execute(text("ALTER TABLE audit_logs ADD COLUMN severity VARCHAR(20) NOT NULL DEFAULT 'informational'"))
 
         db.commit()
     except Exception:
@@ -939,6 +919,17 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
         return {"role": "admin", "user": {"name": admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
+
+    if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_get_setting_value(
+                db,
+                "maintenance",
+                "maintenanceMessage",
+                "Marketplace maintenance in progress.",
+            ),
+        )
 
     # 2.2 ካልሆነ በተማሪዎች ሰንጠረዥ ይፈትሻል
     student = db.query(Student).filter(
@@ -1192,15 +1183,11 @@ async def upload_admin_avatar(
 @app.get("/api/admin/settings")
 def get_admin_settings(db: Session = Depends(get_db)):
     response = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
-    for item in db.query(SystemSetting).all():
+    grouped_keys = set(DEFAULT_SETTINGS_BLOCKS)
+    for item in db.query(SystemSetting).filter(SystemSetting.key.in_(grouped_keys)).all():
         parsed = _parse_setting_value(item.value)
-        if item.key in response and isinstance(parsed, dict):
+        if isinstance(parsed, dict):
             response[item.key].update(parsed)
-        else:
-            for block in response.values():
-                if item.key in block:
-                    block[item.key] = parsed
-                    break
     return response
 
 
@@ -1212,17 +1199,11 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
     current = get_admin_settings(db)
     normalized = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
     for block, values in payload.items():
-        if block in normalized:
-            if not isinstance(values, dict):
-                raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
-            normalized[block].update(values)
-        else:
-            for target in normalized.values():
-                if block in target:
-                    target[block] = values
-                    break
-            else:
-                raise HTTPException(status_code=400, detail=f"Unknown settings block or key: {block}")
+        if block not in normalized:
+            raise HTTPException(status_code=400, detail=f"Unknown settings block: {block}")
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
+        normalized[block].update(values)
 
     for key, value in normalized.items():
         existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
@@ -1231,6 +1212,8 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
             existing.value = serialized
         else:
             db.add(SystemSetting(key=key, value=serialized))
+
+    db.query(SystemSetting).filter(~SystemSetting.key.in_(normalized.keys())).delete(synchronize_session=False)
 
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
     changes = _settings_change_details(current, normalized)
@@ -1259,15 +1242,76 @@ def get_setting_by_id(id: int):
     return {"id": id, "value": True, "message": "Setting retrieved successfully"}
 
 
+@event.listens_for(Session, "before_flush")
+def enforce_audit_log_append_only(session, flush_context, instances):
+    deleted_logs = [item for item in session.deleted if isinstance(item, AuditLog)]
+    updated_logs = [
+        item for item in session.dirty
+        if isinstance(item, AuditLog) and session.is_modified(item, include_collections=False)
+    ]
+
+    if deleted_logs:
+        for audit_log in deleted_logs:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "INSERT INTO audit_logs "
+                    "(admin_id, action, entity_type, entity_id, description, status, severity, ip_address) "
+                    "VALUES (:admin_id, :action, :entity_type, :entity_id, :description, :status, :severity, :ip_address)"
+                ), {
+                    "admin_id": audit_log.admin_id,
+                    "action": "DELETE_AUDIT_LOG_ATTEMPT",
+                    "entity_type": "AuditLog",
+                    "entity_id": audit_log.id,
+                    "description": f"Blocked deletion attempt for audit log {audit_log.id}.",
+                    "status": "BLOCKED",
+                    "severity": "critical",
+                    "ip_address": None,
+                })
+        raise HTTPException(status_code=403, detail="Audit logs are append-only and cannot be deleted.")
+
+    if updated_logs:
+        raise HTTPException(status_code=403, detail="Audit logs are append-only and cannot be updated.")
+
+
+@event.listens_for(engine, "before_cursor_execute", retval=True)
+def block_raw_audit_log_mutations(connection, cursor, statement, parameters, context, executemany):
+    mutation_match = re.match(r"\s*(DELETE\s+FROM|UPDATE)\s+[`\"]?audit_logs[`\"]?\b", statement, re.IGNORECASE)
+    if not mutation_match:
+        return statement, parameters
+
+    if mutation_match.group(1).upper().startswith("DELETE"):
+        with engine.begin() as audit_connection:
+            audit_connection.execute(text(
+                "INSERT INTO audit_logs "
+                "(action, entity_type, description, status, severity) "
+                "VALUES (:action, :entity_type, :description, :status, :severity)"
+            ), {
+                "action": "DELETE_AUDIT_LOG_ATTEMPT",
+                "entity_type": "AuditLog",
+                "description": "Blocked raw SQL deletion attempt against the audit_logs table.",
+                "status": "BLOCKED",
+                "severity": "critical",
+            })
+        raise HTTPException(status_code=403, detail="Audit logs are append-only and cannot be deleted.")
+
+    raise HTTPException(status_code=403, detail="Audit logs are append-only and cannot be updated.")
+
+
 @app.get("/api/admin/audit-logs")
 def get_admin_audit_logs(
     search: Optional[str] = None,
     action_type: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 100,
+    admin_username: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    limit: int = 50,
+    offset: int = 0,
     db: Session = Depends(get_db),
 ):
     try:
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
         query = db.query(AuditLog).outerjoin(Admin, AuditLog.admin_id == Admin.id)
 
         if search and search.strip():
@@ -1296,13 +1340,21 @@ def get_admin_audit_logs(
         if status and status.strip().lower() != "all":
             query = query.filter(AuditLog.status.ilike(f"%{status.strip()}%"))
 
-        logs = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
+        if admin_username and admin_username.strip():
+            query = query.filter(Admin.username.ilike(admin_username.strip()))
+        if start_date:
+            query = query.filter(AuditLog.created_at >= start_date)
+        if end_date:
+            query = query.filter(AuditLog.created_at <= end_date)
+
+        total = query.count()
+        logs = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(offset).limit(limit).all()
 
         results = []
         for log in logs:
             action_label = log.action or "System Event"
             status_value = (log.status or "SUCCESS").upper()
-            severity = "success" if status_value == "SUCCESS" else "warning" if status_value in {"WARNING", "PENDING"} else "critical"
+            severity = log.severity or ("success" if status_value == "SUCCESS" else "warning" if status_value in {"WARNING", "PENDING"} else "critical")
             performed_by = "System"
             if log.admin_id:
                 admin_query = db.query(Admin.username).filter(Admin.id == log.admin_id).first()
@@ -1329,7 +1381,7 @@ def get_admin_audit_logs(
                 "severity": severity,
             })
 
-        return results
+        return {"items": results, "total": total, "limit": limit, "offset": offset}
     except (OperationalError, SQLAlchemyError) as exc:
         traceback.print_exc()
         return JSONResponse(
@@ -1568,7 +1620,7 @@ def get_products(
 ):
     from sqlalchemy import case, or_
 
-    if _get_setting_value(db, "maintenance", "maintenanceMode", False):
+    if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=_get_setting_value(
@@ -3824,6 +3876,57 @@ def get_admin_ai_analytics(db: Session = Depends(get_db)):
         for category_name, product_count in category_rows
     ]
 
+    newest_product = db.query(Product.created_at).order_by(Product.created_at.desc()).first()
+    newest_product_at = newest_product[0] if newest_product else None
+    freshness_is_stable = bool(
+        newest_product_at and newest_product_at >= datetime.now() - timedelta(days=3)
+    )
+
+    lowest_category = (
+        db.query(Product.category, func.count(Product.id).label("product_count"))
+        .filter(Product.status.ilike("Approved"))
+        .group_by(Product.category)
+        .order_by(func.count(Product.id).asc(), Product.category.asc())
+        .first()
+    )
+    lowest_category_name = (lowest_category[0] if lowest_category else None) or "General"
+    lowest_category_count = int(lowest_category[1]) if lowest_category else 0
+    low_confidence = lowest_category_count < 2
+
+    ai_enabled = bool(_get_setting_value(db, "ai", "enableAI", DEFAULT_SETTINGS_BLOCKS["ai"]["enableAI"]))
+    alerts = [
+        {
+            "title": "Recommendation freshness",
+            "status": "STABLE" if freshness_is_stable else "CHECK",
+            "type": "success" if freshness_is_stable else "warning",
+            "description": (
+                "Model updated successfully with the latest product catalog and clickstream data."
+                if freshness_is_stable
+                else "The product catalog has not received a fresh listing in the last 3 days."
+            ),
+        },
+        {
+            "title": "Low confidence cluster",
+            "status": "CHECK" if low_confidence else "STABLE",
+            "type": "warning" if low_confidence else "success",
+            "description": (
+                f"{lowest_category_name} subcategory still needs more behavioral signals for better ranking."
+                if low_confidence
+                else f"{lowest_category_name} has sufficient approved products for reliable ranking signals."
+            ),
+        },
+        {
+            "title": "Search relevance boosted",
+            "status": "IMPROVED" if ai_enabled else "CHECK",
+            "type": "info" if ai_enabled else "warning",
+            "description": (
+                "Cross-sell recommendations improved with AI-enabled relevance ranking."
+                if ai_enabled
+                else "AI relevance ranking is disabled in system settings."
+            ),
+        },
+    ]
+
     return {
         "db_records": db_records,
         "user_profiles": user_profiles,
@@ -3839,6 +3942,7 @@ def get_admin_ai_analytics(db: Session = Depends(get_db)):
         "recall": recall_percentage,
         "top_products": top_products,
         "category_performance": category_performance,
+        "alerts": alerts,
         "table_record_counts": table_record_counts,
     }
 
@@ -3871,31 +3975,19 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             return f"{value / 1_000:.1f}K ETB"
         return f"{value:,.0f} ETB"
 
-    department_rows = db.query(
-        Student.department,
-        func.count(Student.id).label("count")
-    ).group_by(Student.department).order_by(func.count(Student.id).desc()).all()
-
-    department_activity = []
-    for index, (department_name, count) in enumerate(department_rows):
-        color_palette = ["bg-blue-500", "bg-violet-500", "bg-emerald-500", "bg-amber-500", "bg-slate-500", "bg-cyan-500", "bg-pink-500"]
-        department_activity.append({
-            "name": department_name or "Unknown",
-            "value": int(count),
-            "color": color_palette[index % len(color_palette)]
-        })
-
     college_rows = db.query(
         Student.college,
         func.count(Student.id).label("count")
     ).group_by(Student.college).order_by(func.count(Student.id).desc()).all()
 
+    total_college_students = sum(int(count) for _, count in college_rows)
     college_activity = []
     for index, (college_name, count) in enumerate(college_rows):
         color_palette = ["bg-indigo-500", "bg-sky-500", "bg-teal-500", "bg-rose-500", "bg-amber-500", "bg-purple-500"]
         college_activity.append({
             "name": college_name or "Unknown",
             "value": int(count),
+            "percentage": round((int(count) / total_college_students) * 100, 1) if total_college_students else 0,
             "color": color_palette[index % len(color_palette)]
         })
 
@@ -4002,7 +4094,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         "registrations": user_growth,
         "orderStatus": status_distribution,
         "categories": categories,
-        "departmentActivity": department_activity,
+        "college_activity": college_activity,
         "collegeActivity": college_activity,
         "productStatusBreakdown": product_status_breakdown,
         "recentActivity": recent_activity,
@@ -4854,21 +4946,102 @@ def resolve_report_patch(id: int, data: ReportUpdate, db: Session = Depends(get_
 # 19. የአስተዳዳሪ ማስታወቂያ ማሰራጫ (POST /api/admin/notifications/broadcast)
 @app.post("/api/admin/notifications/broadcast")
 def broadcast_notification(data: BroadcastNotificationRequest, db: Session = Depends(get_db)):
-    query = db.query(Student)
-    if data.target and data.target.lower() not in {"all students", "all"}:
-        query = query.filter((Student.college == data.target) | (Student.department == data.target))
-    
+    if not data.title or not data.title.strip():
+        raise HTTPException(status_code=400, detail="Broadcast title is required.")
+
+    target = (data.target or "Everyone").strip()
+    normalized_target = target.lower()
+    if normalized_target in {"all students", "all", "everyone"}:
+        query = db.query(Student)
+    elif normalized_target == "sellers":
+        listed_sellers = db.query(Product.seller).filter(
+            Product.seller.isnot(None),
+            Product.status.in_(["Approved", "Sold", "Active"]),
+        ).distinct()
+        query = db.query(Student).filter(
+            (Student.is_verified.is_(True)) |
+            Student.student_id.in_(listed_sellers) |
+            Student.name.in_(listed_sellers)
+        )
+    elif normalized_target == "buyers":
+        placed_order_students = db.query(Order.student_id).filter(
+            Order.student_id.isnot(None)
+        ).distinct()
+        query = db.query(Student).filter(
+            (Student.status == "Active") | Student.student_id.in_(placed_order_students)
+        )
+    else:
+        query = db.query(Student).filter(Student.department == target)
+
     students = query.all()
     for s in students:
         db.add(Notification(
             student_id=s.student_id,
-            title=data.title,
+            title=data.title.strip(),
             message=data.message,
-            type="announcement",
+            target=target,
+            type=f"broadcast_{target}",
             is_read=False
         ))
     db.commit()
-    return {"message": f"Broadcast delivered to {len(students)} students", "delivered_count": len(students)}
+    return {
+        "message": f"Broadcast delivered to {len(students)} students",
+        "delivered_count": len(students),
+        "target": target,
+    }
+
+
+@app.get("/api/admin/notifications/broadcasts")
+def get_broadcast_history(db: Session = Depends(get_db)):
+    broadcasts = (
+        db.query(Notification)
+        .filter(
+            or_(
+                Notification.type == "broadcast",
+                Notification.type.startswith("broadcast_", autoescape=True),
+            )
+        )
+        .order_by(Notification.created_at.desc(), Notification.id.desc())
+        .all()
+    )
+    campaigns = {}
+    for notification in broadcasts:
+        notification_type = notification.type or ""
+        decoded_target = (
+            notification_type.replace("broadcast_", "", 1)
+            if notification_type.startswith("broadcast_")
+            else notification.target or ""
+        )
+        normalized_decoded_target = decoded_target.strip().lower()
+        campaign_title = notification.title or "Untitled Broadcast"
+        if normalized_decoded_target in {"", "broadcast"}:
+            title_lower = campaign_title.lower()
+            if "information technology" in title_lower or re.search(r"\bit\b", title_lower):
+                campaign_target = "Department of Information Technology (IT)"
+            elif "buyers" in title_lower:
+                campaign_target = "Buyers"
+            else:
+                campaign_target = "Everyone"
+        else:
+            campaign_target = decoded_target.strip()
+        campaign_key = (notification_type, campaign_title, notification.message)
+        campaign = campaigns.setdefault(campaign_key, {
+            "id": notification.id,
+            "title": campaign_key[1],
+            "message": notification.message,
+            "delivered": 0,
+            "read": 0,
+            "unread": 0,
+            "date": notification.created_at.isoformat() if notification.created_at else None,
+            "target": campaign_target,
+        })
+        campaign["delivered"] += 1
+        if notification.is_read:
+            campaign["read"] += 1
+        else:
+            campaign["unread"] += 1
+
+    return list(campaigns.values())
 
 
 # 21. Create Main Category (POST /api/admin/categories)
