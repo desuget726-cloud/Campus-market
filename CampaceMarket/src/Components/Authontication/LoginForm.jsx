@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import ForgotPasswordModal from './ForgotPasswordModal';
+import AuthInfoModal from './AuthInfoModal';
+import logo1 from '../../assets/logo1.jpg';
+import { useLanguage } from '../../context/LanguageContext';
 
 function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
+  const { t } = useLanguage();
   const [formData, setFormData] = useState({ studentId: '', password: '' });
   const [error, setError] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
@@ -10,6 +14,9 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
   const [requiresAdminOtp, setRequiresAdminOtp] = useState(false);
   const [adminOtp, setAdminOtp] = useState('');
   const [adminOtpEmail, setAdminOtpEmail] = useState('');
+  const [showTerms, setShowTerms] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -22,7 +29,7 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
     const password = formData.password.trim();
 
     if (!studentId || !password) {
-      return 'Please fill in both ID and password.';
+      return t('auth.fillBoth');
     }
 
     return '';
@@ -55,10 +62,10 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
       if (!response.ok) {
         const detail = data?.detail;
         const message = Array.isArray(detail)
-          ? detail[0]?.msg || 'Validation error'
+          ? detail[0]?.msg || t('auth.loginFailed')
           : typeof detail === 'string'
             ? detail
-            : 'Login failed.';
+            : t('auth.loginFailed');
 
         setError(message);
         setIsSuccess(false);
@@ -75,8 +82,8 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
       onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
       setIsSuccess(true);
       setError('');
-    } catch (err) {
-      setError('Could not connect to server.');
+    } catch {
+      setError(t('auth.couldNotConnect'));
       setIsSuccess(false);
     }
   };
@@ -84,7 +91,7 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
   const handleAdminOtpSubmit = async (event) => {
     event.preventDefault();
     if (!/^\d{6}$/.test(adminOtp)) {
-      setError('Enter the 6-digit administrator verification code.');
+      setError(t('auth.enterCode'));
       return;
     }
 
@@ -95,124 +102,172 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
         body: JSON.stringify({ email: adminOtpEmail, otp_code: adminOtp }),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || 'Invalid verification code.');
+      if (!response.ok) throw new Error(data.detail || t('auth.invalidCode'));
       onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
       setIsSuccess(true);
     } catch (err) {
-      setError(err.message || 'Could not verify administrator login.');
+      setError(err.message || t('auth.couldNotVerify'));
     }
   };
 
 
   return (
     <>
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
-        <div className="w-full max-w-md rounded-[28px] border border-slate-200/60 bg-white p-8 shadow-sm animate-fade-in">
-          <div className="mb-6 text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-600 text-xl font-semibold text-white">
-              C
-            </div>
-            <h2 className="text-2xl font-semibold text-slate-900">Welcome Back</h2>
-            <p className="mt-2 text-sm text-slate-500">Sign in to your Campus Marketplace account.</p>
+      <div className="grid min-h-screen grid-cols-1 overflow-hidden bg-white md:grid-cols-2">
+        <section className="relative hidden items-center justify-center overflow-hidden bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-950 px-8 py-16 text-white md:flex">
+          <div className="relative z-10 max-w-lg text-center">
+            <img src={logo1} alt="Campus Portal logo" className="mx-auto mb-8 h-28 w-28 rounded-3xl object-cover shadow-2xl ring-4 ring-white/20" />
+            <h1 className="text-4xl font-black tracking-tight lg:text-5xl">{t('auth.campusPortal')}</h1>
+            <p className="mx-auto mt-5 max-w-md text-base leading-7 text-blue-100 lg:text-lg">
+              {t('auth.secureLoginDescription')}
+            </p>
+            <svg className="mx-auto mt-12 h-52 w-full max-w-sm text-blue-100/90" viewBox="0 0 420 230" fill="none" aria-label="Students exchanging items through a campus marketplace" role="img">
+              <rect x="70" y="32" width="280" height="166" rx="18" fill="white" fillOpacity=".12" stroke="currentColor" strokeWidth="3" />
+              <rect x="98" y="62" width="224" height="102" rx="10" fill="#361754" stroke="currentColor" strokeWidth="3" />
+              <path d="M126 96h78M126 116h126M126 136h52" stroke="currentColor" strokeWidth="8" strokeLinecap="round" />
+              <circle cx="210" cy="184" r="8" fill="currentColor" />
+              <path d="M55 183c22-18 42-18 62 0M303 183c22-18 42-18 62 0" stroke="currentColor" strokeWidth="8" strokeLinecap="round" />
+              <path d="M44 190h84M292 190h84" stroke="currentColor" strokeWidth="5" strokeLinecap="round" />
+              <path d="M183 25c10-13 25-13 35 0M218 25c10-13 25-13 35 0" stroke="#93C5FD" strokeWidth="4" strokeLinecap="round" />
+            </svg>
           </div>
+          <div className="absolute -bottom-24 -left-16 h-64 w-64 rounded-full border border-white/10" />
+          <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full border border-white/10" />
+        </section>
 
-          {error && (
-            <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-              {error}
+        <section className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-10 sm:px-8">
+          <div className="w-full max-w-md rounded-[28px] border border-slate-200/60 bg-white p-8 shadow-sm animate-fade-in">
+            <div className="mb-6 flex flex-col items-center text-center md:hidden">
+              <img src={logo1} alt="Campus Portal logo" className="h-16 w-16 rounded-2xl object-cover shadow-md ring-2 ring-blue-100" />
+              <p className="mt-3 text-lg font-bold text-blue-800">{t('auth.campusPortal')}</p>
             </div>
-          )}
-
-          {isSuccess && (
-            <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-              <p className="font-semibold">Login Successful!</p>
-              <p className="mt-1">
-                Student ID: <span className="font-medium">{formData.studentId.trim()}</span>
-              </p>
-              <p>
-                Password: <span className="font-medium">{formData.password.trim()}</span>
-              </p>
+            <div className="mb-6 text-center">
+              <h2 className="text-2xl font-semibold text-slate-900">{t('auth.welcomeBack')}</h2>
+              <p className="mt-2 text-sm text-slate-500">{t('auth.loginDescription')}</p>
             </div>
-          )}
 
-          {requiresAdminOtp ? (
-            <form onSubmit={handleAdminOtpSubmit} className="space-y-4">
-              <p className="text-sm text-slate-500">Enter the 6-digit code sent to the administrator email.</p>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                value={adminOtp}
-                onChange={(e) => setAdminOtp(e.target.value.replace(/\D/g, ''))}
-                placeholder="000000"
-                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none"
-              />
-              <button type="submit" className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white">Verify Code</button>
-            </form>
-          ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">
-                  Student ID
-                </label>
+            {error && (
+              <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+                {error}
+              </div>
+            )}
+
+            {isSuccess && (
+              <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                <p className="font-semibold">{t('auth.loginSuccessful')}</p>
+                <p className="mt-1">
+                  {t('auth.studentId')}: <span className="font-medium">{formData.studentId.trim()}</span>
+                </p>
+                <p>
+                  {t('auth.password')}: <span className="font-medium">{formData.password.trim()}</span>
+                </p>
+              </div>
+            )}
+
+            {requiresAdminOtp ? (
+              <form onSubmit={handleAdminOtpSubmit} className="space-y-4">
+                <p className="text-sm text-slate-500">{t('auth.otpDescription')}</p>
                 <input
-                  id="studentId"
-                  name="studentId"
                   type="text"
-                  value={formData.studentId}
-                  onChange={handleChange}
-                  placeholder="Enter your student ID"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={adminOtp}
+                  onChange={(e) => setAdminOtp(e.target.value.replace(/\D/g, ''))}
+                  placeholder="000000"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none"
                 />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
-                  Password
-                </label>
-                <div className="relative">
+                <button type="submit" className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white">{t('auth.verifyCode')}</button>
+              </form>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">
+                    {t('auth.studentId')}
+                  </label>
                   <input
-                    id="password"
-                    name="password"
-                    type={showPasswordLogin ? 'text' : 'password'}
-                    value={formData.password}
+                    id="studentId"
+                    name="studentId"
+                    type="text"
+                    value={formData.studentId}
                     onChange={handleChange}
-                    placeholder="Enter your password"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 pr-20 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                    placeholder={t('auth.enterStudentId')}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowPasswordLogin((s) => !s)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-600"
-                  >
-                    {showPasswordLogin ? 'Hide' : 'Show'}
-                  </button>
                 </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
+                    {t('auth.password')}
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="password"
+                      name="password"
+                      type={showPasswordLogin ? 'text' : 'password'}
+                      value={formData.password}
+                      onChange={handleChange}
+                      placeholder={t('auth.enterPassword')}
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 pr-20 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPasswordLogin((s) => !s)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-600"
+                    >
+                      {showPasswordLogin ? t('auth.hide') : t('auth.show')}
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+                >
+                  {t('auth.login')}
+                </button>
+              </form>
+            )}
+
+            <div className="mt-6 space-y-2 border-t border-slate-100 pt-5 text-center text-[11px] font-medium text-slate-400">
+              <p>🔒 {t('auth.securedByChapa')}</p>
+              <p className="text-emerald-600">✓ {t('auth.verifiedStudents')}</p>
+            </div>
+
+            <div className="mt-6 flex items-center justify-between text-sm text-slate-500">
+              <button type="button" onClick={onCancel} className="font-medium text-slate-600 hover:text-emerald-700">
+                {t('auth.cancel')}
+              </button>
+              <div className="flex items-center gap-4">
+                <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="font-medium text-emerald-600 hover:text-emerald-700">
+                  {t('auth.forgotPassword')}
+                </button>
+                <button type="button" onClick={onToggleRegister} className="font-medium text-emerald-600 hover:text-emerald-700">
+                  {t('auth.createAccountLink')}
+                </button>
               </div>
-
-              <button
-                type="submit"
-                className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
-              >
-                Login
-              </button>
-            </form>
-          )}
-
-          <div className="mt-6 flex items-center justify-between text-sm text-slate-500">
-            <button type="button" onClick={onCancel} className="font-medium text-slate-600 hover:text-emerald-700">
-              Cancel
-            </button>
-            <div className="flex items-center gap-4">
-              <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="font-medium text-emerald-600 hover:text-emerald-700">
-                Forgot password?
-              </button>
-              <button type="button" onClick={onToggleRegister} className="font-medium text-emerald-600 hover:text-emerald-700">
-                Create account
-              </button>
             </div>
           </div>
-        </div>
+          <footer className="mt-auto pt-8 text-center text-xs text-slate-400">
+            <button type="button" onClick={() => setShowTerms(true)} className="transition hover:text-slate-600">{t('auth.terms')}</button>
+            <span className="mx-2">•</span>
+            <button type="button" onClick={() => setShowPrivacy(true)} className="transition hover:text-slate-600">{t('auth.privacy')}</button>
+            <span className="mx-2">•</span>
+            <button type="button" onClick={() => setShowHelp(true)} className="transition hover:text-slate-600">{t('auth.needHelp')}</button>
+          </footer>
+        </section>
       </div>
+
+      {(showTerms || showPrivacy || showHelp) && (
+        <AuthInfoModal
+          type={showTerms ? 'terms' : showPrivacy ? 'privacy' : 'help'}
+          defaultStudentId={formData.studentId}
+          onClose={() => {
+            setShowTerms(false);
+            setShowPrivacy(false);
+            setShowHelp(false);
+          }}
+        />
+      )}
 
       {showForgotPasswordModal && (
         <ForgotPasswordModal onClose={() => setShowForgotPasswordModal(false)} />

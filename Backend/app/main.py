@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
 from typing import Optional, List, Dict, Tuple, Any
+from dataclasses import dataclass
 import shutil
 import os
 import logging
@@ -31,6 +32,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
 import  bcrypt
+from deep_translator import GoogleTranslator
 from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -39,7 +41,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
-    PasswordReset, SystemSetting, Review
+    PasswordReset, SystemSetting, Review, LoginAttempt
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 
@@ -614,8 +616,10 @@ class UserStatusUpdate(BaseModel):
 
 
 class ReportCreate(BaseModel):
-    student_id: str
+    student_id: Optional[str] = None
     student_name: str
+    email: str
+    category: str
     issue: str
 
 
@@ -692,6 +696,11 @@ class CheckoutRequest(BaseModel):
 
 class AIChatRequest(BaseModel):
     message: str
+
+
+class AITranslateRequest(BaseModel):
+    text: str
+    target_language: str
 
 
 class AIAdvisorRequest(BaseModel):
@@ -814,11 +823,42 @@ def _get_setting_value(db: Session, block: str, key: str, default=None):
     return default
 
 
-def _audit_logging_enabled(db: Session) -> bool:
-    return _setting_bool(
-        _get_setting_value(db, "security", "auditLogging", DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"]),
-        DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
+@dataclass(frozen=True)
+class SecuritySettings:
+    require_student_verification: bool
+    admin_2fa: bool
+    max_login_attempts: int
+    session_timeout: int
+    min_password_length: int
+    audit_logging: bool
+
+
+def get_security_settings(db: Session) -> SecuritySettings:
+    """Read and normalize the six security controls from SystemSetting."""
+    defaults = DEFAULT_SETTINGS_BLOCKS["security"]
+    values = {
+        key: _get_setting_value(db, "security", key, default)
+        for key, default in defaults.items()
+    }
+
+    def positive_int(key: str) -> int:
+        try:
+            return max(1, int(values[key]))
+        except (TypeError, ValueError):
+            return defaults[key]
+
+    return SecuritySettings(
+        require_student_verification=_setting_bool(values["requireStudentVerification"], defaults["requireStudentVerification"]),
+        admin_2fa=_setting_bool(values["admin2FA"], defaults["admin2FA"]),
+        max_login_attempts=positive_int("maxLoginAttempts"),
+        session_timeout=positive_int("sessionTimeout"),
+        min_password_length=positive_int("minPasswordLength"),
+        audit_logging=_setting_bool(values["auditLogging"], defaults["auditLogging"]),
     )
+
+
+def _audit_logging_enabled(db: Session) -> bool:
+    return get_security_settings(db).audit_logging
 
 
 def _add_audit_log(db: Session, **values) -> None:
@@ -827,19 +867,39 @@ def _add_audit_log(db: Session, **values) -> None:
 
 
 def _session_timeout_minutes(db: Session) -> int:
-    value = _get_setting_value(db, "security", "sessionTimeout", DEFAULT_SETTINGS_BLOCKS["security"]["sessionTimeout"])
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return DEFAULT_SETTINGS_BLOCKS["security"]["sessionTimeout"]
+    return get_security_settings(db).session_timeout
 
 
 def _session_password_min_length(db: Session) -> int:
-    value = _get_setting_value(db, "security", "minPasswordLength", DEFAULT_SETTINGS_BLOCKS["security"]["minPasswordLength"])
-    try:
-        return max(1, int(value))
-    except (TypeError, ValueError):
-        return DEFAULT_SETTINGS_BLOCKS["security"]["minPasswordLength"]
+    return get_security_settings(db).min_password_length
+
+
+def _login_identifier(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def _check_login_lock(db: Session, identifier: str, settings: SecuritySettings) -> None:
+    attempt = db.query(LoginAttempt).filter(LoginAttempt.identifier == identifier).first()
+    if attempt and attempt.locked_until and attempt.locked_until > datetime.utcnow():
+        raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later or wait for 15 sec.")
+
+
+def _record_failed_login(db: Session, identifier: str, settings: SecuritySettings) -> None:
+    attempt = db.query(LoginAttempt).filter(LoginAttempt.identifier == identifier).first()
+    if not attempt:
+        attempt = LoginAttempt(identifier=identifier, failed_attempts=0)
+        db.add(attempt)
+    attempt.failed_attempts += 1
+    if attempt.failed_attempts >= settings.max_login_attempts:
+        attempt.locked_until = datetime.utcnow() + timedelta(minutes=settings.session_timeout)
+    db.commit()
+
+
+def _reset_login_attempts(db: Session, identifier: str) -> None:
+    attempt = db.query(LoginAttempt).filter(LoginAttempt.identifier == identifier).first()
+    if attempt:
+        db.delete(attempt)
+        db.commit()
 
 
 def _create_session_token(subject: str, role: str, timeout_minutes: int, secret: str) -> str:
@@ -941,6 +1001,32 @@ def ensure_database_compatibility(db: Session) -> None:
         if audit_severity.fetchone() is None:
             db.execute(text("ALTER TABLE audit_logs ADD COLUMN severity VARCHAR(20) NOT NULL DEFAULT 'informational'"))
 
+        report_email = db.execute(text("SHOW COLUMNS FROM reports LIKE 'email'"))
+        if report_email.fetchone() is None:
+            db.execute(text("ALTER TABLE reports ADD COLUMN email VARCHAR(100) NULL"))
+            legacy_report_email = db.execute(text("SHOW COLUMNS FROM reports LIKE 'contact_email'"))
+            if legacy_report_email.fetchone() is not None:
+                db.execute(text("UPDATE reports SET email = contact_email WHERE email IS NULL"))
+
+        report_category = db.execute(text("SHOW COLUMNS FROM reports LIKE 'category'"))
+        if report_category.fetchone() is None:
+            db.execute(text("ALTER TABLE reports ADD COLUMN category VARCHAR(100) NULL"))
+
+        report_columns = db.execute(text("SHOW COLUMNS FROM reports LIKE 'student_id'"))
+        report_student_column = report_columns.fetchone()
+        if report_student_column is not None and str(report_student_column[2]).upper() == "NO":
+            db.execute(text("ALTER TABLE reports MODIFY COLUMN student_id VARCHAR(50) NULL"))
+
+        report_foreign_keys = inspect(db.bind).get_foreign_keys("reports")
+        for foreign_key in report_foreign_keys:
+            if foreign_key.get("constrained_columns") == ["student_id"] and foreign_key.get("name"):
+                constraint_name = foreign_key["name"].replace("`", "``")
+                db.execute(text(f"ALTER TABLE reports DROP FOREIGN KEY `{constraint_name}`"))
+        db.execute(text(
+            "ALTER TABLE reports ADD CONSTRAINT `fk_reports_student_id` "
+            "FOREIGN KEY (student_id) REFERENCES students (student_id) ON DELETE CASCADE"
+        ))
+
         db.commit()
     except Exception:
         db.rollback()
@@ -968,7 +1054,8 @@ def on_startup():
 # 1. የተማሪዎች ምዝገባ ኤፒአይ (POST /api/register)
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register_student(student_data: StudentRegister, db: Session = Depends(get_db)):
-    minimum_password_length = _session_password_min_length(db)
+    security = get_security_settings(db)
+    minimum_password_length = security.min_password_length
     if len(student_data.password) < minimum_password_length:
         raise HTTPException(status_code=400, detail=f"Password must be at least {minimum_password_length} characters.")
 
@@ -990,28 +1077,38 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
         password=hashed_password,
         college=student_data.college,
         department=student_data.department,
+        status="Pending Verification" if security.require_student_verification else "Active",
     )
     db.add(db_student)
     db.commit()
     db.refresh(db_student)
 
-    return {"message": "Success", "user": {"name": db_student.name, "studentId": db_student.student_id}}
+    return {
+        "message": "Registration submitted for verification." if security.require_student_verification else "Success",
+        "user": {"name": db_student.name, "studentId": db_student.student_id},
+        "requires_verification": security.require_student_verification,
+    }
 
 
 # 2. የጋራ የሎጊን ኤፒአይ ኤንድፖይንት (POST /api/login)
 @app.post("/api/login")
 def login_user(data: LoginRequest, db: Session = Depends(get_db)):
+    security = get_security_settings(db)
+    identifier = _login_identifier(data.id_or_email)
+    _check_login_lock(db, identifier, security)
+
     # 2.1 መጀመሪያ በአስተዳዳሪ ሰንጠረዥ ይፈትሻል
     admin = db.query(Admin).filter(
         (Admin.username == data.id_or_email) | (Admin.email == data.id_or_email)
     ).first()
     
     if admin and verify_password(data.password, admin.password_hash):
+        _reset_login_attempts(db, identifier)
         avatar_filename = f"{admin.username}.jpg"
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
-        if _setting_bool(_get_setting_value(db, "security", "admin2FA", True), True):
+        if security.admin_2fa:
             otp = f"{random.randint(100000, 999999)}"
             db.add(PasswordReset(
                 email=admin.email,
@@ -1031,7 +1128,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
                 "dev_mode": not email_sent,
             }
         session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
-        token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), session_secret)
+        token = _create_session_token(admin.username, "admin", security.session_timeout, session_secret)
         return {"role": "admin", "access_token": token, "user": {"name": admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
 
     if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
@@ -1051,14 +1148,19 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     ).first()
     
     if student and verify_password(data.password, student.password):
+        if security.require_student_verification and not student.is_verified:
+            _record_failed_login(db, identifier, security)
+            raise HTTPException(status_code=403, detail="Student verification is required before login.")
+        _reset_login_attempts(db, identifier)
         avatar_filename = f"{student.student_id}.jpg"
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
         session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
-        token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), session_secret)
+        token = _create_session_token(student.student_id, "student", security.session_timeout, session_secret)
         return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified)}}
 
+    _record_failed_login(db, identifier, security)
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
 
@@ -1971,10 +2073,7 @@ def create_product(
     ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
     """
     try:
-        require_student_verification = _setting_bool(
-            _get_setting_value(db, "security", "requireStudentVerification", True),
-            True,
-        )
+        require_student_verification = get_security_settings(db).require_student_verification
         title_value = str(title or "").strip()
         price_value = str(price or "").strip()
         if not title_value:
@@ -2319,6 +2418,29 @@ def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
 # ==========================================
 # --- AI Chat & Advisor Functions ---
 # ==========================================
+
+@app.post("/api/ai/translate")
+def ai_translate(request: AITranslateRequest):
+    """Translate user-facing database text between English and Amharic."""
+    source_text = request.text.strip()
+    target_language = request.target_language.strip().lower()
+
+    if not source_text:
+        raise HTTPException(status_code=400, detail="Text is required.")
+    if target_language not in {"am", "en"}:
+        raise HTTPException(status_code=400, detail="Target language must be 'am' or 'en'.")
+
+    try:
+        translated_text = GoogleTranslator(source="auto", target=target_language).translate(source_text)
+    except Exception as error:
+        logging.getLogger("ai_translation").exception("Translation provider failed: %s", error)
+        raise HTTPException(status_code=502, detail="Translation service is temporarily unavailable.") from error
+
+    return {
+        "source_text": source_text,
+        "translated_text": translated_text,
+        "target_language": target_language,
+    }
 
 # --- 5. የ Jiji-style የዳታቤዝ AI አማካሪ ቻት ኤንድፖይንት (POST /api/ai/chat) ---
 @app.post("/api/ai/chat")
@@ -2760,21 +2882,41 @@ How can I help you today? 🚀"""
 # 5. ተማሪዎች አዲስ ቅሬታ ወይም የድጋፍ ፎርም የሚልኩበት ኤፒአይ (POST /api/student/report)
 @app.post("/api/student/report", status_code=status.HTTP_201_CREATED)
 def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
-    validated_student_id = _validate_student_id(db, report_data.student_id)
-    student = db.query(Student).filter(Student.student_id == validated_student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student record not found in database.")
+    try:
+        provided_student_id = report_data.student_id.strip() if report_data.student_id else None
+        student = None
+        if provided_student_id:
+            student = db.query(Student).filter(Student.student_id == provided_student_id).first()
 
-    db_report = Report(
-        student_id=report_data.student_id,
-        student_name=report_data.student_name,
-        issue=report_data.issue,
-        status="Open"
-    )
-    db.add(db_report)
-    db.commit()
-    db.refresh(db_report)
-    return {"message": "Success", "report": db_report}
+        db_report = Report(
+            student_id=student.student_id if student else None,
+            student_name=report_data.student_name.strip(),
+            email=report_data.email.strip() if report_data.email else None,
+            category=report_data.category.strip() if report_data.category else None,
+            issue=report_data.issue.strip(),
+            status="Open"
+        )
+        db.add(db_report)
+        db.commit()
+        db.refresh(db_report)
+        return {
+            "message": "Support ticket created successfully.",
+            "ticket_reference": f"RPT-{db_report.id:04d}",
+            "report": {
+                "id": db_report.id,
+                "student_id": db_report.student_id,
+                "student_name": db_report.student_name,
+                "email": db_report.email,
+                "category": db_report.category,
+                "issue": db_report.issue,
+                "status": db_report.status,
+                "created_at": db_report.created_at.isoformat() if db_report.created_at else None,
+            },
+        }
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to create support report: %s", error)
+        raise HTTPException(status_code=500, detail="Could not create support ticket.") from error
 
 
 @app.get("/api/student/highlights")
@@ -3823,10 +3965,7 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == data.student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
-    require_student_verification = _setting_bool(
-        _get_setting_value(db, "security", "requireStudentVerification", True),
-        True,
-    )
+    require_student_verification = get_security_settings(db).require_student_verification
     if require_student_verification and not student.is_verified:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -5469,6 +5608,8 @@ def get_admin_reports(db: Session = Depends(get_db)):
             "id": r.id,
             "report_id": f"RPT-{r.id:04d}",
             "issue": r.issue,
+            "category": r.category,
+            "email": r.email,
             "student": r.student_name,
             "student_id": r.student_id,
             "status": r.status,
@@ -5490,12 +5631,13 @@ def resolve_report_impl(id: int, data: ReportUpdate, db: Session = Depends(get_d
 
     if data.status.lower() in {"closed", "resolved"}:
         issue_snippet = (report.issue or "")[:30]
-        db_notification = Notification(
-            student_id=report.student_id,
-            title="Support Case Update",
-            message=f"Your reported issue regarding '{issue_snippet}...' has been marked as {data.status} by Admin."
-        )
-        db.add(db_notification)
+        if report.student_id:
+            db_notification = Notification(
+                student_id=report.student_id,
+                title="Support Case Update",
+                message=f"Your reported issue regarding '{issue_snippet}...' has been marked as {data.status} by Admin."
+            )
+            db.add(db_notification)
         db.commit()
 
     return {"message": "Dispute status updated successfully", "status": report.status}

@@ -10,11 +10,13 @@ import Footer from './Components/Layout/Footer';
 import AdminDashboard from './Components/Dashboard/AdminDashboard';
 import StudentDashboard from './Components/Dashboard/StudentDashboard';
 import SuccessModal from './Components/Authontication/SuccessModal';
+import AuthInfoModal from './Components/Authontication/AuthInfoModal';
+import { LanguageProvider } from './context/LanguageContext';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
 
-function App() {
+function AppContent() {
   const [currentView, setCurrentView] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     try {
@@ -63,6 +65,8 @@ function App() {
   const [pendingUsername, setPendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
+  const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
+  const [showFooterTerms, setShowFooterTerms] = useState(false);
 
   const activeRole = userRole || user?.role || null;
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
@@ -217,6 +221,11 @@ function App() {
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
 
   const handleNavigate = (view, params = {}) => {
+    if (view === 'signup') {
+      setCurrentView('register');
+      return;
+    }
+
     if (view === 'product-details' || view === 'ProductDetails') {
       setPendingProductId(params.productId ?? params.product_id ?? null);
       setCurrentView('home');
@@ -387,8 +396,31 @@ function App() {
         )}
       </main>
 
-      <Footer onNavigate={setCurrentView} />
+      <Footer
+        onNavigate={handleNavigate}
+        onOpenPrivacy={() => setShowFooterPrivacy(true)}
+        onOpenTerms={() => setShowFooterTerms(true)}
+      />
+
+      {(showFooterPrivacy || showFooterTerms) && (
+        <AuthInfoModal
+          type={showFooterPrivacy ? 'privacy' : 'terms'}
+          defaultStudentId={user?.studentId || ''}
+          onClose={() => {
+            setShowFooterPrivacy(false);
+            setShowFooterTerms(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function App() {
+  return (
+    <LanguageProvider>
+      <AppContent />
+    </LanguageProvider>
   );
 }
 

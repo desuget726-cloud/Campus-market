@@ -88,6 +88,50 @@ const parseAuditDescription = (description = '') => {
   return { field: match[1], previousValue: match[2], newValue: match[3] };
 };
 
+const parseAuditJson = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'object') return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const formatAuditValue = (value) => {
+  if (value === null || value === undefined || value === '') return 'empty';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+};
+
+const getAuditChanges = (log) => {
+  const changes = parseAuditJson(log?.changes);
+  if (Array.isArray(changes)) {
+    return changes.map((change, index) => {
+      if (typeof change === 'string') {
+        return { field: `Change ${index + 1}`, previousValue: 'Unknown', newValue: change };
+      }
+
+      return {
+        field: change?.field ?? change?.key ?? change?.name ?? `Change ${index + 1}`,
+        previousValue: change?.old_value ?? change?.oldValue ?? change?.from ?? change?.previous ?? 'Unknown',
+        newValue: change?.new_value ?? change?.newValue ?? change?.to ?? change?.current ?? 'Unknown',
+      };
+    });
+  }
+
+  const oldValues = parseAuditJson(log?.old_values);
+  const newValues = parseAuditJson(log?.new_values);
+  if (!oldValues && !newValues) return [];
+
+  return Array.from(new Set([...Object.keys(oldValues || {}), ...Object.keys(newValues || {})])).map((field) => ({
+    field,
+    previousValue: oldValues?.[field],
+    newValue: newValues?.[field],
+  }));
+};
+
 const exportCSVFile = (fileName, columns, rows) => {
   const sanitize = (value) => String(value || '').replace(/,/g, ';').replace(/"/g, '""');
   const escape = (value) => `"${sanitize(value)}"`;
@@ -525,6 +569,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             action: log.action ?? 'System Event',
             actionType: log.actionType ?? 'Logins',
             description: log.description ?? 'No description available.',
+            old_values: log.old_values,
+            new_values: log.new_values,
+            changes: log.changes,
             performed_by: log.performed_by ?? 'system.admin',
             entity_type: log.entity_type ?? 'Unknown',
             entity_id: log.entity_id ?? 'N/A',
@@ -5450,6 +5497,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         var totalAuditPages = Math.max(1, Math.ceil(filteredAuditLogs.length / LOGS_PER_PAGE));
         var displayedAuditLogs = filteredAuditLogs.slice((auditPage - 1) * LOGS_PER_PAGE, auditPage * LOGS_PER_PAGE);
         var selectedAuditContext = selectedLogDetails ? parseAuditDescription(selectedLogDetails.description) : null;
+        var selectedAuditChanges = selectedLogDetails ? getAuditChanges(selectedLogDetails) : [];
         const handleExportAuditLogsPDF = () => exportPDFFile(
           `audit-logs-${new Date().toISOString().slice(0, 10)}.pdf`,
           'Security & Action Audit Report',
@@ -5681,6 +5729,43 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">New Value</p>
                           <p className="mt-1 break-words text-sm font-semibold text-emerald-700">{selectedAuditContext.newValue}</p>
                         </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedAuditChanges.length > 0 && (
+                    <div className="mt-5 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50">
+                      <div className="border-b border-amber-200 px-4 py-3">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Detected Changes</p>
+                        <p className="mt-1 text-xs text-amber-800">Review the values changed by this event.</p>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[520px] text-left text-sm">
+                          <thead className="bg-amber-100/70 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-800">
+                            <tr>
+                              <th className="px-4 py-3">Field</th>
+                              <th className="px-4 py-3">Previous</th>
+                              <th className="px-4 py-3">New</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-amber-200">
+                            {selectedAuditChanges.map((change, index) => {
+                              const previousValue = formatAuditValue(change.previousValue);
+                              const newValue = formatAuditValue(change.newValue);
+                              const isRemoved = newValue === 'empty' || newValue === 'Unknown';
+
+                              return (
+                                <tr key={`${change.field}-${index}`} className={isRemoved ? 'bg-rose-50' : 'bg-yellow-50/60'}>
+                                  <td className="px-4 py-3 align-top font-bold text-slate-900">{change.field}</td>
+                                  <td className="max-w-[180px] break-words px-4 py-3 align-top font-medium text-slate-600">{previousValue}</td>
+                                  <td className={`max-w-[180px] break-words px-4 py-3 align-top font-bold ${isRemoved ? 'text-rose-700' : 'text-amber-800'}`}>
+                                    {change.field} changed from {previousValue} to {newValue}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
                   )}

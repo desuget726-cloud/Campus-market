@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import logo1 from '../../assets/logo1.jpg';
+import { useLanguage } from '../../context/LanguageContext';
 
 function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-  const isAuthenticatedDashboardView = Boolean(user) && (userRole === 'admin' || userRole === 'student' || user?.role === 'admin' || user?.role === 'student');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { t, language, setLanguage } = useLanguage();
   const effectiveRole = userRole || user?.role || 'student';
   const isAdmin = effectiveRole === 'admin';
   const displayName = isAdmin ? (user?.username || user?.name || 'mau9999') : (user?.name || user?.studentId || 'Student');
@@ -23,6 +25,20 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
             <span className="text-slate-300">Campus</span>
           </div>
+          <button
+            type="button"
+            aria-label="Open mobile navigation"
+            aria-expanded={isMobileMenuOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              setIsMobileMenuOpen(true);
+            }}
+            className="block rounded-lg p-2 text-white transition hover:bg-white/10 md:hidden"
+          >
+            <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
         </div>
 
         {/* Navigation Links */}
@@ -45,6 +61,11 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Right side: Login/Register OR Profile Dropdown */}
         <div className="flex items-center gap-4 relative">
+          <div className="hidden items-center gap-1 text-sm font-semibold md:flex" aria-label={t('navbar.language')}>
+            <button type="button" onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white' : 'text-blue-200'}>{t('navbar.english')}</button>
+            <span className="text-blue-200" aria-hidden="true">|</span>
+            <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-blue-200'}>{t('navbar.amharic')}</button>
+          </div>
           {user ? (
             // Logged In Dropdown View
             <div className="relative flex items-center gap-4">
@@ -158,15 +179,80 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             <div className="flex items-center gap-2">
               <button
                 onClick={() => onNavigate('login')}
-                className="rounded-full border border-slate-700 bg-white px-5 py-2.5 text-sm font-semibold text-slate-900 hover:bg-slate-100 transition cursor-pointer"
+                className="hidden cursor-pointer font-semibold text-white hover:text-blue-200 md:flex"
               >
-                Login
+                {t('navbar.login')}
+              </button>
+              <button
+                onClick={() => onNavigate('register')}
+                className="hidden cursor-pointer font-semibold text-white hover:text-blue-200 md:flex"
+              >
+                {t('navbar.signup')}
               </button>
             </div>
           )}
         </div>
 
       </div>
+
+      {isMobileMenuOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Close mobile navigation"
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="fixed inset-0 z-40 bg-slate-950/50 md:hidden"
+          />
+          <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 p-6 text-white shadow-2xl animate-slide-in md:hidden" aria-label="Mobile navigation">
+            <div className="flex items-center justify-between border-b border-slate-700 pb-5">
+              <span className="text-lg font-bold">Campus Menu</span>
+              <button type="button" onClick={() => setIsMobileMenuOpen(false)} aria-label="Close menu" className="rounded-lg px-2 py-1 text-2xl leading-none text-slate-300 transition hover:bg-slate-800 hover:text-white">✕</button>
+            </div>
+            <nav className="mt-8 flex flex-col gap-2">
+              {[
+                ['Home', 'home'],
+                ['About', 'about'],
+                ['Services', 'services'],
+                ['Contact', 'contact'],
+              ].map(([label, view]) => (
+                <button
+                  key={view}
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    onNavigate(view);
+                  }}
+                  className="rounded-xl px-4 py-3 text-left text-base font-semibold text-slate-200 transition hover:bg-slate-800 hover:text-blue-400"
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+            <div className="border-t border-slate-800 pt-6 mt-auto flex flex-col gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  onNavigate('login');
+                  setIsMobileMenuOpen(false);
+                }}
+                className="text-left text-base font-semibold text-white hover:text-blue-400 transition-colors py-2 block w-full"
+              >
+                {t('navbar.login')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onNavigate('register');
+                  setIsMobileMenuOpen(false);
+                }}
+                className="text-left text-base font-semibold text-white hover:text-blue-400 transition-colors py-2 block w-full"
+              >
+                {t('navbar.signup')}
+              </button>
+            </div>
+          </aside>
+        </>
+      )}
     </header>
   );
 }

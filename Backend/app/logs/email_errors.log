@@ -325,3 +325,90 @@ smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepte
 2026-08-20 01:33:12,734 ERROR OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.
 2026-08-20 01:33:26,694 ERROR OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.
 2026-08-26 06:47:38,592 INFO OTP email skipped because email notifications are disabled.
+2026-08-26 07:16:22,805 ERROR Failed to send raw OTP email to admin@campace.edu: timed out
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 440, in send_otp_email
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+         ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1036, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 263, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 350, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1042, in _get_socket
+    new_socket = super()._get_socket(host, port, timeout)
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 320, in _get_socket
+    return socket.create_connection((host, port), timeout,
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+                                    self.source_address)
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 868, in create_connection
+    raise exceptions[0]
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 853, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out
+2026-08-26 23:52:28,991 ERROR Failed to send raw OTP email to desu5293@campace.edu: timed out
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 440, in send_otp_email
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+         ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1036, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 263, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 350, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1042, in _get_socket
+    new_socket = super()._get_socket(host, port, timeout)
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 320, in _get_socket
+    return socket.create_connection((host, port), timeout,
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+                                    self.source_address)
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 868, in create_connection
+    raise exceptions[0]
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 853, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out
+2026-08-27 00:00:21,872 ERROR Failed to send raw OTP email to desu5293@campace.edu: timed out
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 441, in send_otp_email
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+         ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1036, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 263, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 350, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1042, in _get_socket
+    new_socket = super()._get_socket(host, port, timeout)
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 320, in _get_socket
+    return socket.create_connection((host, port), timeout,
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+                                    self.source_address)
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 868, in create_connection
+    raise exceptions[0]
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 853, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out

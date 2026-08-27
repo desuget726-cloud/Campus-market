@@ -23,7 +23,7 @@ class Student(Base):
     id_card_url = Column(String(500), nullable=True)
 
     # 1. ሬላሽንሺፖቹ በምን አምድ በኩል መገናኘት እንዳለባቸው በ "primaryjoin" በግልጽ አስቀምጠነዋል
-    reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student", cascade="all, delete-orphan")
+    reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student")
     notifications = relationship("Notification", primaryjoin="Student.student_id == Notification.student_id", back_populates="student", cascade="all, delete-orphan")
     messages_sent = relationship("Message", foreign_keys="Message.sender_id", back_populates="sender", cascade="all, delete-orphan")
     messages_received = relationship("Message", foreign_keys="Message.receiver_id", back_populates="receiver", cascade="all, delete-orphan")
@@ -160,6 +160,15 @@ class SystemSetting(Base):
     value = Column(Text, nullable=False)
 
 
+class LoginAttempt(Base):
+    __tablename__ = "login_attempts"
+
+    identifier = Column(String(150), primary_key=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -181,8 +190,10 @@ class Report(Base):
     __tablename__ = "reports"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=True)
     student_name = Column(String(150), nullable=False)
+    email = Column(String(100), nullable=True)
+    category = Column(String(100), nullable=True)
     issue = Column(String(1000), nullable=False)
     status = Column(String(50), nullable=False, default="Open")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

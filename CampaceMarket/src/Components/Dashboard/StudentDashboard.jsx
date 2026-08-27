@@ -206,6 +206,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   // ለድጋፍ ፎም መቆጣጠሪያዎች (Support/Report Form States)
   const [supportIssue, setSupportIssue] = useState('');
+  const [supportCategory, setSupportCategory] = useState('General Inquiry');
   const [supportMsg, setSupportMsg] = useState('');
 
   // የገዢው ዳሽቦርድ መረጃዎችን ከዳታቤዝ ለመጥራት የተዘጋጁ ስቴቶች (Buyer States)
@@ -872,12 +873,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         body: JSON.stringify({
           student_id: user.studentId,
           student_name: user.name,
+          email: user.email || '',
+          category: supportCategory,
           issue: supportIssue
         })
       });
       if (res.ok) {
+        const data = await res.json().catch(() => ({}));
         setSupportIssue('');
-        setSupportMsg('Your support ticket has been submitted to the Admin! 🎉');
+        setSupportCategory('General Inquiry');
+        setSupportMsg(`Your support ticket ${data.ticket_reference || ''} has been submitted to the Admin! 🎉`);
         setTimeout(() => setShowSupportModal(false), 2000);
       } else {
         setSupportMsg('Failed to submit support ticket.');
@@ -2112,6 +2117,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         body: JSON.stringify({
           student_id: user.studentId,
           student_name: user.name,
+          email: user.email || '',
+          category: 'Fraud Report',
           issue: `Report against ${partnerId}: ${reason}`
         })
       });
@@ -2363,6 +2370,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <div>
                     <label className="block text-sm font-semibold text-slate-700">Student ID</label>
                     <input type="text" disabled value={user?.studentId || ''} className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-500" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700">Inquiry Type</label>
+                    <select value={supportCategory} onChange={(e) => setSupportCategory(e.target.value)} className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-sky-500 focus:bg-white focus:outline-none transition">
+                      <option>General Inquiry</option>
+                      <option>Login Issue</option>
+                      <option>Payment Problem</option>
+                      <option>Fraud Report</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-slate-700">Describe your issue or complaint</label>
