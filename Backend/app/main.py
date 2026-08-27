@@ -444,11 +444,35 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
             server.sendmail(SENDER_EMAIL, receiver_email, msg.as_string())
 
         return True
+    except smtplib.SMTPAuthenticationError as e:
+        error_message = f"SMTP authentication error while sending raw OTP email to {receiver_email}: {e}"
+        email_logger.exception(error_message)
+        print(error_message, flush=True)
+        return False
+    except smtplib.SMTPConnectError as e:
+        error_message = f"SMTP connection error to smtp.gmail.com while sending raw OTP email to {receiver_email}: {e}"
+        email_logger.exception(error_message)
+        print(error_message, flush=True)
+        return False
+    except smtplib.SMTPServerDisconnected as e:
+        error_message = f"SMTP server disconnected while sending raw OTP email to {receiver_email}: {e}"
+        email_logger.exception(error_message)
+        print(error_message, flush=True)
+        return False
     except smtplib.SMTPException as e:
-        email_logger.exception(f"SMTP error while sending raw OTP email to {receiver_email}: {e}")
+        error_message = f"SMTP error while sending raw OTP email to {receiver_email}: {e}"
+        email_logger.exception(error_message)
+        print(error_message, flush=True)
+        return False
+    except (TimeoutError, OSError) as e:
+        error_message = f"Network error connecting to smtp.gmail.com while sending raw OTP email to {receiver_email}: {e}"
+        email_logger.exception(error_message)
+        print(error_message, flush=True)
         return False
     except Exception as e:
-        email_logger.exception(f"Failed to send raw OTP email to {receiver_email}: {e}")
+        error_message = f"Failed to send raw OTP email to {receiver_email}: {e}"
+        email_logger.exception(error_message)
+        print(error_message, flush=True)
         return False
 
 
@@ -610,12 +634,43 @@ class VerificationDecisionRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class BulkRejectVerificationRequest(BaseModel):
+    student_ids: List[int]
+    reason: str
+
+
 class UserStatusUpdate(BaseModel):
     status: str
     reason: Optional[str] = None
 
 
+class AdminUserUpdate(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    college: str
+    department: str
+    is_verified: bool
+    status: str
+
+
+class AdminStudentCreate(BaseModel):
+    name: str
+    student_id: str
+    email: str
+    phone: Optional[str] = None
+    college: str
+    department: str
+    password: str
+
+
+class ProductModerationUpdate(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+
 class ReportCreate(BaseModel):
+    product_id: Optional[int] = None
     student_id: Optional[str] = None
     student_name: str
     email: str
@@ -1017,6 +1072,14 @@ def ensure_database_compatibility(db: Session) -> None:
         if report_student_column is not None and str(report_student_column[2]).upper() == "NO":
             db.execute(text("ALTER TABLE reports MODIFY COLUMN student_id VARCHAR(50) NULL"))
 
+        report_product_column = db.execute(text("SHOW COLUMNS FROM reports LIKE 'product_id'"))
+        if report_product_column.fetchone() is None:
+            db.execute(text("ALTER TABLE reports ADD COLUMN product_id INT NULL"))
+
+        student_created_at = db.execute(text("SHOW COLUMNS FROM students LIKE 'created_at'"))
+        if student_created_at.fetchone() is None:
+            db.execute(text("ALTER TABLE students ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"))
+
         report_foreign_keys = inspect(db.bind).get_foreign_keys("reports")
         for foreign_key in report_foreign_keys:
             if foreign_key.get("constrained_columns") == ["student_id"] and foreign_key.get("name"):
@@ -1055,6 +1118,38 @@ def on_startup():
 @app.post("/api/register", status_code=status.HTTP_201_CREATED)
 def register_student(student_data: StudentRegister, db: Session = Depends(get_db)):
     security = get_security_settings(db)
+    student_verification_defaults = DEFAULT_SETTINGS_BLOCKS["studentVerification"]
+    allowed_email_domain = str(_get_setting_value(
+        db,
+        "studentVerification",
+        "allowedEmailDomain",
+        student_verification_defaults["allowedEmailDomain"],
+    ) or "").strip().lstrip("@").lower()
+    require_university_email = _setting_bool(_get_setting_value(
+        db,
+        "studentVerification",
+        "requireUniversityEmail",
+        student_verification_defaults["requireUniversityEmail"],
+    ), student_verification_defaults["requireUniversityEmail"])
+    auto_approve_students = _setting_bool(_get_setting_value(
+        db,
+        "studentVerification",
+        "autoApproveStudents",
+        student_verification_defaults["autoApproveStudents"],
+    ), student_verification_defaults["autoApproveStudents"])
+
+    if require_university_email:
+        email_parts = student_data.email.strip().rsplit("@", 1)
+        email_domain = email_parts[1].lower() if len(email_parts) == 2 else ""
+        if email_domain != allowed_email_domain:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Registration failed. Please use your official university email "
+                    f"ending with @{allowed_email_domain}"
+                ),
+            )
+
     minimum_password_length = security.min_password_length
     if len(student_data.password) < minimum_password_length:
         raise HTTPException(status_code=400, detail=f"Password must be at least {minimum_password_length} characters.")
@@ -1077,6 +1172,7 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
         password=hashed_password,
         college=student_data.college,
         department=student_data.department,
+        is_verified=auto_approve_students,
         status="Pending Verification" if security.require_student_verification else "Active",
     )
     db.add(db_student)
@@ -1439,71 +1535,83 @@ def get_admin_settings(db: Session = Depends(get_db)):
 
 @app.put("/api/admin/settings")
 def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Settings payload must be a JSON object.")
+    try:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Settings payload must be a JSON object.")
 
-    current = get_admin_settings(db)
-    normalized = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
-    for block, values in payload.items():
-        if block not in normalized:
-            raise HTTPException(status_code=400, detail=f"Unknown settings block: {block}")
-        if not isinstance(values, dict):
-            raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
-        normalized[block].update(values)
+        current = get_admin_settings(db)
+        normalized = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
+        for block, values in payload.items():
+            if block not in normalized:
+                raise HTTPException(status_code=400, detail=f"Unknown settings block: {block}")
+            if not isinstance(values, dict):
+                raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
+            normalized[block].update(values)
 
-    payment_values = normalized["payment"]
-    payment_values["paymentProvider"] = "Chapa"
-    payment_values["currency"] = "ETB"
-    payment_values["paymentVerification"] = "Automatic"
-    if payment_values.get("refundPolicy") not in {"Admin approval required", "Automatic"}:
-        raise HTTPException(status_code=400, detail="Invalid refund policy.")
-    if payment_values.get("maximumRefund") not in {"100%", "75%", "50%"}:
-        raise HTTPException(status_code=400, detail="Invalid maximum refund value.")
-    if not isinstance(payment_values.get("enableOnlinePayment"), bool) or not isinstance(payment_values.get("refundsEnabled"), bool):
-        raise HTTPException(status_code=400, detail="Payment toggles must be boolean values.")
-    security_values = payment_values.get("security")
-    if not isinstance(security_values, dict) or any(not isinstance(value, bool) for value in security_values.values()):
-        raise HTTPException(status_code=400, detail="Payment security rules must be boolean values.")
-    payment_values.pop("publicKey", None)
-    payment_values.pop("secretKey", None)
-    normalized["payment"] = payment_values
+        payment_values = normalized["payment"]
+        payment_values["paymentProvider"] = "Chapa"
+        payment_values["currency"] = "ETB"
+        payment_values["paymentVerification"] = "Automatic"
+        if payment_values.get("refundPolicy") not in {"Admin approval required", "Automatic"}:
+            raise HTTPException(status_code=400, detail="Invalid refund policy.")
+        if payment_values.get("maximumRefund") not in {"100%", "75%", "50%"}:
+            raise HTTPException(status_code=400, detail="Invalid maximum refund value.")
+        if not isinstance(payment_values.get("enableOnlinePayment"), bool) or not isinstance(payment_values.get("refundsEnabled"), bool):
+            raise HTTPException(status_code=400, detail="Payment toggles must be boolean values.")
+        security_values = payment_values.get("security")
+        if not isinstance(security_values, dict) or any(not isinstance(value, bool) for value in security_values.values()):
+            raise HTTPException(status_code=400, detail="Payment security rules must be boolean values.")
+        payment_values.pop("publicKey", None)
+        payment_values.pop("secretKey", None)
+        normalized["payment"] = payment_values
 
-    normalized["general"]["currency"] = "ETB"
-    normalized["general"]["timezone"] = "Africa/Addis_Ababa"
+        normalized["general"]["currency"] = "ETB"
+        normalized["general"]["timezone"] = "Africa/Addis_Ababa"
 
-    for key, value in normalized.items():
-        existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
-        serialized = json.dumps(value, ensure_ascii=False)
-        if existing:
-            existing.value = serialized
-        else:
-            db.add(SystemSetting(key=key, value=serialized))
+        for key, value in normalized.items():
+            existing = db.query(SystemSetting).filter(SystemSetting.key == key).first()
+            serialized = json.dumps(value, ensure_ascii=False)
+            if existing:
+                existing.value = serialized
+            else:
+                db.add(SystemSetting(key=key, value=serialized))
 
-    db.query(SystemSetting).filter(~SystemSetting.key.in_(normalized.keys())).delete(synchronize_session=False)
+        db.query(SystemSetting).filter(~SystemSetting.key.in_(normalized.keys())).delete(synchronize_session=False)
 
-    admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
-    audit_current = json.loads(json.dumps(current))
-    audit_current.get("payment", {}).pop("publicKey", None)
-    audit_current.get("payment", {}).pop("secretKey", None)
-    changes = _settings_change_details(audit_current, normalized)
-    if admin and changes:
-        db.add(AuditLog(
-            admin_id=admin.id,
-            action="System Settings Updated",
-            entity_type="Settings",
-            entity_id=1,
-            description=json.dumps({
-                "username": admin.username,
-                "old_values": audit_current,
-                "new_values": normalized,
-                "changes": changes,
-            }, ensure_ascii=False),
-            status="SUCCESS",
-            ip_address="127.0.0.1",
-        ))
-    db.commit()
+        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        audit_current = json.loads(json.dumps(current))
+        audit_current.get("payment", {}).pop("publicKey", None)
+        audit_current.get("payment", {}).pop("secretKey", None)
+        changes = _settings_change_details(audit_current, normalized)
+        audit_logging_enabled = _setting_bool(
+            audit_current.get("security", {}).get("auditLogging"),
+            DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
+        )
+        if admin and changes and audit_logging_enabled:
+            db.add(AuditLog(
+                admin_id=admin.id,
+                action="System Settings Updated",
+                entity_type="Settings",
+                entity_id=1,
+                description=json.dumps({
+                    "username": admin.username,
+                    "old_values": audit_current,
+                    "new_values": normalized,
+                    "changes": changes,
+                }, ensure_ascii=False),
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+        db.commit()
 
-    return {"success": True, "message": "Settings saved successfully", "settings": normalized, "changes": changes}
+        return {"success": True, "message": "Settings saved successfully", "settings": normalized, "changes": changes}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to update admin settings: %s", error)
+        raise HTTPException(status_code=500, detail="Could not save system settings.") from error
 
 
 @app.patch("/api/admin/settings/{id}")
@@ -1962,6 +2070,22 @@ def get_products(
         )
 
     query = db.query(Product).filter(Product.status.ilike("Approved"))
+    try:
+        auto_hide_reported = _setting_bool(
+            _get_setting_value(
+                db,
+                "moderation",
+                "autoHideReported",
+                DEFAULT_SETTINGS_BLOCKS["moderation"]["autoHideReported"],
+            ),
+            DEFAULT_SETTINGS_BLOCKS["moderation"]["autoHideReported"],
+        )
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to fetch moderation settings for products: %s", error)
+        raise HTTPException(status_code=500, detail="Could not load product moderation settings.") from error
+    if auto_hide_reported:
+        query = query.filter(Product.status.notin_(["Flagged", "Pending"]))
     auto_hide_sold = _setting_bool(
         _get_setting_value(
             db,
@@ -2022,7 +2146,12 @@ def get_products(
     if limit is not None and not manual_filters_active:
         query = query.limit(limit)
 
-    return query.all()
+    try:
+        return query.all()
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to fetch products: %s", error)
+        raise HTTPException(status_code=500, detail="Could not fetch products.") from error
 
 
 @app.get("/api/products/{product_id}")
@@ -2053,6 +2182,40 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
         "status": product.status,
         "created_at": product.created_at,
     }
+
+
+@app.get("/api/settings/moderation")
+def get_public_moderation_settings(db: Session = Depends(get_db)):
+    """Return moderation controls that affect student-facing workflows."""
+    try:
+        default_allow_reports = DEFAULT_SETTINGS_BLOCKS["moderation"]["allowStudentReports"]
+        return {
+            "allowStudentReports": _setting_bool(
+                _get_setting_value(db, "moderation", "allowStudentReports", default_allow_reports),
+                default_allow_reports,
+            )
+        }
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to fetch public moderation settings: %s", error)
+        raise HTTPException(status_code=500, detail="Could not fetch moderation settings.") from error
+
+
+@app.get("/api/settings/chat")
+def get_public_chat_settings(db: Session = Depends(get_db)):
+    """Return the global chat availability for student-facing controls."""
+    try:
+        default_chat_enabled = DEFAULT_SETTINGS_BLOCKS["chat"]["enabled"]
+        return {
+            "enabled": _setting_bool(
+                _get_setting_value(db, "chat", "enabled", default_chat_enabled),
+                default_chat_enabled,
+            )
+        }
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to fetch public chat settings: %s", error)
+        raise HTTPException(status_code=500, detail="Could not fetch chat settings.") from error
 
 
 # 4.1. አዲስ ተለጠፈ እቃ በተማሪ ወይም ሻጭ የሚፈጠር ኤፒአይ (POST /api/products)
@@ -2107,11 +2270,11 @@ def create_product(
         require_approval = _setting_bool(
             _get_setting_value(
                 db,
-                "marketplace",
-                "requireApproval",
-                DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
+                "moderation",
+                "requireAdminApproval",
+                DEFAULT_SETTINGS_BLOCKS["moderation"]["requireAdminApproval"],
             ),
-            DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
+            DEFAULT_SETTINGS_BLOCKS["moderation"]["requireAdminApproval"],
         )
 
         normalized_student_id = str(student_id).strip() if student_id else ""
@@ -2883,12 +3046,31 @@ How can I help you today? 🚀"""
 @app.post("/api/student/report", status_code=status.HTTP_201_CREATED)
 def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
     try:
+        allow_student_reports = _setting_bool(
+            _get_setting_value(
+                db,
+                "moderation",
+                "allowStudentReports",
+                DEFAULT_SETTINGS_BLOCKS["moderation"]["allowStudentReports"],
+            ),
+            DEFAULT_SETTINGS_BLOCKS["moderation"]["allowStudentReports"],
+        )
+        if report_data.product_id is not None and not allow_student_reports:
+            raise HTTPException(status_code=403, detail="Product reporting is currently disabled.")
+
         provided_student_id = report_data.student_id.strip() if report_data.student_id else None
         student = None
         if provided_student_id:
             student = db.query(Student).filter(Student.student_id == provided_student_id).first()
 
+        product = None
+        if report_data.product_id is not None:
+            product = db.query(Product).filter(Product.id == report_data.product_id).first()
+            if not product:
+                raise HTTPException(status_code=404, detail="Product not found.")
+
         db_report = Report(
+            product_id=product.id if product else None,
             student_id=student.student_id if student else None,
             student_name=report_data.student_name.strip(),
             email=report_data.email.strip() if report_data.email else None,
@@ -2897,13 +3079,44 @@ def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
             status="Open"
         )
         db.add(db_report)
+        db.flush()
+
+        if product:
+            active_report_count = db.query(Report).filter(
+                Report.product_id == product.id,
+                Report.status.in_(["Open", "Pending"]),
+            ).count()
+            max_reports_before_review = _get_setting_value(
+                db,
+                "moderation",
+                "maxReportsBeforeReview",
+                DEFAULT_SETTINGS_BLOCKS["moderation"]["maxReportsBeforeReview"],
+            )
+            try:
+                max_reports_before_review = max(1, int(max_reports_before_review))
+            except (TypeError, ValueError):
+                max_reports_before_review = DEFAULT_SETTINGS_BLOCKS["moderation"]["maxReportsBeforeReview"]
+
+            if active_report_count >= max_reports_before_review:
+                product.status = "Flagged"
+                db.add(AuditLog(
+                    action="AUTO_FLAG_PRODUCT",
+                    entity_type="Product",
+                    entity_id=product.id,
+                    description=f"Product automatically flagged after {active_report_count} active reports.",
+                    status="SUCCESS",
+                    severity="warning",
+                ))
+
         db.commit()
         db.refresh(db_report)
+
         return {
             "message": "Support ticket created successfully.",
             "ticket_reference": f"RPT-{db_report.id:04d}",
             "report": {
                 "id": db_report.id,
+                "product_id": db_report.product_id,
                 "student_id": db_report.student_id,
                 "student_name": db_report.student_name,
                 "email": db_report.email,
@@ -3380,6 +3593,23 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
     logger = logging.getLogger("websocket_chat")
     
     try:
+        chat_defaults = DEFAULT_SETTINGS_BLOCKS["chat"]
+        try:
+            chat_enabled = _setting_bool(
+                _get_setting_value(db, "chat", "enabled", chat_defaults["enabled"]),
+                chat_defaults["enabled"],
+            )
+        except Exception as exc:
+            db.rollback()
+            logger.exception(f"[WS SETTINGS ERROR] Failed to load chat settings for {student_id}: {exc}")
+            await websocket.close(code=1011, reason="Unable to load chat settings")
+            return
+
+        if not chat_enabled:
+            logger.info(f"[WS SECURITY] Chat disabled; rejected connection for {student_id}")
+            await websocket.close(code=1008, reason="Chat is currently disabled")
+            return
+
         student = db.query(Student).filter(Student.student_id == student_id).first()
         if not student:
             await websocket.close(code=1008, reason="Student not found")
@@ -3400,6 +3630,36 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
 
         while True:
             raw_payload = await websocket.receive_text()
+
+            try:
+                chat_enabled = _setting_bool(
+                    _get_setting_value(db, "chat", "enabled", chat_defaults["enabled"]),
+                    chat_defaults["enabled"],
+                )
+                max_message_length = _get_setting_value(
+                    db, "chat", "maxMessageLength", chat_defaults["maxMessageLength"]
+                )
+                try:
+                    max_message_length = max(0, int(max_message_length))
+                except (TypeError, ValueError):
+                    max_message_length = chat_defaults["maxMessageLength"]
+                allow_attachments = _setting_bool(
+                    _get_setting_value(db, "chat", "allowAttachments", chat_defaults["allowAttachments"]),
+                    chat_defaults["allowAttachments"],
+                )
+            except Exception as exc:
+                db.rollback()
+                logger.exception(f"[WS SETTINGS ERROR] Failed to refresh chat settings for {student_id}: {exc}")
+                await websocket.send_json({"success": False, "error": "Unable to load chat settings."})
+                await websocket.close(code=1011, reason="Unable to load chat settings")
+                await manager.disconnect(student_id)
+                break
+
+            if not chat_enabled:
+                await websocket.send_json({"success": False, "error": "Chat is currently disabled."})
+                await websocket.close(code=1008, reason="Chat is currently disabled")
+                await manager.disconnect(student_id)
+                break
             
             try:
                 payload = json.loads(raw_payload)
@@ -3426,9 +3686,16 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
             attachment_url = str(payload.get("attachment_url") or "").strip() or None
             attachment_type = str(payload.get("attachment_type") or "").strip().lower() or None
             reply_to_id = payload.get("reply_to_id")
+            has_attachment = any(
+                key in payload for key in ("has_attachment", "attachment_url", "attachment_type")
+            )
             if attachment_type not in {"image", "audio", "video"}:
                 attachment_type = None
             product_id = payload.get("product_id")
+
+            if not allow_attachments and has_attachment:
+                await websocket.send_json({"success": False, "error": "Attachments are disabled."})
+                continue
 
             if not receiver_id:
                 await websocket.send_json({"success": False, "error": "receiver_id is required."})
@@ -3442,9 +3709,12 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 await websocket.send_json({"success": False, "error": "attachment_type is required for attachments."})
                 continue
             
-            if len(message_text) > 5000:
+            if len(message_text) > max_message_length:
                 logger.warning(f"[WS SECURITY] Message too long from {student_id}: {len(message_text)} chars")
-                await websocket.send_json({"success": False, "error": "Message exceeds max length (5000)."})
+                await websocket.send_json({
+                    "success": False,
+                    "error": f"Message exceeds max length ({max_message_length}).",
+                })
                 continue
 
             if student_id == receiver_id:
@@ -4563,20 +4833,42 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             "color": category_colors[index]
         })
 
-    recent_rows = db.query(
-        Transaction.type,
-        Transaction.description,
-        Transaction.created_at,
-        Transaction.student_id
-    ).order_by(Transaction.created_at.desc()).limit(5).all()
+    recent_audit_rows = db.query(AuditLog, Admin.username).outerjoin(
+        Admin, AuditLog.admin_id == Admin.id
+    ).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(3).all()
+    recent_activity = [
+        {
+            "id": audit_log.id,
+            "time": audit_log.created_at.strftime("%I:%M %p") if audit_log.created_at else "--:--",
+            "created_at": audit_log.created_at.isoformat() if audit_log.created_at else None,
+            "action": audit_log.action,
+            "description": audit_log.description,
+            "user": admin_username or "System",
+            "username": admin_username,
+            "status": audit_log.status,
+        }
+        for audit_log, admin_username in recent_audit_rows
+    ]
 
-    recent_activity = []
-    for tx_type, description, created_at, student_id in recent_rows:
-        recent_activity.append({
-            "time": (created_at.strftime("%I:%M %p") if created_at else "--:--"),
-            "action": description or f"{tx_type} transaction recorded",
-            "user": f"Student • {student_id}"
-        })
+    chapa_public_key = os.getenv("CHAPA_PUBLIC_KEY", "").strip()
+    chapa_secret_key = os.getenv("CHAPA_SECRET_KEY", "").strip()
+    successful_transaction_cutoff = datetime.now() - timedelta(hours=24)
+    latest_successful_transaction = db.query(Transaction).filter(
+        Transaction.status.ilike("Successful"),
+        Transaction.created_at >= successful_transaction_cutoff,
+    ).order_by(Transaction.created_at.desc()).first()
+    gateway_configured = bool(chapa_public_key and chapa_secret_key)
+    gateway_status = {
+        "provider": "Chapa",
+        "configured": gateway_configured,
+        "status": "Connected" if gateway_configured else "Not configured",
+        "webhookStatus": "Active" if latest_successful_transaction else "Awaiting successful transaction",
+        "lastSuccessfulTransaction": (
+            latest_successful_transaction.created_at.isoformat()
+            if latest_successful_transaction and latest_successful_transaction.created_at
+            else None
+        ),
+    }
 
     status_counts = {
         "Completed": completed_orders,
@@ -4595,6 +4887,43 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         for label, count in status_counts.items()
     ]
 
+    seven_day_start = datetime.now().date() - timedelta(days=6)
+    seven_day_end = seven_day_start + timedelta(days=7)
+    registration_date = func.date(Student.created_at).label("registration_date")
+    registration_rows = db.query(
+        registration_date,
+        func.count(Student.id),
+    ).filter(
+        Student.created_at >= seven_day_start,
+        Student.created_at < seven_day_end,
+    ).group_by(registration_date).all()
+    product_upload_date = func.date(Product.created_at).label("upload_date")
+    product_upload_rows = db.query(
+        product_upload_date,
+        func.count(Product.id),
+    ).filter(
+        Product.created_at >= seven_day_start,
+        Product.created_at < seven_day_end,
+    ).group_by(product_upload_date).all()
+
+    registration_counts = {
+        str(row_date): int(count)
+        for row_date, count in registration_rows
+    }
+    product_upload_counts = {
+        str(row_date): int(count)
+        for row_date, count in product_upload_rows
+    }
+    registrations = []
+    product_uploads_trend = []
+    cumulative_registrations = 0
+    for day_offset in range(7):
+        trend_date = seven_day_start + timedelta(days=day_offset)
+        date_key = trend_date.isoformat()
+        cumulative_registrations += registration_counts.get(date_key, 0)
+        registrations.append(cumulative_registrations)
+        product_uploads_trend.append(product_upload_counts.get(date_key, 0))
+
     trend_months = []
     user_growth = []
     product_uploads = []
@@ -4608,7 +4937,10 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         next_month = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
 
         trend_months.append(target_date.strftime("%b %y"))
-        user_growth.append(0)
+        user_growth.append(db.query(Student).filter(
+            Student.created_at >= target_date,
+            Student.created_at < next_month,
+        ).count())
         product_uploads.append(db.query(Product).filter(
             Product.created_at >= target_date,
             Product.created_at < next_month,
@@ -4636,6 +4968,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         "completedOrders": completed_orders,
         "pendingProducts": pending_products,
         "pendingReports": pending_reports,
+        "gatewayStatus": gateway_status,
         "revenue": format_revenue(revenue_total),
         "trends": {
             "months": trend_months,
@@ -4645,7 +4978,8 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         },
         "salesTrend": product_uploads,
         "revenueTrend": revenue_trend,
-        "registrations": user_growth,
+        "registrations": registrations,
+        "productUploadsTrend": product_uploads_trend,
         "orderStatus": status_distribution,
         "categories": categories,
         "college_activity": college_activity,
@@ -4713,6 +5047,155 @@ def get_admin_users(
     return results
 
 
+@app.post("/api/admin/users", status_code=status.HTTP_201_CREATED)
+def create_admin_user(payload: AdminStudentCreate, db: Session = Depends(get_db)):
+    try:
+        student_id = payload.student_id.strip()
+        email = payload.email.strip().lower()
+        if not all((payload.name.strip(), student_id, email, payload.college.strip(), payload.department.strip(), payload.password)):
+            raise HTTPException(status_code=400, detail="Name, student ID, email, college, department, and password are required.")
+
+        if db.query(Student).filter(Student.student_id == student_id).first():
+            raise HTTPException(status_code=400, detail="Student ID is already registered.")
+        if db.query(Student).filter(func.lower(Student.email) == email).first():
+            raise HTTPException(status_code=400, detail="Email is already registered.")
+
+        defaults = DEFAULT_SETTINGS_BLOCKS["studentVerification"]
+        allowed_domain = str(_get_setting_value(db, "studentVerification", "allowedEmailDomain", defaults["allowedEmailDomain"]) or "").strip().lstrip("@").lower()
+        require_university_email = _setting_bool(
+            _get_setting_value(db, "studentVerification", "requireUniversityEmail", defaults["requireUniversityEmail"]),
+            defaults["requireUniversityEmail"],
+        )
+        auto_approve_students = _setting_bool(
+            _get_setting_value(db, "studentVerification", "autoApproveStudents", defaults["autoApproveStudents"]),
+            defaults["autoApproveStudents"],
+        )
+        if require_university_email and email.rsplit("@", 1)[-1].lower() != allowed_domain:
+            raise HTTPException(status_code=400, detail=f"Registration failed. Please use your official university email ending with @{allowed_domain}")
+
+        student = Student(
+            name=payload.name.strip(),
+            student_id=student_id,
+            email=email,
+            phone=payload.phone.strip() if payload.phone else None,
+            college=payload.college.strip(),
+            department=payload.department.strip(),
+            password=hash_password(payload.password),
+            is_verified=auto_approve_students,
+            status="Active",
+        )
+        db.add(student)
+        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Admin Student Created",
+            entity_type="Student",
+            entity_id=None,
+            description=f"Admin mau9999 created a new student account: {student.name} ({student.student_id}).",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.commit()
+        db.refresh(student)
+        return {
+            "message": "Student account created successfully.",
+            "student": {
+                "id": student.id,
+                "name": student.name,
+                "student_id": student.student_id,
+                "email": student.email,
+                "phone": student.phone,
+                "college": student.college,
+                "department": student.department,
+                "is_verified": bool(student.is_verified),
+                "status": student.status,
+            },
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create student account.")
+
+
+@app.post("/api/admin/users/bulk-approve")
+def bulk_approve_users(student_ids: List[int], db: Session = Depends(get_db)):
+    if not student_ids:
+        raise HTTPException(status_code=400, detail="Select at least one user to approve.")
+
+    try:
+        unique_ids = list(dict.fromkeys(student_ids))
+        students = db.query(Student).filter(Student.id.in_(unique_ids)).all()
+        students_by_id = {student.id: student for student in students}
+        missing_ids = [student_id for student_id in unique_ids if student_id not in students_by_id]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Student not found: {missing_ids[0]}")
+
+        for student in students:
+            student.is_verified = True
+            student.verification_reason = None
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Bulk User Verification Approved",
+            entity_type="Student",
+            entity_id=None,
+            description=f"Admin approved verification for {len(students)} selected user(s): {', '.join(student.student_id for student in students)}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.commit()
+        return {"message": f"Approved {len(students)} selected user(s).", "approved_ids": unique_ids}
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to approve selected users.")
+
+
+@app.post("/api/admin/users/bulk-reject")
+def bulk_reject_users(payload: BulkRejectVerificationRequest, db: Session = Depends(get_db)):
+    if not payload.student_ids:
+        raise HTTPException(status_code=400, detail="Select at least one user to reject.")
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A rejection reason is required.")
+
+    try:
+        unique_ids = list(dict.fromkeys(payload.student_ids))
+        students = db.query(Student).filter(Student.id.in_(unique_ids)).all()
+        students_by_id = {student.id: student for student in students}
+        missing_ids = [student_id for student_id in unique_ids if student_id not in students_by_id]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Student not found: {missing_ids[0]}")
+
+        for student in students:
+            student.is_verified = False
+            student.verification_reason = reason
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Bulk User Verification Rejected",
+            entity_type="Student",
+            entity_id=None,
+            description=f"Admin rejected verification for {len(students)} selected user(s). Reason: {reason}. Students: {', '.join(student.student_id for student in students)}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.commit()
+        return {"message": f"Rejected {len(students)} selected user(s).", "rejected_ids": unique_ids}
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reject selected users.")
+
+
 @app.get("/api/admin/colleges")
 def get_colleges():
     """Returns all colleges from the university structure."""
@@ -4751,13 +5234,14 @@ def update_user_status(id: int, payload: UserStatusUpdate, db: Session = Depends
         reason_text = "Policy review"
 
     try:
+        previous_status = student.status
         student.status = normalized_status
         student.restriction_reason = reason_text if normalized_status in {"Suspended", "Deactivated"} else None
 
-        if normalized_status in {"Suspended", "Deactivated"}:
+        if normalized_status in {"Suspended", "Deactivated"} and previous_status != normalized_status:
             admin = db.query(Admin).order_by(Admin.id.asc()).first()
             message = (
-                f"Your account has been restricted. Reason: {reason_text}. Please contact support for review."
+                f"Your account has been restricted to {normalized_status}. Reason: {reason_text}. Please contact support for review."
             )
 
             db.add(Notification(
@@ -4766,14 +5250,16 @@ def update_user_status(id: int, payload: UserStatusUpdate, db: Session = Depends
                 is_read=False,
             ))
 
+        if previous_status != normalized_status:
+            admin = db.query(Admin).order_by(Admin.id.asc()).first()
             db.add(AuditLog(
                 admin_id=admin.id if admin else None,
                 action=f"User {normalized_status}",
                 entity_type="User",
                 entity_id=student.id,
                 description=(
-                    f"Admin updated user {student.name} ({student.student_id}) to {normalized_status}."
-                    f" Reason: {reason_text}."
+                    f"Admin updated user {student.name} ({student.student_id}) from {previous_status} "
+                    f"to {normalized_status}. Reason: {reason_text or 'None'}"
                 ),
                 status="SUCCESS",
                 ip_address="127.0.0.1",
@@ -4792,6 +5278,93 @@ def update_user_status(id: int, payload: UserStatusUpdate, db: Session = Depends
     except SQLAlchemyError:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to update user status.")
+
+
+@app.put("/api/admin/users/{id}")
+def update_admin_user(id: int, payload: AdminUserUpdate, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    normalized_email = payload.email.strip().lower()
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
+    duplicate_email = db.query(Student).filter(
+        func.lower(Student.email) == normalized_email,
+        Student.id != id,
+    ).first()
+    if duplicate_email:
+        raise HTTPException(status_code=400, detail="Email is already registered to another student.")
+
+    normalized_status = payload.status.strip()
+    if normalized_status not in {"Active", "Suspended", "Deactivated"}:
+        raise HTTPException(status_code=400, detail="Status must be Active, Suspended, or Deactivated.")
+
+    try:
+        previous_values = {
+            "name": student.name,
+            "email": student.email,
+            "phone": student.phone,
+            "college": student.college,
+            "department": student.department,
+            "is_verified": bool(student.is_verified),
+            "status": student.status,
+        }
+        updated_values = {
+            "name": payload.name.strip(),
+            "email": normalized_email,
+            "phone": payload.phone.strip() if payload.phone else None,
+            "college": payload.college.strip(),
+            "department": payload.department.strip(),
+            "is_verified": payload.is_verified,
+            "status": normalized_status,
+        }
+        if not updated_values["name"] or not updated_values["college"] or not updated_values["department"]:
+            raise HTTPException(status_code=400, detail="Name, college, and department are required.")
+
+        for field, value in updated_values.items():
+            setattr(student, field, value)
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        changes = [
+            f"{field} changed from {previous_values[field]!r} to {value!r}"
+            for field, value in updated_values.items()
+            if previous_values[field] != value
+        ]
+        if changes:
+            db.add(AuditLog(
+                admin_id=admin.id if admin else None,
+                action="Student Profile Updated",
+                entity_type="Student",
+                entity_id=student.id,
+                description="; ".join(changes),
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+
+        db.commit()
+        db.refresh(student)
+        return {
+            "message": "Student profile updated successfully.",
+            "student": {
+                "id": student.id,
+                "name": student.name,
+                "email": student.email,
+                "phone": student.phone,
+                "college": student.college,
+                "department": student.department,
+                "is_verified": bool(student.is_verified),
+                "status": student.status,
+            },
+            "changes": changes,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update student profile.")
 
 
 @app.delete("/api/admin/users/{id}")
@@ -4822,6 +5395,18 @@ def get_admin_verifications(
     department: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    verification_counts = {
+        "pending": db.query(Student).filter(
+            Student.is_verified == False,
+            or_(Student.verification_reason.is_(None), Student.verification_reason == ""),
+        ).count(),
+        "verified": db.query(Student).filter(Student.is_verified == True).count(),
+        "rejected": db.query(Student).filter(
+            Student.is_verified == False,
+            Student.verification_reason.isnot(None),
+            Student.verification_reason != "",
+        ).count(),
+    }
     query = db.query(Student).filter(Student.is_verified == False)
 
     if search and search.strip():
@@ -4866,7 +5451,107 @@ def get_admin_verifications(
             "is_verified": student.is_verified,
         })
 
-    return results
+    return {
+        "verifications": results,
+        "counts": verification_counts,
+        "total_pending": verification_counts["pending"],
+        "total_verified": verification_counts["verified"],
+        "total_rejected": verification_counts["rejected"],
+    }
+
+
+@app.post("/api/admin/verifications/bulk-approve")
+def bulk_approve_verifications(student_ids: List[int], db: Session = Depends(get_db)):
+    if not student_ids:
+        raise HTTPException(status_code=400, detail="Select at least one student to approve.")
+
+    try:
+        unique_ids = list(dict.fromkeys(student_ids))
+        students = db.query(Student).filter(Student.id.in_(unique_ids)).all()
+        students_by_id = {student.id: student for student in students}
+        missing_ids = [student_id for student_id in unique_ids if student_id not in students_by_id]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Student not found: {missing_ids[0]}")
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        approved_ids = []
+        approved_students = []
+        for student in students:
+            student.is_verified = True
+            student.verification_reason = None
+            approved_ids.append(student.id)
+            approved_students.append(f"{student.name} ({student.student_id})")
+            db.add(Notification(
+                student_id=student.student_id,
+                message="Your student identity has been successfully verified. You can now access full marketplace features.",
+                is_read=False,
+            ))
+
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Bulk Student Verification Approved",
+            entity_type="Student Verification",
+            entity_id=None,
+            description=f"Admin approved {len(approved_ids)} student verification request(s) via bulk action: {', '.join(approved_students)}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+
+        db.commit()
+        return {"message": f"Approved {len(approved_ids)} student verification request(s).", "approved_ids": approved_ids}
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to approve selected verifications.")
+
+
+@app.post("/api/admin/verifications/bulk-reject")
+def bulk_reject_verifications(payload: BulkRejectVerificationRequest, db: Session = Depends(get_db)):
+    if not payload.student_ids:
+        raise HTTPException(status_code=400, detail="Select at least one student to reject.")
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A rejection reason is required.")
+
+    try:
+        unique_ids = list(dict.fromkeys(payload.student_ids))
+        students = db.query(Student).filter(Student.id.in_(unique_ids)).all()
+        students_by_id = {student.id: student for student in students}
+        missing_ids = [student_id for student_id in unique_ids if student_id not in students_by_id]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail=f"Student not found: {missing_ids[0]}")
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        rejected_names = []
+        for student in students:
+            student.is_verified = False
+            student.verification_reason = reason
+            rejected_names.append(f"{student.name} ({student.student_id})")
+            db.add(Notification(
+                student_id=student.student_id,
+                message=f"Your student identity verification was rejected. Reason: {reason}. Please resubmit a clear and readable student ID.",
+                is_read=False,
+            ))
+
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Bulk Student Verification Rejected",
+            entity_type="Student Verification",
+            entity_id=None,
+            description=f"Admin rejected {len(students)} student verification request(s) via bulk action. Reason: {reason}. Students: {', '.join(rejected_names)}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.commit()
+        return {"message": f"Rejected {len(students)} student verification request(s).", "rejected_ids": unique_ids}
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to reject selected verifications.")
 
 
 @app.post("/api/student/upload-id")
@@ -4981,6 +5666,61 @@ def update_student_verification(
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to process student verification request.")
+
+
+@app.put("/api/admin/products/{product_id}")
+def update_admin_product_moderation(
+    product_id: int,
+    payload: ProductModerationUpdate,
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    normalized_status = payload.status.strip()
+    if normalized_status not in {"Approved", "Flagged", "Pending", "Rejected"}:
+        raise HTTPException(status_code=400, detail="Invalid product moderation status.")
+
+    try:
+        reason = payload.reason.strip() if payload.reason else None
+        product.status = normalized_status
+        product.moderation_reason = reason if normalized_status in {"Flagged", "Rejected"} else None
+
+        seller = db.query(Student).filter(
+            or_(Student.student_id == product.seller, Student.name == product.seller)
+        ).first() if product.seller else None
+        if seller and normalized_status in {"Flagged", "Rejected"}:
+            db.add(Notification(
+                student_id=seller.student_id,
+                title="Product Requires Review",
+                message=f"Your product '{product.title}' was {normalized_status.lower()}. Reason: {reason or 'Policy review'}. Please review and update your listing.",
+                type="moderation",
+                is_read=False,
+            ))
+
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action=f"Product {normalized_status}",
+            entity_type="Product",
+            entity_id=product.id,
+            description=f"Admin moderated product {product.title} ({product.id}) as {normalized_status}. Reason: {reason or 'None'}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.commit()
+        db.refresh(product)
+        return {
+            "message": "Product moderation updated successfully.",
+            "id": product.id,
+            "status": product.status,
+            "moderation_reason": product.moderation_reason,
+            "seller_notified": bool(seller and normalized_status in {"Flagged", "Rejected"}),
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update product moderation.")
 
 
 @app.get("/api/admin/products")

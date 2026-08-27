@@ -19,8 +19,14 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [chatStatus, setChatStatus] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
+  const [isChatEnabled, setIsChatEnabled] = useState(true);
   const [messageText, setMessageText] = useState('');
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  const [allowStudentReports, setAllowStudentReports] = useState(false);
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportText, setReportText] = useState('');
+  const [reportStatus, setReportStatus] = useState('');
+  const [reportLoading, setReportLoading] = useState(false);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
 
   useEffect(() => {
@@ -41,6 +47,49 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
 
     fetchProductDetails();
   }, [product?.id]);
+
+  useEffect(() => {
+    let active = true;
+
+    const fetchModerationSettings = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/settings/moderation');
+        if (!response.ok) throw new Error('Failed to fetch moderation settings');
+        const data = await response.json();
+        if (active) setAllowStudentReports(data.allowStudentReports === true);
+      } catch (error) {
+        if (active) setAllowStudentReports(false);
+        console.error(error);
+      }
+    };
+
+    fetchModerationSettings();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const fetchChatSettings = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/settings/chat');
+        if (!response.ok) throw new Error('Failed to fetch chat settings');
+        const data = await response.json();
+        if (active && typeof data.enabled === 'boolean') {
+          setIsChatEnabled(data.enabled);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchChatSettings();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const productTitle = String(detailedProduct?.title || product?.title || '').trim();
@@ -72,6 +121,11 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   };
 
   const handleStartChat = async () => {
+    if (!isChatEnabled) {
+      setChatStatus('Chat is currently disabled by the administrator.');
+      return;
+    }
+
     if (!verifiedCurrentUser) {
       setChatStatus('Verification is required to start a chat with other students.');
       return;
@@ -120,6 +174,39 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       console.error(error);
     } finally {
       setChatLoading(false);
+    }
+  };
+
+  const handleSubmitReport = async (event) => {
+    event.preventDefault();
+    if (!allowStudentReports || !currentUser || !product?.id || !reportText.trim()) return;
+
+    setReportLoading(true);
+    setReportStatus('');
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/student/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_id: product.id,
+          student_id: currentUser.studentId,
+          student_name: currentUser.name || currentUser.studentId || 'Student',
+          email: currentUser.email || '',
+          category: 'Product Report',
+          issue: reportText.trim(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Unable to report this product.');
+
+      setReportText('');
+      setShowReportForm(false);
+      setReportStatus(data.message || 'Product report submitted successfully.');
+    } catch (error) {
+      setReportStatus(error.message || 'Unable to report this product.');
+      console.error(error);
+    } finally {
+      setReportLoading(false);
     }
   };
 
@@ -279,9 +366,9 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                   <textarea
                     value={messageText}
                     onChange={(event) => setMessageText(event.target.value)}
-                    placeholder="Write a message to the seller..."
+                    placeholder={isChatEnabled ? 'Write a message to the seller...' : 'Chat is currently disabled by the administrator'}
                     rows={4}
-                    disabled={!verifiedCurrentUser || chatLoading}
+                    disabled={!isChatEnabled || !verifiedCurrentUser || chatLoading}
                     className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:bg-white"
                   />
                   {!verifiedCurrentUser && (
@@ -292,8 +379,8 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                   {/* አረንጓዴ የቻት መክፈቻ ቁልፍ (Start Chat Button) */}
                   <button
                     onClick={handleStartChat}
-                    disabled={!verifiedCurrentUser || chatLoading || !messageText.trim()}
-                    className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white hover:bg-emerald-600 transition flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed disabled:bg-emerald-300"
+                    disabled={!isChatEnabled || !verifiedCurrentUser || chatLoading || !messageText.trim()}
+                    className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white hover:bg-emerald-600 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-slate-300"
                   >
                     <span>💬</span>
                     <span>{chatLoading ? 'Sending...' : 'Send Message & Start Chat'}</span>
@@ -302,6 +389,50 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
+              )}
+              {allowStudentReports && currentUser && (
+                <div className="border-t border-slate-100 pt-4">
+                  {!showReportForm ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowReportForm(true)}
+                      className="w-full rounded-full border border-rose-200 bg-rose-50 py-3.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
+                    >
+                      🚩 Report/Flag Product
+                    </button>
+                  ) : (
+                    <form onSubmit={handleSubmitReport} className="space-y-3">
+                      <textarea
+                        value={reportText}
+                        onChange={(event) => setReportText(event.target.value)}
+                        placeholder="Tell us why this product should be reviewed..."
+                        rows={4}
+                        required
+                        disabled={reportLoading}
+                        className="w-full resize-none rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-rose-400 focus:bg-white"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          disabled={reportLoading || !reportText.trim()}
+                          className="flex-1 rounded-full bg-rose-600 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300"
+                        >
+                          {reportLoading ? 'Submitting...' : 'Submit Report'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowReportForm(false)}
+                          className="rounded-full border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+              {reportStatus && (
+                <p className="text-sm text-rose-700">{reportStatus}</p>
               )}
             </div>
           </div>

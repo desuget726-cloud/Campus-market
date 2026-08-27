@@ -21,6 +21,7 @@ class Student(Base):
     is_verified = Column(Boolean, default=False, nullable=False)
     verification_reason = Column(Text, nullable=True)
     id_card_url = Column(String(500), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     # 1. ሬላሽንሺፖቹ በምን አምድ በኩል መገናኘት እንዳለባቸው በ "primaryjoin" በግልጽ አስቀምጠነዋል
     reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student")
@@ -190,6 +191,7 @@ class Report(Base):
     __tablename__ = "reports"
 
     id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=True)
     student_name = Column(String(150), nullable=False)
     email = Column(String(100), nullable=True)

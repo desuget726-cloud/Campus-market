@@ -17,6 +17,30 @@ const generateLinePath = (data, maxVal) => {
     .join(' ');
 };
 
+const generateSvgPath = (values, maxValue, width = 100, height = 100, padding = 8) => {
+  if (!Array.isArray(values) || values.length === 0) return '';
+
+  const safeValues = values.map((value) => Math.max(0, Number(value) || 0));
+  const safeMax = Math.max(Number(maxValue) || 0, 1);
+  const baseline = height - padding;
+  const chartHeight = baseline - padding;
+  const step = safeValues.length > 1 ? width / (safeValues.length - 1) : 0;
+
+  return safeValues.map((value, index) => {
+    const x = safeValues.length > 1 ? index * step : width / 2;
+    const y = baseline - (value / safeMax) * chartHeight;
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)},${Math.max(padding, Math.min(baseline, y)).toFixed(2)}`;
+  }).join(' ');
+};
+
+const generateSvgAreaPath = (values, maxValue, width = 100, height = 100, padding = 8) => {
+  const linePath = generateSvgPath(values, maxValue, width, height, padding);
+  if (!linePath) return '';
+
+  const baseline = height - padding;
+  return `${linePath} L ${width},${baseline} L 0,${baseline} Z`;
+};
+
 const getDynamicMonths = () => Array.from({ length: 6 }, (_, index) => {
   const targetDate = new Date();
   targetDate.setDate(1);
@@ -34,6 +58,7 @@ const UNIVERSITY_STRUCTURE = {
 };
 
 const ADMIN_AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='64' fill='%230f766e'/%3E%3Ccircle cx='64' cy='48' r='22' fill='white'/%3E%3Cpath d='M25 108c4-24 19-36 39-36s35 12 39 36' fill='white'/%3E%3C/svg%3E";
+const PRODUCT_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='16' fill='%23f1f5f9'/%3E%3Cpath d='M24 35l24-12 24 12v28L48 75 24 63V35z' fill='%2394a3b8'/%3E%3Cpath d='M24 35l24 12 24-12M48 47v28' fill='none' stroke='%23e2e8f0' stroke-width='4'/%3E%3C/svg%3E";
 
 const getComplaintType = (issue = '') => {
   const normalizedIssue = String(issue).toLowerCase();
@@ -234,6 +259,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [dbCollegesList, setDbCollegesList] = useState([]);
   const [dbDepartmentsList, setDbDepartmentsList] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [editingUser, setEditingUser] = useState(null);
   const [showEnforcementModal, setShowEnforcementModal] = useState(false);
   const [enforcementTarget, setEnforcementTarget] = useState(null);
   const [enforcementReason, setEnforcementReason] = useState('Scam attempts');
@@ -255,6 +282,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [addStudentError, setAddStudentError] = useState('');
   const [addStudentLoading, setAddStudentLoading] = useState(false);
 
+  useEffect(() => {
+    setSelectedUserIds([]);
+  }, [userSearchTerm, userCollegeFilter, userDeptFilter]);
+
   // 2. Student Verification States
   const [selectedIDPhoto, setSelectedIDPhoto] = useState(null);
   const [verificationSearchTerm, setVerificationSearchTerm] = useState('');
@@ -268,6 +299,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [verificationZoom, setVerificationZoom] = useState(1);
   const [verificationRotation, setVerificationRotation] = useState(0);
   const [verifications, setVerifications] = useState([]);
+  const [verificationMetrics, setVerificationMetrics] = useState({ pending: 0, verified: 0, rejected: 0 });
+  const [selectedVerificationIds, setSelectedVerificationIds] = useState([]);
 
   // 3. Product Management States
   const [prodSearch, setProdSearch] = useState('');
@@ -284,6 +317,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     { id: 2, title: "Calculus II Textbook", price: "450 ETB", seller: "Abebe Kebede", category: "Books", condition: "Gently Used", status: "Approved", image: "https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=900&q=80", description: "Well-maintained calculus reference book with highlighted notes and exercise solutions.", seller_verified: true }
   ]);
   const [selectedProductDetails, setSelectedProductDetails] = useState(null);
+  const [selectedProductIds, setSelectedProductIds] = useState([]);
+  const [bulkRejectMode, setBulkRejectMode] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReason, setRejectReason] = useState('Inappropriate Image');
   const [pendingRejectProduct, setPendingRejectProduct] = useState(null);
@@ -644,6 +679,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
       const data = await response.json();
       const payload = Array.isArray(data) ? data : (data.verifications || data.items || []);
+      if (!Array.isArray(data)) {
+        setVerificationMetrics({
+          pending: Number(data.counts?.pending ?? data.total_pending ?? 0),
+          verified: Number(data.counts?.verified ?? data.total_verified ?? 0),
+          rejected: Number(data.counts?.rejected ?? data.total_rejected ?? 0),
+        });
+      }
       const mappedVerifications = (Array.isArray(payload) ? payload : [])
         .filter((request) => request.is_verified !== true)
         .map((request, index) => ({
@@ -669,7 +711,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   useEffect(() => {
     fetchFilteredVerifications();
-  }, []);
+  }, [verificationSearchTerm, verificationFilterCollege, verificationFilterDept]);
+
+  useEffect(() => {
+    const visibleIds = new Set(verifications.filter((request) => request.status === 'Pending').map((request) => request.id));
+    setSelectedVerificationIds((selectedIds) => selectedIds.filter((id) => visibleIds.has(id)));
+  }, [verifications]);
 
   const fetchUsersData = async () => {
     try {
@@ -679,7 +726,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
 
       const data = await response.json();
-      if (Array.isArray(data) && data.length > 0) {
+      if (Array.isArray(data)) {
         const mappedUsers = data.map((student, index) => ({
           id: student.id ?? index + 1,
           student_id: student.student_id ?? `STU-${index + 1}`,
@@ -889,6 +936,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     completedOrders: 0,
     totalRevenue: '0 ETB',
     pendingReports: 0,
+    gatewayStatus: {
+      provider: 'Chapa',
+      configured: false,
+      status: 'Not configured',
+      webhookStatus: 'Awaiting successful transaction',
+      lastSuccessfulTransaction: null,
+    },
     trends: {
       months: getDynamicMonths(),
       user_growth: [0, 0, 0, 0, 0, 0],
@@ -947,10 +1001,17 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         completedOrders,
         totalRevenue,
         pendingReports,
+        gatewayStatus: data?.gatewayStatus ?? {
+          provider: 'Chapa',
+          configured: false,
+          status: 'Not configured',
+          webhookStatus: 'Awaiting successful transaction',
+          lastSuccessfulTransaction: null,
+        },
         trends: {
           months: trends.months ?? data?.months ?? getDynamicMonths(),
-          user_growth: hasDatabaseActivity ? (trends.user_growth ?? data?.userGrowth ?? data?.registrations ?? emptyTrends) : emptyTrends,
-          product_uploads: hasDatabaseActivity ? (trends.product_uploads ?? data?.productUploads ?? data?.salesTrend ?? emptyTrends) : emptyTrends,
+          user_growth: hasDatabaseActivity ? (data?.registrations ?? data?.userGrowth ?? trends.user_growth ?? emptyTrends) : emptyTrends,
+          product_uploads: hasDatabaseActivity ? (data?.productUploadsTrend ?? data?.productUploads ?? trends.product_uploads ?? data?.salesTrend ?? emptyTrends) : emptyTrends,
           revenue: hasDatabaseActivity ? (trends.revenue ?? data?.revenueTrend ?? emptyTrends) : emptyTrends,
         },
         order_status_breakdown: Array.isArray(orderStatusBreakdown) ? orderStatusBreakdown : [],
@@ -971,6 +1032,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         completedOrders: 0,
         totalRevenue: '0 ETB',
         pendingReports: 0,
+        gatewayStatus: {
+          provider: 'Chapa',
+          configured: false,
+          status: 'Not configured',
+          webhookStatus: 'Awaiting successful transaction',
+          lastSuccessfulTransaction: null,
+        },
         trends: {
           months: getDynamicMonths(),
           user_growth: [0, 0, 0, 0, 0, 0],
@@ -995,7 +1063,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const userGrowthTrend = metrics.trends?.user_growth ?? [];
   const productUploadsTrend = metrics.trends?.product_uploads ?? [];
   const revenueTrend = (metrics.trends?.revenue ?? []).slice(-6);
-  const lineMaxValue = Math.max(...userGrowthTrend, ...productUploadsTrend, 1);
+  const lineMaxValue = Math.max(
+    ...userGrowthTrend.map((value) => Number(value) || 0),
+    ...productUploadsTrend.map((value) => Number(value) || 0),
+    1,
+  );
+  const userGrowthSvgPath = generateSvgPath(userGrowthTrend, lineMaxValue);
+  const productUploadsSvgPath = generateSvgPath(productUploadsTrend, lineMaxValue);
+  const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, lineMaxValue);
   const maxRevenue = Math.max(...revenueTrend.map((value) => Number(value) || 0), 1);
   const overviewOrderStatus = metrics.order_status_breakdown ?? [];
   const overviewCategories = metrics.popular_categories ?? [];
@@ -1402,7 +1477,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setAddStudentLoading(true);
     setAddStudentError('');
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/register', {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(addStudentForm),
@@ -1473,6 +1548,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ? { ...user, status: newStatus, restriction_reason: reason || user.restriction_reason || '' }
           : user
       ));
+      await fetchUsersData();
 
       setAuditLogs(prev => [{
         id: Date.now(),
@@ -1507,6 +1583,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       if (payload && payload.message) {
         console.info(payload.message);
       }
+      await fetchFilteredVerifications();
     } catch (error) {
       console.error('Failed to update user status:', error);
       window.alert('Unable to update the user status. Please try again.');
@@ -1529,6 +1606,95 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
 
     applyAccountStatusChange(userId, newStatus, '');
+  };
+
+  const handleDeleteUser = async (user) => {
+    if (!user?.id || !window.confirm(`Delete ${user.name}? This action cannot be undone.`)) return;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/users/${user.id}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to delete student.');
+      setStudentUsers((previousUsers) => previousUsers.filter((student) => student.id !== user.id));
+      setSelectedUser(null);
+      setEditingUser(null);
+    } catch (error) {
+      console.error('Failed to delete student:', error);
+      window.alert(error.message || 'Unable to delete student. Please try again.');
+    }
+  };
+
+  const handleBulkApproveUsers = async () => {
+    if (!selectedUserIds.length) return;
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/users/bulk-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(selectedUserIds),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to approve selected users.');
+      setStudentUsers((users) => users.map((user) => selectedUserIds.includes(user.id) ? { ...user, is_verified: true } : user));
+      setSelectedUserIds([]);
+      window.alert(payload.message || 'Selected users approved successfully.');
+    } catch (error) {
+      console.error('Failed to bulk approve users:', error);
+      window.alert(error.message || 'Unable to approve selected users.');
+    }
+  };
+
+  const handleBulkRejectUsers = async () => {
+    if (!selectedUserIds.length) return;
+    const reason = window.prompt('Enter a rejection reason for the selected users:')?.trim();
+    if (!reason) return;
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/users/bulk-reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_ids: selectedUserIds, reason }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to reject selected users.');
+      setStudentUsers((users) => users.map((user) => selectedUserIds.includes(user.id)
+        ? { ...user, is_verified: false, verification_reason: reason }
+        : user));
+      setSelectedUserIds([]);
+      window.alert(payload.message || 'Selected users rejected successfully.');
+    } catch (error) {
+      console.error('Failed to bulk reject users:', error);
+      window.alert(error.message || 'Unable to reject selected users.');
+    }
+  };
+
+  const handleUpdateUser = async (event) => {
+    event.preventDefault();
+    if (!editingUser?.id) return;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/users/${editingUser.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editingUser.name,
+          email: editingUser.email,
+          phone: editingUser.phone || null,
+          college: editingUser.college,
+          department: editingUser.department,
+          is_verified: Boolean(editingUser.is_verified),
+          status: editingUser.status,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to update student.');
+
+      setStudentUsers((previousUsers) => previousUsers.map((student) => (
+        student.id === editingUser.id ? { ...student, ...payload.student } : student
+      )));
+      setEditingUser(null);
+    } catch (error) {
+      console.error('Failed to update student:', error);
+      window.alert(error.message || 'Unable to update student. Please try again.');
+    }
   };
 
   const handleVerifyAction = async (id, actionStatus, reason = '') => {
@@ -1602,6 +1768,52 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
   };
 
+  const handleBulkApprove = async () => {
+    if (!selectedVerificationIds.length) return;
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/verifications/bulk-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(selectedVerificationIds),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to approve selected students.');
+
+      setVerifications((requests) => requests.filter((request) => !selectedVerificationIds.includes(request.id)));
+      setSelectedVerificationIds([]);
+      await fetchFilteredVerifications();
+      window.alert(payload.message || 'Selected students approved successfully.');
+    } catch (error) {
+      console.error('Failed to bulk approve students:', error);
+      window.alert(error.message || 'Unable to approve selected students.');
+    }
+  };
+
+  const handleBulkReject = async () => {
+    if (!selectedVerificationIds.length) return;
+    const reason = window.prompt('Enter a rejection reason for the selected students:')?.trim();
+    if (!reason) return;
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/verifications/bulk-reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_ids: selectedVerificationIds, reason }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to reject selected students.');
+
+      setVerifications((requests) => requests.filter((request) => !selectedVerificationIds.includes(request.id)));
+      setSelectedVerificationIds([]);
+      await fetchFilteredVerifications();
+      window.alert(payload.message || 'Selected students rejected successfully.');
+    } catch (error) {
+      console.error('Failed to bulk reject students:', error);
+      window.alert(error.message || 'Unable to reject selected students.');
+    }
+  };
+
   const handleProductStatus = (id, actionStatus) => {
     setProductsList(prev => prev.map(p =>
       p.id === id ? { ...p, status: actionStatus } : p
@@ -1633,6 +1845,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   const handleOpenRejectModal = (product) => {
+    setBulkRejectMode(false);
     setPendingRejectProduct(product);
     setRejectReason('Inappropriate Image');
     setShowRejectModal(true);
@@ -1642,32 +1855,59 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!pendingRejectProduct) return;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/products/${pendingRejectProduct.id}`, {
+      const targetProducts = bulkRejectMode
+        ? productsList.filter((product) => selectedProductIds.includes(product.id))
+        : [pendingRejectProduct];
+      const responses = await Promise.all(targetProducts.map((product) => fetch(`http://127.0.0.1:8000/api/admin/products/${product.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          status: 'Flagged',
-          reason: rejectReason,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to flag product');
-      }
+        body: JSON.stringify({ status: 'Flagged', reason: rejectReason }),
+      })));
+      const failedResponse = responses.find((response) => !response.ok);
+      if (failedResponse) throw new Error('Failed to flag one or more products');
 
       setProductsList(prev => prev.map(product =>
-        product.id === pendingRejectProduct.id
-          ? { ...product, status: 'Flagged', rejection_reason: rejectReason }
+        targetProducts.some((target) => target.id === product.id)
+          ? { ...product, status: 'Flagged', moderation_reason: rejectReason, rejection_reason: rejectReason }
           : product
       ));
+      setSelectedProductIds([]);
     } catch (error) {
       console.error('Failed to flag product:', error);
       window.alert('Unable to update the product status. Please try again.');
     } finally {
       setShowRejectModal(false);
       setPendingRejectProduct(null);
+      setBulkRejectMode(false);
       setRejectReason('Inappropriate Image');
     }
+  };
+
+  const handleBulkApproveProducts = async () => {
+    if (!selectedProductIds.length) return;
+    try {
+      const responses = await Promise.all(selectedProductIds.map((productId) => fetch(`http://127.0.0.1:8000/api/admin/products/${productId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'Approved' }),
+      })));
+      if (responses.some((response) => !response.ok)) throw new Error('Failed to approve one or more products');
+      setProductsList((products) => products.map((product) => selectedProductIds.includes(product.id)
+        ? { ...product, status: 'Approved', moderation_reason: '', rejection_reason: '' }
+        : product));
+      setSelectedProductIds([]);
+    } catch (error) {
+      console.error('Failed to bulk approve products:', error);
+      window.alert('Unable to approve the selected products. Please try again.');
+    }
+  };
+
+  const handleOpenBulkRejectModal = () => {
+    if (!selectedProductIds.length) return;
+    setBulkRejectMode(true);
+    setPendingRejectProduct({ id: selectedProductIds[0], title: `${selectedProductIds.length} selected products` });
+    setRejectReason('Inappropriate content');
+    setShowRejectModal(true);
   };
 
   // Handle main category creation with API integration
@@ -2480,6 +2720,29 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <p className="mt-1 text-slate-500 text-sm font-semibold">Your quick operational overview across campus marketplace activity.</p>
             </div>
 
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Payment Gateway</p>
+                  <h3 className="mt-1 text-xl font-black text-slate-950">{metrics.gatewayStatus?.provider ?? 'Chapa'} Gateway</h3>
+                </div>
+                <span className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold ${metrics.gatewayStatus?.configured ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                  <span className={`h-2.5 w-2.5 rounded-full ${metrics.gatewayStatus?.configured ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                  {metrics.gatewayStatus?.status ?? 'Not configured'}
+                </span>
+              </div>
+              <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
+                <div className="rounded-2xl bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Webhook</p>
+                  <p className="mt-1 font-bold text-slate-900">{metrics.gatewayStatus?.webhookStatus ?? 'Awaiting successful transaction'}</p>
+                </div>
+                <div className="rounded-2xl bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Latest Successful Transaction</p>
+                  <p className="mt-1 font-bold text-slate-900">{metrics.gatewayStatus?.lastSuccessfulTransaction ? new Date(metrics.gatewayStatus.lastSuccessfulTransaction).toLocaleString() : 'None in the last 24 hours'}</p>
+                </div>
+              </div>
+            </div>
+
             {/* 8 Core KPI Cards Grid */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="rounded-[24px] bg-sky-50/50 border border-sky-100 p-5">
@@ -2529,11 +2792,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       </linearGradient>
                     </defs>
                     <path
-                      d={`${generateLinePath(userGrowthTrend, lineMaxValue)} L 100,100 L 0,100 Z`}
+                      d={userGrowthAreaSvgPath}
                       fill="url(#growthGrad)"
                     />
-                    <path d={generateLinePath(userGrowthTrend, lineMaxValue)} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
-                    <path d={generateLinePath(productUploadsTrend, lineMaxValue)} fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="3,3" />
+                    <path d={userGrowthSvgPath} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
+                    <path d={productUploadsSvgPath} fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="3,3" />
                   </svg>
                 </div>
                 <div className="mt-4 flex items-center justify-between text-xs text-slate-500 font-semibold px-1">
@@ -2544,18 +2807,24 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">Sales & Revenue Trend</h3>
-                <div className="h-44 w-full flex items-end justify-between gap-3 px-2 mt-2">
-                  {revenueTrend.map((value, index) => {
-                    const numericValue = Number(value) || 0;
-                    const height = (numericValue / maxRevenue) * 100;
-                    return (
-                      <div key={`revenue-${index}`} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
-                        <div className="w-full rounded-t-lg bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all duration-300" style={{ height: `${height}%` }} />
-                        <span className="text-[10px] text-slate-500 font-bold">{trendMonths[index]}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                {Number(metrics.totalRevenue ?? metrics.total_revenue ?? 0) === 0 ? (
+                  <div className="flex h-44 items-center justify-center text-center text-sm font-semibold text-slate-500">
+                    Revenue activity will appear here after successful transactions are recorded.
+                  </div>
+                ) : (
+                  <div className="h-44 w-full flex items-end justify-between gap-3 px-2 mt-2">
+                    {revenueTrend.map((value, index) => {
+                      const numericValue = Number(value) || 0;
+                      const height = (numericValue / maxRevenue) * 100;
+                      return (
+                        <div key={`revenue-${index}`} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
+                          <div className="w-full rounded-t-lg bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all duration-300" style={{ height: `${height}%` }} />
+                          <span className="text-[10px] text-slate-500 font-bold">{trendMonths[index]}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
@@ -2620,6 +2889,34 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
               </div>
 
+            </div>
+
+            <div className="rounded-[30px] border border-slate-200 bg-[#111c3a] p-5 text-white shadow-xl">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-300">Audit Feed</p>
+                  <h3 className="mt-1 text-xl font-black">Recent Administrative Activity</h3>
+                </div>
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300">Live</span>
+              </div>
+              <div className="space-y-3">
+                {(metrics.recent_activity ?? []).length === 0 ? (
+                  <p className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">No administrative activity has been recorded yet.</p>
+                ) : (
+                  (metrics.recent_activity ?? []).map((item, index) => (
+                    <div key={item.id ?? `${item.time}-${index}`} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+                      <div className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
+                      <div className="flex-1">
+                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                          <p className="text-sm font-semibold text-white">{item.action || item.description || 'Administrative action'}</p>
+                          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-300">{item.time || '--:--'}</span>
+                        </div>
+                        <p className="mt-1 text-xs text-slate-300">{item.user || item.username || 'System'}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
           </div>
@@ -2726,11 +3023,20 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
             </div>
 
+            <div className="flex flex-col gap-3 rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm font-semibold text-slate-500">{selectedUserIds.length} user(s) selected from the filtered results.</p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={handleBulkApproveUsers} disabled={!selectedUserIds.length} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Approve Selected</button>
+                <button type="button" onClick={handleBulkRejectUsers} disabled={!selectedUserIds.length} className="rounded-full bg-rose-500 px-4 py-2 text-xs font-bold text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-300">Reject Selected</button>
+              </div>
+            </div>
+
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="min-w-full text-left text-sm text-slate-700">
                   <thead className="border-b border-slate-200 text-slate-500">
                     <tr>
+                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={filteredUsers.length > 0 && filteredUsers.every((user) => selectedUserIds.includes(user.id))} onChange={(event) => setSelectedUserIds(event.target.checked ? filteredUsers.map((user) => user.id) : [])} aria-label="Select all filtered students" /></th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Student</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">College</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Department</th>
@@ -2743,6 +3049,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <tbody>
                     {displayedUsers.map((student) => (
                       <tr key={student.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
+                        <td className="px-4 py-4"><input type="checkbox" checked={selectedUserIds.includes(student.id)} onChange={(event) => setSelectedUserIds((ids) => event.target.checked ? [...ids, student.id] : ids.filter((id) => id !== student.id))} aria-label={`Select ${student.name}`} /></td>
                         <td className="px-4 py-4">
                           <div className="font-bold text-slate-900">{student.name}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{student.student_id} • {student.email}</div>
@@ -2783,6 +3090,23 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                               className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer"
                             >
                               Details
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingUser({ ...student });
+                                fetchDepartmentsData(student.college);
+                              }}
+                              className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 transition cursor-pointer"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUser(student)}
+                              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
+                            >
+                              Delete
                             </button>
                             <select
                               value={student.status}
@@ -2871,6 +3195,68 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     Close Log View
                   </button>
                 </div>
+              </div>
+            )}
+
+            {editingUser && (
+              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1002] flex items-center justify-center p-4">
+                <form onSubmit={handleUpdateUser} className="relative max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[28px] bg-white p-8 shadow-2xl border border-slate-100 animate-fade-in">
+                  <div className="flex items-center justify-between border-b pb-4 mb-6">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-600">User Management</p>
+                      <h4 className="mt-1 text-xl font-bold text-slate-900">Edit Student Profile</h4>
+                      <p className="mt-1 text-xs text-slate-500">{editingUser.student_id}</p>
+                    </div>
+                    <button type="button" onClick={() => setEditingUser(null)} className="rounded-full bg-slate-100 p-2 hover:bg-slate-200 transition text-slate-500 font-bold" aria-label="Close edit user modal">✕</button>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Name
+                      <input required value={editingUser.name || ''} onChange={(event) => setEditingUser({ ...editingUser, name: event.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal normal-case text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none" />
+                    </label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Email
+                      <input required type="email" value={editingUser.email || ''} onChange={(event) => setEditingUser({ ...editingUser, email: event.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal normal-case text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none" />
+                    </label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Phone
+                      <input value={editingUser.phone || ''} onChange={(event) => setEditingUser({ ...editingUser, phone: event.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal normal-case text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none" />
+                    </label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      College
+                      <select required value={editingUser.college || ''} onChange={(event) => { const college = event.target.value; setEditingUser({ ...editingUser, college, department: '' }); fetchDepartmentsData(college); }} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal normal-case text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none">
+                        <option value="">Select college</option>
+                        {dbCollegesList.map((college) => <option key={college} value={college}>{college}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Department
+                      <select required value={editingUser.department || ''} onChange={(event) => setEditingUser({ ...editingUser, department: event.target.value })} disabled={!editingUser.college || !dbDepartmentsList.length} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal normal-case text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-60">
+                        <option value="">Select department</option>
+                        {dbDepartmentsList.map((department) => <option key={department} value={department}>{department}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                      Enforcement Status
+                      <select value={editingUser.status || 'Active'} onChange={(event) => setEditingUser({ ...editingUser, status: event.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal normal-case text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none">
+                        <option value="Active">Active</option>
+                        <option value="Suspended">Suspended</option>
+                        <option value="Deactivated">Deactivated</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <label className="mt-5 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-bold text-slate-700">
+                    <input type="checkbox" checked={Boolean(editingUser.is_verified)} onChange={(event) => setEditingUser({ ...editingUser, is_verified: event.target.checked })} className="h-4 w-4 accent-emerald-500" />
+                    Student identity is verified
+                  </label>
+
+                  <div className="mt-6 flex gap-3">
+                    <button type="button" onClick={() => setEditingUser(null)} className="flex-1 rounded-full border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 transition">Cancel</button>
+                    <button type="submit" className="flex-1 rounded-full bg-sky-600 px-4 py-3 text-sm font-bold text-white hover:bg-sky-700 transition">Save Changes</button>
+                  </div>
+                </form>
               </div>
             )}
 
@@ -3028,8 +3414,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
       case 'student-verification': {
         const pendingVerifications = verifications.filter(v => v.status === 'Pending');
-        const verifiedVerifications = verifications.filter(v => v.status === 'Verified');
-        const rejectedVerifications = verifications.filter(v => v.status === 'Rejected');
+        const filtersActive = Boolean(verificationSearchTerm.trim() || verificationFilterCollege !== 'All' || verificationFilterDept !== 'All');
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -3041,15 +3426,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             <div className="grid gap-4 sm:grid-cols-3">
               <div className="rounded-[24px] bg-amber-50/50 border border-amber-100 p-5">
                 <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Pending Requests</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{pendingVerifications.length} Students</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{verificationMetrics.pending} Students</p>
               </div>
               <div className="rounded-[24px] bg-emerald-50/50 border border-emerald-100 p-5">
                 <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Verified Accounts</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{verifiedVerifications.length} Students</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{verificationMetrics.verified} Students</p>
               </div>
               <div className="rounded-[24px] bg-slate-100/50 border border-slate-200/60 p-5">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Rejected Requests</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{rejectedVerifications.length} Students</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{verificationMetrics.rejected} Students</p>
               </div>
             </div>
 
@@ -3089,71 +3474,64 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     ))}
                   </select>
                 </div>
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    onClick={fetchFilteredVerifications}
-                    className="w-full rounded-2xl bg-[#111c3a] hover:bg-[#1a2d5e] py-3 text-sm font-bold text-white transition"
-                  >
-                    🔍 Search
-                  </button>
-                </div>
+                <div className="flex items-end text-sm font-semibold text-slate-500">Results update automatically as filters change.</div>
               </div>
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-950 border-b pb-3 mb-4">Pending Identity Verifications</h3>
+              <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                <h3 className="text-lg font-bold text-slate-950">Pending Identity Verifications</h3>
+                <button
+                  type="button"
+                  onClick={handleBulkApprove}
+                  disabled={!selectedVerificationIds.length}
+                  className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  Approve Selected ({selectedVerificationIds.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBulkReject}
+                  disabled={!selectedVerificationIds.length}
+                  className="rounded-full bg-rose-500 px-4 py-2 text-xs font-bold text-white transition hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+                >
+                  Reject Selected ({selectedVerificationIds.length})
+                </button>
+              </div>
 
               {pendingVerifications.length === 0 ? (
                 <div className="text-center py-10 text-slate-400 font-semibold">
                   <span className="text-4xl">🎓</span>
-                  <p className="mt-3">No pending verification requests match the current filters.</p>
+                  <p className="mt-3">{filtersActive ? 'No pending verification requests match the current filters.' : 'All caught up! No student verifications are pending at this moment.'}</p>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {pendingVerifications.map((req) => (
-                    <div key={req.id} className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-slate-50/50 p-5 sm:flex-row sm:items-center sm:justify-between transition hover:shadow-sm">
-                      <div>
-                        <div className="text-xs uppercase tracking-widest text-slate-400 font-bold">{req.department}</div>
-                        <h4 className="mt-1.5 text-lg font-bold text-slate-900">{req.name}</h4>
-                        <p className="text-xs text-slate-500 mt-1">ID: {req.student_id} • {req.email}</p>
-                        <span className="inline-block mt-3 text-xs bg-amber-50 text-amber-700 font-bold px-3 py-1 rounded-full border border-amber-100">Pending Review</span>
-                      </div>
-                      <div className="flex flex-wrap gap-2 justify-end">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedVerificationRequest(req);
-                            setSelectedIDPhoto(req.uploaded_id_card);
-                            setVerificationZoom(1);
-                            setVerificationRotation(0);
-                          }}
-                          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer"
-                        >
-                          View ID Card
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleVerifyAction(req.id, 'Verified')}
-                          className="rounded-full bg-emerald-500 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-600 transition shadow-xs cursor-pointer"
-                        >
-                          Verify Student
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedVerificationRequest(req);
-                            setSelectedIDPhoto(req.uploaded_id_card);
-                            setVerificationZoom(1);
-                            setVerificationRotation(0);
-                          }}
-                          className="rounded-full border border-rose-200 bg-rose-50 px-4 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
-                        >
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-left text-sm text-slate-700">
+                    <thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-3 py-3"><input type="checkbox" checked={pendingVerifications.length > 0 && pendingVerifications.every((request) => selectedVerificationIds.includes(request.id))} onChange={(event) => setSelectedVerificationIds(event.target.checked ? pendingVerifications.map((request) => request.id) : [])} aria-label="Select all pending verifications" /></th>
+                        <th className="px-3 py-3">Student</th>
+                        <th className="px-3 py-3">College</th>
+                        <th className="px-3 py-3">Department</th>
+                        <th className="px-3 py-3">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pendingVerifications.map((req) => (
+                        <tr key={req.id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="px-3 py-4"><input type="checkbox" checked={selectedVerificationIds.includes(req.id)} onChange={(event) => setSelectedVerificationIds((ids) => event.target.checked ? [...ids, req.id] : ids.filter((id) => id !== req.id))} aria-label={`Select ${req.name}`} /></td>
+                          <td className="px-3 py-4"><p className="font-bold text-slate-900">{req.name}</p><p className="text-xs text-slate-500">{req.student_id} • {req.email}</p></td>
+                          <td className="px-3 py-4">{req.college || 'Not provided'}</td>
+                          <td className="px-3 py-4">{req.department || 'General Studies'}</td>
+                          <td className="px-3 py-4"><div className="flex flex-wrap gap-2">
+                            <button type="button" onClick={() => { setSelectedVerificationRequest(req); setSelectedIDPhoto(req.uploaded_id_card); setVerificationZoom(1); setVerificationRotation(0); }} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">View ID Card</button>
+                            <button type="button" onClick={() => handleVerifyAction(req.id, 'Verified')} className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-600">Verify</button>
+                            <button type="button" onClick={() => { setSelectedVerificationRequest(req); setSelectedIDPhoto(req.uploaded_id_card); setVerificationZoom(1); setVerificationRotation(0); }} className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100">Reject</button>
+                          </div></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -3341,6 +3719,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         });
         const totalProductPages = Math.max(1, Math.ceil(filteredProds.length / PRODUCTS_PER_PAGE));
         const displayedProducts = filteredProds.slice((productPage - 1) * PRODUCTS_PER_PAGE, productPage * PRODUCTS_PER_PAGE);
+        const displayedPendingProducts = displayedProducts.filter((product) => product.status === 'Pending');
         const handleExportProductsCSV = () => exportCSVFile('products.csv', ['ID', 'Product Title', 'Seller ID', 'Category', 'Subcategory', 'Price', 'Status'], filteredProds.map((product) => [
           String(product.id || ''), String(product.title || ''), String(product.seller_id || product.seller || ''), String(product.category || ''),
           String(product.subcategory || ''), String(product.price || ''), String(product.status || ''),
@@ -3433,10 +3812,21 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
+              <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-950">Product Review Queue</h3>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">Select pending products for a batch moderation action.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={handleBulkApproveProducts} disabled={!selectedProductIds.length} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Approve Selected</button>
+                  <button type="button" onClick={handleOpenBulkRejectModal} disabled={!selectedProductIds.length} className="rounded-full bg-rose-500 px-4 py-2 text-xs font-bold text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-300">Reject Selected</button>
+                </div>
+              </div>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-left text-sm text-slate-700">
                   <thead className="border-b border-slate-200 text-slate-500">
                     <tr>
+                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={displayedPendingProducts.length > 0 && displayedPendingProducts.every((product) => selectedProductIds.includes(product.id))} onChange={(event) => setSelectedProductIds(event.target.checked ? displayedPendingProducts.map((product) => product.id) : [])} aria-label="Select pending products" /></th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Product</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Seller ID</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Condition</th>
@@ -3447,11 +3837,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <tbody>
                     {displayedProducts.map((product) => (
                       <tr key={product.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
+                        <td className="px-4 py-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} disabled={product.status !== 'Pending'} onChange={(event) => setSelectedProductIds((ids) => event.target.checked ? [...ids, product.id] : ids.filter((id) => id !== product.id))} aria-label={`Select ${product.title}`} /></td>
                         <td className="px-4 py-4">
                           <div className="flex items-center gap-3">
                             <img
                               src={product.image || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80'}
                               alt={product.title}
+                              onError={(event) => {
+                                event.currentTarget.onerror = null;
+                                event.currentTarget.src = PRODUCT_PLACEHOLDER;
+                              }}
                               className="h-14 w-14 rounded-xl object-cover border border-slate-200"
                             />
                             <div>
