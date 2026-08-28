@@ -1,10 +1,10 @@
 from __future__ import annotations
-from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import event, func, inspect, or_, text
+from sqlalchemy import case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
@@ -41,7 +41,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
-    PasswordReset, SystemSetting, Review, LoginAttempt
+    PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
+    AdminSession, AdminLoginHistory
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 
@@ -50,8 +51,8 @@ app = FastAPI(title="Campace Backend")
 
 # React ßîìßèòßèÖßèÉßë╡ ßêÿßììßëÇßîâ (CORS)
 origins = [
-    "http://localhost:5173",      # Γ£ô React frontend (dev)
-    "http://127.0.0.1:5173",      # Γ£ô Alternative localhost
+    "http://localhost:5173",      
+    "http://127.0.0.1:5173",     
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8000",
@@ -578,6 +579,26 @@ class AdminLoginOtpRequest(BaseModel):
     otp_code: str
 
 
+class AdminSessionRequest(BaseModel):
+    session_token: str
+
+
+class AdminTwoFactorRequest(BaseModel):
+    session_token: Optional[str] = None
+
+
+class AdminProfileUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    full_name: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
+    confirm_password: Optional[str] = None
+    logout_all_sessions: bool = False
+    current_session_token: Optional[str] = None
+
+
 class ForgotPasswordRequest(BaseModel):
     email: str
 
@@ -669,13 +690,24 @@ class ProductModerationUpdate(BaseModel):
     reason: Optional[str] = None
 
 
+class AdminProductDetailsUpdate(BaseModel):
+    title: str
+    price: str
+    category: str
+    subcategory: Optional[str] = None
+    description: Optional[str] = None
+    condition: Optional[str] = None
+
+
 class ReportCreate(BaseModel):
     product_id: Optional[int] = None
     student_id: Optional[str] = None
+    seller_id: Optional[str] = None
     student_name: str
     email: str
     category: str
     issue: str
+    evidence_image: Optional[str] = None
 
 
 class WishlistCreate(BaseModel):
@@ -751,6 +783,11 @@ class CheckoutRequest(BaseModel):
 
 class AIChatRequest(BaseModel):
     message: str
+
+
+class AIRecommendationClickRequest(BaseModel):
+    student_id: str
+    product_id: int
 
 
 class AITranslateRequest(BaseModel):
@@ -946,7 +983,7 @@ def _record_failed_login(db: Session, identifier: str, settings: SecuritySetting
         db.add(attempt)
     attempt.failed_attempts += 1
     if attempt.failed_attempts >= settings.max_login_attempts:
-        attempt.locked_until = datetime.utcnow() + timedelta(minutes=settings.session_timeout)
+        attempt.locked_until = datetime.utcnow() + timedelta(minutes=15)
     db.commit()
 
 
@@ -971,6 +1008,42 @@ def _create_session_token(subject: str, role: str, timeout_minutes: int, secret:
     unsigned_token = f"{encode(header)}.{encode(payload)}"
     signature = hmac.new(secret.encode(), unsigned_token.encode(), hashlib.sha256).digest()
     return f"{unsigned_token}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+def _record_admin_login_event(db: Session, admin_id: Optional[int], event_type: str, request: Request) -> None:
+    db.add(AdminLoginHistory(
+        admin_id=admin_id,
+        event_type=event_type,
+        ip_address=request.client.host if request.client else None,
+        device_browser=request.headers.get("user-agent"),
+    ))
+
+
+def _create_admin_session(db: Session, admin: Admin, token: str, request: Request) -> None:
+    db.add(AdminSession(
+        admin_id=admin.id,
+        session_token=token,
+        ip_address=request.client.host if request.client else None,
+        device_browser=request.headers.get("user-agent"),
+        is_active=True,
+    ))
+
+
+def _validate_admin_password(password: str) -> None:
+    if len(password) < 8 or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password) or not re.search(r"\d", password) or not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters and include uppercase, lowercase, number, and special character.")
+
+
+def _add_admin_audit(db: Session, admin: Admin, request: Request, action: str, description: str) -> None:
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action=action,
+        entity_type="Admin",
+        entity_id=admin.id,
+        description=description,
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
 
 
 def _notifications_enabled(db: Optional[Session], key: str) -> bool:
@@ -1029,6 +1102,33 @@ def ensure_database_compatibility(db: Session) -> None:
         admin_column = db.execute(text("SHOW COLUMNS FROM admins LIKE 'two_factor_enabled'"))
         if admin_column.fetchone() is None:
             db.execute(text("ALTER TABLE admins ADD COLUMN two_factor_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
+
+        for column_name, definition in {
+            "full_name": "VARCHAR(150) NULL",
+            "phone": "VARCHAR(30) NULL",
+            "failed_login_attempts": "INT NOT NULL DEFAULT 0",
+            "locked_until": "DATETIME NULL",
+            "two_factor_secret": "VARCHAR(64) NULL",
+            "backup_codes": "TEXT NULL",
+        }.items():
+            column = db.execute(text(f"SHOW COLUMNS FROM admins LIKE '{column_name}'"))
+            if column.fetchone() is None:
+                db.execute(text(f"ALTER TABLE admins ADD COLUMN {column_name} {definition}"))
+
+        for table_name, definition in {
+            "admin_sessions": """CREATE TABLE IF NOT EXISTS admin_sessions (
+                id INT PRIMARY KEY AUTO_INCREMENT, admin_id INT NOT NULL, session_token VARCHAR(500) NOT NULL UNIQUE,
+                ip_address VARCHAR(50) NULL, device_browser VARCHAR(255) NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                last_active DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX (admin_id), FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
+            )""",
+            "admin_login_history": """CREATE TABLE IF NOT EXISTS admin_login_history (
+                id INT PRIMARY KEY AUTO_INCREMENT, admin_id INT NULL, event_type VARCHAR(50) NOT NULL,
+                ip_address VARCHAR(50) NULL, device_browser VARCHAR(255) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX (admin_id), FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
+            )""",
+        }.items():
+            db.execute(text(definition))
 
         for column_name, definition in {
             "pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
@@ -1188,7 +1288,7 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
 
 # 2. የጋራ የሎጊን ኤፒአይ ኤንድፖይንት (POST /api/login)
 @app.post("/api/login")
-def login_user(data: LoginRequest, db: Session = Depends(get_db)):
+def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     security = get_security_settings(db)
     identifier = _login_identifier(data.id_or_email)
     _check_login_lock(db, identifier, security)
@@ -1197,8 +1297,15 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(
         (Admin.username == data.id_or_email) | (Admin.email == data.id_or_email)
     ).first()
+
+    if admin and admin.locked_until and admin.locked_until > datetime.utcnow():
+        _record_admin_login_event(db, admin.id, "login_locked", request)
+        db.commit()
+        raise HTTPException(status_code=429, detail="Administrator account is temporarily locked. Try again later.")
     
     if admin and verify_password(data.password, admin.password_hash):
+        admin.failed_login_attempts = 0
+        admin.locked_until = None
         _reset_login_attempts(db, identifier)
         avatar_filename = f"{admin.username}.jpg"
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
@@ -1225,7 +1332,10 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
             }
         session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
         token = _create_session_token(admin.username, "admin", security.session_timeout, session_secret)
-        return {"role": "admin", "access_token": token, "user": {"name": admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
+        _create_admin_session(db, admin, token, request)
+        _record_admin_login_event(db, admin.id, "login_success", request)
+        db.commit()
+        return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
 
     if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
         raise HTTPException(
@@ -1256,12 +1366,24 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         token = _create_session_token(student.student_id, "student", security.session_timeout, session_secret)
         return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified)}}
 
+    if admin:
+        admin.failed_login_attempts = int(admin.failed_login_attempts or 0) + 1
+        if admin.failed_login_attempts >= 5:
+            admin.locked_until = datetime.utcnow() + timedelta(minutes=15)
+            _record_admin_login_event(db, admin.id, "login_failed_locked", request)
+            try:
+                send_otp_email(admin.email, "Admin account locked after 5 failed login attempts")
+            except Exception:
+                pass
+        else:
+            _record_admin_login_event(db, admin.id, "login_failed", request)
+        db.commit()
     _record_failed_login(db, identifier, security)
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
 
 @app.post("/api/login/verify-otp")
-def verify_admin_login_otp(request: AdminLoginOtpRequest, db: Session = Depends(get_db)):
+def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request, db: Session = Depends(get_db)):
     admin = db.query(Admin).filter(Admin.email.ilike(request.email.strip().lower())).first()
     if not admin:
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
@@ -1279,9 +1401,11 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, db: Session = Depends(
     if not otp_record:
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     otp_record.is_used = True
-    db.commit()
     token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), os.getenv("SESSION_SECRET", "campace-session-secret"))
-    return {"role": "admin", "access_token": token, "user": {"name": admin.username, "username": admin.username, "email": admin.email}}
+    _create_admin_session(db, admin, token, http_request)
+    _record_admin_login_event(db, admin.id, "login_success_2fa", http_request)
+    db.commit()
+    return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}}
 
 # 2.3 የይለፍ ቃል መርሻ ኮድ መላኪያ (POST /api/auth/forgot-password)
 @app.post("/api/auth/forgot-password")
@@ -1407,7 +1531,9 @@ def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_
 
     return {
         "username": admin.username,
+        "full_name": admin.full_name or admin.username,
         "email": admin.email,
+        "phone": admin.phone or "",
         "role": admin.role,
         "status": admin.status,
         "last_login": admin.last_login.isoformat() if admin.last_login else datetime.utcnow().isoformat(),
@@ -1419,32 +1545,36 @@ def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_
 
 
 @app.put("/api/admin/profile")
-def update_admin_profile(payload: dict, db: Session = Depends(get_db)):
-    print(f"DEBUG update_admin_profile payload: {payload}", flush=True)
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Profile payload must be a JSON object.")
-
-    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Session = Depends(get_db)):
+    admin = None
+    if payload.current_session_token:
+        admin, _ = _admin_for_session(db, payload.current_session_token)
+    if not admin:
+        admin = db.query(Admin).filter(Admin.username == payload.username).first()
+    if not admin:
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
     if not admin:
         raise HTTPException(status_code=404, detail="Admin profile not found.")
 
-    username = payload.get("username") or admin.username
-    email = payload.get("email") or admin.email
-    new_password = payload.get("new_password")
-    confirm_password = payload.get("confirm_password")
-    current_password = payload.get("current_password")
-    two_factor_enabled = payload.get("two_factor_enabled", admin.two_factor_enabled if hasattr(admin, "two_factor_enabled") else True)
+    username = (payload.username or admin.username).strip()
+    email = (payload.email or admin.email).strip().lower()
+    new_password = payload.new_password
+    current_password = payload.current_password
+    full_name = (payload.full_name if payload.full_name is not None else admin.full_name or admin.username).strip()
+    phone = (payload.phone if payload.phone is not None else admin.phone or "").strip()
 
     if new_password:
         if not current_password:
             raise HTTPException(status_code=400, detail="Current password is required to update the password.")
         if not verify_password(current_password, admin.password_hash):
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
-        if new_password != confirm_password:
+        if new_password != payload.confirm_password:
             raise HTTPException(status_code=400, detail="New password and confirm password do not match.")
+        _validate_admin_password(new_password)
         admin.password_hash = hash_password(new_password)
 
-    admin.two_factor_enabled = bool(two_factor_enabled)
+    admin.full_name = full_name
+    admin.phone = phone or None
 
     if username and username != admin.username:
         existing = db.query(Admin).filter(Admin.username == username).first()
@@ -1458,19 +1588,22 @@ def update_admin_profile(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Email is already in use.")
         admin.email = email
 
-    admin.last_login = datetime.utcnow()
+    current_token = payload.current_session_token
+    if new_password or payload.logout_all_sessions:
+        db.query(AdminSession).filter(
+            AdminSession.admin_id == admin.id,
+            AdminSession.is_active.is_(True),
+            AdminSession.session_token != current_token,
+        ).update({"is_active": False, "last_active": datetime.utcnow()}, synchronize_session=False)
     db.commit()
     db.refresh(admin)
 
-    db.add(AuditLog(
-        admin_id=admin.id,
-        action="Admin Profile Updated",
-        entity_type="Admin",
-        entity_id=admin.id,
-        description="Administrator updated personal account information and access settings.",
-        status="SUCCESS",
-        ip_address="127.0.0.1",
-    ))
+    _add_admin_audit(db, admin, request, "Admin Profile Updated", "Administrator updated personal information.")
+    if new_password:
+        _record_admin_login_event(db, admin.id, "password_changed", request)
+        _add_admin_audit(db, admin, request, "Admin Password Changed", "Administrator changed their password and terminated other sessions.")
+    if payload.logout_all_sessions:
+        _add_admin_audit(db, admin, request, "Admin Sessions Terminated", "Administrator requested logout from all other active sessions.")
     db.commit()
 
     return {
@@ -1478,12 +1611,105 @@ def update_admin_profile(payload: dict, db: Session = Depends(get_db)):
         "message": "Profile updated successfully",
         "username": admin.username,
         "email": admin.email,
-        "two_factor_enabled": bool(two_factor_enabled),
+        "full_name": admin.full_name,
+        "phone": admin.phone or "",
+        "two_factor_enabled": bool(admin.two_factor_enabled),
     }
+
+
+def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin, AdminSession]:
+    if not session_token:
+        raise HTTPException(status_code=401, detail="An admin session token is required.")
+    session = db.query(AdminSession).filter(
+        AdminSession.session_token == session_token,
+        AdminSession.is_active.is_(True),
+    ).first()
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or inactive admin session.")
+    admin = db.query(Admin).filter(Admin.id == session.admin_id).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin profile not found.")
+    session.last_active = datetime.utcnow()
+    return admin, session
+
+
+@app.get("/api/admin/sessions")
+def get_admin_sessions(session_token: str, db: Session = Depends(get_db)):
+    admin, current_session = _admin_for_session(db, session_token)
+    sessions = db.query(AdminSession).filter(AdminSession.admin_id == admin.id, AdminSession.is_active.is_(True)).order_by(AdminSession.last_active.desc()).all()
+    db.commit()
+    return [{
+        "id": item.id,
+        "is_current": item.id == current_session.id,
+        "ip_address": item.ip_address,
+        "device_browser": item.device_browser,
+        "last_active": item.last_active.isoformat() if item.last_active else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    } for item in sessions]
+
+
+@app.post("/api/admin/sessions/logout-others")
+def logout_other_admin_sessions(payload: AdminSessionRequest, request: Request, db: Session = Depends(get_db)):
+    admin, current_session = _admin_for_session(db, payload.session_token)
+    invalidated = db.query(AdminSession).filter(
+        AdminSession.admin_id == admin.id,
+        AdminSession.is_active.is_(True),
+        AdminSession.id != current_session.id,
+    ).update({"is_active": False, "last_active": datetime.utcnow()}, synchronize_session=False)
+    _record_admin_login_event(db, admin.id, "sessions_terminated", request)
+    db.add(AuditLog(admin_id=admin.id, action="Admin Sessions Terminated", entity_type="Admin", entity_id=admin.id, description=f"Terminated {invalidated} other active admin sessions.", status="SUCCESS", ip_address=request.client.host if request.client else None))
+    db.commit()
+    return {"message": "Other active sessions were logged out.", "terminated": invalidated}
+
+
+@app.get("/api/admin/login-history")
+def get_admin_login_history(session_token: str, db: Session = Depends(get_db)):
+    admin, _ = _admin_for_session(db, session_token)
+    return [{
+        "id": item.id,
+        "event_type": item.event_type,
+        "ip_address": item.ip_address,
+        "device_browser": item.device_browser,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    } for item in db.query(AdminLoginHistory).filter(AdminLoginHistory.admin_id == admin.id).order_by(AdminLoginHistory.created_at.desc()).limit(100).all()]
+
+
+@app.post("/api/admin/2fa/setup")
+def setup_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
+    admin, _ = _admin_for_session(db, payload.session_token)
+    secret = base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=")
+    admin.two_factor_secret = secret
+    admin.two_factor_enabled = True
+    _record_admin_login_event(db, admin.id, "2fa_enabled", request)
+    db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Enabled", entity_type="Admin", entity_id=admin.id, description="Authenticator setup enabled.", status="SUCCESS", ip_address=request.client.host if request.client else None))
+    db.commit()
+    return {"enabled": True, "secret": secret}
+
+
+@app.post("/api/admin/2fa/backup-codes")
+def generate_admin_backup_codes(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
+    admin, _ = _admin_for_session(db, payload.session_token)
+    codes = [uuid.uuid4().hex[:10].upper() for _ in range(8)]
+    admin.backup_codes = json.dumps(codes)
+    _record_admin_login_event(db, admin.id, "backup_codes_generated", request)
+    db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Backup Codes Generated", entity_type="Admin", entity_id=admin.id, description="Generated a new set of authenticator backup codes.", status="SUCCESS", ip_address=request.client.host if request.client else None))
+    db.commit()
+    return {"backup_codes": codes}
+
+
+@app.post("/api/admin/2fa/disable")
+def disable_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
+    admin, _ = _admin_for_session(db, payload.session_token)
+    admin.two_factor_enabled = False
+    _record_admin_login_event(db, admin.id, "2fa_disabled", request)
+    db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Disabled", entity_type="Admin", entity_id=admin.id, description="Authenticator-based two-factor authentication disabled.", status="SUCCESS", ip_address=request.client.host if request.client else None))
+    db.commit()
+    return {"enabled": False}
 
 
 @app.post("/api/admin/upload-avatar")
 async def upload_admin_avatar(
+    request: Request,
     username: str = Form(...),
     image: UploadFile = File(...),
     db: Session = Depends(get_db)
@@ -1515,6 +1741,8 @@ async def upload_admin_avatar(
         await image.close()
 
     image_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_name}"
+    _add_admin_audit(db, admin, request, "Admin Avatar Updated", "Administrator updated their profile photo.")
+    db.commit()
     return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
 
 
@@ -1605,6 +1833,9 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         db.commit()
 
         return {"success": True, "message": "Settings saved successfully", "settings": normalized, "changes": changes}
+    except HTTPException:
+        db.rollback()
+        raise
     except HTTPException:
         db.rollback()
         raise
@@ -3044,7 +3275,17 @@ How can I help you today? 🚀"""
 
 # 5. ተማሪዎች አዲስ ቅሬታ ወይም የድጋፍ ፎርም የሚልኩበት ኤፒአይ (POST /api/student/report)
 @app.post("/api/student/report", status_code=status.HTTP_201_CREATED)
-def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
+def create_report(
+    student_name: str = Form(...),
+    email: str = Form(...),
+    category: str = Form(...),
+    issue: str = Form(...),
+    product_id: Optional[int] = Form(None),
+    student_id: Optional[str] = Form(None),
+    seller_id: Optional[str] = Form(None),
+    evidence_image: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+):
     try:
         allow_student_reports = _setting_bool(
             _get_setting_value(
@@ -3055,27 +3296,49 @@ def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
             ),
             DEFAULT_SETTINGS_BLOCKS["moderation"]["allowStudentReports"],
         )
-        if report_data.product_id is not None and not allow_student_reports:
+        if product_id is not None and not allow_student_reports:
             raise HTTPException(status_code=403, detail="Product reporting is currently disabled.")
 
-        provided_student_id = report_data.student_id.strip() if report_data.student_id else None
+        provided_student_id = student_id.strip() if student_id else None
         student = None
         if provided_student_id:
             student = db.query(Student).filter(Student.student_id == provided_student_id).first()
 
         product = None
-        if report_data.product_id is not None:
-            product = db.query(Product).filter(Product.id == report_data.product_id).first()
+        if product_id is not None:
+            product = db.query(Product).filter(Product.id == product_id).first()
             if not product:
                 raise HTTPException(status_code=404, detail="Product not found.")
+
+        evidence_url = None
+        if evidence_image and evidence_image.filename:
+            allowed_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".jfif"}
+            file_ext = os.path.splitext(evidence_image.filename)[1].lower()
+            if file_ext not in allowed_extensions:
+                raise HTTPException(status_code=400, detail="Invalid evidence image format.")
+            evidence_image.file.seek(0, os.SEEK_END)
+            evidence_size = evidence_image.file.tell()
+            evidence_image.file.seek(0)
+            max_evidence_size = _parse_size_bytes(_get_setting_value(
+                db, "marketplace", "maxImageSize", DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImageSize"]
+            ))
+            if evidence_size > max_evidence_size:
+                raise HTTPException(status_code=400, detail="Evidence image exceeds the maximum allowed size.")
+            unique_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{file_ext}"
+            evidence_path = os.path.join(STATIC_DIR, unique_filename)
+            with open(evidence_path, "wb") as buffer:
+                shutil.copyfileobj(evidence_image.file, buffer)
+            evidence_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
 
         db_report = Report(
             product_id=product.id if product else None,
             student_id=student.student_id if student else None,
-            student_name=report_data.student_name.strip(),
-            email=report_data.email.strip() if report_data.email else None,
-            category=report_data.category.strip() if report_data.category else None,
-            issue=report_data.issue.strip(),
+            seller_id=seller_id.strip() if seller_id else (product.seller if product else None),
+            student_name=student_name.strip(),
+            email=email.strip() if email else None,
+            category=category.strip() if category else None,
+            issue=issue.strip(),
+            evidence_image=evidence_url,
             status="Open"
         )
         db.add(db_report)
@@ -3118,14 +3381,19 @@ def create_report(report_data: ReportCreate, db: Session = Depends(get_db)):
                 "id": db_report.id,
                 "product_id": db_report.product_id,
                 "student_id": db_report.student_id,
+                "seller_id": db_report.seller_id,
                 "student_name": db_report.student_name,
                 "email": db_report.email,
                 "category": db_report.category,
                 "issue": db_report.issue,
+                "evidence_image": db_report.evidence_image,
                 "status": db_report.status,
                 "created_at": db_report.created_at.isoformat() if db_report.created_at else None,
             },
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as error:
         db.rollback()
         logger.exception("Failed to create support report: %s", error)
@@ -3238,17 +3506,15 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
 
     corpus = [profile_text] + product_texts
     vectors, _ = _build_tfidf_vectors(corpus)
-    if not vectors:
-        return []
-
-    profile_vector = vectors[0]
     scored_products = []
-    for idx, product in enumerate(approved_products, start=1):
-        similarity = _cosine_similarity(profile_vector, vectors[idx]) if idx < len(vectors) else 0.0
-        scored_products.append({
-            "product": product,
-            "score": similarity,
-        })
+    if vectors:
+        profile_vector = vectors[0]
+        for idx, product in enumerate(approved_products, start=1):
+            similarity = _cosine_similarity(profile_vector, vectors[idx]) if idx < len(vectors) else 0.0
+            scored_products.append({
+                "product": product,
+                "score": similarity,
+            })
 
     scored_products.sort(key=lambda item: item["score"], reverse=True)
     best_matches = []
@@ -3273,7 +3539,51 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
         if len(best_matches) >= num_recommendations:
             break
 
+    if len(best_matches) < num_recommendations:
+        latest_products = db.query(Product).filter(
+            Product.status.ilike("%approved%")
+        ).order_by(Product.created_at.desc()).limit(5).all()
+        for product in latest_products:
+            if product.id in seen_ids:
+                continue
+            seen_ids.add(product.id)
+            best_matches.append({
+                "id": product.id,
+                "title": product.title,
+                "description": product.description or 'Latest active product available in the marketplace.',
+                "category": product.category or 'General',
+                "price": product.price,
+                "image": product.image,
+                "match_score": 0,
+                "match": "Latest listing",
+            })
+            if len(best_matches) >= num_recommendations:
+                break
+
+    for recommendation in best_matches:
+        db.add(AIRecommendationLog(
+            student_id=student.student_id,
+            product_id=recommendation["id"],
+            action_type="impression",
+        ))
+    db.commit()
     return best_matches
+
+
+@app.post("/api/ai/log-click", status_code=status.HTTP_201_CREATED)
+def log_ai_recommendation_click(payload: AIRecommendationClickRequest, db: Session = Depends(get_db)):
+    student = db.query(Student).filter(Student.student_id == payload.student_id.strip()).first()
+    product = db.query(Product).filter(Product.id == payload.product_id).first()
+    if not student or not product:
+        raise HTTPException(status_code=404, detail="Student or product not found.")
+
+    db.add(AIRecommendationLog(
+        student_id=student.student_id,
+        product_id=product.id,
+        action_type="click",
+    ))
+    db.commit()
+    return {"message": "Recommendation click logged successfully."}
 
 
 @app.get("/api/student/recent-activity")
@@ -4278,6 +4588,18 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
         product.status = "Sold"
         db.add(order)
         db.flush()
+        recent_click = db.query(AIRecommendationLog.id).filter(
+            AIRecommendationLog.student_id == data.student_id,
+            AIRecommendationLog.product_id == product.id,
+            AIRecommendationLog.action_type == "click",
+            AIRecommendationLog.created_at >= datetime.now() - timedelta(hours=24),
+        ).first()
+        if recent_click:
+            db.add(AIRecommendationLog(
+                student_id=data.student_id,
+                product_id=product.id,
+                action_type="purchase",
+            ))
         if _notifications_enabled(db, "orderNotifs"):
             db.add(Notification(
                 student_id=data.student_id,
@@ -4625,13 +4947,39 @@ def get_admin_kpis(db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/api/admin/ai/debug-logs")
+def get_ai_debug_logs(db: Session = Depends(get_db)):
+    action_counts = {
+        action_type: int(count)
+        for action_type, count in db.query(
+            AIRecommendationLog.action_type,
+            func.count(AIRecommendationLog.id),
+        ).filter(
+            AIRecommendationLog.action_type.in_(["impression", "click", "purchase"]),
+        ).group_by(AIRecommendationLog.action_type).all()
+    }
+    counts = {
+        "impression": action_counts.get("impression", 0),
+        "click": action_counts.get("click", 0),
+        "purchase": action_counts.get("purchase", 0),
+    }
+    print(
+        "[AI DEBUG] recommendation logs - "
+        f"impression: {counts['impression']}, "
+        f"click: {counts['click']}, "
+        f"purchase: {counts['purchase']}",
+        flush=True,
+    )
+    return counts
+
+
 @app.get("/api/admin/ai-analytics")
 def get_admin_ai_analytics(db: Session = Depends(get_db)):
     """Return live recommendation-model metrics and ranking insights."""
     major_tables = (
         Student, Category, SubCategory, Product, Admin, AuditLog, Report,
         Notification, Message, WishlistItem, CartItem, Order, Transaction,
-        PasswordReset, SystemSetting, Review,
+        PasswordReset, SystemSetting, Review, AIRecommendationLog,
     )
     table_record_counts = {
         model.__tablename__: db.query(model).count() for model in major_tables
@@ -4644,44 +4992,54 @@ def get_admin_ai_analytics(db: Session = Depends(get_db)):
         column["name"] for column in inspect(db.get_bind()).get_columns(Product.__tablename__)
     }
     has_product_views = "views" in product_columns
-    clicks = 0
-    if has_product_views:
-        clicks = int(db.execute(text("SELECT COALESCE(SUM(views), 0) FROM products")).scalar() or 0)
-
-    request_count = user_profiles
+    request_count = db.query(AIRecommendationLog).filter(AIRecommendationLog.action_type == "impression").count()
+    clicks = db.query(AIRecommendationLog).filter(AIRecommendationLog.action_type == "click").count()
+    purchases = db.query(AIRecommendationLog).filter(AIRecommendationLog.action_type == "purchase").count()
     ctr_percentage = round((clicks / request_count) * 100, 2) if request_count else 0
+    weekly_start = datetime.now() - timedelta(days=6)
+    weekly_rows = db.query(
+        func.date(AIRecommendationLog.created_at).label("event_date"),
+        AIRecommendationLog.action_type,
+        func.count(AIRecommendationLog.id),
+    ).filter(
+        AIRecommendationLog.created_at >= weekly_start,
+        AIRecommendationLog.action_type.in_(["impression", "click"]),
+    ).group_by(
+        func.date(AIRecommendationLog.created_at), AIRecommendationLog.action_type
+    ).all()
+    weekly_counts = {}
+    for event_date, action_type, count in weekly_rows:
+        weekly_counts.setdefault(str(event_date), {})[action_type] = int(count)
+    weekly_dates = [(datetime.now() - timedelta(days=6 - index)).date().isoformat() for index in range(7)]
+    weekly_requests = [weekly_counts.get(day, {}).get("impression", 0) for day in weekly_dates]
+    weekly_clicks = [weekly_counts.get(day, {}).get("click", 0) for day in weekly_dates]
     completed_orders = db.query(Order).filter(Order.status.ilike("Completed")).count()
-    precision_percentage = round((completed_orders / clicks) * 100, 2) if clicks else 0
-    recall_percentage = round((completed_orders / request_count) * 100, 2) if request_count else 0
+    precision_percentage = round((purchases / clicks) * 100, 2) if clicks else 0
+    recall_percentage = round((purchases / request_count) * 100, 2) if request_count else 0
 
-    approved_products = db.query(Product).filter(Product.status.ilike("Approved"))
-    order_counts = dict(
-        db.query(Order.product_id, func.count(Order.id))
-        .filter(Order.status.ilike("Completed"))
-        .group_by(Order.product_id)
-        .all()
-    )
-    if has_product_views:
-        approved_products = approved_products.order_by(text("views DESC"), Product.created_at.desc())
-    else:
-        approved_products = approved_products.order_by(Product.created_at.desc())
-
-    top_products = []
-    for product in approved_products.limit(5).all():
-        product_views = int(db.execute(
-            text("SELECT COALESCE(views, 0) FROM products WHERE id = :product_id"),
-            {"product_id": product.id},
-        ).scalar() or 0) if has_product_views else 0
-        product_clicks = product_views
-        product_conversions = int(order_counts.get(product.id, 0))
-        top_products.append({
-            "id": product.id,
-            "product": product.title,
-            "title": product.title,
-            "views": product_views,
-            "clicks": product_clicks,
-            "conversion": round((product_conversions / product_clicks) * 100, 2) if product_clicks else 0,
-        })
+    top_product_rows = db.query(
+        Product.id,
+        Product.title,
+        func.sum(case((AIRecommendationLog.action_type == "impression", 1), else_=0)).label("views"),
+        func.sum(case((AIRecommendationLog.action_type == "click", 1), else_=0)).label("clicks"),
+        func.sum(case((AIRecommendationLog.action_type == "purchase", 1), else_=0)).label("purchases"),
+    ).join(
+        AIRecommendationLog, AIRecommendationLog.product_id == Product.id
+    ).group_by(Product.id, Product.title).order_by(
+        func.sum(case((AIRecommendationLog.action_type == "impression", 1), else_=0)).desc(),
+        Product.title.asc(),
+    ).limit(5).all()
+    top_products = [
+        {
+            "id": product_id,
+            "product": title,
+            "title": title,
+            "views": int(views or 0),
+            "clicks": int(product_clicks or 0),
+            "purchases": int(product_purchases or 0),
+        }
+        for product_id, title, views, product_clicks, product_purchases in top_product_rows
+    ]
 
     category_rows = (
         db.query(Product.category, func.count(Product.id).label("product_count"))
@@ -4759,9 +5117,14 @@ def get_admin_ai_analytics(db: Session = Depends(get_db)):
         "requests": request_count,
         "request_count": request_count,
         "ctr": ctr_percentage,
+        "weeklyRequests": weekly_requests,
+        "weeklyClicks": weekly_clicks,
+        "topRecommendedProducts": top_products,
         "ctr_percentage": ctr_percentage,
-        "purchase_conversions": completed_orders,
+        "purchase_conversions": purchases,
+        "purchase_conversion": purchases,
         "completed_orders": completed_orders,
+        "purchases": purchases,
         "precision": precision_percentage,
         "recall": recall_percentage,
         "top_products": top_products,
@@ -4784,6 +5147,18 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     ).scalar() or 0
     revenue_total = float(revenue_total)
     pending_reports = db.query(Report).filter(Report.status.ilike("Open")).count()
+    recommendation_requests = db.query(AIRecommendationLog).filter(
+        AIRecommendationLog.action_type == "impression"
+    ).count()
+    recommendation_clicks = db.query(AIRecommendationLog).filter(
+        AIRecommendationLog.action_type == "click"
+    ).count()
+    recommendation_purchases = db.query(AIRecommendationLog).filter(
+        AIRecommendationLog.action_type == "purchase"
+    ).count()
+    recommendation_ctr = round(
+        (recommendation_clicks / recommendation_requests) * 100, 2
+    ) if recommendation_requests else 0
 
     product_status_rows = db.query(Product.status, func.count(Product.id)).group_by(Product.status).all()
     product_status_breakdown = {"Approved": 0, "Pending": 0, "Rejected": 0}
@@ -4818,14 +5193,13 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     category_rows = db.query(
         Product.category,
         func.count(Product.id).label("product_count")
-    ).group_by(Product.category).order_by(func.count(Product.id).desc()).limit(5).all()
+    ).group_by(Product.category).order_by(func.count(Product.id).desc()).all()
 
-    top_category_rows = category_rows[:4]
-    top_category_total = sum(int(product_count) for _, product_count in top_category_rows)
+    total_category_products = sum(int(product_count) for _, product_count in category_rows)
     categories = []
     category_colors = ["bg-blue-500", "bg-emerald-500", "bg-amber-500", "bg-rose-500"]
-    for index, (category_name, product_count) in enumerate(top_category_rows):
-        percentage = round((int(product_count) / top_category_total) * 100, 1) if top_category_total else 0
+    for index, (category_name, product_count) in enumerate(category_rows):
+        percentage = round((int(product_count) / total_category_products) * 100, 1) if total_category_products else 0
         categories.append({
             "name": category_name or "General",
             "product_count": int(product_count),
@@ -4833,13 +5207,36 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             "color": category_colors[index]
         })
 
+    monthly_revenue = []
+    monthly_order_counts = []
+    months_labels = []
+    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    for month_offset in range(5, -1, -1):
+        month_index = current_month.month - month_offset
+        year = current_month.year + (month_index - 1) // 12
+        month = (month_index - 1) % 12 + 1
+        month_start = datetime(year, month, 1)
+        month_end = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
+        months_labels.append(month_start.strftime("%b %y"))
+        monthly_revenue.append(float(db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+            Transaction.status.ilike("Successful"),
+            Transaction.type.ilike("%Purchase%"),
+            Transaction.created_at >= month_start,
+            Transaction.created_at < month_end,
+        ).scalar() or 0))
+        monthly_order_counts.append(db.query(Order).filter(
+            Order.status.ilike("Completed"),
+            Order.created_at >= month_start,
+            Order.created_at < month_end,
+        ).count())
+
     recent_audit_rows = db.query(AuditLog, Admin.username).outerjoin(
         Admin, AuditLog.admin_id == Admin.id
     ).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(3).all()
     recent_activity = [
         {
             "id": audit_log.id,
-            "time": audit_log.created_at.strftime("%I:%M %p") if audit_log.created_at else "--:--",
+            "time": audit_log.created_at.strftime("%d %b %Y, %I:%M %p") if audit_log.created_at else "Unknown date",
             "created_at": audit_log.created_at.isoformat() if audit_log.created_at else None,
             "action": audit_log.action,
             "description": audit_log.description,
@@ -4929,7 +5326,8 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     product_uploads = []
     revenue_trend = []
     current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    for month_offset in range(5, -1, -1):
+    history_months_limit = 6
+    for month_offset in range(history_months_limit - 1, -1, -1):
         month_index = current_month.month - month_offset
         year = current_month.year + (month_index - 1) // 12
         month = (month_index - 1) % 12 + 1
@@ -4961,6 +5359,10 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         "completed_orders": completed_orders,
         "total_revenue": revenue_total,
         "pending_reports": pending_reports,
+        "requests": recommendation_requests,
+        "clicks": recommendation_clicks,
+        "ctr": recommendation_ctr,
+        "purchases": recommendation_purchases,
         "users": total_students,
         "activeStudents": active_students,
         "products": total_products,
@@ -4979,11 +5381,20 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         "salesTrend": product_uploads,
         "revenueTrend": revenue_trend,
         "registrations": registrations,
+        "registrationLabels": [
+            (seven_day_start + timedelta(days=day_offset)).strftime("%d %b")
+            for day_offset in range(7)
+        ],
         "productUploadsTrend": product_uploads_trend,
+        "monthlyRevenue": monthly_revenue,
+        "monthlyOrderCounts": monthly_order_counts,
+        "monthsLabels": months_labels,
         "orderStatus": status_distribution,
         "categories": categories,
         "college_activity": college_activity,
         "collegeActivity": college_activity,
+        "collegesActivity": college_activity,
+        "categoryPerformance": categories,
         "productStatusBreakdown": product_status_breakdown,
         "recentActivity": recent_activity,
     }
@@ -5723,6 +6134,62 @@ def update_admin_product_moderation(
         raise HTTPException(status_code=500, detail="Failed to update product moderation.")
 
 
+@app.put("/api/admin/products/{product_id}/details")
+def update_admin_product_details(
+    product_id: int,
+    payload: AdminProductDetailsUpdate,
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    details = {
+        "title": payload.title.strip(),
+        "price": payload.price.strip(),
+        "category": payload.category.strip(),
+        "subcategory": payload.subcategory.strip() if payload.subcategory else None,
+        "description": payload.description.strip() if payload.description else None,
+        "condition": payload.condition.strip() if payload.condition else None,
+    }
+    if not details["title"] or not details["price"] or not details["category"]:
+        raise HTTPException(status_code=400, detail="Title, price, and category are required.")
+
+    try:
+        changes = []
+        for field, new_value in details.items():
+            old_value = getattr(product, field)
+            if old_value != new_value:
+                changes.append(f'{field} changed from "{old_value or ""}" to "{new_value or ""}"')
+                setattr(product, field, new_value)
+
+        if changes:
+            admin = db.query(Admin).order_by(Admin.id.asc()).first()
+            db.add(AuditLog(
+                admin_id=admin.id if admin else None,
+                action="Product Details Updated",
+                entity_type="Product",
+                entity_id=product.id,
+                description=f"Admin updated product {product.title} ({product.id}): {'; '.join(changes)}.",
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+        db.commit()
+        db.refresh(product)
+        return {"message": "Product details updated successfully.", "product": {
+            "id": product.id,
+            "title": product.title,
+            "price": product.price,
+            "category": product.category,
+            "subcategory": product.subcategory,
+            "description": product.description,
+            "condition": product.condition,
+        }}
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to update product details.")
+
+
 @app.get("/api/admin/products")
 def get_admin_products(
     status: Optional[str] = None,
@@ -5763,10 +6230,13 @@ def get_admin_products(
 
         normalized_price = p.price or "0 ETB"
         price_value = str(normalized_price).replace(",", "").replace(" ETB", "").replace("etb", "").strip()
-        try:
-            condition = "New" if float(price_value) >= 1000 else "Gently Used"
-        except (TypeError, ValueError):
-            condition = "New"
+        if p.condition:
+            condition = p.condition
+        else:
+            try:
+                condition = "New" if float(price_value) >= 1000 else "Gently Used"
+            except (TypeError, ValueError):
+                condition = "New"
 
         results.append({
             "id": p.id,
@@ -5889,9 +6359,23 @@ def delete_product_admin(id: int, db: Session = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    db.delete(product)
-    db.commit()
-    return {"message": "Product deleted successfully"}
+    try:
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Product Deleted",
+            entity_type="Product",
+            entity_id=product.id,
+            description=f"Admin permanently deleted product {product.title} ({product.id}).",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        db.delete(product)
+        db.commit()
+        return {"message": "Product deleted successfully"}
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete product.")
 
 
 @app.get("/api/admin/payments")
@@ -6352,11 +6836,52 @@ def get_admin_reports(db: Session = Depends(get_db)):
             "email": r.email,
             "student": r.student_name,
             "student_id": r.student_id,
+            "seller_id": r.seller_id or (db.query(Product.seller).filter(Product.id == r.product_id).scalar() if r.product_id else None),
+            "product_name": db.query(Product.title).filter(Product.id == r.product_id).scalar() if r.product_id else None,
+            "evidence_image": r.evidence_image,
             "status": r.status,
             "date": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else None,
         }
         for r in reports
     ]
+
+
+@app.get("/api/admin/reports/{report_id}/conversation-logs")
+def get_report_conversation_logs(report_id: int, db: Session = Depends(get_db)):
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    seller_id = report.seller_id
+    if not seller_id and report.product_id:
+        seller_id = db.query(Product.seller).filter(Product.id == report.product_id).scalar()
+    if not report.student_id or not seller_id:
+        return {"report_id": report.id, "reporter_id": report.student_id, "seller_id": seller_id, "messages": []}
+
+    messages = db.query(Message).filter(
+        or_(
+            (Message.sender_id == report.student_id) & (Message.receiver_id == seller_id),
+            (Message.sender_id == seller_id) & (Message.receiver_id == report.student_id),
+        )
+    ).order_by(Message.created_at.asc(), Message.id.asc()).all()
+
+    return {
+        "report_id": report.id,
+        "reporter_id": report.student_id,
+        "seller_id": seller_id,
+        "messages": [
+            {
+                "id": message.id,
+                "sender_id": message.sender_id,
+                "receiver_id": message.receiver_id,
+                "message": message.message_text,
+                "attachment_url": message.attachment_url,
+                "attachment_type": message.attachment_type,
+                "created_at": message.created_at.isoformat() if message.created_at else None,
+            }
+            for message in messages
+        ],
+    }
 
 
 # 18. የቅሬታ መፍቻ እና አውቶማቲክ ኖቲፊኬሽን መላኪያ (PUT & PATCH /api/admin/reports/{id})

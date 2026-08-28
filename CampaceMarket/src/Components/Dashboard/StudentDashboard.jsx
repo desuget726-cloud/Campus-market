@@ -208,6 +208,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [supportIssue, setSupportIssue] = useState('');
   const [supportCategory, setSupportCategory] = useState('General Inquiry');
   const [supportMsg, setSupportMsg] = useState('');
+  const [supportEvidenceImage, setSupportEvidenceImage] = useState(null);
 
   // የገዢው ዳሽቦርድ መረጃዎችን ከዳታቤዝ ለመጥራት የተዘጋጁ ስቴቶች (Buyer States)
   const [wishlist, setWishlist] = useState([]);
@@ -867,21 +868,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!supportIssue.trim()) return;
 
     try {
+      const formData = new FormData();
+      formData.append('student_id', user.studentId || '');
+      formData.append('student_name', user.name || '');
+      formData.append('email', user.email || '');
+      formData.append('category', supportCategory);
+      formData.append('issue', supportIssue.trim());
+      if (supportEvidenceImage) formData.append('evidence_image', supportEvidenceImage);
       const res = await fetch('http://127.0.0.1:8000/api/student/report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          student_id: user.studentId,
-          student_name: user.name,
-          email: user.email || '',
-          category: supportCategory,
-          issue: supportIssue
-        })
+        body: formData
       });
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
         setSupportIssue('');
         setSupportCategory('General Inquiry');
+        setSupportEvidenceImage(null);
         setSupportMsg(`Your support ticket ${data.ticket_reference || ''} has been submitted to the Admin! 🎉`);
         setTimeout(() => setShowSupportModal(false), 2000);
       } else {
@@ -2074,6 +2076,20 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     onNavigate?.('product-details', { productId });
   };
 
+  const handleRecommendationClick = async (productId) => {
+    if (!productId || !user?.studentId) return;
+    try {
+      await fetch('http://127.0.0.1:8000/api/ai/log-click', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id: user.studentId, product_id: productId }),
+      });
+    } catch (error) {
+      console.error('Failed to log recommendation click:', error);
+    }
+    handleViewProductFromChat(productId);
+  };
+
   const handleBlockUser = (partnerId, partnerName) => {
     const normalizedPartnerId = String(partnerId || '').trim();
     if (!normalizedPartnerId || blockedUsers.includes(normalizedPartnerId)) return;
@@ -2111,16 +2127,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setIsSubmittingReport(true);
     setReportStatus('');
     try {
+      const formData = new FormData();
+      formData.append('student_id', user.studentId);
+      formData.append('student_name', user.name || '');
+      formData.append('email', user.email || '');
+      formData.append('category', 'Fraud Report');
+      formData.append('seller_id', partnerId);
+      formData.append('issue', `Report against ${partnerId}: ${reason}`);
       const res = await fetch('http://127.0.0.1:8000/api/student/report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          student_id: user.studentId,
-          student_name: user.name,
-          email: user.email || '',
-          category: 'Fraud Report',
-          issue: `Report against ${partnerId}: ${reason}`
-        })
+        body: formData
       });
 
       if (!res.ok) {
@@ -2390,6 +2406,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-sky-500 focus:bg-white focus:outline-none transition"
                     ></textarea>
                   </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700">Evidence image <span className="font-normal text-slate-400">(optional)</span></label>
+                    <input type="file" accept="image/*" onChange={(e) => setSupportEvidenceImage(e.target.files?.[0] || null)} className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600" />
+                  </div>
 
                   <div className="flex gap-3">
                     <button type="submit" className="flex-1 rounded-full bg-emerald-500 border border-slate-950 py-3 font-semibold text-white hover:bg-emerald-600 transition cursor-pointer">
@@ -2480,7 +2500,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <p className="mt-2 line-clamp-2 text-sm text-slate-600">{item.description || 'Popular campus item tailored to your department.'}</p>
                             <div className="mt-4 flex items-center justify-between">
                               <span className="text-lg font-black text-slate-950">{formatETB(item.price)}</span>
-                              <button type="button" onClick={() => handleViewProductFromChat(item.id)} className="rounded-full bg-slate-950 px-3.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition">View Details →</button>
+                              <button type="button" onClick={() => handleRecommendationClick(item.id)} className="rounded-full bg-slate-950 px-3.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition">View Details →</button>
                             </div>
                           </div>
                         ))

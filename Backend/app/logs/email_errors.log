@@ -425,3 +425,32 @@ TimeoutError: timed out
 2026-08-27 04:40:29,184 INFO OTP email skipped because email notifications are disabled.
 2026-08-27 04:40:29,249 INFO OTP email skipped because email notifications are disabled.
 2026-08-27 04:40:29,251 INFO OTP email skipped because email notifications are disabled.
+2026-08-28 00:41:10,286 ERROR Network error connecting to smtp.gmail.com while sending raw OTP email to desu5392@gmail.com: timed out
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 442, in send_otp_email
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+         ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1036, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 263, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 350, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1042, in _get_socket
+    new_socket = super()._get_socket(host, port, timeout)
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 320, in _get_socket
+    return socket.create_connection((host, port), timeout,
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+                                    self.source_address)
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 868, in create_connection
+    raise exceptions[0]
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 853, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out

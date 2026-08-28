@@ -1,7 +1,7 @@
 import os
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
 # Read full DATABASE_URL from env or build from components
@@ -47,3 +47,19 @@ def init_db() -> None:
     Call this from an application startup event or a separate setup script.
     """
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    if "products" in inspector.get_table_names() and "condition" not in {
+        column["name"] for column in inspector.get_columns("products")
+    }:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE products ADD COLUMN `condition` VARCHAR(50) NULL"))
+    if "reports" in inspector.get_table_names():
+        report_columns = {column["name"] for column in inspector.get_columns("reports")}
+        missing_columns = {
+            "seller_id": "VARCHAR(50) NULL",
+            "evidence_image": "VARCHAR(255) NULL",
+        }
+        for column_name, column_definition in missing_columns.items():
+            if column_name not in report_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE reports ADD COLUMN `{column_name}` {column_definition}"))

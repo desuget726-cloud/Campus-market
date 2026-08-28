@@ -41,6 +41,17 @@ const generateSvgAreaPath = (values, maxValue, width = 100, height = 100, paddin
   return `${linePath} L ${width},${baseline} L 0,${baseline} Z`;
 };
 
+const generateRecommendationChartPath = (values, maxValue, width = 600, height = 190, padding = 20) => {
+  if (!Array.isArray(values) || values.length === 0) return '';
+  const safeMax = Math.max(Number(maxValue) || 0, 1);
+  const step = values.length > 1 ? (width - padding * 2) / (values.length - 1) : 0;
+  return values.map((value, index) => {
+    const x = values.length > 1 ? padding + index * step : width / 2;
+    const y = height - padding - ((Number(value) || 0) / safeMax) * (height - padding * 2);
+    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)},${y.toFixed(2)}`;
+  }).join(' ');
+};
+
 const getDynamicMonths = () => Array.from({ length: 6 }, (_, index) => {
   const targetDate = new Date();
   targetDate.setDate(1);
@@ -122,6 +133,21 @@ const parseAuditJson = (value) => {
   } catch {
     return null;
   }
+};
+
+const getProductImageUrl = (image) => {
+  if (!image) return PRODUCT_PLACEHOLDER;
+  if (typeof image === 'string') {
+    try {
+      const parsedImage = JSON.parse(image);
+      if (Array.isArray(parsedImage) && typeof parsedImage[0] === 'string' && parsedImage[0].trim()) {
+        return parsedImage[0];
+      }
+    } catch {
+      return image.trim() || PRODUCT_PLACEHOLDER;
+    }
+  }
+  return PRODUCT_PLACEHOLDER;
 };
 
 const formatAuditValue = (value) => {
@@ -218,6 +244,50 @@ const adminTabs = [
   { id: 'logout', label: 'Logout', icon: 'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1' }
 ];
 
+function AdminSecurityProfile({ user }) {
+  const [section, setSection] = useState('personal');
+  const [profile, setProfile] = useState({ full_name: '', username: '', email: '', phone: '', role: 'Primary Super Admin', two_factor_enabled: false, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
+  const [form, setForm] = useState({ full_name: '', username: '', email: '', phone: '', current_password: '', new_password: '', confirm_password: '', logout_all_sessions: false });
+  const [sessions, setSessions] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [backupCodes, setBackupCodes] = useState([]);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const token = () => {
+    try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || ''; } catch { return user?.access_token || ''; }
+  };
+  const request = async (url, options = {}) => {
+    const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || 'Security request failed.');
+    return data;
+  };
+  const refreshSecurityData = async () => {
+    const sessionToken = token(); if (!sessionToken) return;
+    const query = `?session_token=${encodeURIComponent(sessionToken)}`;
+    try { const [sessionData, historyData] = await Promise.all([request(`http://127.0.0.1:8000/api/admin/sessions${query}`), request(`http://127.0.0.1:8000/api/admin/login-history${query}`)]); setSessions(sessionData); setHistory(historyData); } catch (error) { setMessage(error.message); }
+  };
+  useEffect(() => {
+    const load = async () => { try { const data = await request(`http://127.0.0.1:8000/api/admin/profile?username=${encodeURIComponent(user?.username || 'mau9999')}`); setProfile(data); setForm((current) => ({ ...current, full_name: data.full_name || '', username: data.username || '', email: data.email || '', phone: data.phone || '' })); } catch (error) { setMessage(error.message); } refreshSecurityData(); };
+    load(); const interval = window.setInterval(refreshSecurityData, 30000); return () => window.clearInterval(interval);
+  }, [user?.username]);
+  const passwordScore = [form.new_password.length >= 8, /[A-Z]/.test(form.new_password), /[a-z]/.test(form.new_password), /\d/.test(form.new_password), /[^A-Za-z0-9]/.test(form.new_password)].filter(Boolean).length;
+  const updateProfile = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/profile', { method: 'PUT', body: JSON.stringify({ ...form, current_session_token: token() }) }); setProfile((current) => ({ ...current, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); setMessage('Profile and security settings saved.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const securityAction = async (path) => { setBusy(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); setMessage(data.message || 'Security action completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); setMessage('Profile photo updated.'); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions']];
+  const permissions = ['Users', 'Products', 'Orders', 'Payments', 'Reports', 'AI', 'Analytics', 'Audit Logs', 'Settings'];
+  const field = (label, key, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{label}</span><input type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500" /></label>;
+  return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>{message && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</div>}
+    {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={profile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER} alt="Admin profile" className="h-20 w-20 rounded-full object-cover" /><label className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white">Upload Photo<input type="file" accept="image/*" onChange={uploadAvatar} className="hidden" /></label></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="mt-6 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white disabled:opacity-60">Save Changes</button></form>}
+    {section === 'password' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="grid gap-4 md:grid-cols-2">{field('Current Password', 'current_password', 'password')}{field('New Password', 'new_password', 'password')}</div>{form.new_password && <div className="mt-4"><div className="flex h-2 gap-1">{[0, 1, 2, 3, 4].map((item) => <span key={item} className={`flex-1 rounded-full ${item < passwordScore ? (passwordScore < 3 ? 'bg-rose-500' : passwordScore < 5 ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-200'}`} />)}</div><p className="mt-2 text-xs text-slate-500">{passwordScore}/5 password requirements met</p></div>}{field('Confirm New Password', 'confirm_password', 'password')}<label className="mt-5 flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={form.logout_all_sessions} onChange={(event) => setForm((current) => ({ ...current, logout_all_sessions: event.target.checked }))} />Log out of all active sessions</label><button disabled={busy} className="mt-6 rounded-xl bg-slate-900 px-5 py-3 text-sm font-bold text-white disabled:opacity-60">Update Password</button></form>}
+    {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection</h3><p className="mt-2 text-sm text-slate-500">Status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={() => securityAction('2fa/setup')} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => securityAction('2fa/backup-codes')} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => securityAction('2fa/disable')} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700">Disable 2FA</button></div>{backupCodes.length > 0 && <div className="mt-5 grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-4 font-mono text-sm">{backupCodes.map((code) => <span key={code}>{code}</span>)}</div>}</div>}
+    {section === 'sessions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-black">Active Sessions</h3><button disabled={busy} onClick={() => securityAction('sessions/logout-others')} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white">Logout Other Sessions</button></div><div className="mt-5 space-y-3">{sessions.map((item) => <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-4 text-sm md:grid-cols-4"><span className="font-bold">{item.is_current ? 'Current session' : 'Active session'}</span><span>{item.device_browser || 'Unknown browser'}</span><span>{item.ip_address || 'Unknown IP'}</span><span>{item.last_active ? new Date(item.last_active).toLocaleString() : 'Unknown activity'}</span></div>)}{sessions.length === 0 && <p className="text-sm text-slate-500">No active sessions were found for this account.</p>}</div></div>}
+    {section === 'history' && <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Login History</h3><table className="mt-5 w-full min-w-[680px] text-left text-sm"><thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><th className="pb-3">Date & Time</th><th className="pb-3">Event</th><th className="pb-3">IP Address</th><th className="pb-3">Browser / Device</th></tr></thead><tbody>{history.map((item) => <tr key={item.id} className="border-b border-slate-100"><td className="py-3">{item.created_at ? new Date(item.created_at).toLocaleString() : '-'}</td><td className="py-3 font-semibold">{item.event_type}</td><td className="py-3">{item.ip_address || '-'}</td><td className="py-3">{item.device_browser || '-'}</td></tr>)}</tbody></table></div>}
+    {section === 'permissions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Role & Permissions</h3><p className="mt-2 text-sm text-slate-500">Role</p><p className="font-bold">Primary Super Admin</p><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{permissions.map((permission) => <label key={permission} className="flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold"><input type="checkbox" checked readOnly />{permission}</label>)}</div></div>}
+  </div>;
+}
+
 function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -225,8 +295,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
+    fullName: 'Primary Administrator',
     username: 'mau9999',
     email: 'admin@campace.edu',
+    phone: '',
     currentPassword: '',
     newPassword: '',
     confirmPassword: '',
@@ -237,7 +309,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [logoutAllSessions, setLogoutAllSessions] = useState(false);
+  const [adminSessions, setAdminSessions] = useState([]);
+  const [loginHistory, setLoginHistory] = useState([]);
+  const [backupCodes, setBackupCodes] = useState([]);
+  const [profileSection, setProfileSection] = useState('personal');
   const [adminProfile, setAdminProfile] = useState({
+    fullName: 'Primary Administrator',
     username: 'mau9999',
     email: 'admin@campace.edu',
     role: 'Primary Super Admin',
@@ -247,6 +325,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     avatarUrl: ADMIN_AVATAR_PLACEHOLDER,
     sessionIp: '192.168.10.24',
   });
+
+  const getAdminSessionToken = () => {
+    try {
+      const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+      return session.access_token || session.accessToken || user?.access_token || '';
+    } catch {
+      return user?.access_token || '';
+    }
+  };
 
   // === HOISTED STATES FOR ALL PANELS (OBEYING RULES OF HOOKS) ===
 
@@ -322,6 +409,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReason, setRejectReason] = useState('Inappropriate Image');
   const [pendingRejectProduct, setPendingRejectProduct] = useState(null);
+  const [editingProduct, setEditingProduct] = useState(null);
+  const [editProductForm, setEditProductForm] = useState(null);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
 
   // 4. Category Management States
   const [categoriesList, setCategoriesList] = useState([]);
@@ -370,6 +460,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [selectedReport, setSelectedReport] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportActionLoading, setReportActionLoading] = useState(false);
+  const [evidenceImage, setEvidenceImage] = useState(null);
+  const [conversationLogs, setConversationLogs] = useState(null);
+  const [conversationLoading, setConversationLoading] = useState(false);
+  const [reportToast, setReportToast] = useState('');
 
   const calculatedReportMetrics = useMemo(() => {
     const openStatuses = new Set(['Open']);
@@ -808,7 +902,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           status: product.status ?? 'Pending',
           moderation_reason: product.moderation_reason ?? '',
           rejection_reason: product.rejection_reason ?? '',
-          image: product.image ?? 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80',
+          image: product.image ?? null,
           description: product.description ?? 'No product description provided by the seller yet.',
           seller_verified: product.seller_verified ?? product.is_verified ?? true,
         }));
@@ -959,6 +1053,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     clicks: 0,
     ctr: 0,
     purchase_conversions: 0,
+    purchase_conversion: 0,
+    weeklyRequests: [],
+    weeklyClicks: [],
+    topRecommendedProducts: [],
     db_records: 0,
     user_profiles: 0,
     products_indexed: 0,
@@ -1009,15 +1107,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           lastSuccessfulTransaction: null,
         },
         trends: {
-          months: trends.months ?? data?.months ?? getDynamicMonths(),
+          months: data?.monthsLabels ?? trends.months ?? data?.months ?? getDynamicMonths(),
           user_growth: hasDatabaseActivity ? (data?.registrations ?? data?.userGrowth ?? trends.user_growth ?? emptyTrends) : emptyTrends,
           product_uploads: hasDatabaseActivity ? (data?.productUploadsTrend ?? data?.productUploads ?? trends.product_uploads ?? data?.salesTrend ?? emptyTrends) : emptyTrends,
-          revenue: hasDatabaseActivity ? (trends.revenue ?? data?.revenueTrend ?? emptyTrends) : emptyTrends,
+          revenue: hasDatabaseActivity ? (data?.monthlyRevenue ?? trends.revenue ?? data?.revenueTrend ?? emptyTrends) : emptyTrends,
         },
+        registrationLabels: Array.isArray(data?.registrationLabels) ? data.registrationLabels : [],
+        registrations: Array.isArray(data?.registrations) ? data.registrations : [],
+        monthlyRevenue: Array.isArray(data?.monthlyRevenue) ? data.monthlyRevenue : [],
+        monthsLabels: Array.isArray(data?.monthsLabels) ? data.monthsLabels : [],
         order_status_breakdown: Array.isArray(orderStatusBreakdown) ? orderStatusBreakdown : [],
-        popular_categories: Array.isArray(popularCategories) ? popularCategories : [],
-        college_activity: Array.isArray(data?.college_activity ?? data?.collegeActivity)
-          ? (data.college_activity ?? data.collegeActivity)
+        popular_categories: Array.isArray(data?.categoryPerformance ?? popularCategories) ? (data?.categoryPerformance ?? popularCategories) : [],
+        college_activity: Array.isArray(data?.collegesActivity ?? data?.college_activity ?? data?.collegeActivity)
+          ? (data?.collegesActivity ?? data.college_activity ?? data.collegeActivity)
           : [],
         recent_activity: Array.isArray(data?.recentActivity) ? data.recentActivity : [],
       });
@@ -1060,9 +1162,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     { label: 'Revenue', value: metrics.total_revenue ?? metrics.totalRevenue, trend: '0%' },
   ];
 
-  const userGrowthTrend = metrics.trends?.user_growth ?? [];
-  const productUploadsTrend = metrics.trends?.product_uploads ?? [];
-  const revenueTrend = (metrics.trends?.revenue ?? []).slice(-6);
+  const userGrowthTrend = Array.isArray(metrics.trends?.user_growth) ? metrics.trends.user_growth : [];
+  const productUploadsTrend = Array.isArray(metrics.trends?.product_uploads) ? metrics.trends.product_uploads : [];
+  const revenueTrend = (Array.isArray(metrics.trends?.revenue) ? metrics.trends.revenue : []).slice(-6);
   const lineMaxValue = Math.max(
     ...userGrowthTrend.map((value) => Number(value) || 0),
     ...productUploadsTrend.map((value) => Number(value) || 0),
@@ -1098,6 +1200,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setAiMetrics((previous) => ({
         ...previous,
         ...data,
+        weeklyRequests: Array.isArray(data.weeklyRequests) ? data.weeklyRequests : [],
+        weeklyClicks: Array.isArray(data.weeklyClicks) ? data.weeklyClicks : [],
+        topRecommendedProducts: Array.isArray(data.topRecommendedProducts) ? data.topRecommendedProducts : [],
         top_products: Array.isArray(data.top_products) ? data.top_products : [],
         category_performance: Array.isArray(data.category_performance) ? data.category_performance : [],
         alerts: Array.isArray(data.alerts) ? data.alerts : [],
@@ -1267,6 +1372,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         report_id: report.report_id || `RPT-${report.id}`,
         student: report.student || report.student_name || 'Unknown Student',
         student_id: report.student_id || 'Unknown',
+        seller_id: report.seller_id || '',
+        evidence_image: report.evidence_image || null,
         product_name: report.product_name || 'Marketplace Report',
         issue: report.issue || 'No issue details provided.',
         status: report.status || 'Open',
@@ -1851,6 +1958,61 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setShowRejectModal(true);
   };
 
+  const handleOpenEditProduct = (product) => {
+    setEditingProduct(product);
+    setEditProductForm({
+      title: product.title || '',
+      price: product.price || '',
+      category: product.category || '',
+      subcategory: product.subcategory || '',
+      description: product.description || '',
+      condition: product.condition || 'New',
+    });
+  };
+
+  const handleSaveProductDetails = async (event) => {
+    event.preventDefault();
+    if (!editingProduct || !editProductForm) return;
+    setIsSavingProduct(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/admin/products/${editingProduct.id}/details`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editProductForm),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to update product details.');
+
+      setProductsList((products) => products.map((product) => product.id === editingProduct.id
+        ? { ...product, ...editProductForm }
+        : product));
+      setEditingProduct(null);
+      setEditProductForm(null);
+      window.alert('Product details updated successfully.');
+    } catch (error) {
+      console.error('Failed to update product details:', error);
+      window.alert(error.message || 'Unable to update product details.');
+    } finally {
+      setIsSavingProduct(false);
+    }
+  };
+
+  const handleDeleteProduct = async (product) => {
+    if (!window.confirm(`Permanently delete "${product.title}"? This action cannot be undone.`)) return;
+    try {
+      const response = await fetch(`http://localhost:8000/api/admin/products/${product.id}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to delete product.');
+      setProductsList((products) => products.filter((item) => item.id !== product.id));
+      setSelectedProductIds((ids) => ids.filter((id) => id !== product.id));
+      if (selectedProductDetails?.id === product.id) setSelectedProductDetails(null);
+      window.alert(payload.message || 'Product deleted successfully.');
+    } catch (error) {
+      console.error('Failed to delete product:', error);
+      window.alert(error.message || 'Unable to delete product.');
+    }
+  };
+
   const handleSubmitProductFlag = async () => {
     if (!pendingRejectProduct) return;
 
@@ -2187,6 +2349,32 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setSelectedReport(report);
     setShowReportModal(true);
     setReportDecision('Warning');
+  };
+
+  const handleViewEvidence = () => {
+    if (!selectedReport?.evidence_image) {
+      setReportToast('No evidence photo was attached to this report.');
+      window.setTimeout(() => setReportToast(''), 3000);
+      return;
+    }
+    setEvidenceImage(selectedReport.evidence_image);
+  };
+
+  const handleViewConversationLogs = async () => {
+    if (!selectedReport) return;
+    setConversationLoading(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/admin/reports/${selectedReport.id}/conversation-logs`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Unable to load conversation logs.');
+      setConversationLogs(payload);
+    } catch (error) {
+      console.error('Failed to load conversation logs:', error);
+      setReportToast(error.message || 'Unable to load conversation logs.');
+      window.setTimeout(() => setReportToast(''), 3000);
+    } finally {
+      setConversationLoading(false);
+    }
   };
 
   const handleDeleteAnnouncement = (id) => {
@@ -2527,6 +2715,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   }, [announcementLog, notificationsSearch, notificationsFilter]);
 
   const renderTabContent = () => {
+    if (activeTab === 'profile') return <AdminSecurityProfile user={user} />;
     switch (activeTab) {
       case 'profile':
         return (
@@ -3050,7 +3239,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     {displayedUsers.map((student) => (
                       <tr key={student.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4"><input type="checkbox" checked={selectedUserIds.includes(student.id)} onChange={(event) => setSelectedUserIds((ids) => event.target.checked ? [...ids, student.id] : ids.filter((id) => id !== student.id))} aria-label={`Select ${student.name}`} /></td>
-                        <td className="px-4 py-4">
+                        <td className="min-w-[220px] px-4 py-4">
                           <div className="font-bold text-slate-900">{student.name}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{student.student_id} • {student.email}</div>
                         </td>
@@ -3826,7 +4015,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <table className="min-w-full text-left text-sm text-slate-700">
                   <thead className="border-b border-slate-200 text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={displayedPendingProducts.length > 0 && displayedPendingProducts.every((product) => selectedProductIds.includes(product.id))} onChange={(event) => setSelectedProductIds(event.target.checked ? displayedPendingProducts.map((product) => product.id) : [])} aria-label="Select pending products" /></th>
+                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={displayedProducts.length > 0 && displayedProducts.every((product) => selectedProductIds.includes(product.id))} onChange={(event) => setSelectedProductIds(event.target.checked ? displayedProducts.map((product) => product.id) : [])} aria-label="Select visible products" /></th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Product</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Seller ID</th>
                       <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Condition</th>
@@ -3837,11 +4026,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <tbody>
                     {displayedProducts.map((product) => (
                       <tr key={product.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
-                        <td className="px-4 py-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} disabled={product.status !== 'Pending'} onChange={(event) => setSelectedProductIds((ids) => event.target.checked ? [...ids, product.id] : ids.filter((id) => id !== product.id))} aria-label={`Select ${product.title}`} /></td>
+                        <td className="px-4 py-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={(event) => setSelectedProductIds((ids) => event.target.checked ? [...ids, product.id] : ids.filter((id) => id !== product.id))} aria-label={`Select ${product.title}`} /></td>
                         <td className="px-4 py-4">
                           <div className="flex items-center gap-3">
                             <img
-                              src={product.image || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80'}
+                              src={getProductImageUrl(product.image)}
                               alt={product.title}
                               onError={(event) => {
                                 event.currentTarget.onerror = null;
@@ -3863,7 +4052,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">
+                        <td className="min-w-[150px] px-4 py-4 font-semibold text-slate-700">
                           <div>{product.seller_id || product.seller || 'Unknown Student'}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{product.seller_verified ? 'Verified Seller' : 'Unverified'}</div>
                         </td>
@@ -3899,6 +4088,20 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                               className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
                             >
                               Reject/Flag
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditProduct(product)}
+                              className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100 transition cursor-pointer"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteProduct(product)}
+                              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
+                            >
+                              Delete
                             </button>
                             {product.status !== 'Approved' && (
                               <button
@@ -3943,8 +4146,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="grid gap-5 md:grid-cols-[1.2fr_0.8fr]">
                     <div className="overflow-hidden rounded-2xl border bg-slate-50 p-2">
                       <img
-                        src={selectedProductDetails.image || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=900&q=80'}
+                        src={getProductImageUrl(selectedProductDetails.image)}
                         alt={selectedProductDetails.title}
+                        onError={(event) => {
+                          event.currentTarget.onerror = null;
+                          event.currentTarget.src = PRODUCT_PLACEHOLDER;
+                        }}
                         className="h-72 w-full rounded-xl object-cover"
                       />
                     </div>
@@ -3980,6 +4187,55 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     Close Preview
                   </button>
                 </div>
+              </div>
+            )}
+
+            {editingProduct && editProductForm && (
+              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1002] flex items-center justify-center p-4">
+                <form onSubmit={handleSaveProductDetails} className="max-h-[90vh] overflow-y-auto bg-white rounded-[28px] p-6 max-w-2xl w-full shadow-2xl border border-slate-100 animate-fade-in">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-5">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.2em] text-sky-500 font-bold">Edit Listing</p>
+                      <h4 className="text-xl font-black text-slate-900 mt-1">{editingProduct.title}</h4>
+                    </div>
+                    <button type="button" onClick={() => { setEditingProduct(null); setEditProductForm(null); }} className="rounded-full bg-slate-100 p-2 hover:bg-slate-200 transition text-slate-500 font-bold" aria-label="Close edit form">✕</button>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {[
+                      ['title', 'Title', 'text'],
+                      ['price', 'Price', 'text'],
+                    ].map(([field, label, type]) => (
+                      <label key={field} className="block text-sm font-bold text-slate-700">
+                        {label}
+                        <input required type={type} value={editProductForm[field]} onChange={(event) => setEditProductForm((form) => ({ ...form, [field]: event.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition" />
+                      </label>
+                    ))}
+                    <label className="block text-sm font-bold text-slate-700">Category
+                      <select required value={editProductForm.category} onChange={(event) => setEditProductForm((form) => ({ ...form, category: event.target.value, subcategory: '' }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition">
+                        <option value="">Select category</option>
+                        {dbCategories.map((category) => <option key={category.id ?? category.name} value={category.name}>{category.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="block text-sm font-bold text-slate-700">Subcategory
+                      <select value={editProductForm.subcategory} onChange={(event) => setEditProductForm((form) => ({ ...form, subcategory: event.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition">
+                        <option value="">None</option>
+                        {(dbCategories.find((category) => category.name === editProductForm.category)?.subcategories || []).map((subcategory) => <option key={subcategory.id ?? subcategory.name} value={subcategory.name}>{subcategory.name}</option>)}
+                      </select>
+                    </label>
+                    <label className="block text-sm font-bold text-slate-700">Condition
+                      <select value={editProductForm.condition} onChange={(event) => setEditProductForm((form) => ({ ...form, condition: event.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition">
+                        <option>New</option><option>Like New</option><option>Gently Used</option><option>Good</option><option>Fair</option>
+                      </select>
+                    </label>
+                    <label className="block text-sm font-bold text-slate-700 sm:col-span-2">Description
+                      <textarea value={editProductForm.description} onChange={(event) => setEditProductForm((form) => ({ ...form, description: event.target.value }))} rows="4" className="mt-2 block w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition" />
+                    </label>
+                  </div>
+                  <div className="mt-6 flex gap-3">
+                    <button type="button" onClick={() => { setEditingProduct(null); setEditProductForm(null); }} className="flex-1 rounded-full border border-slate-200 bg-white px-4 py-3 font-bold text-slate-700 hover:bg-slate-50 transition">Cancel</button>
+                    <button type="submit" disabled={isSavingProduct} className="flex-1 rounded-full bg-sky-600 px-4 py-3 font-bold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60 transition">{isSavingProduct ? 'Saving...' : 'Save Changes'}</button>
+                  </div>
+                </form>
               </div>
             )}
 
@@ -5034,8 +5290,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </div>
 
                   <div className="mt-6 flex flex-wrap gap-3">
-                    <button type="button" onClick={() => alert('Evidence photo opened in a new panel.')} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100">View Evidence Photo</button>
-                    <button type="button" onClick={() => alert('Conversation logs opened for the reported case.')} className="rounded-full border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-100">View Conversation Logs</button>
+                    <button type="button" onClick={handleViewEvidence} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100">View Evidence Photo</button>
+                    <button type="button" onClick={handleViewConversationLogs} disabled={conversationLoading} className="rounded-full border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60">{conversationLoading ? 'Loading Logs...' : 'View Conversation Logs'}</button>
                   </div>
 
                   <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -5073,231 +5329,278 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
               </div>
             )}
+            {reportToast && (
+              <div role="alert" className="fixed right-6 top-6 z-[1200] rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm font-bold text-amber-800 shadow-lg">
+                {reportToast}
+              </div>
+            )}
+            {evidenceImage && (
+              <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setEvidenceImage(null)}>
+                <div className="relative max-h-[90vh] max-w-3xl rounded-2xl bg-white p-3 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                  <button type="button" onClick={() => setEvidenceImage(null)} className="absolute right-3 top-3 rounded-full bg-slate-900/75 px-3 py-1 text-sm font-bold text-white" aria-label="Close evidence photo">✕</button>
+                  <img src={evidenceImage} alt="Report evidence" className="max-h-[82vh] max-w-full rounded-xl object-contain" onError={() => { setEvidenceImage(null); setReportToast('The evidence photo could not be loaded.'); window.setTimeout(() => setReportToast(''), 3000); }} />
+                </div>
+              </div>
+            )}
+            {conversationLogs && (
+              <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setConversationLogs(null)}>
+                <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                  <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-4">
+                    <div><p className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-500">Conversation Logs</p><h3 className="mt-1 text-xl font-black text-slate-950">Buyer and Seller Transcript</h3></div>
+                    <button type="button" onClick={() => setConversationLogs(null)} className="rounded-full bg-slate-100 px-3 py-1 font-bold text-slate-600" aria-label="Close conversation logs">✕</button>
+                  </div>
+                  <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-2">
+                    {conversationLogs.messages?.length ? conversationLogs.messages.map((message) => (
+                      <div key={message.id} className={`rounded-2xl p-3 ${message.sender_id === conversationLogs.reporter_id ? 'bg-sky-50' : 'bg-indigo-50'}`}>
+                        <div className="flex items-center justify-between gap-3 text-xs font-bold text-slate-500"><span>{message.sender_id === conversationLogs.reporter_id ? 'Reporter' : 'Reported Seller'} ({message.sender_id})</span><time>{message.created_at ? new Date(message.created_at).toLocaleString() : 'Unknown time'}</time></div>
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-800">{message.message}</p>
+                        {message.attachment_url && <a href={message.attachment_url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-bold text-indigo-700 underline">View attachment</a>}
+                      </div>
+                    )) : <p className="py-10 text-center text-sm font-semibold text-slate-500">No conversation messages were found between these users.</p>}
+                  </div>
+                  <button type="button" onClick={() => setConversationLogs(null)} className="mt-5 w-full rounded-full bg-slate-900 py-3 font-bold text-white hover:bg-slate-800">Close Logs</button>
+                </div>
+              </div>
+            )}
           </div>
         );
       }
       case 'ai-recommendations':
-        return (
-          <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.26em] text-indigo-200">AI Recommendation Dashboard</p>
-                  <h2 className="mt-2 text-3xl font-black">Final-Year Project Defense</h2>
-                </div>
-                <div className="inline-flex items-center gap-2 self-start rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                  Live Model • Active
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {[
-                { label: 'Requests', value: aiMetrics.requests.toLocaleString(), accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
-                { label: 'Clicks', value: aiMetrics.clicks.toLocaleString(), accent: 'bg-sky-50 border-sky-100 text-slate-950', small: 'text-sky-600' },
-                { label: 'CTR', value: `${aiMetrics.ctr}%`, accent: 'bg-emerald-50 border-emerald-100 text-emerald-600', small: 'text-emerald-600' },
-                { label: 'Purchase Conversion', value: aiMetrics.purchase_conversions.toLocaleString(), accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
-              ].map((item) => (
-                <div key={item.label} className={`rounded-[24px] border p-5 shadow-sm ${item.accent}`}>
-                  <p className={`text-[10px] font-bold uppercase tracking-[0.2em] ${item.small}`}>{item.label}</p>
-                  <p className="mt-4 text-3xl font-black">{item.value}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-center justify-between">
+        {
+          const weeklyRequests = aiMetrics.weeklyRequests;
+          const weeklyClicks = aiMetrics.weeklyClicks;
+          const recommendationChartMax = Math.max(...weeklyRequests, ...weeklyClicks, 1);
+          const weeklyRequestsPath = generateRecommendationChartPath(weeklyRequests, recommendationChartMax);
+          const weeklyClicksPath = generateRecommendationChartPath(weeklyClicks, recommendationChartMax);
+          const weeklyLabels = weeklyRequests.map((_, index) => `Day ${index + 1}`);
+          return (
+            <div className="space-y-6 animate-fade-in text-slate-900">
+              <div className="rounded-[32px] border border-slate-200 bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Weekly Performance</p>
-                    <h3 className="mt-1 text-xl font-black text-slate-950">Requests vs Clicks</h3>
+                    <p className="text-[11px] font-bold uppercase tracking-[0.26em] text-indigo-200">AI Recommendation Dashboard</p>
+                    <h2 className="mt-2 text-3xl font-black">MAU Market </h2>
                   </div>
-                  <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                    <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500" /> Requests</span>
-                    <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-400" /> Clicks</span>
+                  <div className="inline-flex items-center gap-2 self-start rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
+                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Live Model • Active
                   </div>
                 </div>
-
-                <svg viewBox="0 0 640 250" className="h-64 w-full">
-                  <defs>
-                    <linearGradient id="requestsFill" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.2" />
-                      <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.02" />
-                    </linearGradient>
-                    <linearGradient id="clicksFill" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.18" />
-                      <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.02" />
-                    </linearGradient>
-                  </defs>
-
-                  {[0, 1, 2, 3, 4].map((line) => (
-                    <line key={line} x1="20" x2="620" y1={30 + line * 46} y2={30 + line * 46} stroke="#e2e8f0" strokeDasharray="4 8" />
-                  ))}
-
-                  <path d="M20 180 C110 170, 150 140, 210 150 S330 80, 390 110 S520 60, 620 40 L620 220 L20 220 Z" fill="url(#requestsFill)" opacity="0.85" />
-                  <path d="M20 195 C110 178, 155 160, 214 165 S328 128, 390 146 S520 105, 620 90 L620 220 L20 220 Z" fill="url(#clicksFill)" opacity="0.8" />
-
-                  <path d="M20 180 C110 170, 150 140, 210 150 S330 80, 390 110 S520 60, 620 40" fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
-                  <path d="M20 195 C110 178, 155 160, 214 165 S328 128, 390 146 S520 105, 620 90" fill="none" stroke="#38bdf8" strokeWidth="4" strokeLinecap="round" />
-
-                  {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((label, index) => (
-                    <g key={label}>
-                      <circle cx={20 + index * 86} cy={index === 0 ? 180 : index === 1 ? 170 : index === 2 ? 140 : index === 3 ? 150 : index === 4 ? 110 : index === 5 ? 60 : 40} r="4" fill={index % 2 === 0 ? '#4f46e5' : '#38bdf8'} />
-                      <text x={20 + index * 86} y="235" fill="#64748b" fontSize="12" textAnchor="middle">{label}</text>
-                    </g>
-                  ))}
-                </svg>
               </div>
 
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">AI Recommendation Model</p>
-                <h3 className="mt-2 text-xl font-black text-slate-950">Configuration</h3>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  { label: 'Requests', value: aiMetrics.requests.toLocaleString(), accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
+                  { label: 'Clicks', value: aiMetrics.clicks.toLocaleString(), accent: 'bg-sky-50 border-sky-100 text-slate-950', small: 'text-sky-600' },
+                  { label: 'CTR', value: `${aiMetrics.ctr}%`, accent: 'bg-emerald-50 border-emerald-100 text-emerald-600', small: 'text-emerald-600' },
+                  { label: 'Purchase Conversion', value: Number(aiMetrics.purchase_conversion ?? aiMetrics.purchase_conversions ?? 0).toLocaleString(), accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
+                ].map((item) => (
+                  <div key={item.label} className={`rounded-[24px] border p-5 shadow-sm ${item.accent}`}>
+                    <p className={`text-[10px] font-bold uppercase tracking-[0.2em] ${item.small}`}>{item.label}</p>
+                    <p className="mt-4 text-3xl font-black">{item.value}</p>
+                  </div>
+                ))}
+              </div>
 
-                <div className="mt-5 space-y-3">
-                  {[
-                    ['Algorithm', 'Content-Based Filtering'],
-                    ['Text Vectorization', 'TF-IDF'],
-                    ['Similarity Metric', 'Cosine Similarity'],
-                    ['Output Limit', '10 Recommended Products'],
-                    ['Features Analyzed', 'Titles, Category, Description, User Behavior']
-                  ].map(([key, value]) => (
-                    <div key={key} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{key}</div>
-                      <div className="mt-1 text-sm font-semibold text-slate-800">{value}</div>
+              <div className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
+                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Weekly Performance</p>
+                      <h3 className="mt-1 text-xl font-black text-slate-950">Requests vs Clicks</h3>
                     </div>
-                  ))}
-                </div>
-
-                <p className="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm leading-6 text-slate-700">
-                  The system analyzes product titles, descriptions, categories, and user interactions to recommend products that are similar to the student's interests and browsing behavior.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid gap-6 xl:grid-cols-[1.35fr_1fr]">
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Top Recommendations</p>
-                    <h3 className="mt-1 text-xl font-black text-slate-950">Top Recommended Products</h3>
+                    <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500" /> Requests</span>
+                      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-400" /> Clicks</span>
+                    </div>
                   </div>
-                  <button type="button" className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-700">
-                    Updated 2h ago
-                  </button>
+
+                  <svg viewBox="0 0 640 250" className="h-64 w-full">
+                    <defs>
+                      <linearGradient id="requestsFill" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.2" />
+                        <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.02" />
+                      </linearGradient>
+                      <linearGradient id="clicksFill" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.18" />
+                        <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.02" />
+                      </linearGradient>
+                    </defs>
+
+                    {[0, 1, 2, 3, 4].map((line) => (
+                      <line key={line} x1="20" x2="620" y1={30 + line * 46} y2={30 + line * 46} stroke="#e2e8f0" strokeDasharray="4 8" />
+                    ))}
+
+                    <path d={weeklyRequestsPath} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d={weeklyClicksPath} fill="none" stroke="#38bdf8" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+
+                    {weeklyLabels.map((label, index) => (
+                      <g key={label}>
+                        <text x={20 + index * (600 / Math.max(weeklyLabels.length - 1, 1))} y="235" fill="#64748b" fontSize="12" textAnchor="middle">{label}</text>
+                      </g>
+                    ))}
+                  </svg>
                 </div>
 
-                <div className="overflow-hidden rounded-2xl border border-slate-200">
-                  <table className="min-w-full text-left text-sm">
-                    <thead className="bg-slate-100 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                      <tr>
-                        <th className="px-4 py-3">Product</th>
-                        <th className="px-4 py-3">Views</th>
-                        <th className="px-4 py-3">Clicks</th>
-                        <th className="px-4 py-3">Conversion</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {aiMetrics.top_products.map((product) => (
-                        <tr key={product.id} className="border-t border-slate-200 bg-white">
-                          <td className="px-4 py-3 font-semibold text-slate-800">{product.title || product.product}</td>
-                          <td className="px-4 py-3 text-slate-600">{Number(product.views || 0).toLocaleString()}</td>
-                          <td className="px-4 py-3 text-slate-600">{Number(product.clicks || 0).toLocaleString()}</td>
-                          <td className="px-4 py-3 font-bold text-emerald-600">{product.conversion}%</td>
+                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">AI Recommendation Model</p>
+                  <h3 className="mt-2 text-xl font-black text-slate-950">Configuration</h3>
+
+                  <div className="mt-5 space-y-3">
+                    {[
+                      ['Algorithm', 'Content-Based Filtering'],
+                      ['Text Vectorization', 'TF-IDF'],
+                      ['Similarity Metric', 'Cosine Similarity'],
+                      ['Output Limit', '10 Recommended Products'],
+                      ['Features Analyzed', 'Titles, Category, Description, User Behavior']
+                    ].map(([key, value]) => (
+                      <div key={key} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{key}</div>
+                        <div className="mt-1 text-sm font-semibold text-slate-800">{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <p className="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm leading-6 text-slate-700">
+                    The system analyzes product titles, descriptions, categories, and user interactions to recommend products that are similar to the student's interests and browsing behavior.
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-6 xl:grid-cols-[1.35fr_1fr]">
+                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Top Recommendations</p>
+                      <h3 className="mt-1 text-xl font-black text-slate-950">Top Recommended Products</h3>
+                    </div>
+                    <button type="button" className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-700">
+                      Updated 2h ago
+                    </button>
+                  </div>
+
+                  <div className="overflow-hidden rounded-2xl border border-slate-200">
+                    <table className="min-w-full text-left text-sm">
+                      <thead className="bg-slate-100 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                        <tr>
+                          <th className="px-4 py-3">Product</th>
+                          <th className="px-4 py-3">Views</th>
+                          <th className="px-4 py-3">Clicks</th>
+                          <th className="px-4 py-3">Conversion</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Category Insights</p>
-                <h3 className="mt-2 text-xl font-black text-slate-950">Category Recommendation Performance</h3>
-
-                <div className="mt-5 space-y-5">
-                  {aiMetrics.category_performance.map((category, index) => {
-                    const colors = ['bg-indigo-500', 'bg-emerald-500', 'bg-sky-500', 'bg-violet-500', 'bg-amber-500'];
-                    const value = Number(category.value || 0);
-                    return (<div key={category.label}>
-                      <div className="mb-1 flex items-center justify-between text-sm font-semibold text-slate-700">
-                        <span>{category.label}</span>
-                        <span>{value}%</span>
-                      </div>
-                      <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
-                        <div className={`h-full rounded-full ${colors[index % colors.length]}`} style={{ width: `${value}%` }} />
-                      </div>
-                    </div>);
-                  })}
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-6 xl:grid-cols-[1.1fr_1fr]">
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Model Health</p>
-                    <h3 className="mt-1 text-xl font-black text-slate-950">Status & Performance Accuracies</h3>
-                  </div>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
-                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Active
+                      </thead>
+                      <tbody>
+                        {aiMetrics.topRecommendedProducts.map((product) => (
+                          <tr key={product.id} className="border-t border-slate-200 bg-white">
+                            <td className="px-4 py-3 font-semibold text-slate-800">{product.title || product.product}</td>
+                            <td className="px-4 py-3 text-slate-600">{Number(product.views || 0).toLocaleString()}</td>
+                            <td className="px-4 py-3 text-slate-600">{Number(product.clicks || 0).toLocaleString()}</td>
+                            <td className="px-4 py-3 font-bold text-emerald-600">{(Number(product.views) ? ((Number(product.clicks || 0) / Number(product.views)) * 100).toFixed(2) : '0.00')}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
 
-                <div className="mt-5 grid gap-4 md:grid-cols-3">
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">DB Records</p>
-                    <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.db_records.toLocaleString()}</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">User Profiles</p>
-                    <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.user_profiles.toLocaleString()}</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Products Indexed</p>
-                    <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.products_indexed.toLocaleString()}</p>
-                  </div>
-                </div>
+                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Category Insights</p>
+                  <h3 className="mt-2 text-xl font-black text-slate-950">Category Recommendation Performance</h3>
 
-                <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Precision@5</div>
-                    <div className="mt-2 text-3xl font-black text-emerald-700">{aiMetrics.precision}%</div>
-                  </div>
-                  <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Recall@5</div>
-                    <div className="mt-2 text-3xl font-black text-sky-700">{aiMetrics.recall}%</div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Diagnostics</p>
-                <h3 className="mt-2 text-xl font-black text-slate-950">Alerts</h3>
-
-                <div className="mt-5 space-y-3">
-                  {aiMetrics.alerts.map((alert) => (
-                    <div key={alert.title} className={`rounded-2xl border p-4 ${alert.type === 'success' ? 'border-emerald-200 bg-emerald-50' : alert.type === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-sky-200 bg-sky-50'}`}>
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-block h-2.5 w-2.5 rounded-full ${alert.type === 'success' ? 'bg-emerald-500' : alert.type === 'warning' ? 'bg-amber-500' : 'bg-sky-500'}`} />
-                          <span className="text-sm font-bold text-slate-800">{alert.title}</span>
+                  <div className="mt-5 space-y-5">
+                    {aiMetrics.category_performance.map((category, index) => {
+                      const colors = ['bg-indigo-500', 'bg-emerald-500', 'bg-sky-500', 'bg-violet-500', 'bg-amber-500'];
+                      const value = Number(category.value || 0);
+                      return (<div key={category.label}>
+                        <div className="mb-1 flex items-center justify-between text-sm font-semibold text-slate-700">
+                          <span>{category.label}</span>
+                          <span>{value}%</span>
                         </div>
-                        <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${alert.type === 'success' ? 'bg-emerald-100 text-emerald-700' : alert.type === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
-                          {alert.status}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-sm leading-6 text-slate-700">{alert.description}</p>
+                        <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+                          <div className={`h-full rounded-full ${colors[index % colors.length]}`} style={{ width: `${value}%` }} />
+                        </div>
+                      </div>);
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-6 xl:grid-cols-[1.1fr_1fr]">
+                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Model Health</p>
+                      <h3 className="mt-1 text-xl font-black text-slate-950">Status & Performance Accuracies</h3>
                     </div>
-                  ))}
+                    <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Active
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-4 md:grid-cols-3">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">DB Records</p>
+                      <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.db_records.toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">User Profiles</p>
+                      <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.user_profiles.toLocaleString()}</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Products Indexed</p>
+                      <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.products_indexed.toLocaleString()}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Precision@5</div>
+                      <div className="mt-2 text-3xl font-black text-emerald-700">{aiMetrics.precision}%</div>
+                    </div>
+                    <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Recall@5</div>
+                      <div className="mt-2 text-3xl font-black text-sky-700">{aiMetrics.recall}%</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Diagnostics</p>
+                  <h3 className="mt-2 text-xl font-black text-slate-950">Alerts</h3>
+
+                  <div className="mt-5 space-y-3">
+                    {aiMetrics.alerts.map((alert) => (
+                      <div key={alert.title} className={`rounded-2xl border p-4 ${alert.type === 'success' ? 'border-emerald-200 bg-emerald-50' : alert.type === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-sky-200 bg-sky-50'}`}>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-block h-2.5 w-2.5 rounded-full ${alert.type === 'success' ? 'bg-emerald-500' : alert.type === 'warning' ? 'bg-amber-500' : 'bg-sky-500'}`} />
+                            <span className="text-sm font-bold text-slate-800">{alert.title}</span>
+                          </div>
+                          <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${alert.type === 'success' ? 'bg-emerald-100 text-emerald-700' : alert.type === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+                            {alert.status}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-6 text-slate-700">{alert.description}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        );
-      case 'analytics':
+          );
+        }
+      case 'analytics': {
+        const analyticsRegistrations = Array.isArray(metrics.registrations) ? metrics.registrations : userGrowthTrend;
+        const analyticsRevenue = Array.isArray(metrics.monthlyRevenue) ? metrics.monthlyRevenue : revenueTrend;
+        const registrationChartMax = Math.max(...analyticsRegistrations.map((value) => Number(value) || 0), 1);
+        const revenueChartMax = Math.max(...analyticsRevenue.map((value) => Number(value) || 0), 1);
+        const registrationPath = generateSvgPath(analyticsRegistrations, registrationChartMax, 560, 130, 20);
+        const registrationAreaPath = generateSvgAreaPath(analyticsRegistrations, registrationChartMax, 560, 130, 20);
+        const revenuePath = generateSvgPath(analyticsRevenue, revenueChartMax, 560, 130, 20);
+        const revenueAreaPath = generateSvgAreaPath(analyticsRevenue, revenueChartMax, 560, 130, 20);
+        const registrationLabels = metrics.registrationLabels?.length ? metrics.registrationLabels : analyticsRegistrations.map((_, index) => `Day ${index + 1}`);
+        const analyticsMonths = metrics.monthsLabels?.length ? metrics.monthsLabels : trendMonths;
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-gradient-to-r from-[#0f172a] via-[#111c3a] to-[#172554] p-6 text-white shadow-xl">
@@ -5361,12 +5664,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     <line key={line} x1="20" x2="600" y1={30 + line * 25} y2={30 + line * 25} stroke="#e2e8f0" strokeDasharray="4 8" />
                   ))}
 
-                  <path d={`${generateLinePath(revenueTrend, maxRevenue)} L 560,130 L 40,130 Z`} fill="url(#salesBg)" opacity="0.7" />
-                  <path d={generateLinePath(revenueTrend, maxRevenue)} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
+                  <path d={revenueAreaPath} fill="url(#salesBg)" opacity="0.7" />
+                  <path d={revenuePath} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
 
-                  {trendMonths.map((label, index) => (
+                  {analyticsMonths.map((label, index) => (
                     <g key={label}>
-                      <circle cx={40 + index * 104} cy={Number(revenueTrend[index]) === 0 && revenueTrend.every((value) => Number(value) === 0) ? 130 : Math.max(30, 130 - ((Number(revenueTrend[index]) || 0) / maxRevenue) * 100)} r="4" fill="#4f46e5" />
+                      <circle cx={analyticsRevenue.length > 1 ? 40 + index * (520 / (analyticsRevenue.length - 1)) : 300} cy={110 - ((Number(analyticsRevenue[index]) || 0) / revenueChartMax) * 90} r="4" fill="#4f46e5" />
                       <text x={40 + index * 104} y="155" fill="#64748b" fontSize="11" textAnchor="middle">{label}</text>
                     </g>
                   ))}
@@ -5436,12 +5739,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   {Array.from({ length: 5 }).map((_, index) => (
                     <line key={index} x1="20" x2="600" y1={30 + index * 25} y2={30 + index * 25} stroke="#e2e8f0" strokeDasharray="4 8" />
                   ))}
-                  <path d={`${generateLinePath(userGrowthTrend, lineMaxValue)} L 560,130 L 40,130 Z`} fill="url(#regBg)" />
-                  <path d={generateLinePath(userGrowthTrend, lineMaxValue)} fill="none" stroke="#0ea5e9" strokeWidth="4" strokeLinecap="round" />
+                  <path d={registrationAreaPath} fill="url(#regBg)" />
+                  <path d={registrationPath} fill="none" stroke="#0ea5e9" strokeWidth="4" strokeLinecap="round" />
 
-                  {trendMonths.map((label, index) => (
+                  {registrationLabels.map((label, index) => (
                     <g key={label}>
-                      <circle cx={40 + index * 104} cy={Number(userGrowthTrend[index]) === 0 && userGrowthTrend.every((value) => Number(value) === 0) ? 130 : Math.max(30, 130 - ((Number(userGrowthTrend[index]) || 0) / lineMaxValue) * 100)} r="4" fill="#0ea5e9" />
+                      <circle cx={analyticsRegistrations.length > 1 ? 40 + index * (520 / (analyticsRegistrations.length - 1)) : 300} cy={110 - ((Number(analyticsRegistrations[index]) || 0) / registrationChartMax) * 90} r="4" fill="#0ea5e9" />
                       <text x={40 + index * 104} y="155" textAnchor="middle" fill="#64748b" fontSize="11">{label}</text>
                     </g>
                   ))}
@@ -5543,6 +5846,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
           </div>
         );
+      }
       case 'notifications':
         var broadcastTotals = announcementLog.reduce((totals, campaign) => ({
           sent: totals.sent + 1,

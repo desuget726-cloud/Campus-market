@@ -33,6 +33,7 @@ class Student(Base):
     orders = relationship("Order", primaryjoin="Student.student_id == Order.student_id", back_populates="student", cascade="all, delete-orphan")
     transactions = relationship("Transaction", primaryjoin="Student.student_id == Transaction.student_id", back_populates="student", cascade="all, delete-orphan")
     reviews = relationship("Review", primaryjoin="Student.student_id == Review.student_id", back_populates="student", cascade="all, delete-orphan")
+    ai_recommendation_logs = relationship("AIRecommendationLog", back_populates="student", cascade="all, delete-orphan")
 
 class Category(Base):
     __tablename__ = "categories"
@@ -61,6 +62,7 @@ class Product(Base):
     category = Column(String(100), nullable=False)
     subcategory = Column(String(100), nullable=True)
     price = Column(String(50), nullable=False)
+    condition = Column(String(50), nullable=True)
     image = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
     seller = Column(String(100), nullable=True)
@@ -72,6 +74,19 @@ class Product(Base):
     cart_items = relationship("CartItem", back_populates="product", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="product", cascade="all, delete-orphan")
     messages = relationship("Message", back_populates="product", cascade="all, delete-orphan")
+    ai_recommendation_logs = relationship("AIRecommendationLog", back_populates="product", cascade="all, delete-orphan")
+
+class AIRecommendationLog(Base):
+    __tablename__ = "ai_recommendation_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    action_type = Column(String(20), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+
+    student = relationship("Student", back_populates="ai_recommendation_logs")
+    product = relationship("Product", back_populates="ai_recommendation_logs")
 
 class WishlistItem(Base):
     __tablename__ = "wishlist_items"
@@ -144,14 +159,50 @@ class Admin(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
+    full_name = Column(String(150), nullable=True)
+    phone = Column(String(30), nullable=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), default="Admin", nullable=False)
     status = Column(String(50), default="Active", nullable=False)
     two_factor_enabled = Column(Boolean, default=True, nullable=False)
+    two_factor_secret = Column(String(64), nullable=True)
+    backup_codes = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     last_login = Column(DateTime, nullable=True)
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
 
     audit_logs = relationship("AuditLog", back_populates="admin", cascade="all, delete-orphan")
+    sessions = relationship("AdminSession", back_populates="admin", cascade="all, delete-orphan")
+    login_history = relationship("AdminLoginHistory", back_populates="admin", cascade="all, delete-orphan")
+
+
+class AdminSession(Base):
+    __tablename__ = "admin_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True)
+    session_token = Column(String(500), unique=True, nullable=False, index=True)
+    ip_address = Column(String(50), nullable=True)
+    device_browser = Column(String(255), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_active = Column(DateTime, server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    admin = relationship("Admin", back_populates="sessions")
+
+
+class AdminLoginHistory(Base):
+    __tablename__ = "admin_login_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=True, index=True)
+    event_type = Column(String(50), nullable=False)
+    ip_address = Column(String(50), nullable=True)
+    device_browser = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    admin = relationship("Admin", back_populates="login_history")
 
 
 class SystemSetting(Base):
@@ -193,10 +244,12 @@ class Report(Base):
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=True)
+    seller_id = Column(String(50), nullable=True, index=True)
     student_name = Column(String(150), nullable=False)
     email = Column(String(100), nullable=True)
     category = Column(String(100), nullable=True)
     issue = Column(String(1000), nullable=False)
+    evidence_image = Column(String(255), nullable=True)
     status = Column(String(50), nullable=False, default="Open")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

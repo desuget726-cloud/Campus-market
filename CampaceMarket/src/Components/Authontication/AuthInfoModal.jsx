@@ -6,6 +6,7 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
     const [studentId, setStudentId] = useState(defaultStudentId);
     const [category, setCategory] = useState('General Inquiry');
     const [message, setMessage] = useState('');
+    const [evidenceImage, setEvidenceImage] = useState(null);
     const [ticketReference, setTicketReference] = useState('');
     const [status, setStatus] = useState({ error: '', success: '', submitting: false });
 
@@ -15,6 +16,7 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
         setStudentId(defaultStudentId);
         setCategory('General Inquiry');
         setMessage('');
+        setEvidenceImage(null);
         setTicketReference('');
         setStatus({ error: '', success: '', submitting: false });
     }, [defaultStudentId]);
@@ -43,22 +45,23 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
 
         setStatus({ error: '', success: '', submitting: true });
         try {
+            const formData = new FormData();
+            formData.append('student_id', studentId.trim());
+            formData.append('student_name', name.trim());
+            formData.append('email', email.trim());
+            formData.append('category', category);
+            formData.append('issue', message.trim());
+            if (evidenceImage) formData.append('evidence_image', evidenceImage);
             const response = await fetch('http://127.0.0.1:8000/api/student/report', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    student_id: studentId.trim() || null,
-                    student_name: name.trim(),
-                    email: email.trim(),
-                    category,
-                    issue: message.trim()
-                })
+                body: formData
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data?.detail || 'Could not submit your support request.');
             setTicketReference(data?.ticket_reference || 'Pending reference');
             setStatus({ error: '', success: '', submitting: false });
             setMessage('');
+            setEvidenceImage(null);
         } catch (error) {
             setStatus({ error: error.message || 'Could not submit your support request.', success: '', submitting: false });
         }
@@ -202,6 +205,7 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
                         <label className="block text-sm font-medium text-slate-700">Inquiry Type<select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"><option>General Inquiry</option><option>Login Issue</option><option>Payment Problem</option><option>Fraud Report</option></select></label>
                         <label className="block text-sm font-medium text-slate-700">Student ID <span className="font-normal text-slate-400">(optional)</span><input value={studentId} onChange={(event) => setStudentId(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
                         <label className="block text-sm font-medium text-slate-700">Message<textarea required rows={4} value={message} onChange={(event) => setMessage(event.target.value)} className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
+                        <label className="block text-sm font-medium text-slate-700">Evidence image <span className="font-normal text-slate-400">(optional)</span><input type="file" accept="image/*" onChange={(event) => setEvidenceImage(event.target.files?.[0] || null)} className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal text-slate-600" /></label>
                         {status.error && <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{status.error}</p>}
                         {status.success && <p className="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{status.success}</p>}
                         <button type="submit" disabled={status.submitting} className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400">{status.submitting ? 'Sending...' : 'Send to Admin'}</button>
