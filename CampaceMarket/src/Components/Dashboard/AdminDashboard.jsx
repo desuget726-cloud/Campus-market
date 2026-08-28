@@ -58,7 +58,6 @@ const getDynamicMonths = () => Array.from({ length: 6 }, (_, index) => {
   targetDate.setMonth(targetDate.getMonth() - (5 - index));
   return targetDate.toLocaleString('en-US', { month: 'short', year: '2-digit' });
 });
-
 const UNIVERSITY_STRUCTURE = {
   'College of Computing and Informatics (CCI)': ['Department of Computer Science', 'Department of Information Technology (IT)', 'Department of Software Engineering'],
   'College of Natural and Computational Sciences (CNCS)': ['Department of Biology', 'Department of Chemistry', 'Department of Geology', 'Department of Mathematics', 'Department of Physics', 'Department of Statistics', 'Department of Sport Science'],
@@ -111,8 +110,6 @@ const normalizeTarget = (target = '') => {
   if (normalizedTarget.startsWith('broadcast_')) {
     return normalizeTarget(normalizedTarget.slice('broadcast_'.length));
   }
-
-  if (normalizedTarget === 'broadcast') return 'Everyone';
 
   return aliases[normalizedTarget] || normalizedTarget;
 };
@@ -980,6 +977,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   });
   const [chapaConnectionMessage, setChapaConnectionMessage] = useState('');
   const [chapaConnectionLoading, setChapaConnectionLoading] = useState(false);
+  const [gatewayInfo, setGatewayInfo] = useState({
+    gateway: 'Checking...',
+    webhook: 'Checking...',
+    currency: 'ETB',
+    last_checked: null,
+  });
   const [notificationSettings, setNotificationSettings] = useState({
     emailNotifs: true,
     orderNotifs: true,
@@ -1161,6 +1164,29 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     { label: 'Orders', value: metrics.total_orders ?? metrics.totalOrders, trend: '0%' },
     { label: 'Revenue', value: metrics.total_revenue ?? metrics.totalRevenue, trend: '0%' },
   ];
+
+  useEffect(() => {
+    const fetchGatewayStatus = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/admin/payments/gateway-status');
+        if (!response.ok) throw new Error('Gateway status endpoint unavailable');
+        const data = await response.json();
+        setGatewayInfo({
+          gateway: data.gateway || 'Disconnected',
+          webhook: data.webhook || 'Not configured',
+          currency: data.currency || 'ETB',
+          last_checked: data.last_checked || null,
+        });
+      } catch (error) {
+        console.error('Failed to fetch gateway status:', error);
+        setGatewayInfo((current) => ({ ...current, gateway: 'Disconnected', last_checked: new Date().toISOString() }));
+      }
+    };
+
+    fetchGatewayStatus();
+    const gatewayInterval = window.setInterval(fetchGatewayStatus, 30000);
+    return () => window.clearInterval(gatewayInterval);
+  }, []);
 
   const userGrowthTrend = Array.isArray(metrics.trends?.user_growth) ? metrics.trends.user_growth : [];
   const productUploadsTrend = Array.isArray(metrics.trends?.product_uploads) ? metrics.trends.product_uploads : [];
@@ -3548,10 +3574,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         ['student_id', 'Student ID', 'text'],
                         ['email', 'Email', 'email'],
                         ['phone', 'Phone', 'tel'],
-                        ['password', 'Temporary Password', 'password'],
+                        ['password', 'Password', 'password'],
                       ].map(([field, label, type]) => (
                         <label key={field} className="block text-sm font-semibold text-slate-700">
-                          {label}{field !== 'phone' && <span className="text-rose-500"> *</span>}
+                          {label}
                           <input
                             type={type}
                             required={field !== 'phone'}
@@ -4830,7 +4856,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 ['Gateway', 'Chapa 🟢 Connected'],
                 ['Webhook', '🟢 Active'],
                 ['Settlement Currency', 'ETB'],
-                ['Heartbeat', 'Last checked 2 minutes ago'],
+                ['Heartbeat', 'Last checked a minutes ago'],
               ].map(([label, value]) => (
                 <div key={label} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
                   <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</p>

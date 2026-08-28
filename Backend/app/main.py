@@ -5198,6 +5198,31 @@ def get_admin_ai_analytics(db: Session = Depends(get_db)):
     }
 
 
+@app.get("/api/admin/payments/gateway-status")
+def get_payment_gateway_status():
+    checked_at = datetime.utcnow().isoformat()
+    secret_key = os.getenv("CHAPA_SECRET_KEY", "").strip()
+    gateway = "Disconnected"
+    if secret_key:
+        try:
+            with httpx.Client(timeout=3.0) as chapa_client:
+                response = chapa_client.get(
+                    "https://api.chapa.co/v1/banks",
+                    headers={"Authorization": f"Bearer {secret_key}"},
+                )
+            if response.status_code == 200:
+                gateway = "Connected"
+        except (httpx.RequestError, httpx.TimeoutException):
+            gateway = "Disconnected"
+
+    return {
+        "gateway": gateway,
+        "webhook": "Active" if os.getenv("CHAPA_WEBHOOK_SECRET", "").strip() else "Not configured",
+        "currency": "ETB",
+        "last_checked": checked_at,
+    }
+
+
 @app.get("/api/admin/analytics")
 def get_admin_analytics(db: Session = Depends(get_db)):
     total_students = db.query(Student).count()
@@ -5318,11 +5343,24 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         Transaction.status.ilike("Successful"),
         Transaction.created_at >= successful_transaction_cutoff,
     ).order_by(Transaction.created_at.desc()).first()
-    gateway_configured = bool(chapa_public_key and chapa_secret_key)
+    gateway_status = "Disconnected"
+    if chapa_secret_key:
+        try:
+            with httpx.Client(timeout=3.0) as chapa_client:
+                chapa_response = chapa_client.get(
+                    "https://api.chapa.co/v1/banks",
+                    headers={"Authorization": f"Bearer {chapa_secret_key}"},
+                )
+            if chapa_response.status_code == 200:
+                gateway_status = "Connected"
+        except (httpx.RequestError, httpx.TimeoutException):
+            gateway_status = "Disconnected"
+
+    gateway_configured = gateway_status == "Connected"
     gateway_status = {
         "provider": "Chapa",
         "configured": gateway_configured,
-        "status": "Connected" if gateway_configured else "Not configured",
+        "status": "Connected" if gateway_configured else "Disconnected",
         "webhookStatus": "Active" if latest_successful_transaction else "Awaiting successful transaction",
         "lastSuccessfulTransaction": (
             latest_successful_transaction.created_at.isoformat()
