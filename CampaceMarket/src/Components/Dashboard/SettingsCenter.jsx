@@ -4,10 +4,6 @@ const settingsSections = [
     ["account", "👤", "Account"],
     ["security", "🔐", "Security"],
     ["notifications", "🔔", "Notifications"],
-    ["ai", "🤖", "AI Advisor"],
-    ["wallet", "💰", "Wallet & Payment"],
-    ["privacy", "🛡️", "Privacy"],
-    ["appearance", "🎨", "Appearance"],
 ];
 
 const Toggle = ({ label, checked, onChange }) => (
@@ -54,11 +50,6 @@ function SettingsCenter({
     avatarUploadMessage,
     avatarUploading,
     universityStructure,
-    currentWalletBalance,
-    transactionLedger,
-    onNavigate,
-    blockedUsers = [],
-    onUnblockUser,
 }) {
     const [security, setSecurity] = useState({
         twoFactor: true,
@@ -75,20 +66,6 @@ function SettingsCenter({
         paymentsEmail: false,
         browser: true,
     });
-    const [aiPrefs, setAiPrefs] = useState({
-        frequency: "Daily",
-        departmentTriggers: true,
-    });
-    const [paymentMethod, setPaymentMethod] = useState("Chapa");
-    const [privacy, setPrivacy] = useState({
-        profileVisible: true,
-        showPhone: false,
-    });
-    const [appearance, setAppearance] = useState({
-        theme: "System",
-        language: "English",
-    });
-    const [deleteOpen, setDeleteOpen] = useState(false);
     const [savedMessage, setSavedMessage] = useState("");
     const updatePref = (key) =>
         setNotificationPrefs((previous) => ({
