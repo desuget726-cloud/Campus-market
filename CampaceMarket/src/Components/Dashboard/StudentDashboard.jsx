@@ -198,6 +198,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     phone: user?.phone || '',
     college: user?.college || '',
     department: user?.department || '',
+    preferredPickupLocation: user?.preferred_pickup_location || 'Student Center',
     password: '',
     confirmPassword: ''
   });
@@ -590,6 +591,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           phone: freshUser.phone || '',
           college: freshUser.college || '',
           department: freshUser.department || '',
+          preferredPickupLocation: freshUser.preferred_pickup_location || 'Student Center',
         }));
       } catch (err) {
         console.error('Error fetching fresh student profile:', err);
@@ -986,6 +988,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         phone: profileForm.phone,
         college: profileForm.college,
         department: profileForm.department,
+        preferred_pickup_location: profileForm.preferredPickupLocation,
       };
 
       if (profileForm.password) {
@@ -1009,6 +1012,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         phone: data.user.phone,
         college: data.user.college,
         department: data.user.department,
+        preferred_pickup_location: data.user.preferred_pickup_location,
       };
 
       onUserUpdate(updatedUser);

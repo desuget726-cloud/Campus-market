@@ -30,6 +30,7 @@ import re
 import math
 import mimetypes
 import base64
+import secrets
 from decimal import Decimal
 from collections import Counter
 from datetime import datetime, timedelta
@@ -583,6 +584,11 @@ class AdminLoginOtpRequest(BaseModel):
     otp_code: str
 
 
+class StudentLoginOtpRequest(BaseModel):
+    email: str
+    otp_code: str
+
+
 class AdminSessionRequest(BaseModel):
     session_token: str
 
@@ -625,6 +631,27 @@ class StudentProfileUpdate(BaseModel):
     college: str
     department: str
     password: Optional[str] = None
+    preferred_pickup_location: Optional[str] = None
+
+
+class StudentNotificationSettingsUpdate(BaseModel):
+    notif_msg_inapp: bool
+    notif_msg_email: bool
+    notif_order_inapp: bool
+    notif_order_email: bool
+    notif_pay_inapp: bool
+    notif_pay_email: bool
+    notif_browser_enabled: bool
+
+
+class StudentPasswordUpdate(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
+class StudentTwoFactorUpdate(BaseModel):
+    enabled: bool
 
 
 class NotificationMarkReadRequest(BaseModel):
@@ -1063,6 +1090,52 @@ def _notifications_enabled(db: Optional[Session], key: str) -> bool:
             settings_db.close()
 
 
+NOTIFICATION_PREFERENCE_FIELDS = {
+    "message": ("notif_msg_inapp", "notif_msg_email"),
+    "order": ("notif_order_inapp", "notif_order_email"),
+    "payment": ("notif_pay_inapp", "notif_pay_email"),
+}
+
+
+def _add_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str) -> bool:
+    preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
+    if not preference_fields or not getattr(student, preference_fields[0], True):
+        return False
+    db.add(Notification(
+        student_id=student.student_id,
+        title=title,
+        message=message,
+        type=notification_type,
+        is_read=False,
+    ))
+    return True
+
+
+def _send_student_notification_email(student: Student, subject: str, message: str, notification_type: str) -> bool:
+    preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
+    if not preference_fields or not getattr(student, preference_fields[1], True) or not student.email:
+        return False
+    try:
+        email_message = MIMEMultipart("alternative")
+        email_message["Subject"] = subject
+        email_message["From"] = SENDER_EMAIL
+        email_message["To"] = student.email
+        email_message.attach(MIMEText(message, "html"))
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, student.email, email_message.as_string())
+        return True
+    except Exception as exc:
+        email_logger.exception("Failed to send student notification email: %s", exc)
+        return False
+
+
+def _dispatch_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str) -> None:
+    _add_student_notification(db, student, title, message, notification_type)
+    _send_student_notification_email(student, title, message, notification_type)
+
+
 def _parse_size_bytes(value, default=5 * 1024 * 1024):
     if isinstance(value, (int, float)) and value >= 0:
         return int(value)
@@ -1375,9 +1448,22 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+        if student.two_factor_enabled:
+            otp = f"{secrets.randbelow(900000) + 100000}"
+            db.add(PasswordReset(
+                email=student.email,
+                otp_code=otp,
+                expires_at=datetime.utcnow() + timedelta(minutes=10),
+                is_used=False,
+            ))
+            db.commit()
+            email_sent = send_otp_email(student.email, otp)
+            if not email_sent:
+                logging.getLogger("app.auth").warning("Student login OTP email could not be sent.")
+            return {"status": "otp_required", "email": student.email, "dev_mode": not email_sent}
         session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
         token = _create_session_token(student.student_id, "student", security.session_timeout, session_secret)
-        return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified)}}
+        return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified), "two_factor_enabled": bool(student.two_factor_enabled)}}
 
     if admin:
         admin.failed_login_attempts = int(admin.failed_login_attempts or 0) + 1
@@ -1393,6 +1479,47 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         db.commit()
     _record_failed_login(db, identifier, security)
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
+
+
+@app.post("/api/auth/verify-login-otp")
+def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Request, db: Session = Depends(get_db)):
+    email = request.email.strip().lower()
+    otp = request.otp_code.strip()
+    if not otp.isdigit() or len(otp) != 6:
+        raise HTTPException(status_code=400, detail="Invalid OTP format.")
+
+    student = db.query(Student).filter(Student.email.ilike(email)).first()
+    if not student:
+        raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
+    otp_record = (
+        db.query(PasswordReset)
+        .filter(
+            PasswordReset.email.ilike(student.email),
+            PasswordReset.otp_code == otp,
+            PasswordReset.is_used.is_(False),
+            PasswordReset.expires_at >= datetime.utcnow(),
+        )
+        .order_by(PasswordReset.id.desc())
+        .first()
+    )
+    if not otp_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
+
+    otp_record.is_used = True
+    token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), os.getenv("SESSION_SECRET", "campace-session-secret"))
+    db.commit()
+    return {
+        "role": "student",
+        "access_token": token,
+        "user": {
+            "name": student.name,
+            "studentId": student.student_id,
+            "email": student.email,
+            "is_verified": bool(student.is_verified),
+            "two_factor_enabled": bool(student.two_factor_enabled),
+            "preferred_pickup_location": student.preferred_pickup_location,
+        },
+    }
 
 
 @app.post("/api/login/verify-otp")
@@ -1666,6 +1793,39 @@ def _decode_admin_jwt(session_token: str) -> dict:
     if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.utcnow().timestamp():
         raise HTTPException(status_code=401, detail="JWT token has expired.")
     return payload
+
+
+def _student_from_authorization(authorization: Optional[str], db: Session) -> Student:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization Bearer token is required.")
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Authorization header must use the Bearer scheme.")
+
+    try:
+        encoded_header, encoded_payload, encoded_signature = token.strip().split(".")
+        padding = lambda value: value + "=" * (-len(value) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padding(encoded_header)).decode())
+        payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode())
+        provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
+
+    unsigned_token = f"{encoded_header}.{encoded_payload}"
+    expected_signature = hmac.new(
+        os.getenv("SESSION_SECRET", "campace-session-secret").encode(),
+        unsigned_token.encode(),
+        hashlib.sha256,
+    ).digest()
+    if header.get("alg") != "HS256" or header.get("typ") != "JWT" or not hmac.compare_digest(provided_signature, expected_signature):
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
+    if payload.get("role") != "student" or not payload.get("sub") or not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.utcnow().timestamp():
+        raise HTTPException(status_code=401, detail="Invalid or expired student session.")
+
+    student = db.query(Student).filter(Student.student_id == payload["sub"]).first()
+    if not student:
+        raise HTTPException(status_code=401, detail="Student session is no longer valid.")
+    return student
 
 
 def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin, AdminSession]:
@@ -2173,7 +2333,99 @@ def get_student_profile(student_id: str, db: Session = Depends(get_db)):
             "college": student.college,
             "department": student.department,
             "is_verified": bool(student.is_verified),
+            "two_factor_enabled": bool(student.two_factor_enabled),
+            "notification_settings": {
+                field: bool(getattr(student, field)) for field in (
+                    "notif_msg_inapp", "notif_msg_email", "notif_order_inapp",
+                    "notif_order_email", "notif_pay_inapp", "notif_pay_email",
+                    "notif_browser_enabled",
+                )
+            },
         },
+    }
+
+
+@app.put("/api/student/profile/notification-settings")
+def update_student_notification_settings(
+    payload: StudentNotificationSettingsUpdate,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    for field in payload.model_fields:
+        setattr(student, field, getattr(payload, field))
+    db.commit()
+    db.refresh(student)
+    return {
+        "success": True,
+        "notification_settings": {
+            field: bool(getattr(student, field)) for field in payload.model_fields
+        },
+    }
+
+
+@app.put("/api/student/profile/password")
+def update_student_password(
+    payload: StudentPasswordUpdate,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+
+    if not verify_password(payload.current_password, student.password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="New password and confirmation do not match.")
+
+    student.password = hash_password(payload.new_password)
+    db.add(AuditLog(
+        admin_id=None,
+        action="Student Password Changed",
+        entity_type="Student",
+        entity_id=student.id,
+        description="Student changed their account password.",
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+    return {"success": True, "message": "Password updated successfully."}
+
+
+@app.put("/api/student/profile/2fa")
+def update_student_two_factor(
+    payload: StudentTwoFactorUpdate,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+
+    student.two_factor_enabled = payload.enabled
+    db.add(AuditLog(
+        admin_id=None,
+        action="Student 2FA Updated",
+        entity_type="Student",
+        entity_id=student.id,
+        description=f"Student {'enabled' if payload.enabled else 'disabled'} two-factor authentication.",
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+    return {"success": True, "two_factor_enabled": bool(student.two_factor_enabled)}
+
+
+@app.get("/api/student/session-info")
+def get_student_session_info(request: Request):
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    return {
+        "ip_address": client_ip,
+        "user_agent": user_agent,
+        "client_ip": client_ip,
+        "browser": user_agent,
     }
 
 
@@ -2187,6 +2439,8 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
     student.phone = profile.phone
     student.college = profile.college
     student.department = profile.department
+    if profile.preferred_pickup_location:
+        student.preferred_pickup_location = profile.preferred_pickup_location.strip()
 
     if profile.password:
         student.password = hash_password(profile.password)
@@ -2204,6 +2458,8 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
             "college": student.college,
             "department": student.department,
             "is_verified": bool(student.is_verified),
+            "two_factor_enabled": bool(student.two_factor_enabled),
+            "preferred_pickup_location": student.preferred_pickup_location,
         },
     }
 
@@ -2732,18 +2988,28 @@ def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
     if buyer.student_id == seller.student_id:
         return {"success": True, "message": "You are the owner of this listing."}
 
-    notification = Notification(
-        student_id=seller.student_id,
-        message=f"Student {buyer.name} wants to start a chat regarding your item {product.title}."
-    )
-    db.add(notification)
+    notification = None
+    if seller.notif_msg_inapp:
+        notification = Notification(
+            student_id=seller.student_id,
+            message=f"Student {buyer.name} wants to start a chat regarding your item {product.title}."
+        )
+        db.add(notification)
+    if seller.notif_msg_email:
+        _send_student_notification_email(
+            seller,
+            "New chat request",
+            f"Student {buyer.name} wants to start a chat regarding your item {product.title}.",
+            "message",
+        )
     db.commit()
-    db.refresh(notification)
+    if notification:
+        db.refresh(notification)
 
     return {
         "success": True,
         "message": "Chat notification sent to the seller.",
-        "notification_id": notification.id,
+        "notification_id": notification.id if notification else None,
     }
 
 
@@ -4230,6 +4496,14 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
         db.add(chat_message)
         db.commit()
         db.refresh(chat_message)
+        _dispatch_student_notification(
+            db,
+            receiver,
+            "New Message",
+            f"You received a new message from {sender.name}.",
+            "message",
+        )
+        db.commit()
     except Exception:
         db.rollback()
         logging.exception("Failed to save message transaction")
@@ -4664,25 +4938,15 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
                 product_id=product.id,
                 action_type="purchase",
             ))
-        if _notifications_enabled(db, "orderNotifs"):
-            db.add(Notification(
-                student_id=data.student_id,
-                title="Order Placed",
-                message=f"Your order for '{product.title}' has been placed successfully.",
-                type="order",
-                is_read=False,
-            ))
-            seller_student = db.query(Student).filter(
-                (Student.student_id == product.seller) | (Student.name == product.seller)
-            ).first() if product.seller else None
-            if seller_student and seller_student.student_id != data.student_id:
-                db.add(Notification(
-                    student_id=seller_student.student_id,
-                    title="New Order",
-                    message=f"You received a new order for '{product.title}'.",
-                    type="order",
-                    is_read=False,
-                ))
+        order_message = f"Your order for '{product.title}' has been placed successfully."
+        _dispatch_student_notification(db, student, "Order Placed", order_message, "order")
+        seller_student = db.query(Student).filter(
+            (Student.student_id == product.seller) | (Student.name == product.seller)
+        ).first() if product.seller else None
+        if seller_student and seller_student.student_id != data.student_id:
+            _dispatch_student_notification(
+                db, seller_student, "New Order", f"You received a new order for '{product.title}'.", "order"
+            )
         order_payload.append({
             "id": order.id,
             "student_id": order.student_id,
@@ -6891,14 +7155,13 @@ def simulate_chapa_webhook(
         tx_record.status = "Successful"
         tx_record.description = tx_record.description or "Chapa webhook settlement captured via payment callback."
 
-    if _notifications_enabled(db, "paymentNotifs"):
-        db.add(Notification(
-            student_id=student.student_id,
-            title="Payment Successful",
-            message=f"Your Chapa wallet deposit of {amount} ETB was completed successfully.",
-            type="payment",
-            is_read=False,
-        ))
+    _dispatch_student_notification(
+        db,
+        student,
+        "Payment Successful",
+        f"Your Chapa wallet deposit of {amount} ETB was completed successfully.",
+        "payment",
+    )
 
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
     if admin:

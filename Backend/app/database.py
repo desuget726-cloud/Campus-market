@@ -63,3 +63,20 @@ def init_db() -> None:
             if column_name not in report_columns:
                 with engine.begin() as connection:
                     connection.execute(text(f"ALTER TABLE reports ADD COLUMN `{column_name}` {column_definition}"))
+    if "students" in inspector.get_table_names():
+        student_columns = {column["name"] for column in inspector.get_columns("students")}
+        missing_student_columns = {
+            "two_factor_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "notif_msg_inapp": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "notif_msg_email": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "notif_order_inapp": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "notif_order_email": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "notif_pay_inapp": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "notif_pay_email": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "notif_browser_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "preferred_pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
+        }
+        for column_name, column_definition in missing_student_columns.items():
+            if column_name not in student_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE students ADD COLUMN `{column_name}` {column_definition}"))

@@ -488,6 +488,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [selectedPaymentDetail, setSelectedPaymentDetail] = useState(null);
   const [paymentVerificationLoading, setPaymentVerificationLoading] = useState(false);
   const [paymentVerificationMessage, setPaymentVerificationMessage] = useState('');
+  const [gatewayStatus, setGatewayStatus] = useState({
+    gateway: 'Checking...',
+    webhook: 'Checking...',
+    currency: 'ETB',
+    last_checked: null,
+  });
 
   const calculatedPaymentMetrics = useMemo(() => {
     const now = new Date();
@@ -607,6 +613,30 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     setPaymentPage(1);
   }, [paymentSearchTerm, paymentStatusFilter, paymentMethodFilter, paymentFromDate, paymentToDate]);
+
+  const fetchGatewayStatus = async () => {
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/payments/gateway-status', {
+        headers: { Authorization: `Bearer ${getAdminSessionToken()}` },
+      });
+      if (!response.ok) throw new Error('Gateway status endpoint unavailable');
+      const data = await response.json();
+      setGatewayStatus({
+        gateway: data.gateway || 'Disconnected',
+        webhook: data.webhook || 'Not configured',
+        currency: data.currency || 'ETB',
+        last_checked: data.last_checked || null,
+      });
+    } catch (error) {
+      console.error('Failed to fetch gateway status:', error);
+      setGatewayStatus((current) => ({ ...current, gateway: 'Disconnected', last_checked: new Date().toISOString() }));
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'payments') return;
+    fetchGatewayStatus();
+  }, [activeTab]);
 
   useEffect(() => {
     setAuditPage(1);
@@ -4853,14 +4883,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
             <div className="grid gap-4 lg:grid-cols-4">
               {[
-                ['Gateway', 'Chapa 🟢 Connected'],
-                ['Webhook', '🟢 Active'],
-                ['Settlement Currency', 'ETB'],
-                ['Heartbeat', 'Last checked a minutes ago'],
+                ['Gateway', gatewayStatus.gateway],
+                ['Webhook', gatewayStatus.webhook],
+                ['Settlement Currency', gatewayStatus.currency],
+                ['Heartbeat', gatewayStatus.last_checked ? new Date(gatewayStatus.last_checked).toLocaleString() : 'Checking...'],
               ].map(([label, value]) => (
                 <div key={label} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
                   <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</p>
-                  <p className="mt-3 text-base font-black text-slate-950">{value}</p>
+                  <p className="mt-3 flex items-center gap-2 text-base font-black text-slate-950">
+                    {(label === 'Gateway' || label === 'Webhook') && (
+                      <span className={`h-2.5 w-2.5 rounded-full ${/active|connected|configured|ok|healthy/i.test(String(value)) ? 'animate-pulse bg-emerald-500' : 'bg-rose-500'}`} />
+                    )}
+                    {value}
+                  </p>
                 </div>
               ))}
             </div>
