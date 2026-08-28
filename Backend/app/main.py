@@ -1,4 +1,11 @@
 from __future__ import annotations
+
+import os
+from dotenv import load_dotenv
+
+# Load configuration before importing modules that may initialize database state.
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -11,7 +18,6 @@ import bcrypt
 from typing import Optional, List, Dict, Tuple, Any
 from dataclasses import dataclass
 import shutil
-import os
 import logging
 import httpx
 import uuid
@@ -33,7 +39,6 @@ from email.mime.multipart import MIMEMultipart
 import asyncio
 import  bcrypt
 from deep_translator import GoogleTranslator
-from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -402,7 +407,6 @@ def _compute_chapa_signature(secret: str, payload: dict) -> str:
 
 
 # Read Gmail SMTP credentials from Backend/.env or the process environment.
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "desu5392@gmail.com")
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "yzekmnucvxcbnzni")
 
@@ -1198,6 +1202,15 @@ def ensure_database_compatibility(db: Session) -> None:
 
 @app.on_event("startup")
 def on_startup():
+    missing_gateway_variables = [
+        variable_name for variable_name in ("CHAPA_SECRET_KEY", "CHAPA_PUBLIC_KEY")
+        if not os.getenv(variable_name, "").strip()
+    ]
+    if missing_gateway_variables:
+        logging.getLogger("app.startup").warning(
+            "Chapa payment gateway is not fully configured; missing environment variables: %s",
+            ", ".join(missing_gateway_variables),
+        )
     try:
         init_db()
         db = SessionLocal()
@@ -1617,9 +1630,48 @@ def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Sess
     }
 
 
+def _extract_admin_token(authorization: Optional[str], session_token: Optional[str]) -> str:
+    if authorization:
+        scheme, separator, credentials = authorization.partition(" ")
+        if not separator or scheme.lower() != "bearer" or not credentials.strip():
+            raise HTTPException(status_code=401, detail="Authorization header must use the Bearer scheme.")
+        return credentials.strip()
+    if session_token and session_token.strip():
+        return session_token.strip()
+    raise HTTPException(status_code=401, detail="Provide an admin token using Authorization Bearer or session_token.")
+
+
+def _decode_admin_jwt(session_token: str) -> dict:
+    try:
+        encoded_header, encoded_payload, encoded_signature = session_token.split(".")
+        padding = lambda value: value + "=" * (-len(value) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padding(encoded_header)).decode())
+        payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode())
+        provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
+
+    if header.get("alg") != "HS256" or header.get("typ") != "JWT":
+        raise HTTPException(status_code=401, detail="Unsupported JWT token.")
+    unsigned_token = f"{encoded_header}.{encoded_payload}"
+    expected_signature = hmac.new(
+        os.getenv("SESSION_SECRET", "campace-session-secret").encode(),
+        unsigned_token.encode(),
+        hashlib.sha256,
+    ).digest()
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        raise HTTPException(status_code=401, detail="Invalid JWT signature.")
+    if not payload.get("sub") or payload.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="JWT does not identify an administrator.")
+    if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.utcnow().timestamp():
+        raise HTTPException(status_code=401, detail="JWT token has expired.")
+    return payload
+
+
 def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin, AdminSession]:
     if not session_token:
         raise HTTPException(status_code=401, detail="An admin session token is required.")
+    claims = _decode_admin_jwt(session_token)
     session = db.query(AdminSession).filter(
         AdminSession.session_token == session_token,
         AdminSession.is_active.is_(True),
@@ -1629,12 +1681,19 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
     admin = db.query(Admin).filter(Admin.id == session.admin_id).first()
     if not admin:
         raise HTTPException(status_code=404, detail="Admin profile not found.")
+    if admin.username != claims["sub"]:
+        raise HTTPException(status_code=401, detail="JWT subject does not match the admin session.")
     session.last_active = datetime.utcnow()
     return admin, session
 
 
 @app.get("/api/admin/sessions")
-def get_admin_sessions(session_token: str, db: Session = Depends(get_db)):
+def get_admin_sessions(
+    session_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    session_token = _extract_admin_token(authorization, session_token)
     admin, current_session = _admin_for_session(db, session_token)
     sessions = db.query(AdminSession).filter(AdminSession.admin_id == admin.id, AdminSession.is_active.is_(True)).order_by(AdminSession.last_active.desc()).all()
     db.commit()
@@ -1663,7 +1722,12 @@ def logout_other_admin_sessions(payload: AdminSessionRequest, request: Request, 
 
 
 @app.get("/api/admin/login-history")
-def get_admin_login_history(session_token: str, db: Session = Depends(get_db)):
+def get_admin_login_history(
+    session_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    session_token = _extract_admin_token(authorization, session_token)
     admin, _ = _admin_for_session(db, session_token)
     return [{
         "id": item.id,

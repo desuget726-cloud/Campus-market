@@ -264,8 +264,8 @@ function AdminSecurityProfile({ user }) {
   };
   const refreshSecurityData = async () => {
     const sessionToken = token(); if (!sessionToken) return;
-    const query = `?session_token=${encodeURIComponent(sessionToken)}`;
-    try { const [sessionData, historyData] = await Promise.all([request(`http://127.0.0.1:8000/api/admin/sessions${query}`), request(`http://127.0.0.1:8000/api/admin/login-history${query}`)]); setSessions(sessionData); setHistory(historyData); } catch (error) { setMessage(error.message); }
+    const headers = { Authorization: `Bearer ${sessionToken}` };
+    try { const [sessionData, historyData] = await Promise.all([request('http://127.0.0.1:8000/api/admin/sessions', { headers }), request('http://127.0.0.1:8000/api/admin/login-history', { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { setMessage(error.message); }
   };
   useEffect(() => {
     const load = async () => { try { const data = await request(`http://127.0.0.1:8000/api/admin/profile?username=${encodeURIComponent(user?.username || 'mau9999')}`); setProfile(data); setForm((current) => ({ ...current, full_name: data.full_name || '', username: data.username || '', email: data.email || '', phone: data.phone || '' })); } catch (error) { setMessage(error.message); } refreshSecurityData(); };
