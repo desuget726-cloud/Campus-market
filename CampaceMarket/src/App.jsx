@@ -17,6 +17,32 @@ import './App.css';
 const SESSION_STORAGE_KEY = 'campaceSession';
 
 function AppContent() {
+  const persistSession = (nextUser = user, nextRole = activeRole, nextCurrentView = currentView, nextDashboardTab = dashboardTab, nextStudentTab = studentTab) => {
+    if (typeof window === 'undefined') return;
+
+    try {
+      const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      const existingSession = saved ? JSON.parse(saved) : {};
+
+      const session = {
+        ...existingSession,
+        user: nextUser || existingSession.user || null,
+        userRole: nextRole || existingSession.userRole || null,
+        currentView: nextCurrentView,
+        dashboardTab: nextDashboardTab,
+        studentTab: nextStudentTab,
+      };
+
+      if (session.user) {
+        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+      } else {
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      }
+    } catch (error) {
+      console.error('Failed to persist session:', error);
+    }
+  };
+
   const [currentView, setCurrentView] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     try {
@@ -73,8 +99,7 @@ function AppContent() {
 
   useEffect(() => {
     if (!user || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
-    const session = { user, currentView, dashboardTab, adminTab, studentTab, userRole: activeRole };
-    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    persistSession(user, activeRole, currentView, dashboardTab, studentTab);
   }, [currentView, dashboardTab, adminTab, studentTab, user, activeRole]);
 
   useEffect(() => {
@@ -153,7 +178,9 @@ function AppContent() {
   }, [user, userRole]);
 
   const handleRegisterSuccess = (studentData) => {
-    setUser(studentData);
+    const nextUser = { ...studentData, access_token: studentData?.access_token || studentData?.accessToken || null };
+    setUser(nextUser);
+    persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home');
   };
 
   const handleLoginSuccess = (userData, role) => {
@@ -164,10 +191,12 @@ function AppContent() {
         ? (userData?.name || 'Admin')
         : userData?.studentId || userData?.name || 'Student';
 
-    setUser(userData);
+    const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
+    setUser(nextUser);
     setUserRole(role);
     setDashboardTab('home');
     setStudentTab('home');
+    persistSession(nextUser, role, 'login', 'home', 'home');
     setPendingView(nextView);
     setPendingUsername(username);
     setShowSuccessModal(true);
@@ -176,6 +205,7 @@ function AppContent() {
   const handleContinueToDashboard = () => {
     setShowSuccessModal(false);
     setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
+    persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab);
   };
 
   const handleLogout = () => {
@@ -301,7 +331,7 @@ function AppContent() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800">
+    <div className="flex min-h-screen flex-col bg-slate-50 text-slate-800">
       <Navbar
         onNavigate={handleNavigate}
         user={user}
@@ -319,82 +349,88 @@ function AppContent() {
         }}
       />
 
-      <main className={`${isDashboardView ? 'w-full flex-1' : 'mx-auto max-w-7xl'} flex-grow px-4 py-6 sm:px-6 lg:px-8 lg:py-8`}>
-        {currentView === 'login' && (
-          <div className="py-8">
-            <LoginForm
-              onLoginSuccess={handleLoginSuccess}
-              onCancel={() => setCurrentView('home')}
-              onToggleRegister={() => setCurrentView('register')}
+      <div className="flex min-h-0 flex-1 flex-col pt-20 lg:flex-row">
+        <main className={`${isDashboardView ? 'w-full flex-1 min-h-0' : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 lg:pb-8`}>
+          {currentView === 'login' && (
+            <div className="py-8">
+              <LoginForm
+                onLoginSuccess={handleLoginSuccess}
+                onCancel={() => setCurrentView('home')}
+                onToggleRegister={() => setCurrentView('register')}
+              />
+            </div>
+          )}
+
+          {currentView === 'register' && (
+            <div className="py-8">
+              <RegisterForm
+                onRegisterSuccess={handleRegisterSuccess}
+                onCancel={() => setCurrentView('home')}
+              />
+            </div>
+          )}
+
+          {currentView === 'home' && (
+            <HomeView
+              user={user}
+              initialProductId={pendingProductId}
+              onAction={(product) => console.log('view', product)}
+              onUserUpdate={setUser}
+              onNavigate={handleNavigate}
+              onNavigateToMessages={() => {
+                setStudentTab('messages');
+                setCurrentView('student-dashboard');
+              }}
             />
-          </div>
-        )}
+          )}
 
-        {currentView === 'register' && (
-          <div className="py-8">
-            <RegisterForm
-              onRegisterSuccess={handleRegisterSuccess}
-              onCancel={() => setCurrentView('home')}
+          {showSuccessModal && (
+            <SuccessModal
+              username={pendingUsername}
+              onContinue={handleContinueToDashboard}
             />
-          </div>
-        )}
+          )}
 
-        {currentView === 'home' && (
-          <HomeView
-            user={user}
-            initialProductId={pendingProductId}
-            onAction={(product) => console.log('view', product)}
-            onUserUpdate={setUser}
-            onNavigate={handleNavigate}
-            onNavigateToMessages={() => {
-              setStudentTab('messages');
-              setCurrentView('student-dashboard');
-            }}
-          />
-        )}
+          {currentView === 'about' && <AboutView />}
 
-        {showSuccessModal && (
-          <SuccessModal
-            username={pendingUsername}
-            onContinue={handleContinueToDashboard}
-          />
-        )}
+          {currentView === 'services' && <ServicesView />}
 
-        {currentView === 'about' && <AboutView />}
-
-        {currentView === 'services' && <ServicesView />}
-
-        {currentView === 'contact' && <ContactView />}
-        {activeRole === 'admin' && currentView === 'admin-dashboard' && (
-          <AdminDashboard
-            onLogout={handleLogout}
-            user={user}
-            onUserUpdate={setUser}
-            initialTab={adminTab}
-            onTabChange={(tab) => setAdminTab(tab)}
-          />
-        )}
-        {activeRole === 'student' && currentView === 'student-dashboard' && (
-          <StudentDashboard
-            onLogout={handleLogout}
-            user={user}
-            initialTab={studentTab}
-            onTabChange={setStudentTab}
-            onUserUpdate={setUser}
-            onNavigate={handleNavigate}
-          />
-        )}
-        {!activeRole && currentView === 'student-dashboard' && (
-          <StudentDashboard
-            onLogout={handleLogout}
-            user={user}
-            initialTab={studentTab}
-            onTabChange={setStudentTab}
-            onUserUpdate={setUser}
-            onNavigate={handleNavigate}
-          />
-        )}
-      </main>
+          {currentView === 'contact' && <ContactView />}
+          {activeRole === 'admin' && currentView === 'admin-dashboard' && (
+            <AdminDashboard
+              onLogout={handleLogout}
+              user={user}
+              onUserUpdate={setUser}
+              initialTab={adminTab}
+              onTabChange={(tab) => setAdminTab(tab)}
+            />
+          )}
+          {activeRole === 'student' && currentView === 'student-dashboard' && (
+            <StudentDashboard
+              onLogout={handleLogout}
+              user={user}
+              initialTab={studentTab}
+              onTabChange={setStudentTab}
+              onUserUpdate={setUser}
+              onNavigate={handleNavigate}
+              onOpenPrivacy={() => setShowFooterPrivacy(true)}
+              onOpenTerms={() => setShowFooterTerms(true)}
+            />
+          )}
+          {!activeRole && currentView === 'student-dashboard' && (
+            <StudentDashboard
+              onLogout={handleLogout}
+              user={user}
+              initialTab={studentTab}
+              onTabChange={setStudentTab}
+              onUserUpdate={setUser}
+              onNavigate={handleNavigate}
+              onOpenPrivacy={() => setShowFooterPrivacy(true)}
+              onOpenTerms={() => setShowFooterTerms(true)}
+            />
+          )}
+        </main>
+      </div>
 
       <Footer
         onNavigate={handleNavigate}

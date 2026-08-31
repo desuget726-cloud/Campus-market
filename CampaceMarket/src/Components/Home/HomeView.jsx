@@ -780,7 +780,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                           <p className="truncate text-xs font-bold text-emerald-600">{product.category || 'Marketplace pick'}</p>
                           <h4 className="mt-1 truncate font-black text-slate-950">{product.title || 'Recommended product'}</h4>
                           <p className="mt-2 text-sm font-bold text-slate-700">{formatEtb(product.price)}</p>
-                          <button type="button" onClick={() => { setSelectedProduct(product); onAction && onAction(product); }} className="mt-3 w-full rounded-full border border-emerald-200 bg-white px-3 py-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-50">View Details</button>
+                          <button type="button" onClick={() => { setSelectedProduct(product); onAction && onAction(product); }} className="mt-3 w-full rounded-full border border-slate-950 bg-white px-3 py-2 text-xs font-bold text-slate-950 hover:bg-slate-50 transition-colors cursor-pointer">View Details</button>
                         </div>
                       </article>
                     ))}
@@ -822,7 +822,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                               setSelectedProduct(product);
                               onAction && onAction(product);
                             }}
-                            className="rounded-full bg-emerald-500 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 transition"
+                            className="rounded-full bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors cursor-pointer"
                           >
                             View Details
                           </button>

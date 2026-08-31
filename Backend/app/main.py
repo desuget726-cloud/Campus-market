@@ -15,7 +15,7 @@ from sqlalchemy import case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError, OperationalError
 import bcrypt
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, cast
 from dataclasses import dataclass
 import shutil
 import logging
@@ -96,7 +96,7 @@ class ConnectionManager:
         self._lock = asyncio.Lock()
         self.logger = logging.getLogger("chat_manager")
 
-    async def connect(self, student_id: str, websocket: WebSocket, student_name: str = None):
+    async def connect(self, student_id: str, websocket: WebSocket, student_name: Optional[str] = None):
         """Register a student connection and log session."""
         await websocket.accept()
         async with self._lock:
@@ -303,13 +303,15 @@ def _cosine_similarity(vec_a: Dict[str, float], vec_b: Dict[str, float]) -> floa
 
 
 def _student_interest_text(student: Student, db: Session) -> str:
-    dept_terms = _tokenize(student.department) + _tokenize(student.college)
+    department = str(getattr(student, "department", "") or "")
+    college = str(getattr(student, "college", "") or "")
+    dept_terms = _tokenize(department) + _tokenize(college)
     history_tokens = []
 
-    for model in (WishlistItem, CartItem, Order):
-        if model == WishlistItem:
+    for model in cast(Tuple[Any, Any, Any], (WishlistItem, CartItem, Order)):
+        if model is WishlistItem:
             rows = db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
-        elif model == CartItem:
+        elif model is CartItem:
             rows = db.query(CartItem).filter(CartItem.student_id == student.student_id).all()
         else:
             rows = db.query(Order).filter(Order.student_id == student.student_id).all()
@@ -317,10 +319,10 @@ def _student_interest_text(student: Student, db: Session) -> str:
         for row in rows:
             product = db.query(Product).filter(Product.id == row.product_id).first()
             if product:
-                history_tokens.extend(_tokenize(product.title))
-                history_tokens.extend(_tokenize(product.category))
-                history_tokens.extend(_tokenize(product.subcategory))
-                history_tokens.extend(_tokenize(product.description))
+                history_tokens.extend(_tokenize(str(getattr(product, "title", "") or "")))
+                history_tokens.extend(_tokenize(str(getattr(product, "category", "") or "")))
+                history_tokens.extend(_tokenize(str(getattr(product, "subcategory", "") or "")))
+                history_tokens.extend(_tokenize(str(getattr(product, "description", "") or "")))
 
     return " ".join(dept_terms + history_tokens)
 
@@ -4015,6 +4017,29 @@ def mark_all_student_notifications_read(student_id: str, db: Session = Depends(g
     }
 
 
+@app.delete("/api/student/notifications/{notification_id}")
+def delete_student_notification(
+    notification_id: int,
+    student_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(Notification).filter(Notification.id == notification_id)
+    if student_id:
+        query = query.filter(Notification.student_id == student_id)
+    notification = query.first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Notification not found.")
+
+    try:
+        db.delete(notification)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to delete notification.")
+
+    return {"success": True, "notification_id": notification_id}
+
+
 @app.post("/api/student/notifications")
 def create_student_notification(request: NotificationCreate, db: Session = Depends(get_db)):
     validated_student_id = _validate_student_id(db, request.student_id)
@@ -4500,7 +4525,7 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
             db,
             receiver,
             "New Message",
-            f"You received a new message from {sender.name}.",
+            f"You received a new message from {sender.name}: {chat_message.message_text[:120]}{'...' if len(chat_message.message_text) > 120 else ''}",
             "message",
         )
         db.commit()
@@ -6260,7 +6285,9 @@ def bulk_approve_verifications(student_ids: List[int], db: Session = Depends(get
             approved_students.append(f"{student.name} ({student.student_id})")
             db.add(Notification(
                 student_id=student.student_id,
+                title="Identity verification approved",
                 message="Your student identity has been successfully verified. You can now access full marketplace features.",
+                type="system",
                 is_read=False,
             ))
 
@@ -6308,7 +6335,9 @@ def bulk_reject_verifications(payload: BulkRejectVerificationRequest, db: Sessio
             rejected_names.append(f"{student.name} ({student.student_id})")
             db.add(Notification(
                 student_id=student.student_id,
+                title="Identity verification update",
                 message=f"Your student identity verification was rejected. Reason: {reason}. Please resubmit a clear and readable student ID.",
+                type="system",
                 is_read=False,
             ))
 
@@ -6394,6 +6423,7 @@ def update_student_verification(
                 f"Your student identity has been successfully verified. "
                 "You can now access full marketplace features and complete transactions without restrictions."
             )
+            notification_title = "Identity verification approved"
             log_action = "Student Verification Approved"
             description = f"Admin approved student verification for {student.name} ({student.student_id})."
         else:
@@ -6403,6 +6433,7 @@ def update_student_verification(
                 f"Your student identity verification was rejected. "
                 f"Reason: {rejection_reason}. Please resubmit a clear and readable student ID."
             )
+            notification_title = "Identity verification update"
             log_action = "Student Verification Rejected"
             description = (
                 f"Admin rejected student verification for {student.name} ({student.student_id}) "
@@ -6411,7 +6442,9 @@ def update_student_verification(
 
         db.add(Notification(
             student_id=student.student_id,
+            title=notification_title,
             message=notification_message,
+            type="system",
             is_read=False,
         ))
 
@@ -6968,6 +7001,14 @@ async def verify_admin_payment_with_chapa(payment_id: int, db: Session = Depends
             student.wallet_balance = Decimal(str(student.wallet_balance or 0)) + Decimal(str(transaction.amount))
             transaction.status = "Successful"
 
+            _dispatch_student_notification(
+                db,
+                student,
+                "Payment Successful",
+                f"Your wallet deposit of {transaction.amount} ETB was completed successfully.",
+                "payment",
+            )
+
             admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
             db.add(AuditLog(
                 admin_id=admin.id if admin else None,
@@ -7069,6 +7110,21 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
         order.payment_status = updated_payment_status
     if hasattr(order, "pickup_location"):
         order.pickup_location = pickup_location
+
+    buyer = db.query(Student).filter(Student.student_id == order.student_id).first()
+    if buyer:
+        order_message = (
+            f"Your order #{order.id} is now marked as {updated_order_status}."
+            if updated_order_status != "Processing"
+            else f"Your order #{order.id} is being processed."
+        )
+        _dispatch_student_notification(
+            db,
+            buyer,
+            "Order Update",
+            order_message,
+            "order",
+        )
 
     db.commit()
     db.refresh(order)

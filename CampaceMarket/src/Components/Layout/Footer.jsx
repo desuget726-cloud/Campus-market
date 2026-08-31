@@ -17,7 +17,7 @@ const socialLinks = [
 ];
 
 const Footer = ({ onNavigate, onOpenPrivacy, onOpenTerms }) => (
-  <footer className="border-t border-slate-800 bg-slate-900 px-4 py-10 text-sm text-white sm:px-6 lg:px-8">
+  <footer className="w-full border-t border-slate-800 bg-slate-900 px-4 py-10 text-sm text-white sm:px-6 lg:px-8">
     <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-3">
       <div>
         <p className="text-lg font-bold text-white">Campus Marketplace</p>

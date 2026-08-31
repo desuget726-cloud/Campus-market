@@ -85,6 +85,8 @@ function NotificationCenter({
     onMarkAllRead,
     onNavigate,
     onBuyerOrders,
+    onBuyerPayments,
+    onDeleteNotification,
 }) {
     const [activeFilter, setActiveFilter] = useState("All");
     const safeNotifications = Array.isArray(notifications) ? notifications : [];
@@ -107,8 +109,16 @@ function NotificationCenter({
 
     const handleAction = (notification) => {
         const category = getCategory(notification);
-        if (category === "Orders") onBuyerOrders();
-        else if (category === "Payments") onNavigate("buyer");
+        if (category === "Orders") {
+            if (onBuyerOrders) onBuyerOrders();
+            return;
+        }
+        if (category === "Payments") {
+            if (onBuyerPayments) onBuyerPayments();
+            else if (onNavigate) onNavigate("buyer");
+            return;
+        }
+        if (category === "System" && onNavigate) onNavigate("notifications");
     };
 
     return (
@@ -181,6 +191,7 @@ function NotificationCenter({
                                     {group.items.map((notification) => {
                                         const priority = getPriority(notification);
                                         const category = getCategory(notification);
+                                        const isRead = Boolean(notification.read);
                                         const notificationDate = formatNotificationDate(
                                             notification.created_at,
                                         );
@@ -190,48 +201,59 @@ function NotificationCenter({
                                                     notification.id ??
                                                     `${notification.created_at}-${notification.title}`
                                                 }
-                                                className={`border-l-4 ${priority.border} rounded-r-2xl border-y border-r border-slate-200 bg-slate-50/70 p-5 transition-all duration-200 hover:bg-slate-100 hover:shadow-md`}
+                                                className={`border-l-4 ${priority.border} rounded-r-2xl border-y border-r border-slate-200 p-5 transition-all duration-200 hover:shadow-md ${isRead ? "bg-slate-50/50 text-slate-500" : "bg-slate-50/70 text-slate-700 hover:bg-slate-100"}`}
                                             >
                                                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                                                     <div className="flex gap-3">
-                                                        <span
-                                                            className={`mt-1 h-3 w-3 shrink-0 rounded-full ${priority.color}`}
-                                                            title={priority.label}
-                                                        />
+                                                        {!isRead && (
+                                                            <span
+                                                                className={`mt-1 h-3 w-3 shrink-0 rounded-full ${priority.color}`}
+                                                                title={priority.label}
+                                                            />
+                                                        )}
                                                         <div>
                                                             <div className="flex flex-wrap items-center gap-2">
-                                                                <h4 className="font-black text-slate-950">
+                                                                <h4 className={`font-black ${isRead ? "text-slate-700" : "text-slate-950"}`}>
                                                                     {notification.title || "Campus update"}
                                                                 </h4>
                                                                 <span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
                                                                     {priority.icon} {priority.label}
                                                                 </span>
                                                             </div>
-                                                            <p className="mt-2 text-sm leading-6 text-slate-600">
+                                                            <p className={`mt-2 text-sm leading-6 ${isRead ? "text-slate-500" : "text-slate-600"}`}>
                                                                 {notification.message}
                                                             </p>
                                                         </div>
                                                     </div>
                                                     <div className="shrink-0 text-left sm:text-right">
-                                                        <span
-                                                            className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${notification.read ? "bg-slate-200 text-slate-500" : "bg-emerald-100 text-emerald-700"}`}
-                                                        >
-                                                            {notification.read ? "Read" : "New"}
-                                                        </span>
+                                                        <div className="flex items-center justify-end gap-2">
+                                                            <span
+                                                                className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${notification.read ? "bg-slate-200 text-slate-500" : "bg-emerald-100 text-emerald-700"}`}
+                                                            >
+                                                                {notification.read ? "Read" : "New"}
+                                                            </span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => onDeleteNotification(notification.id)}
+                                                                className="rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold text-rose-700 hover:bg-rose-100"
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        </div>
                                                         <p className="mt-2 text-xs text-slate-400">
                                                             {notificationDate}
                                                         </p>
                                                     </div>
                                                 </div>
                                                 <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
-                                                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                                                    <span className={`text-xs font-bold uppercase tracking-wider ${isRead ? "text-slate-400" : "text-slate-500"}`}>
                                                         {category}
                                                     </span>
                                                     {category !== "System" && (
                                                         <button
                                                             type="button"
                                                             onClick={() => handleAction(notification)}
-                                                            className="text-sm font-black text-sky-700 hover:text-sky-900"
+                                                            className={`text-sm font-black ${isRead ? "text-sky-600 hover:text-sky-800" : "text-sky-700 hover:text-sky-900"}`}
                                                         >
                                                             {category === "Orders"
                                                                 ? "View Order →"

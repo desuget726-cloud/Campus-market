@@ -42,7 +42,7 @@ const ServicesView = () => (
       <div className="absolute -bottom-32 left-1/3 h-72 w-72 rounded-full bg-emerald-500/15 blur-3xl" />
       <div className="relative max-w-4xl animate-fade-in">
         <p className="text-xs font-bold uppercase tracking-[0.28em] text-emerald-300">Campus commerce, connected</p>
-        <h1 className="mt-4 text-4xl font-black tracking-tight sm:text-5xl">Our Services — የምናቀርባቸው አገልግሎቶች</h1>
+        <h1 className="mt-4 text-4xl font-black tracking-tight sm:text-5xl">Our Services</h1>
         <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
           Practical digital services that make buying, selling, communicating, and completing trades within the university community simpler and safer.
         </p>

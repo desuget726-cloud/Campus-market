@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 const settingsSections = [
     ['account', 'Account'],
@@ -48,11 +48,143 @@ function SettingsCenter({
         ordersEmail: true,
         paymentsInApp: true,
         paymentsEmail: false,
-        browser: true,
     });
     const [twoFactor, setTwoFactor] = useState(Boolean(user?.two_factor_enabled));
+    const [notificationToast, setNotificationToast] = useState('');
+    const [isSavingNotificationPrefs, setIsSavingNotificationPrefs] = useState(false);
+    const [securityForm, setSecurityForm] = useState({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: '',
+    });
+    const [securityMessage, setSecurityMessage] = useState('');
+    const [securityError, setSecurityError] = useState('');
+    const [showConfirmPasswordModal, setShowConfirmPasswordModal] = useState(false);
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [confirmPasswordError, setConfirmPasswordError] = useState('');
+    const [sessionInfo, setSessionInfo] = useState({
+        ip_address: 'Loading...',
+        user_agent: 'Loading...',
+        browser: 'Loading...',
+        operating_system: 'Loading...',
+    });
 
     const updatePref = (key) => setNotificationPrefs((previous) => ({ ...previous, [key]: !previous[key] }));
+
+    const getStudentSessionToken = () => {
+        if (user?.access_token) return user.access_token;
+
+        try {
+            const savedSession = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+            return savedSession?.user?.access_token || savedSession?.access_token || '';
+        } catch (error) {
+            return '';
+        }
+    };
+
+    const getBrowserAndOS = (userAgent = '') => {
+        const value = userAgent || '';
+        const browser = value.includes('Edg') ? 'Edge'
+            : value.includes('Chrome') && !value.includes('Edg') ? 'Chrome'
+                : value.includes('Firefox') ? 'Firefox'
+                    : value.includes('Safari') ? 'Safari'
+                        : value.includes('Opera') || value.includes('OPR') ? 'Opera'
+                            : 'Browser';
+
+        const os = value.includes('Windows') ? 'Windows'
+            : value.includes('Mac OS') ? 'macOS'
+                : value.includes('Android') ? 'Android'
+                    : value.includes('iPhone') || value.includes('iPad') ? 'iOS'
+                        : value.includes('Linux') ? 'Linux'
+                            : 'Unknown OS';
+
+        return { browser, os };
+    };
+
+    const loadSessionInfo = async () => {
+        const token = getStudentSessionToken();
+        if (!token) {
+            setSessionInfo({
+                ip_address: 'Unavailable',
+                user_agent: 'Unavailable',
+                browser: 'Unavailable',
+                operating_system: 'Unavailable',
+            });
+            return;
+        }
+
+        try {
+            const response = await fetch('http://127.0.0.1:8000/api/student/session-info', {
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            if (!response.ok) {
+                throw new Error('Unable to load session info.');
+            }
+
+            const data = await response.json();
+            const browserMetadata = getBrowserAndOS(data.user_agent || data.browser || '');
+            setSessionInfo({
+                ip_address: data.ip_address || data.client_ip || 'Unavailable',
+                user_agent: data.user_agent || data.browser || 'Unavailable',
+                browser: browserMetadata.browser,
+                operating_system: browserMetadata.os,
+            });
+        } catch (error) {
+            console.error('Session info load failed:', error);
+            setSessionInfo({
+                ip_address: 'Unavailable',
+                user_agent: 'Unavailable',
+                browser: 'Unavailable',
+                operating_system: 'Unavailable',
+            });
+        }
+    };
+
+    const handleSaveNotificationPreferences = async () => {
+        setIsSavingNotificationPrefs(true);
+
+        try {
+            const payload = {
+                notif_msg_inapp: Boolean(notificationPrefs.messagesInApp),
+                notif_msg_email: Boolean(notificationPrefs.messagesEmail),
+                notif_order_inapp: Boolean(notificationPrefs.ordersInApp),
+                notif_order_email: Boolean(notificationPrefs.ordersEmail),
+                notif_pay_inapp: Boolean(notificationPrefs.paymentsInApp),
+                notif_pay_email: Boolean(notificationPrefs.paymentsEmail),
+                notif_browser_enabled: true,
+            };
+
+            const token = getStudentSessionToken();
+            const response = await fetch('http://127.0.0.1:8000/api/student/profile/notification-settings', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify(payload),
+            });
+
+            const data = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+                throw new Error(data?.detail || data?.message || 'Unable to save notification preferences.');
+            }
+
+            setNotificationToast('Notification preferences updated successfully!');
+            window.setTimeout(() => setNotificationToast(''), 3000);
+        } catch (error) {
+            console.error('Notification preferences update failed:', error);
+            setNotificationToast(error.message || 'Unable to save notification preferences.');
+            window.setTimeout(() => setNotificationToast(''), 3000);
+        } finally {
+            setIsSavingNotificationPrefs(false);
+        }
+    };
+
     const renderPanel = () => {
         if (settingsTab === 'account') {
             return (
@@ -75,9 +207,6 @@ function SettingsCenter({
                             <Field label="Phone Number"><input type="tel" value={profileForm.phone} onChange={(event) => handleProfileFieldChange('phone', event.target.value)} className={inputClass} /></Field>
                             <Field label="Select College"><select value={profileForm.college} onChange={(event) => handleProfileFieldChange('college', event.target.value)} className={inputClass}><option value="">Select College</option>{Object.keys(universityStructure).map((college) => <option key={college} value={college}>{college}</option>)}</select></Field>
                             <Field label="Select Department"><select value={profileForm.department} onChange={(event) => handleProfileFieldChange('department', event.target.value)} disabled={!profileForm.college} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}><option value="">Select Department</option>{profileForm.college && universityStructure[profileForm.college]?.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
-                            <Field label="Preferred Campus Pickup"><select value={profileForm.preferredPickupLocation} onChange={(event) => handleProfileFieldChange('preferredPickupLocation', event.target.value)} className={inputClass}><option>Student Center</option><option>Main Library</option><option>Science Block</option><option>ICT Service Desk</option></select></Field>
-                            <Field label="New Password"><input type="password" value={profileForm.password} onChange={(event) => handleProfileFieldChange('password', event.target.value)} className={inputClass} /></Field>
-                            <Field label="Confirm New Password"><input type="password" value={profileForm.confirmPassword} onChange={(event) => handleProfileFieldChange('confirmPassword', event.target.value)} className={inputClass} /></Field>
                             <div className="sm:col-span-2">{profileMessage && <p className={`mb-4 text-sm font-semibold ${profileMessage.includes('successfully') ? 'text-emerald-600' : 'text-rose-600'}`}>{profileMessage}</p>}<button type="submit" disabled={profileSaving} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{profileSaving ? 'Saving...' : 'Save Changes'}</button></div>
                         </form>
                     </div>
@@ -85,12 +214,292 @@ function SettingsCenter({
             );
         }
         if (settingsTab === 'security') {
-            return <><PanelHeader eyebrow="Security" title="Protect your account" text="Review password access, two-factor protection, and recent sessions." /><div className="mt-6 space-y-4"><Toggle label="Two-Factor Authentication" checked={twoFactor} onChange={() => setTwoFactor((value) => !value)} /><div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"><p className="text-xs font-bold uppercase tracking-wider text-emerald-700">Active session</p><p className="mt-2 font-bold text-slate-900">This device</p><p className="mt-1 text-sm text-slate-600">Protected connection</p></div></div></>;
+            const handlePasswordSubmit = async (event) => {
+                event.preventDefault();
+                setSecurityMessage('');
+                setSecurityError('');
+
+                if (!securityForm.currentPassword || !securityForm.newPassword || !securityForm.confirmPassword) {
+                    setSecurityError('Please complete all password fields.');
+                    return;
+                }
+
+                if (securityForm.newPassword.length < 8) {
+                    setSecurityError('New password must be at least 8 characters long.');
+                    return;
+                }
+
+                if (securityForm.newPassword !== securityForm.confirmPassword) {
+                    setSecurityError('New password and confirmation do not match.');
+                    return;
+                }
+
+                const token = getStudentSessionToken();
+
+                try {
+                    const response = await fetch('http://127.0.0.1:8000/api/student/profile/password', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                        },
+                        body: JSON.stringify({
+                            current_password: securityForm.currentPassword,
+                            new_password: securityForm.newPassword,
+                            confirm_password: securityForm.confirmPassword,
+                        }),
+                    });
+
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        throw new Error(data?.detail || 'Failed to update password.');
+                    }
+
+                    setSecurityForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+                    setSecurityMessage(data?.message || 'Password updated successfully.');
+                } catch (error) {
+                    setSecurityError(error.message || 'Password update failed.');
+                }
+            };
+
+            const handle2FAToggle = async () => {
+                if (twoFactor) {
+                    const token = getStudentSessionToken();
+                    try {
+                        const response = await fetch('http://127.0.0.1:8000/api/student/profile/2fa', {
+                            method: 'PUT',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                            },
+                            body: JSON.stringify({ enabled: false }),
+                        });
+
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok) {
+                            throw new Error(data?.detail || 'Unable to disable 2FA.');
+                        }
+
+                        setTwoFactor(false);
+                    } catch (error) {
+                        console.error('Disable 2FA failed:', error);
+                        setSecurityError(error.message || 'Unable to disable 2FA.');
+                    }
+                    return;
+                }
+
+                setShowConfirmPasswordModal(true);
+                setConfirmPassword('');
+                setConfirmPasswordError('');
+            };
+
+            const confirmPasswordAndEnable2FA = async (event) => {
+                event.preventDefault();
+                setConfirmPasswordError('');
+
+                if (!confirmPassword.trim()) {
+                    setConfirmPasswordError('Please enter your current password to continue.');
+                    return;
+                }
+
+                const token = getStudentSessionToken();
+
+                try {
+                    const verificationResponse = await fetch('http://127.0.0.1:8000/api/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id_or_email: user?.studentId || user?.student_id || '',
+                            password: confirmPassword,
+                        }),
+                    });
+
+                    const verificationData = await verificationResponse.json().catch(() => ({}));
+                    if (!verificationResponse.ok) {
+                        throw new Error(verificationData?.detail || 'Password confirmation failed.');
+                    }
+
+                    const twoFactorResponse = await fetch('http://127.0.0.1:8000/api/student/profile/2fa', {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                        },
+                        body: JSON.stringify({ enabled: true }),
+                    });
+
+                    const twoFactorData = await twoFactorResponse.json().catch(() => ({}));
+                    if (!twoFactorResponse.ok) {
+                        throw new Error(twoFactorData?.detail || 'Unable to enable 2FA.');
+                    }
+
+                    setTwoFactor(true);
+                    setShowConfirmPasswordModal(false);
+                    setConfirmPassword('');
+                    setSecurityMessage('Two-factor authentication enabled.');
+                } catch (error) {
+                    setConfirmPasswordError(error.message || 'Password verification failed.');
+                }
+            };
+
+            return (
+                <>
+                    <PanelHeader eyebrow="Security" title="Protect your account" text="Review password access, two-factor protection, and the current device session." />
+                    <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+                        <form onSubmit={handlePasswordSubmit} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                            <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Password</p>
+                            <div className="mt-4 space-y-4">
+                                <Field label="Current Password">
+                                    <input type="password" value={securityForm.currentPassword} onChange={(event) => setSecurityForm((previous) => ({ ...previous, currentPassword: event.target.value }))} className={inputClass} placeholder="Enter current password" />
+                                </Field>
+                                <Field label="New Password">
+                                    <input type="password" value={securityForm.newPassword} onChange={(event) => setSecurityForm((previous) => ({ ...previous, newPassword: event.target.value }))} className={inputClass} placeholder="Create a new password" />
+                                </Field>
+                                <Field label="Confirm New Password">
+                                    <input type="password" value={securityForm.confirmPassword} onChange={(event) => setSecurityForm((previous) => ({ ...previous, confirmPassword: event.target.value }))} className={inputClass} placeholder="Confirm your new password" />
+                                </Field>
+                            </div>
+                            <div className="mt-5 flex items-center justify-between gap-3">
+                                <button type="submit" className="rounded-full bg-sky-600 px-5 py-3 text-sm font-bold text-white hover:bg-sky-700">Update Password</button>
+                                {securityMessage && <p className="text-sm font-semibold text-emerald-600">{securityMessage}</p>}
+                            </div>
+                            {securityError && <p className="mt-3 text-sm font-semibold text-rose-600">{securityError}</p>}
+                        </form>
+
+                        <div className="space-y-4">
+                            <Toggle label="Two-Factor Authentication" checked={twoFactor} onChange={handle2FAToggle} />
+                            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                                <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Active session</p>
+                                <div className="mt-4 space-y-3 text-sm text-slate-700">
+                                    <div className="flex items-start justify-between gap-4">
+                                        <span className="font-medium text-slate-500">IP Address</span>
+                                        <span className="text-right font-semibold text-slate-900 break-all">{sessionInfo.ip_address}</span>
+                                    </div>
+                                    <div className="flex items-start justify-between gap-4">
+                                        <span className="font-medium text-slate-500">Device / Browser</span>
+                                        <span className="text-right font-semibold text-slate-900">{sessionInfo.operating_system} / {sessionInfo.browser}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {showConfirmPasswordModal && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-password-title">
+                            <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <p className="text-xs font-bold uppercase tracking-[0.18em] text-sky-600">Security check</p>
+                                        <h3 id="confirm-password-title" className="mt-2 text-xl font-bold text-slate-900">Confirm Password</h3>
+                                    </div>
+                                    <button type="button" onClick={() => setShowConfirmPasswordModal(false)} className="rounded-full p-2 text-slate-500 hover:bg-slate-100" aria-label="Close password confirmation">✕</button>
+                                </div>
+                                <form onSubmit={confirmPasswordAndEnable2FA} className="mt-5 space-y-4">
+                                    <label className="block text-sm font-semibold text-slate-700">
+                                        Enter your current password
+                                        <input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className={`${inputClass} mt-2`} placeholder="Current password" />
+                                    </label>
+                                    {confirmPasswordError && <p className="text-sm font-semibold text-rose-600">{confirmPasswordError}</p>}
+                                    <div className="flex gap-3 pt-2">
+                                        <button type="button" onClick={() => setShowConfirmPasswordModal(false)} className="flex-1 rounded-full border border-slate-200 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
+                                        <button type="submit" className="flex-1 rounded-full bg-sky-600 py-3 text-sm font-semibold text-white hover:bg-sky-700">Verify</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </>
+            );
         }
-        return <><PanelHeader eyebrow="Notifications" title="Choose what reaches you" text="Control in-app, email, and browser alerts for important marketplace activity." /><div className="mt-6 space-y-5">{[['New Messages', 'messagesInApp', 'messagesEmail'], ['Order Updates', 'ordersInApp', 'ordersEmail'], ['Payment Success', 'paymentsInApp', 'paymentsEmail']].map(([label, inApp, email]) => <div key={label} className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center"><span className="font-bold text-slate-800">{label}</span><label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={notificationPrefs[inApp]} onChange={() => updatePref(inApp)} /> In-app</label><label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={notificationPrefs[email]} onChange={() => updatePref(email)} /> Email</label></div>)}<Toggle label="Browser notifications" checked={notificationPrefs.browser} onChange={() => updatePref('browser')} /></div></>;
+        const notificationDetails = {
+            'New Messages': 'Receive live alerts on the sidebar when a classmate messages you.',
+            'Order Updates': 'Get updates when your orders move to a new stage or require action.',
+            'Payment Success': 'Receive confirmation as soon as a payment is marked successful.',
+        };
+
+        return (
+            <>
+                <PanelHeader eyebrow="Notifications" title="Choose what reaches you" text="Control the alerts you receive for messages, order progress, and payment confirmations." />
+                <div className="mt-6 space-y-5">
+                    {[
+                        ['New Messages', 'messagesInApp', 'messagesEmail'],
+                        ['Order Updates', 'ordersInApp', 'ordersEmail'],
+                        ['Payment Success', 'paymentsInApp', 'paymentsEmail'],
+                    ].map(([label, inApp, email]) => (
+                        <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+                                <div>
+                                    <span className="block font-bold text-slate-800">{label}</span>
+                                    <span className="mt-1 block text-[11px] leading-5 text-slate-500">{notificationDetails[label]}</span>
+                                </div>
+                                <label className="flex items-center gap-2 text-sm text-slate-600">
+                                    <input type="checkbox" checked={notificationPrefs[inApp]} onChange={() => updatePref(inApp)} />
+                                    In-app
+                                </label>
+                                <label className="flex items-center gap-2 text-sm text-slate-600">
+                                    <input type="checkbox" checked={notificationPrefs[email]} onChange={() => updatePref(email)} />
+                                    Email
+                                </label>
+                            </div>
+                        </div>
+                    ))}
+
+                    <div className="pt-2">
+                        <button
+                            type="button"
+                            onClick={handleSaveNotificationPreferences}
+                            disabled={isSavingNotificationPrefs}
+                            className="inline-flex w-full items-center justify-center rounded-full bg-sky-700 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        >
+                            {isSavingNotificationPrefs ? 'Saving...' : 'Save Preferences'}
+                        </button>
+                    </div>
+
+                    {notificationToast && (
+                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 shadow-sm">
+                            {notificationToast}
+                        </div>
+                    )}
+                </div>
+            </>
+        );
     };
 
-    return <div className="min-h-screen bg-slate-50 px-4 pb-10 pt-16 text-slate-900 lg:px-8 lg:pt-10"><div className="mx-auto max-w-7xl"><div className="mb-6"><p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Student Control Center</p><h2 className="mt-2 text-3xl font-black text-slate-950">Account Settings</h2></div><div className="grid gap-6 lg:grid-cols-[240px_1fr]"><aside className="h-fit rounded-[28px] border border-slate-200 bg-white p-3 shadow-sm"><nav className="space-y-1">{settingsSections.map(([id, label]) => <button key={id} type="button" onClick={() => setSettingsTab(id)} className={`flex w-full items-center rounded-2xl px-4 py-3 text-left text-sm font-bold transition ${settingsTab === id ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-950'}`}>{label}</button>)}</nav></aside><section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">{renderPanel()}</section></div></div></div>;
+    useEffect(() => {
+        if (settingsTab === 'security') {
+            loadSessionInfo();
+        }
+    }, [settingsTab, user]);
+
+    return (
+        <div className="min-h-screen bg-slate-50 px-4 pb-10 pt-16 text-slate-900 lg:px-8 lg:pt-10">
+            <div className="mx-auto max-w-7xl">
+                <div className="mb-6">
+                    <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Student Control Center</p>
+                    <h2 className="mt-2 text-3xl font-black text-slate-950">Account Settings</h2>
+                </div>
+
+                <div className="flex flex-col gap-6">
+                    <nav className="flex max-w-md flex-row items-center gap-1.5 rounded-3xl border border-slate-200 bg-white p-1.5">
+                        {settingsSections.map(([id, label]) => (
+                            <button
+                                key={id}
+                                type="button"
+                                onClick={() => setSettingsTab(id)}
+                                className={`flex-1 rounded-2xl py-2.5 text-center text-sm font-semibold transition ${settingsTab === id ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </nav>
+
+                    <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+                        {renderPanel()}
+                    </section>
+                </div>
+            </div>
+        </div>
+    );
 }
 
 function PanelHeader({ eyebrow, title, text }) {

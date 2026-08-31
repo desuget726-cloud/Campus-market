@@ -15,8 +15,8 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     : (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : ''));
 
   return (
-    <header className="bg-blue-600 text-white border-b border-blue-700 sticky top-0 z-[999]">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-[100px] flex items-center justify-between">
+    <header className="fixed top-0 left-0 right-0 z-50 h-20 bg-blue-600 text-white border-b border-blue-700">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
 
         {/* Logo */}
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate('home')}>

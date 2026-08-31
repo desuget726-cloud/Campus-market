@@ -63,9 +63,9 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 };
 
 
-function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
+function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, onOpenPrivacy, onOpenTerms }) {
   const verifiedStudent = isVerifiedStudent(user);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState(initialTab); // የጎን መቆጣጠሪያ ታብ
   const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
@@ -198,9 +198,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     phone: user?.phone || '',
     college: user?.college || '',
     department: user?.department || '',
-    preferredPickupLocation: user?.preferred_pickup_location || 'Student Center',
-    password: '',
-    confirmPassword: ''
   });
   const [profileMessage, setProfileMessage] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
@@ -371,8 +368,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
-  const cartTotal = cart.reduce((total, item) => total + normalizePrice(item.price) * (item.quantity || 1), 0);
-  const derivedCartItemCount = cart.reduce((total, item) => total + (item.quantity || 1), 0);
+  const cartTotal = cart.reduce((total, item) => total + normalizePrice(item.price), 0);
+  const derivedCartItemCount = cart.length;
   const cartItemCount = cartBadgeCount || derivedCartItemCount;
   const wishlistCount = wishlistBadgeCount || wishlist.length;
   const orderCount = orders.length;
@@ -591,7 +588,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           phone: freshUser.phone || '',
           college: freshUser.college || '',
           department: freshUser.department || '',
-          preferredPickupLocation: freshUser.preferred_pickup_location || 'Student Center',
         }));
       } catch (err) {
         console.error('Error fetching fresh student profile:', err);
@@ -668,6 +664,28 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     fetchNotificationsData();
   }, [activeTab, studentId]);
+
+  const handleDeleteNotification = async (id) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/student/notifications/${id}?student_id=${encodeURIComponent(studentId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to delete notification.');
+      }
+
+      setNotifications((previousNotifications) => {
+        const deletedNotification = previousNotifications.find((notification) => String(notification.id) === String(id));
+        if (deletedNotification && !deletedNotification.read) {
+          setUnreadNotificationCount((count) => Math.max(0, count - 1));
+        }
+        return previousNotifications.filter((notification) => String(notification.id) !== String(id));
+      });
+    } catch (err) {
+      console.error('Error deleting notification:', err);
+    }
+  };
 
   useEffect(() => {
     if (!studentId || activeTab !== 'buyer') return;
@@ -975,12 +993,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
-    if (profileForm.password !== profileForm.confirmPassword) {
-      setProfileMessage('Passwords do not match.');
-      setProfileSaving(false);
-      return;
-    }
-
     try {
       const payload = {
         student_id: user.studentId,
@@ -988,12 +1000,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         phone: profileForm.phone,
         college: profileForm.college,
         department: profileForm.department,
-        preferred_pickup_location: profileForm.preferredPickupLocation,
       };
-
-      if (profileForm.password) {
-        payload.password = profileForm.password;
-      }
 
       const res = await fetch('http://127.0.0.1:8000/api/student/profile', {
         method: 'PUT',
@@ -1012,12 +1019,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         phone: data.user.phone,
         college: data.user.college,
         department: data.user.department,
-        preferred_pickup_location: data.user.preferred_pickup_location,
       };
 
       onUserUpdate(updatedUser);
       setProfileMessage('Profile updated successfully.');
-      setProfileForm((prev) => ({ ...prev, password: '' }));
 
       if (typeof window !== 'undefined') {
         const saved = window.localStorage.getItem('campaceSession');
@@ -1673,15 +1678,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
-  const updateCartItemQuantity = (itemId, delta) => {
-    setCart((prev) => prev.map((item) => {
-      if (item.id !== itemId) return item;
-      const currentQuantity = Number(item.quantity) || 1;
-      const nextQuantity = Math.max(1, currentQuantity + delta);
-      return { ...item, quantity: nextQuantity };
-    }));
-  };
-
   const walletShortfall = Math.max(0, checkoutTotal - currentWalletBalance);
 
   const handleTopUpFromCart = () => {
@@ -2224,15 +2220,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   return (
-    <div className="min-h-screen w-full bg-slate-50 pt-2 text-slate-900">
-      <div className="flex min-h-screen w-full flex-col gap-3 lg:h-[calc(100vh-56px)] lg:overflow-hidden lg:flex-row lg:items-start lg:gap-3 lg:pt-1 lg:pb-2">
+    <div className="min-h-0 w-full bg-slate-50 pt-10 text-slate-900">
+      <div className="flex min-h-0 w-full flex-col gap-3 lg:h-[calc(100vh-160px)] lg:overflow-hidden lg:flex-row lg:items-start lg:gap-3 lg:pt-1 lg:pb-2">
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside className={`
-          flex w-72 flex-col bg-[#111c3a] p-6 text-white transition-all duration-300 ease-in-out fixed inset-y-0 left-0 z-50
-          lg:static lg:mt-0 lg:translate-x-0 lg:h-fit lg:overflow-visible lg:overflow-y-visible lg:shrink-0 lg:rounded-[32px] lg:shadow-none
-          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-          ${isSidebarCollapsed ? 'w-24 p-3' : 'w-72 p-6'}
+          fixed top-28 bottom-0 left-0 z-40 flex w-72 -translate-x-full flex-col overflow-y-auto bg-[#0a0e23] p-4 text-white shadow-2xl transition-transform duration-300 ease-in-out
+          lg:static lg:relative lg:top-28 lg:h-full lg:w-72 lg:translate-x-0 lg:overflow-hidden lg:rounded-[32px] lg:p-6 lg:shadow-none
+          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          ${isSidebarCollapsed ? 'lg:w-24 lg:p-3' : 'lg:w-72 lg:p-6'}
         `}>
           <div className={`mb-8 flex items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
@@ -2277,7 +2273,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
           </div>
 
-          <nav className={`space-y-2 ${isSidebarCollapsed ? 'items-center' : ''}`}>
+          <nav className={`flex flex-1 flex-col space-y-2 ${isSidebarCollapsed ? 'items-center' : ''}`}>
             {[
               { key: 'home', label: 'Home' },
               { key: 'buyer', label: 'Buyer Hub' },
@@ -2293,11 +2289,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   key={item.key}
                   onClick={() => {
                     setActiveTab(item.key);
+                    setIsSidebarOpen(false);
                     if (onTabChange) {
                       onTabChange(item.key);
                     }
                   }}
-                  className={`group rounded-2xl px-3 py-3 w-full flex items-center justify-between text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-300 hover:bg-white/10 hover:text-white'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
+                  className={`group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-300 hover:bg-white/10 hover:text-white'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
                   title={item.label}
                 >
                   <span className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
@@ -2319,7 +2316,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </nav>
 
           <div className="mt-auto flex flex-col gap-4 pt-5 transition-all duration-300">
-            <div className={`rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm ${isSidebarCollapsed ? 'p-3' : ''}`}>
+            <div className={`rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm lg:absolute lg:bottom-6 lg:left-6 lg:right-6 ${isSidebarCollapsed ? 'p-3' : ''}`}>
               {!isSidebarCollapsed ? (
                 <>
                   <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-400">
@@ -2363,9 +2360,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         {isSidebarOpen && (
           <div
             onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden"
+            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm lg:hidden"
           />
         )}
+
+        <div className="flex items-center gap-3 bg-[#1d4ed8] px-4 py-3 text-white shadow-sm lg:hidden">
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-white transition hover:bg-white/20 cursor-pointer"
+            aria-label="Open navigation menu"
+          >
+            <span className="text-2xl leading-none">☰</span>
+          </button>
+          <span className="text-sm font-bold">Campus Portal</span>
+        </div>
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
         <main className="min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 lg:h-full lg:overflow-y-scroll lg:pr-2 lg:pt-1">
@@ -2433,7 +2442,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
               <div className="space-y-6">
-                <div className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+                <div className="rounded-[32px] border border-white/5 bg-[#16224f] p-8 shadow-[0_20px_40px_rgba(10,14,35,0.28)] sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-4">
 
                     {/* ዴስክቶፕ ላይ ማውጫው ከተዘጋ በኋላ ለመክፈቻ የሚሆን የ [|] ቁልፍ (ምስል 2 - Sidebar Toggle Open Button) */}
@@ -2451,23 +2460,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     )}
 
                     {/* በሞባይል ስልኮች ላይ የሚታየው የሜኑ መክፈቻ ቁልፍ (Mobile Hamburger Menu) */}
-                    <button
-                      onClick={() => setIsSidebarOpen(prev => !prev)}
-                      className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer lg:hidden"
-                      title="Menu"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                      </svg>
-                    </button>
-
                     <div>
-                      <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Student Experience</p>
-                      <h2 className="mt-2 text-3xl font-semibold text-slate-950">Unified buyer + seller dashboard</h2>
+                      <p className="text-sm uppercase tracking-[0.24em] text-sky-400">User Experience</p>
+                      <h2 className="mt-2 text-3xl font-semibold text-white">Buyer and Seller dashboard</h2>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={() => setShowSupportModal(true)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow hover:bg-emerald-600 cursor-pointer">Support</button>
+                    <button onClick={() => setShowSupportModal(true)} className="rounded-full bg-blue-500 px-5 py-3 text-sm font-semibold text-white shadow hover:bg-blue-600 cursor-pointer">Support</button>
                   </div>
                 </div>
 
@@ -2481,33 +2480,47 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                     <div className="grid gap-4 md:grid-cols-2">
                       {recommendedProducts.length ? (
-                        recommendedProducts.map((item) => (
-                          <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
-                            <div className="mb-4 h-32 w-full overflow-hidden rounded-[18px] bg-slate-200">
-                              <img
-                                src={item.image || 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80'}
-                                alt={item.title || 'Recommended marketplace product'}
-                                onError={(event) => {
-                                  event.currentTarget.onerror = null;
-                                  event.currentTarget.src = 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80';
-                                }}
-                                className="h-full w-full object-cover"
-                              />
+                        recommendedProducts.map((item) => {
+                          const fallbackImage = 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80';
+                          let displayImage = fallbackImage;
+
+                          try {
+                            const parsedImages = JSON.parse(item.image || '[]');
+                            if (Array.isArray(parsedImages) && parsedImages.length > 0) {
+                              displayImage = parsedImages[0];
+                            }
+                          } catch {
+                            displayImage = fallbackImage;
+                          }
+
+                          return (
+                            <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
+                              <div className="mb-4 h-32 w-full overflow-hidden rounded-[18px] bg-slate-200">
+                                <img
+                                  src={displayImage}
+                                  alt={item.title || 'Recommended marketplace product'}
+                                  onError={(event) => {
+                                    event.currentTarget.onerror = null;
+                                    event.currentTarget.src = fallbackImage;
+                                  }}
+                                  className="h-full w-full object-cover"
+                                />
+                              </div>
+                              <div className="flex items-center justify-between gap-3">
+                                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+                                  {item.category || 'Recommended'}
+                                </span>
+                                <span className="text-xs font-semibold text-slate-500">{item.match || 'High match'}</span>
+                              </div>
+                              <h4 className="mt-3 text-lg font-bold text-slate-900">{item.title}</h4>
+                              <p className="mt-2 line-clamp-2 text-sm text-slate-600">{item.description || 'Popular campus item tailored to your department.'}</p>
+                              <div className="mt-4 flex items-center justify-between">
+                                <span className="text-lg font-black text-slate-950">{formatETB(item.price)}</span>
+                                <button type="button" onClick={() => handleRecommendationClick(item.id)} className="rounded-full bg-slate-950 px-3.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition">View Details →</button>
+                              </div>
                             </div>
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">
-                                {item.category || 'Recommended'}
-                              </span>
-                              <span className="text-xs font-semibold text-slate-500">{item.match || 'High match'}</span>
-                            </div>
-                            <h4 className="mt-3 text-lg font-bold text-slate-900">{item.title}</h4>
-                            <p className="mt-2 line-clamp-2 text-sm text-slate-600">{item.description || 'Popular campus item tailored to your department.'}</p>
-                            <div className="mt-4 flex items-center justify-between">
-                              <span className="text-lg font-black text-slate-950">{formatETB(item.price)}</span>
-                              <button type="button" onClick={() => handleRecommendationClick(item.id)} className="rounded-full bg-slate-950 px-3.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition">View Details →</button>
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       ) : (
                         <div className="rounded-[24px] bg-slate-50 p-4 border border-slate-100 text-sm text-slate-500 md:col-span-2">
                           No recommendations are available yet for your department.
@@ -2570,21 +2583,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {/* 2. ገጽ 2፦ የገዢዎች መቆጣጠሪያ ሰሌዳ (Buyer Hub) */}
             {activeTab === 'buyer' && (
               <div className="space-y-6">
-                <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                  <h3 className="text-xl font-bold text-slate-950">Buyer Hub</h3>
-                  <p className="text-sm text-slate-500 mt-1">Search products, manage your wishlist, cart, orders, and payments.</p>
+                <div className="rounded-[32px] border border-white/5 bg-[#16224f] p-6 shadow-[0_20px_40px_rgba(10,14,35,0.28)]">
+                  <h3 className="text-xl font-bold text-white">Buyer Hub</h3>
+                  <p className="text-sm text-slate-300 mt-1">Search products, manage your wishlist, cart, orders, and payments.</p>
 
                   {/* Buyer Hub Sub-tabs (White Pill Buttons) */}
-                  <div className="mt-6 flex flex-wrap gap-2.5">
+                  <div className="mt-6 flex flex-row gap-2 overflow-x-auto pb-1 scrollbar-none snap-x md:overflow-x-visible md:flex-wrap">
                     {buyerSubTabs.map((tab) => (
                       <button
                         key={tab.id}
                         onClick={() => setBuyerTab(tab.id)}
-                        className={`inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold transition border border-slate-200 cursor-pointer ${buyerTab === tab.id ? 'bg-slate-950 text-white border-slate-950' : 'bg-white text-slate-800 hover:bg-slate-50'}`}
+                        className={`inline-flex shrink-0 items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold cursor-pointer transition-all duration-200 ${buyerTab === tab.id ? 'border border-white bg-white text-slate-950 shadow-sm' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'}`}
                       >
                         <span>{tab.label}</span>
                         {tab.badge > 0 && (
-                          <span className={`inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold ${buyerTab === tab.id ? 'bg-white text-slate-900' : 'bg-slate-900 text-white'}`}>
+                          <span className={`inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold ${buyerTab === tab.id ? 'bg-blue-500/10 text-blue-400' : 'bg-white/10 text-slate-300'}`}>
                             {tab.badge}
                           </span>
                         )}
@@ -2602,8 +2615,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <p className="text-sm text-slate-500 mt-1">Find student listings by name, category, or subcategory.</p>
                       </div>
                       <div className="flex flex-col gap-3 sm:flex-row">
-                        <button onClick={handleSearchSubmit} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition cursor-pointer">Search</button>
-                        <button onClick={() => { resetSearchFilters(); fetchProducts(); }} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Reset</button>
+                        <button onClick={handleSearchSubmit} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-600 transition cursor-pointer">Search</button>
+                        <button onClick={() => { resetSearchFilters(); fetchProducts(); }} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer">Reset</button>
                       </div>
                     </div>
 
@@ -2658,31 +2671,65 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <p className="text-sm text-slate-500">No products match your search yet. Try a different keyword or category.</p>
                       ) : (
                         <div className="space-y-4">
-                          {searchResults.map((item) => (
-                            <div key={item.id} className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-                              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
-                                <img
-                                  src={item.image || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80'}
-                                  alt={item.title}
-                                  onError={(e) => {
-                                    e.currentTarget.onerror = null;
-                                    e.currentTarget.src = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
-                                  }}
-                                  className="h-24 w-32 rounded-2xl object-cover"
-                                />
-                                <div>
-                                  <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{item.category} / {item.subcategory || 'General'}</p>
-                                  <h4 className="mt-2 text-lg font-semibold text-slate-900">{item.title}</h4>
-                                  <p className="mt-1 text-sm text-slate-500">{item.description || item.summary || 'No description available.'}</p>
-                                  <p className="mt-2 font-bold text-slate-900">${item.price}</p>
+                          {searchResults.map((item) => {
+                            const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
+                            const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
+                            const backendOrigin = 'http://127.0.0.1:8000';
+                            let displayImage = fallbackImage;
+                            const imageValue = typeof item.image === 'string' ? item.image.trim() : '';
+                            let imageSource = imageValue;
+
+                            if (imageValue) {
+                              if (imageValue.startsWith('[') && imageValue.endsWith(']')) {
+                                try {
+                                  const parsedImages = JSON.parse(imageValue);
+                                  if (Array.isArray(parsedImages) && parsedImages.length > 0) {
+                                    imageSource = String(parsedImages[0]).trim();
+                                  } else {
+                                    imageSource = '';
+                                  }
+                                } catch {
+                                  imageSource = '';
+                                }
+                              }
+
+                              if (imageSource) {
+                                displayImage = imageSource.startsWith('http')
+                                  ? imageSource
+                                  : `${backendOrigin}${imageSource.startsWith('/') ? '' : '/'}${imageSource}`;
+                              }
+                            }
+
+                            return (
+                              <div key={item.id} className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
+                                  <img
+                                    src={displayImage}
+                                    alt={item.title}
+                                    onError={(e) => {
+                                      e.currentTarget.onerror = null;
+                                      e.currentTarget.src = fallbackImage;
+                                    }}
+                                    className="h-24 w-32 rounded-2xl object-cover"
+                                  />
+                                  <div>
+                                    <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{item.category} / {item.subcategory || 'General'}</p>
+                                    <h4 className="mt-2 text-lg font-semibold text-slate-900">{item.title}</h4>
+                                    <p className="mt-1 text-sm text-slate-500">{item.description || item.summary || 'No description available.'}</p>
+                                    <p className="mt-2 font-bold text-slate-900">{formatETB(normalizePrice(item.price))}</p>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition">Add to Cart</button>
+                                  {isInWishlist ? (
+                                    <button type="button" disabled className="rounded-full border border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
+                                  ) : (
+                                    <button type="button" onClick={() => handleAddToWishlist(item.id)} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">♡ Add to Wishlist</button>
+                                  )}
                                 </div>
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                                <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-600 transition">Add to Cart</button>
-                                <button type="button" onClick={() => handleAddToWishlist(item.id)} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">Add to Wishlist</button>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -2809,46 +2856,48 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <div className="grid gap-6 xl:grid-cols-[1.4fr_0.9fr]">
                         <div className="space-y-4">
                           {cart.map((item) => {
-                            const itemQuantity = Number(item.quantity) || 1;
-                            const lineTotal = normalizePrice(item.price) * itemQuantity;
+                            const lineTotal = normalizePrice(item.price);
+                            const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
+                            const backendOrigin = 'http://127.0.0.1:8000';
+                            let displayImage = fallbackImage;
+                            const imageValue = typeof item.image === 'string' ? item.image.trim() : '';
+                            let imageSource = imageValue;
+
+                            if (imageValue) {
+                              if (imageValue.startsWith('[') && imageValue.endsWith(']')) {
+                                try {
+                                  const parsedImages = JSON.parse(imageValue);
+                                  imageSource = Array.isArray(parsedImages) && parsedImages.length > 0
+                                    ? String(parsedImages[0]).trim()
+                                    : '';
+                                } catch {
+                                  imageSource = '';
+                                }
+                              }
+
+                              if (imageSource) {
+                                displayImage = imageSource.startsWith('http')
+                                  ? imageSource
+                                  : `${backendOrigin}${imageSource.startsWith('/') ? '' : '/'}${imageSource}`;
+                              }
+                            }
 
                             return (
                               <div key={item.id} className="grid gap-4 rounded-[28px] border border-slate-200 bg-slate-50 p-4 shadow-sm sm:grid-cols-[auto_1fr_auto] sm:items-center">
                                 <img
-                                  src={item.image || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80'}
+                                  src={displayImage}
                                   alt={item.title}
                                   className="h-20 w-20 rounded-full object-cover ring-2 ring-white shadow-sm"
                                   onError={(e) => {
                                     e.currentTarget.onerror = null;
-                                    e.currentTarget.src = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
+                                    e.currentTarget.src = fallbackImage;
                                   }}
                                 />
 
                                 <div className="min-w-0">
                                   <h4 className="truncate text-base font-semibold text-slate-900">{item.title}</h4>
                                   <p className="mt-1 text-sm text-slate-500">Seller: {item.seller || 'Campus Seller'}</p>
-                                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                                    <div className="inline-flex items-center rounded-full border border-slate-200 bg-white shadow-sm">
-                                      <button
-                                        type="button"
-                                        onClick={() => updateCartItemQuantity(item.id, -1)}
-                                        className="flex h-9 w-9 items-center justify-center text-lg font-semibold text-slate-700 transition hover:bg-slate-100"
-                                        aria-label={`Decrease quantity for ${item.title}`}
-                                      >
-                                        −
-                                      </button>
-                                      <span className="min-w-12 px-2 text-center text-sm font-semibold text-slate-900">{itemQuantity}</span>
-                                      <button
-                                        type="button"
-                                        onClick={() => updateCartItemQuantity(item.id, 1)}
-                                        className="flex h-9 w-9 items-center justify-center text-lg font-semibold text-slate-700 transition hover:bg-slate-100"
-                                        aria-label={`Increase quantity for ${item.title}`}
-                                      >
-                                        +
-                                      </button>
-                                    </div>
-                                    <span className="text-sm font-medium text-slate-500">Unit {formatETB(normalizePrice(item.price))}</span>
-                                  </div>
+                                  <p className="mt-3 text-sm font-medium text-slate-500">Price: {formatETB(normalizePrice(item.price))}</p>
                                 </div>
 
                                 <div className="flex flex-col items-end gap-3">
@@ -4161,6 +4210,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   setBuyerTab('orders');
                   setActiveTab('buyer');
                 }}
+                onBuyerPayments={() => {
+                  setBuyerTab('payments');
+                  setActiveTab('buyer');
+                }}
+                onDeleteNotification={handleDeleteNotification}
               />
             )}
 

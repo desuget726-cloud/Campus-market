@@ -11,9 +11,10 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
   const [isSuccess, setIsSuccess] = useState(false);
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
-  const [requiresAdminOtp, setRequiresAdminOtp] = useState(false);
-  const [adminOtp, setAdminOtp] = useState('');
-  const [adminOtpEmail, setAdminOtpEmail] = useState('');
+  const [otpRole, setOtpRole] = useState('');
+  const [otpEmail, setOtpEmail] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [showOtpModal, setShowOtpModal] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -72,9 +73,14 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
         return;
       }
 
-      if (data.requires_2fa) {
-        setRequiresAdminOtp(true);
-        setAdminOtpEmail(data.otp_email || formData.studentId.trim());
+      if (data.status === 'otp_required' || data.requires_2fa) {
+        const nextRole = data.role || (data.status === 'otp_required' ? 'student' : 'admin');
+        const nextEmail = data.email || data.otp_email || formData.studentId.trim();
+
+        setOtpRole(nextRole);
+        setOtpEmail(nextEmail);
+        setOtpCode('');
+        setShowOtpModal(true);
         setError('');
         return;
       }
@@ -88,23 +94,32 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
     }
   };
 
-  const handleAdminOtpSubmit = async (event) => {
+  const handleOtpSubmit = async (event) => {
     event.preventDefault();
-    if (!/^\d{6}$/.test(adminOtp)) {
+    if (!/^\d{6}$/.test(otpCode)) {
       setError(t('auth.enterCode'));
       return;
     }
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/login/verify-otp', {
+      const isStudent = otpRole === 'student';
+      const endpoint = isStudent ? 'http://127.0.0.1:8000/api/auth/verify-login-otp' : 'http://127.0.0.1:8000/api/login/verify-otp';
+      const body = isStudent
+        ? { email: otpEmail, otp_code: otpCode }
+        : { email: otpEmail, otp_code: otpCode };
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: adminOtpEmail, otp_code: adminOtp }),
+        body: JSON.stringify(body),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || t('auth.invalidCode'));
+
       onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
       setIsSuccess(true);
+      setShowOtpModal(false);
+      setError('');
     } catch (err) {
       setError(err.message || t('auth.couldNotVerify'));
     }
@@ -164,21 +179,38 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
               </div>
             )}
 
-            {requiresAdminOtp ? (
-              <form onSubmit={handleAdminOtpSubmit} className="space-y-4">
-                <p className="text-sm text-slate-500">{t('auth.otpDescription')}</p>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={adminOtp}
-                  onChange={(e) => setAdminOtp(e.target.value.replace(/\D/g, ''))}
-                  placeholder="000000"
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none"
-                />
-                <button type="submit" className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white">{t('auth.verifyCode')}</button>
-              </form>
-            ) : (
+            {showOtpModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+                <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-600">Two-step verification</p>
+                      <h3 className="mt-2 text-xl font-bold text-slate-900">Verify your login code</h3>
+                    </div>
+                    <button type="button" onClick={() => setShowOtpModal(false)} className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600">✕</button>
+                  </div>
+
+                  <p className="mb-4 text-sm leading-6 text-slate-600">
+                    Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.
+                  </p>
+
+                  <form onSubmit={handleOtpSubmit} className="space-y-4">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                      placeholder="000000"
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                    />
+                    <button type="submit" className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white">{t('auth.verifyCode')}</button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {!showOtpModal && (
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">

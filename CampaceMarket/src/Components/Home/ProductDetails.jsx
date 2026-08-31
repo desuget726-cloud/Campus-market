@@ -25,6 +25,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [allowStudentReports, setAllowStudentReports] = useState(false);
   const [showReportForm, setShowReportForm] = useState(false);
   const [reportText, setReportText] = useState('');
+  const [reportEvidenceFile, setReportEvidenceFile] = useState(null);
   const [reportStatus, setReportStatus] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
@@ -184,22 +185,29 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     setReportLoading(true);
     setReportStatus('');
     try {
+      const formData = new FormData();
+      formData.append('product_id', String(product.id));
+      formData.append('student_id', currentUser.studentId || '');
+      formData.append('student_name', currentUser.name || currentUser.studentId || 'Student');
+      formData.append('email', currentUser.email || '');
+      formData.append('category', 'Product Report');
+      formData.append('issue', reportText.trim());
+      if (reportEvidenceFile) formData.append('evidence_image', reportEvidenceFile);
+
       const response = await fetch('http://127.0.0.1:8000/api/student/report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          product_id: product.id,
-          student_id: currentUser.studentId,
-          student_name: currentUser.name || currentUser.studentId || 'Student',
-          email: currentUser.email || '',
-          category: 'Product Report',
-          issue: reportText.trim(),
-        }),
+        body: formData,
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || 'Unable to report this product.');
+      if (!response.ok) {
+        const detail = Array.isArray(data.detail)
+          ? data.detail.map((error) => error.msg || 'Invalid report data.').join(', ')
+          : data.detail;
+        throw new Error(detail || 'Unable to report this product.');
+      }
 
       setReportText('');
+      setReportEvidenceFile(null);
       setShowReportForm(false);
       setReportStatus(data.message || 'Product report submitted successfully.');
     } catch (error) {
@@ -411,6 +419,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                         disabled={reportLoading}
                         className="w-full resize-none rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-rose-400 focus:bg-white"
                       />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) => setReportEvidenceFile(event.target.files?.[0] || null)}
+                        disabled={reportLoading}
+                        className="w-full rounded-2xl border border-rose-200 bg-white px-4 py-3 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-rose-100 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-rose-700"
+                      />
                       <div className="flex gap-2">
                         <button
                           type="submit"
@@ -421,7 +436,10 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                         </button>
                         <button
                           type="button"
-                          onClick={() => setShowReportForm(false)}
+                          onClick={() => {
+                            setShowReportForm(false);
+                            setReportEvidenceFile(null);
+                          }}
                           className="rounded-full border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                         >
                           Cancel
