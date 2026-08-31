@@ -6,6 +6,12 @@ from dotenv import load_dotenv
 # Load configuration before importing modules that may initialize database state.
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    print("🟢 OpenAI Client initialized successfully")
+else:
+    print("⚠️ OpenAI API Key is missing. Running in local-only mode")
+
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -20,6 +26,8 @@ from dataclasses import dataclass
 import shutil
 import logging
 import httpx
+from openai import OpenAI
+from duckduckgo_search import DDGS
 import uuid
 import random
 import json
@@ -55,7 +63,7 @@ from .database import get_db, init_db, SessionLocal, Base, engine
 
 app = FastAPI(title="Campace Backend")
 
-# React ßîìßèòßèÖßèÉßë╡ ßêÿßììßëÇßîâ (CORS)
+# React (CORS)
 origins = [
     "http://localhost:5173",      
     "http://127.0.0.1:5173",     
@@ -67,10 +75,10 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,        # Γ£ô Uses origins list
-    allow_credentials=True,       # Γ£ô Allow cookies/auth
-    allow_methods=["*"],          # Γ£ô All HTTP methods
-    allow_headers=["*"],          # Γ£ô All headers
+    allow_origins=origins,        #  Uses origins list
+    allow_credentials=True,       #  Allow cookies/auth
+    allow_methods=["*"],          # All HTTP methods
+    allow_headers=["*"],          #  All headers
 )
 
 # Create static directory for uploads if it doesn't exist
@@ -1278,14 +1286,17 @@ def ensure_database_compatibility(db: Session) -> None:
 @app.on_event("startup")
 def on_startup():
     missing_gateway_variables = [
-        variable_name for variable_name in ("CHAPA_SECRET_KEY", "CHAPA_PUBLIC_KEY")
+        variable_name for variable_name in ("CHAPA_SECRET_KEY", "CHAPA_WEBHOOK_SECRET")
         if not os.getenv(variable_name, "").strip()
     ]
     if missing_gateway_variables:
-        logging.getLogger("app.startup").warning(
-            "Chapa payment gateway is not fully configured; missing environment variables: %s",
-            ", ".join(missing_gateway_variables),
+        missing_list = ", ".join(missing_gateway_variables)
+        warning_message = (
+            "WARNING: Chapa payment gateway is not fully configured. Missing environment variables: "
+            f"{missing_list}. Please configure these values in your .env file before running the app."
         )
+        print(warning_message)
+        logging.getLogger("app.startup").warning(warning_message)
     try:
         init_db()
         db = SessionLocal()
@@ -3365,39 +3376,83 @@ def format_products_for_response(products: List[Product]) -> str:
     return "\n".join(product_cards)
 
 
+def perform_web_search(query: str) -> str:
+    """Perform a live web search and return a concise summary of the top results."""
+    cleaned_query = (query or '').strip()
+    if not cleaned_query:
+        return "No web search was performed because the query was empty."
+
+    try:
+        if DDGS is None:
+            return "Live web search is unavailable because the duckduckgo_search package is not installed."
+
+        with DDGS() as ddgs:
+            results = ddgs.text(cleaned_query, region="wt-wt", safesearch="Moderate", max_results=4)
+
+        if not results:
+            return "No live web search results were found for this query."
+
+        formatted_results = []
+        for index, item in enumerate(results[:4], start=1):
+            title = item.get("title") or "Web result"
+            link = item.get("href") or item.get("link") or "https://example.com"
+            snippet = item.get("body") or item.get("snippet") or "No summary available."
+            formatted_results.append(
+                f"{index}. {title}\n   Link: {link}\n   Summary: {snippet}"
+            )
+
+        return "\n\n".join(formatted_results)
+    except Exception as exc:
+        logger = logging.getLogger("ai_advisor")
+        logger.warning("Web search failed for query '%s': %s", cleaned_query, exc)
+        return "Live web search is temporarily unavailable. Use the marketplace data and local guidance when needed."
+
+
 def _openai_advisor_response(
     request: AIAdvisorRequest,
     message: str,
     intent: str,
     products: List[Product],
     price_data: Optional[Dict] = None,
+    database_context: Optional[str] = None,
+    web_context: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Ask OpenAI for a response when configured; return None to use the local fallback."""
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if not api_key or OpenAI is None:
         return None
 
     try:
-        from openai import OpenAI
-
         product_context = "\n".join(
             f"id={product.id}; title={product.title}; category={product.category}; "
             f"price={product.price}; description={product.description or ''}"
             for product in products
         ) or "No approved products matched the request."
+
+        real_time_database_context = database_context or "\n".join(
+            f"[PRODUCT:{product.id}:{product.title}:{product.category}:{product.price}]"
+            for product in products
+        ) or "No approved products are currently available in the marketplace database."
+
+        live_web_context = web_context or "No live web search results were available for this query."
         pricing_context = json.dumps(price_data or {}, default=str)
         system_prompt = (
-            "You are Campus AI Advisor for a student marketplace. Use only the supplied "
-            "database context for product facts and prices. Be concise and helpful. "
-            "For buying requests, include one exact marker per matching listing in the "
-            "format [PRODUCT:id:title:price]. For selling requests, explain the market "
-            "average and recommended range using the supplied pricing context."
+            "You are Campus AI Advisor, acting like a helpful ChatGPT-style assistant for a student marketplace. "
+            "Use the supplied marketplace database context as the source of truth for local product facts and pricing. "
+            "Use the live web search context for general questions, current information, academic guidance, price trends, "
+            "or broader student advice. If the student is asking for local marketplace items, recommend from the approved "
+            "database and format every recommended product strictly as [PRODUCT:id:title:price] without extra punctuation "
+            "around the marker. If the student asks general, academic, or pricing questions, respond conversationally and "
+            "synthesize the best answer from the live web results plus the product context. Be concise, campus-focused, and "
+            "use clear structured explanations when helpful."
         )
         user_prompt = (
             f"Student department: {request.department or 'Not provided'}\n"
             f"Intent: {intent}\n"
             f"User message: {message}\n\n"
             f"Approved product context:\n{product_context}\n\n"
+            f"Real-time marketplace database context:\n{real_time_database_context}\n\n"
+            f"Live web search context:\n{live_web_context}\n\n"
             f"Local pricing context:\n{pricing_context}"
         )
         client = OpenAI(api_key=api_key)
@@ -3434,19 +3489,38 @@ def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required.")
-    
+
     logger = logging.getLogger("ai_advisor")
     logger.info(f"[AI ADVISOR] Query from {request.student_id}: {message[:100]}")
-    
+
+    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
+
     try:
         intent = detect_intent(message)
         keywords = extract_search_keywords(message)
-        cloud_products = search_products_by_intent(db, message, intent, request.department) if intent == "buy" else db.query(Product).filter(Product.status == "Approved").order_by(Product.created_at.desc()).limit(30).all()
+        approved_products = db.query(Product).filter(Product.status == "Approved").all()
+        approved_database_context = "\n".join(
+            f"[PRODUCT:{product.id}:{product.title}:{product.category}:{product.price}]"
+            for product in approved_products
+        ) or "No approved products are available in the marketplace database."
+        web_search_context = perform_web_search(message)
+
+        cloud_products = search_products_by_intent(db, message, intent, request.department) if intent == "buy" else approved_products[:30]
         local_price_data = calculate_price_recommendation(db, keywords) if intent == "sell" else None
-        cloud_response = _openai_advisor_response(request, message, intent, cloud_products, local_price_data)
-        if cloud_response:
-            return cloud_response
-        
+
+        if openai_client is not None:
+            cloud_response = _openai_advisor_response(
+                request,
+                message,
+                intent,
+                cloud_products,
+                local_price_data,
+                approved_database_context,
+                web_search_context,
+            )
+            if cloud_response:
+                return cloud_response
+
         if intent == 'buy':
             products = search_products_by_intent(
                 db=db,
@@ -3557,35 +3631,19 @@ Ready to list your item? Create a detailed listing in the Seller Hub!"""
                 }
         
         else:
-            reply = """🎓 **Welcome to Campus AI Advisor!**
+            if openai_client is None:
+                reply = """⚠️ **AI Advisor is currently offline**
 
-I'm here to help with your academic defense preparation and campus marketplace needs.
+This Campus AI Advisor is running in local-only mode because the OPENAI_API_KEY is missing from your .env file.
 
-**What I can help with:**
+Please add your API key to the environment and restart the backend to enable live AI responses for marketplace and general academic questions."""
+                return {
+                    "reply": reply,
+                    "intent": intent,
+                    "message_type": "offline_guidance"
+                }
 
-📚 **Find Study Materials & Books**
-- "Find calculus textbooks"
-- "Show me CCI programming books"
-- "Laptops under 25,000 ETB"
-
-💰 **Pricing & Selling Advice**
-- "How much should I sell my Dell laptop for?"
-- "Price recommendation for used HP notebook"
-- "What's the market rate for textbooks?"
-
-🎯 **Defense Preparation Tips**
-- Best study materials for your department
-- Recommended resources and tools
-- Timeline and budgeting advice
-
-**Try asking:**
-- "Find laptops under 25k ETB" → Search our database
-- "How much is a used MacBook worth?" → Get price advice
-- "Show programming books" → Browse available textbooks
-- "Defense tips for Computer Science" → Get expert guidance
-
-How can I help you today? 🚀"""
-            
+            reply = """I can help with marketplace items, academic questions, and broader student advice once the AI model responds. Please try again in a moment."""
             return {
                 "reply": reply,
                 "intent": intent,
@@ -5218,7 +5276,7 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         "first_name": name_parts[0],
         "last_name": name_parts[1] if len(name_parts) > 1 else name_parts[0],
         "tx_ref": tx_ref,
-        "callback_url": os.getenv("CHAPA_CALLBACK_URL", "http://127.0.0.1:8000/api/payment/webhook"),
+        "callback_url": os.getenv("CHAPA_CALLBACK_URL", "http://127.0.0.1:8000/api/admin/payments/webhook"),
         "return_url": os.getenv("CHAPA_RETURN_URL", "http://localhost:5173/"),
         "customization": {"title": "Campus Market Wallet Deposit"},
     }
@@ -7138,6 +7196,7 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
     }
 
 
+@app.post("/api/payment/webhook")
 @app.post("/api/admin/payments/webhook")
 def simulate_chapa_webhook(
     payload: dict,
@@ -7147,7 +7206,7 @@ def simulate_chapa_webhook(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object.")
 
-    secret = os.getenv("CHAPA_SECRET_KEY", "campace_dev_secret")
+    secret = os.getenv("CHAPA_WEBHOOK_SECRET") or os.getenv("CHAPA_SECRET_KEY", "campace_dev_secret")
     callback_signature = authorization or payload.get("signature") or payload.get("x_chapa_signature")
     if callback_signature:
         expected = _compute_chapa_signature(secret, payload)
@@ -7173,6 +7232,27 @@ def simulate_chapa_webhook(
     except Exception:
         amount = Decimal("0")
 
+    transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).with_for_update().first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Pending payment transaction not found for callback.")
+    if _normalize_payment_status(transaction.status) == "Successful":
+        settled_student = db.query(Student).filter(Student.student_id == transaction.student_id).first()
+        if not settled_student:
+            raise HTTPException(status_code=404, detail="Student not found for payment callback.")
+        return {
+            "message": "Payment webhook was already processed.",
+            "status": "Successful",
+            "transaction_id": transaction.tx_id,
+            "student_id": transaction.student_id,
+            "wallet_balance": float(settled_student.wallet_balance or 0),
+            "amount": float(transaction.amount),
+        }
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Payment callback amount must be greater than 0.")
+    if Decimal(str(transaction.amount)).quantize(Decimal("0.01")) != amount:
+        raise HTTPException(status_code=400, detail="Payment callback amount does not match the initialized transaction.")
+
     student_identifier = (
         payload.get("student_id")
         or payload.get("buyer_id")
@@ -7186,30 +7266,17 @@ def simulate_chapa_webhook(
             or student_identifier.get("studentId")
         )
 
-    student = None
-    if student_identifier:
-        student = db.query(Student).filter(Student.student_id == str(student_identifier)).first()
+    student = db.query(Student).filter(Student.student_id == transaction.student_id).with_for_update().first()
+    if student_identifier and str(student_identifier) != str(transaction.student_id):
+        raise HTTPException(status_code=400, detail="Payment callback student does not match the transaction.")
     if not student:
         raise HTTPException(status_code=404, detail="Student not found for payment callback.")
 
     student.wallet_balance = Decimal(str(student.wallet_balance or 0)) + amount
 
-    tx_record = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
-    if tx_record is None:
-        tx_record = Transaction(
-            student_id=student.student_id,
-            tx_id=tx_ref,
-            type="Wallet Deposit",
-            amount=float(amount),
-            description="Chapa webhook settlement captured via payment callback.",
-            status="Successful",
-        )
-        db.add(tx_record)
-    else:
-        tx_record.type = "Wallet Deposit"
-        tx_record.amount = float(amount)
-        tx_record.status = "Successful"
-        tx_record.description = tx_record.description or "Chapa webhook settlement captured via payment callback."
+    transaction.type = "Wallet Deposit"
+    transaction.status = "Successful"
+    transaction.description = transaction.description or "Chapa webhook settlement captured via payment callback."
 
     _dispatch_student_notification(
         db,
@@ -7220,24 +7287,23 @@ def simulate_chapa_webhook(
     )
 
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
-    if admin:
-        db.add(AuditLog(
-            admin_id=admin.id,
-            action="Payment Webhook Success",
-            entity_type="Payment",
-            entity_id=tx_record.id,
-            description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {amount} ETB.",
-            status="SUCCESS",
-            ip_address="127.0.0.1",
-        ))
+    db.add(AuditLog(
+        admin_id=admin.id if admin else None,
+        action="Payment Webhook Success",
+        entity_type="Payment",
+        entity_id=transaction.id,
+        description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {amount} ETB.",
+        status="SUCCESS",
+        ip_address="127.0.0.1",
+    ))
 
     db.commit()
-    db.refresh(tx_record)
+    db.refresh(transaction)
 
     return {
         "message": "Payment webhook processed successfully.",
         "status": "Successful",
-        "transaction_id": tx_record.tx_id,
+        "transaction_id": transaction.tx_id,
         "student_id": student.student_id,
         "wallet_balance": float(student.wallet_balance),
         "amount": float(amount),

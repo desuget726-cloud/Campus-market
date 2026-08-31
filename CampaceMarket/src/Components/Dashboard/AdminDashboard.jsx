@@ -6843,11 +6843,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pt-16 lg:pt-0">
+    <div className="min-h-screen bg-slate-50 text-slate-900 pt-20 lg:pt-8">
       <div className="flex min-h-screen flex-col gap-2 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className={`
-          fixed inset-y-0 left-0 z-50 flex w-[min(18rem,calc(100vw-1rem))] flex-col overflow-hidden bg-[#111c3a] p-4 text-white shadow-xl transition-all duration-300 ease-in-out sm:p-6
+          fixed left-0 top-10 bottom-0 z-40 w-72 flex flex-col overflow-hidden bg-[#111c3a] p-4 text-white shadow-xl transition-all duration-300 ease-in-out sm:p-6
           lg:static lg:translate-x-0 lg:h-full lg:overflow-visible lg:shrink-0 lg:shadow-none lg:inset-auto lg:left-auto lg:inset-y-auto
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:w-72 lg:ml-0'}
         `}>
@@ -6910,7 +6910,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         )}
 
         {/* Main Panel Content Area */}
-        <main className="min-w-0 flex-1 lg:h-full lg:overflow-y-auto lg:pr-2">
+        <main className="min-w-0 flex-1 h-screen overflow-y-auto pt-[120px] lg:pr-2">
           <div className="mb-4 flex flex-col gap-4 rounded-[24px] border border-slate-200/40 bg-white p-4 text-slate-950 shadow-sm sm:mb-6 sm:rounded-[32px] sm:p-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-4">

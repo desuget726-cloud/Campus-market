@@ -174,22 +174,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [loading, setLoading] = useState(false);
   const [isMarkingRead, setIsMarkingRead] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
-  const [chatHistory, setChatHistory] = useState([
-    {
-      role: 'assistant',
-      text: 'Hello! I am your Campus AI assistant. Ask me anything about textbooks, gadget pricing, or campus trading tips!'
-    }
-  ]);
+  const [chatHistory, setChatHistory] = useState([]);
   const [aiInput, setAiInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isAiAdvisorOpen, setIsAiAdvisorOpen] = useState(false);
   const aiScrollRef = useRef(null);
+  const showAiAdvisorFab = ['home', 'buyer', 'seller'].includes(activeTab);
   const aiAbortControllerRef = useRef(null);
-  const suggestedPrompts = [
-    '🔍 Laptops under 25k ETB',
-    '📖 CCI Textbooks',
-    '💡 Pricing Tips',
-    '🧥 Best study gear under 5k ETB'
-  ];
 
   const [profileForm, setProfileForm] = useState({
     name: user?.name || '',
@@ -373,21 +364,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const cartItemCount = cartBadgeCount || derivedCartItemCount;
   const wishlistCount = wishlistBadgeCount || wishlist.length;
   const orderCount = orders.length;
-  const currentWalletBalance = Number(paymentInfo?.balance ?? walletBalance ?? user?.wallet_balance ?? 0);
+  const currentWalletBalance = Number(paymentInfo?.balance ?? 0);
   const platformFee = cartTotal * 0.035;
   const checkoutTotal = cartTotal + platformFee;
   const walletHasSufficientFunds = currentWalletBalance >= checkoutTotal;
 
-  const defaultTransactionLedger = [
-    { id: 1, type: 'deposit', label: 'Chapa wallet load', amount: 6000, status: 'Successful', date: '2026-08-13', hash: 'CHA_3F2A1D71A9' },
-    { id: 2, type: 'purchase', label: 'Intro to Machine Learning', amount: -1750, status: 'Completed', date: '2026-08-11', hash: 'TXN_9C4E7D2A11' },
-    { id: 3, type: 'deposit', label: 'Chapa wallet load', amount: 2500, status: 'Successful', date: '2026-08-09', hash: 'CHA_5A8E9C4D22' },
-    { id: 4, type: 'purchase', label: 'Campus backpack', amount: -2200, status: 'Completed', date: '2026-08-06', hash: 'TXN_1D4F7B8E90' },
-  ];
-
-  const transactionLedger = Array.isArray(paymentInfo?.transactions) && paymentInfo.transactions.length
-    ? paymentInfo.transactions
-    : defaultTransactionLedger;
+  const transactionLedger = Array.isArray(paymentInfo?.transactions) ? paymentInfo.transactions : [];
 
   const getTransactionSummaryText = (tx) => {
     if (!tx) return 'No transactions yet';
@@ -401,10 +383,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return `${label} — ${sign}${formatted}`;
   };
 
-  const latestTransaction = transactionLedger[0] || null;
-  const recentTransactionText = Array.isArray(paymentInfo?.transactions) && paymentInfo.transactions.length
-    ? getTransactionSummaryText(paymentInfo.transactions[0])
-    : paymentInfo?.recentTx || getTransactionSummaryText(latestTransaction) || 'No transactions yet';
+  const recentTransactionText = transactionLedger[0]
+    ? getTransactionSummaryText(transactionLedger[0])
+    : 'No transactions yet';
 
   const fetchBuyerDashboardData = async () => {
     if (!studentId) return;
@@ -1616,12 +1597,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleClearChat = () => {
     aiAbortControllerRef.current?.abort();
-    setChatHistory([
-      {
-        role: 'assistant',
-        text: 'Hello! I am your Campus AI assistant. Ask me anything about textbooks, gadget pricing, or campus trading tips!'
-      }
-    ]);
+    setChatHistory([]);
     setAiInput('');
     setIsTyping(false);
   };
@@ -2279,7 +2255,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               { key: 'buyer', label: 'Buyer Hub' },
               { key: 'seller', label: 'Seller Hub' },
               { key: 'messages', label: 'Messages', badge: unreadCount || unreadMessageCount },
-              { key: 'ai-advisor', label: 'AI Advisor' },
               { key: 'notifications', label: 'Notifications', badge: unreadNotificationCount },
               { key: 'settings', label: 'Settings' },
             ].map((item) => {
@@ -2323,12 +2298,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <span>Wallet</span>
                     <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-300">Live</span>
                   </div>
-                  <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(walletBalance || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
+                  <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
                 </>
               ) : (
                 <div className="flex flex-col items-center gap-2 text-center">
                   <div className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-[9px] font-semibold text-emerald-300">ETB</div>
-                  <div className="text-[10px] font-semibold text-white">{Number(walletBalance || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
+                  <div className="text-[10px] font-semibold text-white">{Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
                 </div>
               )}
             </div>
@@ -3193,8 +3168,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       <p className="text-sm font-semibold text-slate-900">{tx.label || tx.type || 'Transaction'}</p>
                                       <p className="mt-1 text-xs text-slate-500">{tx.date || '2026-08-13'} • {tx.status || 'Successful'}</p>
                                     </div>
-                                    <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${isDeposit ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                                      {isDeposit ? 'Deposit' : 'Purchase'}
+                                    <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase text-emerald-700">
+                                      {tx.status || 'Successful'}
                                     </span>
                                   </div>
                                   <div className="mt-3 flex items-center justify-between">
@@ -3569,184 +3544,82 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               );
             })()}
 
-            {activeTab === 'ai-advisor' && (
-              <div className="space-y-6">
-                {/* Main AI Chat Container */}
-                <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="flex flex-col gap-4">
-                    {/* Header with Status & Actions */}
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {showAiAdvisorFab && (
+              <div className="fixed bottom-6 right-6 z-50">
+                {isAiAdvisorOpen && (
+                  <div className="fixed bottom-24 right-6 z-50 flex h-[520px] w-96 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl animate-fade-in">
+                    <div className="flex items-center justify-between border-b border-slate-200 bg-gradient-to-r from-sky-50 to-blue-50 px-4 py-3">
                       <div>
-                        <h3 className="text-xl font-bold text-slate-950">Academic Defense AI Advisor</h3>
-                        <p className="text-sm text-slate-500 mt-1">Expert guidance on study materials, pricing strategies, and campus resources for your defense readiness.</p>
+                        <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-sky-600">Academic Defense</p>
+                        <h3 className="mt-1 text-sm font-bold text-slate-900">AI Advisor</h3>
                       </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="inline-flex items-center rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
-                          🟢 Active
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleClearChat}
-                          className="rounded-full border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition active:scale-95"
-                          title="Clear Chat"
-                        >
-                          🗑️ Clear
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleClearChat();
-                            setAiInput('');
-                          }}
-                          className="rounded-full border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition active:scale-95"
-                          title="New Conversation"
-                        >
-                          ✨ New
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const lastAssistantMsg = [...chatHistory].reverse().find(m => m.role === 'assistant');
-                            if (lastAssistantMsg) {
-                              navigator.clipboard.writeText(lastAssistantMsg.text);
-                              alert('Response copied to clipboard!');
-                            }
-                          }}
-                          className="rounded-full border border-slate-200 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition active:scale-95"
-                          title="Copy Response"
-                        >
-                          📋 Copy
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsAiAdvisorOpen(false)}
+                        className="rounded-full bg-white p-2 text-slate-500 transition hover:bg-slate-100"
+                        aria-label="Close AI advisor"
+                      >
+                        ✕
+                      </button>
                     </div>
 
-                    {/* Quick-Start Chips - Dynamic Prompts */}
-                    <div className="space-y-3">
-                      <p className="text-xs font-bold uppercase tracking-[0.1em] text-slate-500">Quick Start Prompts</p>
-                      <div className="flex flex-wrap gap-2">
-                        {suggestedPrompts.map((prompt) => (
-                          <button
-                            key={prompt}
-                            type="button"
-                            onClick={() => handleAiSend(prompt)}
-                            className="group rounded-full border-2 border-sky-200 bg-gradient-to-br from-sky-50 to-sky-100 px-4 py-2.5 text-xs font-semibold text-sky-700 shadow-sm hover:shadow-lg hover:border-sky-400 hover:from-sky-100 hover:to-sky-200 transition-all active:scale-95"
-                          >
-                            <span>{prompt}</span>
-                          </button>
-                        ))}
-                        <button
-                          type="button"
-                          onClick={() => handleAiSend('🎓 Defense tips for ' + (user?.department || 'my field'))}
-                          className="group rounded-full border-2 border-violet-200 bg-gradient-to-br from-violet-50 to-violet-100 px-4 py-2.5 text-xs font-semibold text-violet-700 shadow-sm hover:shadow-lg hover:border-violet-400 transition-all active:scale-95"
-                        >
-                          🎓 Defense Tips
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Chat History */}
-                    <div className="rounded-[28px] border border-slate-200 bg-sky-50 p-5 h-[480px] flex flex-col">
-                      <div ref={aiScrollRef} className="flex-1 overflow-y-auto space-y-4 pr-2">
-                        {chatHistory.map((message, index) => {
-                          const productMatches = message.role === 'assistant' ? parseInlineProductCards(message.text) : [];
-                          const renderedText = productMatches.length ? message.text.replace(/\[PRODUCT:[^\]]+\]/g, '') : message.text;
-
-                          return (
-                            <div key={index} className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                              <div className={`max-w-[85%] rounded-3xl px-5 py-4 text-sm leading-6 shadow-md ${message.role === 'assistant' ? 'bg-gradient-to-br from-white to-slate-50 text-slate-900 border border-slate-200' : 'bg-emerald-500 text-white'}`}>
-                                {renderedText && <div className="whitespace-pre-wrap font-medium">{renderedText}</div>}
-
-                                {message.product_id && message.product && (
-                                  <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-slate-900">
-                                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Discussing Item</p>
-                                    <p className="mt-1 text-sm font-bold">{message.product.title}</p>
-                                    {message.product.price !== undefined && (
-                                      <p className="mt-1 text-xs font-semibold text-emerald-700">{message.product.price} ETB</p>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Dynamic Product Cards */}
-                                {productMatches.length > 0 && (
-                                  <div className="mt-4 space-y-3">
-                                    {productMatches.map((product, pIdx) => {
-                                      const productObj = recommendedProducts.find(p => p.id === product.id) || {};
-                                      return (
-                                        <div key={`${product.id}-${pIdx}`} className="rounded-[20px] border-2 border-emerald-200 bg-gradient-to-br from-white to-emerald-50 p-4 text-slate-900 shadow-lg hover:shadow-xl hover:border-emerald-300 transition-all">
-                                          <div className="flex items-start gap-3">
-                                            {/* Product Image */}
-                                            <div className="flex-shrink-0">
-                                              <div className="h-16 w-16 rounded-[14px] bg-gradient-to-br from-blue-100 to-blue-50 border-2 border-blue-200 flex items-center justify-center overflow-hidden">
-                                                {productObj.image ? (
-                                                  <img src={productObj.image} alt={product.title} className="h-full w-full object-cover" />
-                                                ) : (
-                                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
-                                                  </svg>
-                                                )}
-                                              </div>
-                                            </div>
-                                            {/* Product Info */}
-                                            <div className="flex-1 min-w-0">
-                                              <div className="flex items-center justify-between gap-2 mb-2">
-                                                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 bg-emerald-100 rounded-full px-2.5 py-0.5">✨ AI Recommended</p>
-                                                <span className="text-xs font-bold text-emerald-700 bg-emerald-50 rounded-full px-3 py-1 whitespace-nowrap">{product.price} ETB</span>
-                                              </div>
-                                              <h4 className="text-sm font-bold text-slate-900 leading-snug line-clamp-2">{product.title}</h4>
-                                              {productObj.category && <p className="text-[11px] text-slate-500 mt-1">{productObj.category}</p>}
-                                            </div>
-                                          </div>
-                                          <div className="flex gap-2 mt-3">
-                                            <button
-                                              type="button"
-                                              onClick={() => handleAddToCartFromSearch(product.id)}
-                                              className="flex-1 rounded-full bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:shadow-md transition-all"
-                                            >
-                                              🛒 Add to Cart
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => handleViewProductFromChat(message.product_id || product.id)}
-                                              className="flex-1 rounded-full border-2 border-sky-300 bg-sky-50 hover:bg-sky-100 px-3 py-2.5 text-xs font-semibold text-sky-700 transition-all"
-                                            >
-                                              👁️ View
-                                            </button>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {/* Typing Indicator */}
-                        {isTyping && (
-                          <div className="flex justify-start">
-                            <div className="rounded-3xl bg-gradient-to-br from-white to-slate-50 border border-slate-200 px-5 py-4 text-sm text-slate-600 shadow-md">
-                              <div className="flex items-center gap-2">
-                                <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500" />
-                                <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500 [animation-delay:150ms]" />
-                                <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-sky-500 [animation-delay:300ms]" />
-                                <span className="ml-2 text-slate-500 font-medium">🤖 Thinking…</span>
-                              </div>
+                    <div className="flex-1 overflow-y-auto bg-slate-50 p-3">
+                      <div ref={aiScrollRef} className="space-y-3">
+                        {chatHistory.length === 0 && !isTyping ? (
+                          <div className="flex h-full min-h-[320px] items-center justify-center">
+                            <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-6 text-center text-slate-500 shadow-sm">
+                              <p className="text-sm font-medium text-slate-600">Ask about textbooks, gadgets, or campus deals.</p>
                             </div>
                           </div>
+                        ) : (
+                          <>
+                            {chatHistory.map((message, index) => {
+                              const productMatches = message.role === 'assistant' ? parseInlineProductCards(message.text) : [];
+                              const renderedText = productMatches.length ? message.text.replace(/\[PRODUCT:[^\]]+\]/g, '') : message.text;
+
+                              return (
+                                <div key={`${message.role}-${index}`} className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
+                                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-6 shadow-sm ${message.role === 'assistant' ? 'border border-slate-200 bg-white text-slate-800' : 'bg-blue-600 text-white'}`}>
+                                    {renderedText && <div className="whitespace-pre-wrap font-medium">{renderedText}</div>}
+                                    {productMatches.length > 0 && (
+                                      <div className="mt-2 space-y-2">
+                                        {productMatches.map((product, pIdx) => (
+                                          <div key={`${product.id}-${pIdx}`} className="rounded-xl border border-emerald-200 bg-emerald-50 p-2 text-slate-800">
+                                            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">AI pick</p>
+                                            <p className="mt-1 text-xs font-bold">{product.title}</p>
+                                            <p className="mt-1 text-[10px] font-semibold text-emerald-700">{product.price} ETB</p>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {isTyping && (
+                              <div className="flex justify-start">
+                                <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="h-2 w-2 animate-pulse rounded-full bg-sky-500" />
+                                    <span className="h-2 w-2 animate-pulse rounded-full bg-sky-500 [animation-delay:150ms]" />
+                                    <span className="h-2 w-2 animate-pulse rounded-full bg-sky-500 [animation-delay:300ms]" />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
                       </div>
+                    </div>
 
-                      {/* Input Box */}
-                      <div className="mt-4 flex items-center gap-3 rounded-full border border-slate-200 bg-gradient-to-r from-white to-slate-50 px-5 py-4 shadow-md focus-within:shadow-lg focus-within:border-emerald-300 transition-all">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
+                    <div className="border-t border-slate-200 bg-white p-3">
+                      <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 focus-within:border-sky-300 focus-within:bg-white">
                         <input
                           type="text"
                           value={aiInput}
                           onChange={(e) => setAiInput(e.target.value)}
-                          placeholder="Ask about study resources, exam prep, project materials…"
+                          placeholder="Ask the advisor..."
                           className="flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
@@ -3756,61 +3629,38 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           }}
                         />
                         {isTyping ? (
-                          <button type="button" onClick={handleStopAiGeneration} className="inline-flex items-center justify-center rounded-full bg-red-500 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-red-600">Stop</button>
+                          <button
+                            type="button"
+                            onClick={handleStopAiGeneration}
+                            className="rounded-full bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600"
+                          >
+                            Stop
+                          </button>
                         ) : (
-                          <button type="button" onClick={() => handleAiSend()} disabled={!aiInput.trim()} className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-6 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="mr-1.5 h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 L4.13399899,1.16027068 C3.50612381,-0.1 2.40999899,0.0570974055 1.77946707,0.4870386 C0.994623095,1.11 0.8376543,2.20 1.15159189,3.1 L3.03521743,9.5 C3.03521743,9.68012422 3.34915502,9.83721169 3.50612381,9.83721169 L16.6915026,10.6227347 C16.6915026,10.6227347 17.1624089,10.6227347 17.1624089,11.0526759 C17.1624089,11.4860699 16.6915026,11.4860699 16.6915026,12.4744748 Z" /></svg>
+                          <button
+                            type="button"
+                            onClick={() => handleAiSend()}
+                            disabled={!aiInput.trim()}
+                            className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
                             Send
                           </button>
                         )}
                       </div>
                     </div>
                   </div>
-                </div>
-
-                {/* Recommended for You Widget */}
-                {recommendedProducts.length > 0 && (
-                  <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h4 className="text-lg font-bold text-slate-950">📚 Recommended for You</h4>
-                        <p className="text-xs text-slate-500 mt-1">Based on your {user?.department || 'department'}</p>
-                      </div>
-                      <span className="text-xs font-bold uppercase tracking-[0.1em] text-sky-600 bg-sky-100 rounded-full px-3 py-1.5">
-                        {recommendedProducts.length} Items
-                      </span>
-                    </div>
-                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                      {recommendedProducts.slice(0, 4).map((item) => (
-                        <div key={item.id} className="group rounded-[20px] border border-slate-200 bg-gradient-to-br from-sky-50 to-white p-4 hover:shadow-lg transition-all">
-                          <div className="relative mb-3 h-32 w-full overflow-hidden rounded-[14px] bg-slate-100 border border-slate-200">
-                            {item.image ? (
-                              <img src={item.image} alt={item.title} className="h-full w-full object-cover group-hover:scale-110 transition-transform" />
-                            ) : (
-                              <div className="flex h-full items-center justify-center">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                </svg>
-                              </div>
-                            )}
-                          </div>
-                          <h5 className="text-sm font-bold text-slate-900 line-clamp-2 mb-2">{item.title}</h5>
-                          <div className="flex items-center justify-between mb-3">
-                            <span className="text-lg font-bold text-emerald-600">{item.price} ETB</span>
-                            {item.category && <span className="text-[10px] font-bold uppercase text-slate-500 bg-slate-100 rounded-full px-2 py-0.5">{item.category}</span>}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleAddToCartFromSearch(item.id)}
-                            className="w-full rounded-full bg-emerald-500 hover:bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition-all shadow-sm hover:shadow-md"
-                          >
-                            🛒 Add to Cart
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => setIsAiAdvisorOpen((prev) => !prev)}
+                  className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-green-600 text-white shadow-xl transition hover:bg-green-700"
+                  aria-label="Toggle AI Advisor"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h8M8 14h5m-7 5h10a3 3 0 003-3V7a3 3 0 00-3-3H6a3 3 0 00-3 3v9a3 3 0 003 3z" />
+                  </svg>
+                </button>
               </div>
             )}
 
