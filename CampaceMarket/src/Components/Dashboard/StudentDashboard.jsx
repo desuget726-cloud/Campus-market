@@ -137,6 +137,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [conversationsList, setConversationsList] = useState(initialConversations);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
+  const messagesEndRef = useRef(null);
   const [replyToMessage, setReplyToMessage] = useState(null);
   const [typingInput, setTypingInput] = useState('');
   const [peerIsTyping, setPeerIsTyping] = useState(false);
@@ -370,6 +371,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const walletHasSufficientFunds = currentWalletBalance >= checkoutTotal;
 
   const transactionLedger = Array.isArray(paymentInfo?.transactions) ? paymentInfo.transactions : [];
+  const depositAmountValue = Number(depositAmount);
+  const isValidDepositAmount = depositAmount !== '' && depositAmount !== null && Number.isFinite(depositAmountValue) && depositAmountValue > 0;
 
   const getTransactionSummaryText = (tx) => {
     if (!tx) return 'No transactions yet';
@@ -1199,6 +1202,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
+    if (amount > 1000000) {
+      setDepositError('Amount cannot exceed 1,000,000 ETB.');
+      return;
+    }
+
     if (!user?.studentId) {
       setDepositError('Student ID is missing. Please log in again.');
       return;
@@ -1687,7 +1695,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         console.error('Error fetching conversations:', error);
         setConversationsList([]);
         setActiveConversationId('');
-        setActiveChatMessages([]);
       } finally {
         setConversationsLoaded(true);
       }
@@ -1710,6 +1717,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!selectedConversation || !selectedConversation.studentId) return;
 
     const fetchChatHistory = async () => {
+      setActiveChatMessages([]);
       try {
         const res = await fetch(`http://127.0.0.1:8000/api/student/messages/chat-history?sender_id=${user.studentId}&receiver_id=${selectedConversation.studentId}`);
         if (res.ok) {
@@ -1738,6 +1746,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     fetchChatHistory();
   }, [activeConversationId, user?.studentId, conversationsList, conversationsLoaded]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [activeChatMessages]);
 
   const handleDeleteMessage = async (messageId) => {
     if (!window.confirm('Are you sure you want to delete this message?')) return;
@@ -2077,7 +2089,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setTypingInput('');
     setShowChatDropdown(false);
     setMobileChatView('list');
-    setActiveChatMessages([]);
     setActiveConversationId('');
   };
 
@@ -2167,7 +2178,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const remainingConversations = conversationsList.filter((conversation) => conversation.id !== activeConversation.id);
         setConversationsList(remainingConversations);
         setActiveConversationId(remainingConversations[0]?.id || '');
-        setActiveChatMessages([]);
         setMobileChatView('list');
       }
     }
@@ -3066,7 +3076,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                           <div className={`mt-2 h-1.5 w-full rounded-full ${isActive ? 'bg-emerald-500' : 'bg-slate-200'}`} />
                                         )}
                                         {isCurrent && (
-                                          <span className="mt-2 inline-flex rounded-full bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700">Current</span>
+                                          <span className="mt-2 flex justify-center">
+                                            <span className="inline-flex rounded-full bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700">Current</span>
+                                          </span>
                                         )}
                                       </div>
                                     );
@@ -3157,30 +3169,36 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-700">{transactionLedger.length} records</span>
                           </div>
                           <div className="max-h-80 space-y-3 overflow-y-auto pr-2">
-                            {transactionLedger.map((tx) => {
-                              const amount = Number(tx.amount ?? tx.value ?? 0);
-                              const isDeposit = amount >= 0;
+                            {transactionLedger.length === 0 ? (
+                              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                                No transaction records found. Your wallet loads and product purchases will appear here.
+                              </div>
+                            ) : (
+                              transactionLedger.map((tx) => {
+                                const amount = Number(tx.amount ?? tx.value ?? 0);
+                                const isDeposit = amount >= 0;
 
-                              return (
-                                <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <p className="text-sm font-semibold text-slate-900">{tx.label || tx.type || 'Transaction'}</p>
-                                      <p className="mt-1 text-xs text-slate-500">{tx.date || '2026-08-13'} • {tx.status || 'Successful'}</p>
+                                return (
+                                  <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <p className="text-sm font-semibold text-slate-900">{tx.label || tx.type || 'Transaction'}</p>
+                                        <p className="mt-1 text-xs text-slate-500">{tx.date || '2026-08-13'} • {tx.status || 'Successful'}</p>
+                                      </div>
+                                      <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase text-emerald-700">
+                                        {tx.status || 'Successful'}
+                                      </span>
                                     </div>
-                                    <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase text-emerald-700">
-                                      {tx.status || 'Successful'}
-                                    </span>
+                                    <div className="mt-3 flex items-center justify-between">
+                                      <span className={`text-lg font-black ${isDeposit ? 'text-emerald-600' : 'text-slate-900'}`}>
+                                        {isDeposit ? '+' : '-'}{formatETB(Math.abs(amount))}
+                                      </span>
+                                      <span className="text-[11px] font-medium text-slate-500">Hash: {tx.hash || 'N/A'}</span>
+                                    </div>
                                   </div>
-                                  <div className="mt-3 flex items-center justify-between">
-                                    <span className={`text-lg font-black ${isDeposit ? 'text-emerald-600' : 'text-slate-900'}`}>
-                                      {isDeposit ? '+' : '-'}{formatETB(Math.abs(amount))}
-                                    </span>
-                                    <span className="text-[11px] font-medium text-slate-500">Hash: {tx.hash || 'N/A'}</span>
-                                  </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })
+                            )}
                           </div>
                         </div>
                       </div>
@@ -3204,8 +3222,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           {depositError && <p className="text-sm text-red-600">{depositError}</p>}
                           <button
                             type="submit"
-                            disabled={depositLoading}
-                            className="w-full rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-emerald-300"
+                            disabled={depositLoading || !isValidDepositAmount}
+                            className="w-full rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-emerald-300"
                           >
                             {depositLoading ? 'Redirecting to Chapa…' : 'Deposit via Chapa'}
                           </button>
@@ -3707,7 +3725,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               type="button"
                               onClick={() => {
                                 setActiveConversationId(conversation.id);
-                                setActiveChatMessages([]);
                                 setMobileChatView('chat');
                               }}
                               className={`relative flex w-full items-center gap-3 rounded-[24px] border px-3 py-3 text-left transition ${isActive ? 'border-sky-200 bg-sky-50 shadow-sm' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-100'}`}
@@ -3866,6 +3883,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           </div>
                         );
                       })}
+                      <div ref={messagesEndRef} />
 
                       {activeConversation?.product && (
                         <div className="order-first mb-5 rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
@@ -4031,7 +4049,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           type="button"
                           onClick={() => {
                             setActiveConversationId(conversation.id);
-                            setActiveChatMessages([]);
+                            setMobileChatView('chat');
                             setShowAddChatModal(false);
                           }}
                           className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 p-3 text-left transition hover:border-sky-200 hover:bg-sky-50"

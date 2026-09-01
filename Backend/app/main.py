@@ -41,7 +41,7 @@ import base64
 import secrets
 from decimal import Decimal
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -56,7 +56,7 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory
+    AdminSession, AdminLoginHistory, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 
@@ -415,6 +415,10 @@ def _compute_chapa_signature(secret: str, payload: dict) -> str:
         f"{payload.get('amount', '')}:{payload.get('currency', '')}"
     )
     return hmac.new(secret.encode('utf-8'), raw.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
+def _compute_chapa_body_signature(secret: str, body: bytes) -> str:
+    return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
 # Read Gmail SMTP credentials from Backend/.env or the process environment.
@@ -956,6 +960,57 @@ def _get_setting_value(db: Session, block: str, key: str, default=None):
     return default
 
 
+def determine_report_priority(issue_text: str) -> str:
+    normalized_issue = str(issue_text or "").lower()
+    high_risk_keywords = [
+        "scam", "cheat", "stole", "fraud", "stolen", "hack", "abusive",
+        "explicit", "harass", "fake", "illegal", "money", "chapa", "deposit",
+        "failed", "locked",
+    ]
+    mid_risk_keywords = [
+        "damaged", "broken", "wrong item", "differ", "condition", "refund",
+        "edit", "seller", "buyer",
+    ]
+    general_support_keywords = [
+        "how", "question", "help", "suggest", "typo", "incorrect", "spelling",
+        "info", "guidance",
+    ]
+
+    if any(keyword in normalized_issue for keyword in high_risk_keywords):
+        return "High"
+    if any(keyword in normalized_issue for keyword in mid_risk_keywords):
+        return "Medium"
+    if any(keyword in normalized_issue for keyword in general_support_keywords):
+        return "Low"
+    return "Low"
+
+
+def get_payment_settings(db: Session) -> dict:
+    """Return the payment settings with every schema field populated."""
+    stored_record = db.query(SystemSetting).filter(SystemSetting.key == "payment").first()
+    stored = _parse_setting_value(stored_record.value) if stored_record else {}
+    payment = {key: value for key, value in PAYMENT_SETTINGS_SCHEMA.items() if key != "security"}
+    if isinstance(stored, dict):
+        payment.update({key: stored[key] for key in payment if key in stored})
+        stored_security = stored.get("security")
+    else:
+        stored_security = None
+    for key in ("enableOnlinePayment", "refundsEnabled"):
+        payment[key] = _setting_bool(payment[key], PAYMENT_SETTINGS_SCHEMA[key])
+    security_defaults = PAYMENT_SETTINGS_SCHEMA["security"]
+    payment["security"] = {
+        key: _setting_bool(stored_security.get(key), default)
+        if isinstance(stored_security, dict) and key in stored_security
+        else default
+        for key, default in security_defaults.items()
+    }
+    return payment
+
+
+def _payment_security_enabled(db: Session, key: str) -> bool:
+    return bool(get_payment_settings(db)["security"].get(key, False))
+
+
 @dataclass(frozen=True)
 class SecuritySettings:
     require_student_verification: bool
@@ -1013,7 +1068,7 @@ def _login_identifier(value: str) -> str:
 
 def _check_login_lock(db: Session, identifier: str, settings: SecuritySettings) -> None:
     attempt = db.query(LoginAttempt).filter(LoginAttempt.identifier == identifier).first()
-    if attempt and attempt.locked_until and attempt.locked_until > datetime.utcnow():
+    if attempt and attempt.locked_until and attempt.locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later or wait for 15 sec.")
 
 
@@ -1024,7 +1079,7 @@ def _record_failed_login(db: Session, identifier: str, settings: SecuritySetting
         db.add(attempt)
     attempt.failed_attempts += 1
     if attempt.failed_attempts >= settings.max_login_attempts:
-        attempt.locked_until = datetime.utcnow() + timedelta(minutes=15)
+        attempt.locked_until = datetime.now(timezone.utc) + timedelta(minutes=15)
     db.commit()
 
 
@@ -1040,7 +1095,7 @@ def _create_session_token(subject: str, role: str, timeout_minutes: int, secret:
     payload = {
         "sub": subject,
         "role": role,
-        "exp": int((datetime.utcnow() + timedelta(minutes=timeout_minutes)).timestamp()),
+        "exp": int((datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)).timestamp()),
     }
 
     def encode(value):
@@ -1254,6 +1309,10 @@ def ensure_database_compatibility(db: Session) -> None:
         if report_category.fetchone() is None:
             db.execute(text("ALTER TABLE reports ADD COLUMN category VARCHAR(100) NULL"))
 
+        report_priority = db.execute(text("SHOW COLUMNS FROM reports LIKE 'priority'"))
+        if report_priority.fetchone() is None:
+            db.execute(text("ALTER TABLE reports ADD COLUMN priority VARCHAR(20) NOT NULL DEFAULT 'Low'"))
+
         report_columns = db.execute(text("SHOW COLUMNS FROM reports LIKE 'student_id'"))
         report_student_column = report_columns.fetchone()
         if report_student_column is not None and str(report_student_column[2]).upper() == "NO":
@@ -1397,7 +1456,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         (Admin.username == data.id_or_email) | (Admin.email == data.id_or_email)
     ).first()
 
-    if admin and admin.locked_until and admin.locked_until > datetime.utcnow():
+    if admin and admin.locked_until and admin.locked_until > datetime.now(timezone.utc):
         _record_admin_login_event(db, admin.id, "login_locked", request)
         db.commit()
         raise HTTPException(status_code=429, detail="Administrator account is temporarily locked. Try again later.")
@@ -1415,7 +1474,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             db.add(PasswordReset(
                 email=admin.email,
                 otp_code=otp,
-                expires_at=datetime.utcnow() + timedelta(minutes=10),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
                 is_used=False,
             ))
             db.commit()
@@ -1466,7 +1525,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             db.add(PasswordReset(
                 email=student.email,
                 otp_code=otp,
-                expires_at=datetime.utcnow() + timedelta(minutes=10),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
                 is_used=False,
             ))
             db.commit()
@@ -1481,7 +1540,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     if admin:
         admin.failed_login_attempts = int(admin.failed_login_attempts or 0) + 1
         if admin.failed_login_attempts >= 5:
-            admin.locked_until = datetime.utcnow() + timedelta(minutes=15)
+            admin.locked_until = datetime.now(timezone.utc) + timedelta(minutes=15)
             _record_admin_login_event(db, admin.id, "login_failed_locked", request)
             try:
                 send_otp_email(admin.email, "Admin account locked after 5 failed login attempts")
@@ -1510,7 +1569,7 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
             PasswordReset.email.ilike(student.email),
             PasswordReset.otp_code == otp,
             PasswordReset.is_used.is_(False),
-            PasswordReset.expires_at >= datetime.utcnow(),
+            PasswordReset.expires_at >= datetime.now(timezone.utc),
         )
         .order_by(PasswordReset.id.desc())
         .first()
@@ -1546,7 +1605,7 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
             PasswordReset.email.ilike(admin.email),
             PasswordReset.otp_code == request.otp_code.strip(),
             PasswordReset.is_used == False,
-            PasswordReset.expires_at >= datetime.utcnow(),
+            PasswordReset.expires_at >= datetime.now(timezone.utc),
         )
         .order_by(PasswordReset.id.desc())
         .first()
@@ -1569,7 +1628,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=404, detail="Email not found.")
 
     otp = f"{random.randint(100000, 999999)}"
-    expires = datetime.utcnow() + timedelta(minutes=15)
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
 
     reset_entry = PasswordReset(
         email=email,
@@ -1608,7 +1667,7 @@ def verify_reset_code(request: VerifyResetCodeRequest, db: Session = Depends(get
             PasswordReset.email.ilike(email),
             PasswordReset.otp_code == otp,
             PasswordReset.is_used == False,
-            PasswordReset.expires_at >= datetime.utcnow(),
+            PasswordReset.expires_at >= datetime.now(timezone.utc),
         )
         .order_by(PasswordReset.id.desc())
         .first()
@@ -1638,7 +1697,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
             PasswordReset.email.ilike(email),
             PasswordReset.otp_code == otp,
             PasswordReset.is_used == False,
-            PasswordReset.expires_at >= datetime.utcnow()
+            PasswordReset.expires_at >= datetime.now(timezone.utc)
         )
         .order_by(PasswordReset.id.desc())
         .first()
@@ -1689,7 +1748,7 @@ def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_
         "phone": admin.phone or "",
         "role": admin.role,
         "status": admin.status,
-        "last_login": admin.last_login.isoformat() if admin.last_login else datetime.utcnow().isoformat(),
+        "last_login": admin.last_login.isoformat() if admin.last_login else datetime.now(timezone.utc).isoformat(),
         "total_actions": total_actions,
         "avatarUrl": avatar_url,
         "session_ip": "192.168.10.24",
@@ -1747,7 +1806,7 @@ def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Sess
             AdminSession.admin_id == admin.id,
             AdminSession.is_active.is_(True),
             AdminSession.session_token != current_token,
-        ).update({"is_active": False, "last_active": datetime.utcnow()}, synchronize_session=False)
+        ).update({"is_active": False, "last_active": datetime.now(timezone.utc)}, synchronize_session=False)
     db.commit()
     db.refresh(admin)
 
@@ -1803,7 +1862,7 @@ def _decode_admin_jwt(session_token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid JWT signature.")
     if not payload.get("sub") or payload.get("role") != "admin":
         raise HTTPException(status_code=401, detail="JWT does not identify an administrator.")
-    if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.utcnow().timestamp():
+    if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
         raise HTTPException(status_code=401, detail="JWT token has expired.")
     return payload
 
@@ -1832,7 +1891,7 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
     ).digest()
     if header.get("alg") != "HS256" or header.get("typ") != "JWT" or not hmac.compare_digest(provided_signature, expected_signature):
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
-    if payload.get("role") != "student" or not payload.get("sub") or not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.utcnow().timestamp():
+    if payload.get("role") != "student" or not payload.get("sub") or not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
         raise HTTPException(status_code=401, detail="Invalid or expired student session.")
 
     student = db.query(Student).filter(Student.student_id == payload["sub"]).first()
@@ -1856,7 +1915,7 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
         raise HTTPException(status_code=404, detail="Admin profile not found.")
     if admin.username != claims["sub"]:
         raise HTTPException(status_code=401, detail="JWT subject does not match the admin session.")
-    session.last_active = datetime.utcnow()
+    session.last_active = datetime.now(timezone.utc)
     return admin, session
 
 
@@ -1887,7 +1946,7 @@ def logout_other_admin_sessions(payload: AdminSessionRequest, request: Request, 
         AdminSession.admin_id == admin.id,
         AdminSession.is_active.is_(True),
         AdminSession.id != current_session.id,
-    ).update({"is_active": False, "last_active": datetime.utcnow()}, synchronize_session=False)
+    ).update({"is_active": False, "last_active": datetime.now(timezone.utc)}, synchronize_session=False)
     _record_admin_login_event(db, admin.id, "sessions_terminated", request)
     db.add(AuditLog(admin_id=admin.id, action="Admin Sessions Terminated", entity_type="Admin", entity_id=admin.id, description=f"Terminated {invalidated} other active admin sessions.", status="SUCCESS", ip_address=request.client.host if request.client else None))
     db.commit()
@@ -1991,10 +2050,11 @@ def get_admin_settings(db: Session = Depends(get_db)):
         parsed = _parse_setting_value(item.value)
         if isinstance(parsed, dict):
             response[item.key].update(parsed)
-            public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
-            secret_key = os.getenv("CHAPA_SECRET_KEY", "")
-            response["payment"]["publicKey"] = f"{public_key[:8]}••••••" if public_key else "Not configured"
-            response["payment"]["secretKey"] = "••••••••••••" if secret_key else "Not configured"
+    response["payment"] = get_payment_settings(db)
+    public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
+    secret_key = os.getenv("CHAPA_SECRET_KEY", "")
+    response["payment"]["publicKey"] = f"{public_key[:8]}••••••" if public_key else "Not configured"
+    response["payment"]["secretKey"] = "••••••••••••" if secret_key else "Not configured"
     return response
 
 
@@ -2014,6 +2074,9 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
             normalized[block].update(values)
 
         payment_values = normalized["payment"]
+        submitted_payment = payload.get("payment", {})
+        if isinstance(submitted_payment, dict) and isinstance(submitted_payment.get("security"), dict):
+            payment_values["security"].update(submitted_payment["security"])
         payment_values["paymentProvider"] = "Chapa"
         payment_values["currency"] = "ETB"
         payment_values["paymentVerification"] = "Automatic"
@@ -2024,7 +2087,11 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         if not isinstance(payment_values.get("enableOnlinePayment"), bool) or not isinstance(payment_values.get("refundsEnabled"), bool):
             raise HTTPException(status_code=400, detail="Payment toggles must be boolean values.")
         security_values = payment_values.get("security")
-        if not isinstance(security_values, dict) or any(not isinstance(value, bool) for value in security_values.values()):
+        if (
+            not isinstance(security_values, dict)
+            or set(security_values) != set(PAYMENT_SETTINGS_SCHEMA["security"])
+            or any(not isinstance(value, bool) for value in security_values.values())
+        ):
             raise HTTPException(status_code=400, detail="Payment security rules must be boolean values.")
         payment_values.pop("publicKey", None)
         payment_values.pop("secretKey", None)
@@ -2049,8 +2116,11 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         audit_current.get("payment", {}).pop("secretKey", None)
         changes = _settings_change_details(audit_current, normalized)
         audit_logging_enabled = _setting_bool(
-            audit_current.get("security", {}).get("auditLogging"),
-            DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
+            audit_current.get("payment", {}).get("security", {}).get("auditLogging"),
+            PAYMENT_SETTINGS_SCHEMA["security"]["auditLogging"],
+        ) or _setting_bool(
+            normalized.get("payment", {}).get("security", {}).get("auditLogging"),
+            PAYMENT_SETTINGS_SCHEMA["security"]["auditLogging"],
         )
         if admin and changes and audit_logging_enabled:
             db.add(AuditLog(
@@ -2089,9 +2159,20 @@ def update_setting_patch(id: int, data: SettingUpdate):
 
 @app.post("/api/admin/payments/test-connection")
 def test_chapa_connection(db: Session = Depends(get_db)):
-    public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
-    secret_key = os.getenv("CHAPA_SECRET_KEY", "")
-    connected = bool(public_key and secret_key)
+    secret_key = os.getenv("CHAPA_SECRET_KEY", "").strip()
+    connected = False
+    detail = "Chapa secret key is not configured."
+    if secret_key:
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(
+                    "https://api.chapa.co/v1/banks",
+                    headers={"Authorization": f"Bearer {secret_key}"},
+                )
+            connected = response.status_code == 200
+            detail = "Connected" if connected else f"Chapa rejected the connection (HTTP {response.status_code})."
+        except httpx.HTTPError as exc:
+            detail = f"Unable to reach Chapa: {exc}"
     admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
     if admin:
         db.add(AuditLog(
@@ -2099,13 +2180,13 @@ def test_chapa_connection(db: Session = Depends(get_db)):
             action="Payment Connection Tested",
             entity_type="Payment Configuration",
             entity_id=1,
-            description=f"Admin {admin.username} tested Chapa connection; result={'connected' if connected else 'not configured'}.",
+            description=f"Admin {admin.username} tested Chapa connection; result={detail}.",
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
         db.commit()
 
-    return {"success": connected, "provider": "Chapa", "status": "Connected" if connected else "Not configured"}
+    return {"success": connected, "provider": "Chapa", "status": "Connected" if connected else "Not connected", "detail": detail}
 
 
 @app.get("/api/admin/settings/{id}")
@@ -2834,11 +2915,11 @@ def create_product(
         require_approval = _setting_bool(
             _get_setting_value(
                 db,
-                "moderation",
-                "requireAdminApproval",
-                DEFAULT_SETTINGS_BLOCKS["moderation"]["requireAdminApproval"],
+                "marketplace",
+                "requireApproval",
+                DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
             ),
-            DEFAULT_SETTINGS_BLOCKS["moderation"]["requireAdminApproval"],
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
         )
 
         normalized_student_id = str(student_id).strip() if student_id else ""
@@ -2943,6 +3024,18 @@ def create_product(
 @app.put("/api/student/products/{product_id}")
 def update_student_product(product_id: int, payload: StudentProductUpdate, db: Session = Depends(get_db)):
     """Update a seller's own product details or marketplace status."""
+    allow_editing = _setting_bool(
+        _get_setting_value(
+            db,
+            "marketplace",
+            "allowEditing",
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["allowEditing"],
+        ),
+        DEFAULT_SETTINGS_BLOCKS["marketplace"]["allowEditing"],
+    )
+    if not allow_editing:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Product editing is currently disabled.")
+
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
@@ -3720,6 +3813,7 @@ def create_report(
                 shutil.copyfileobj(evidence_image.file, buffer)
             evidence_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
 
+        normalized_issue = issue.strip()
         db_report = Report(
             product_id=product.id if product else None,
             student_id=student.student_id if student else None,
@@ -3727,8 +3821,9 @@ def create_report(
             student_name=student_name.strip(),
             email=email.strip() if email else None,
             category=category.strip() if category else None,
-            issue=issue.strip(),
+            issue=normalized_issue,
             evidence_image=evidence_url,
+            priority=determine_report_priority(normalized_issue),
             status="Open"
         )
         db.add(db_report)
@@ -3777,6 +3872,7 @@ def create_report(
                 "category": db_report.category,
                 "issue": db_report.issue,
                 "evidence_image": db_report.evidence_image,
+                "priority": db_report.priority,
                 "status": db_report.status,
                 "created_at": db_report.created_at.isoformat() if db_report.created_at else None,
             },
@@ -3841,6 +3937,43 @@ def get_student_highlights(student_id: str, db: Session = Depends(get_db)):
     }
 
 
+def _collaborative_product_scores(student: Student, db: Session) -> Dict[int, float]:
+    purchased_product_ids = {
+        order.product_id
+        for order in db.query(Order).filter(Order.student_id == student.student_id).all()
+        if order.product_id
+    }
+    if not purchased_product_ids:
+        return {}
+
+    peer_ids = {
+        order.student_id
+        for order in db.query(Order).filter(Order.product_id.in_(purchased_product_ids)).all()
+        if order.student_id and order.student_id != student.student_id
+    }
+    if not peer_ids:
+        return {}
+
+    interacted_product_ids = purchased_product_ids | {
+        item.product_id
+        for item in db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
+        if item.product_id
+    }
+    scores: Dict[int, float] = {}
+    for order in db.query(Order).filter(Order.student_id.in_(peer_ids)).all():
+        if order.product_id and order.product_id not in interacted_product_ids:
+            scores[order.product_id] = scores.get(order.product_id, 0.0) + 2.0
+    for item in db.query(WishlistItem).filter(WishlistItem.student_id.in_(peer_ids)).all():
+        if item.product_id and item.product_id not in interacted_product_ids:
+            scores[item.product_id] = scores.get(item.product_id, 0.0) + 1.0
+
+    maximum_score = max(scores.values(), default=0.0)
+    return {
+        product_id: score / maximum_score
+        for product_id, score in scores.items()
+    } if maximum_score else {}
+
+
 @app.get("/api/student/recommendations")
 def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
@@ -3877,14 +4010,28 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     if num_recommendations == 0:
         return []
 
+    recommendation_engine = str(_get_setting_value(
+        db,
+        "ai",
+        "recommendationEngine",
+        DEFAULT_SETTINGS_BLOCKS["ai"]["recommendationEngine"],
+    )).strip()
+    supported_engines = {
+        "Content-Based Filtering (TF-IDF)",
+        "Collaborative Filtering",
+        "Hybrid Recommendation",
+    }
+    if recommendation_engine not in supported_engines:
+        recommendation_engine = DEFAULT_SETTINGS_BLOCKS["ai"]["recommendationEngine"]
+
     approved_products = db.query(Product).filter(Product.status.ilike('%approved%')).all()
     if not approved_products:
         return []
 
-    profile_text = _student_interest_text(student, db)
-    product_texts = []
-    for product in approved_products:
-        product_texts.append(
+    content_scores: Dict[int, float] = {}
+    if recommendation_engine in {"Content-Based Filtering (TF-IDF)", "Hybrid Recommendation"}:
+        profile_text = _student_interest_text(student, db)
+        product_texts = [
             " ".join([
                 product.title or '',
                 product.category or '',
@@ -3892,19 +4039,30 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
                 product.description or '',
                 product.seller or '',
             ])
-        )
+            for product in approved_products
+        ]
+        vectors, _ = _build_tfidf_vectors([profile_text] + product_texts)
+        if vectors:
+            profile_vector = vectors[0]
+            for idx, product in enumerate(approved_products, start=1):
+                content_scores[product.id] = _cosine_similarity(profile_vector, vectors[idx]) if idx < len(vectors) else 0.0
 
-    corpus = [profile_text] + product_texts
-    vectors, _ = _build_tfidf_vectors(corpus)
+    collaborative_scores = (
+        _collaborative_product_scores(student, db)
+        if recommendation_engine in {"Collaborative Filtering", "Hybrid Recommendation"}
+        else {}
+    )
     scored_products = []
-    if vectors:
-        profile_vector = vectors[0]
-        for idx, product in enumerate(approved_products, start=1):
-            similarity = _cosine_similarity(profile_vector, vectors[idx]) if idx < len(vectors) else 0.0
-            scored_products.append({
-                "product": product,
-                "score": similarity,
-            })
+    for product in approved_products:
+        content_score = content_scores.get(product.id, 0.0)
+        collaborative_score = collaborative_scores.get(product.id, 0.0)
+        if recommendation_engine == "Collaborative Filtering":
+            score = collaborative_score
+        elif recommendation_engine == "Hybrid Recommendation":
+            score = (content_score * 0.6) + (collaborative_score * 0.4)
+        else:
+            score = content_score
+        scored_products.append({"product": product, "score": score})
 
     scored_products.sort(key=lambda item: item["score"], reverse=True)
     best_matches = []
@@ -5078,8 +5236,13 @@ def get_student_orders(student_id: str, db: Session = Depends(get_db)):
             o.created_at,
             COALESCE(o.pickup_location, '') AS pickup_location,
             COALESCE(o.payment_status, 'Successful') AS payment_status,
-            COALESCE(o.reviewed, FALSE) AS reviewed
+            COALESCE(o.reviewed, FALSE) AS reviewed,
+            p.seller AS seller_id,
+            s.name AS seller_name,
+            p.title AS product_title
         FROM orders o
+        LEFT JOIN products p ON p.id = o.product_id
+        LEFT JOIN students s ON BINARY s.student_id = BINARY p.seller OR BINARY s.name = BINARY p.seller
         WHERE o.student_id = :student_id
         ORDER BY o.created_at DESC
     """), {"student_id": student_id}).mappings().all()
@@ -5089,13 +5252,13 @@ def get_student_orders(student_id: str, db: Session = Depends(get_db)):
         product = db.query(Product).filter(Product.id == row["product_id"]).first()
         pickup_location = (row["pickup_location"] or "").strip() or _resolve_pickup_location(db, product)
         payment_status = _normalize_payment_status(row["payment_status"] or "Successful")
-        seller_name = product.seller if product and product.seller else "Campus Seller"
+        seller_name = row["seller_name"] or row["seller_id"] or "Campus Seller"
 
         result.append({
             "id": row["id"],
             "student_id": row["student_id"],
             "product_id": row["product_id"],
-            "title": row["title"] or (product.title if product else "Campus Purchase"),
+            "title": row["title"] or row["product_title"] or "Campus Purchase",
             "status": _normalize_order_status(row["status"] or "Processing"),
             "fulfillment_status": _normalize_order_status(row["status"] or "Processing"),
             "price": row["price"],
@@ -5231,6 +5394,10 @@ def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
 @app.post("/api/payment/initialize")
 async def initialize_payment(request: DepositRequest, db: Session = Depends(get_db)):
     """Initialize a payment / deposit gateway session for student wallet."""
+    payment_settings = get_payment_settings(db)
+    if not payment_settings["enableOnlinePayment"]:
+        raise HTTPException(status_code=503, detail="Online payment is currently disabled.")
+
     student = db.query(Student).filter(Student.student_id == request.student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
@@ -5238,35 +5405,43 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
     amount = float(request.amount)
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than 0.")
+    if amount > 1000000.0:
+        raise HTTPException(status_code=400, detail="The deposit amount must not exceed 1,000,000 ETB.")
 
     amount_value = Decimal(str(amount))
-    duplicate_cutoff = datetime.now() - timedelta(seconds=30)
-    existing_transaction = (
-        db.query(Transaction)
-        .filter(
-            Transaction.student_id == student.student_id,
-            Transaction.type == "Wallet Deposit",
-            Transaction.status == "Pending",
-            Transaction.amount == amount_value,
-            Transaction.created_at >= duplicate_cutoff,
+    duplicate_cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
+    if payment_settings["security"]["duplicateTransactionProtection"]:
+        existing_transaction = (
+            db.query(Transaction)
+            .filter(
+                Transaction.student_id == student.student_id,
+                Transaction.type == "Wallet Deposit",
+                Transaction.status == "Pending",
+                Transaction.amount == amount_value,
+                Transaction.created_at >= duplicate_cutoff,
+            )
+            .order_by(Transaction.created_at.desc())
+            .first()
         )
-        .order_by(Transaction.created_at.desc())
-        .first()
-    )
-    if existing_transaction:
-        return {
-            "status": "success",
-            "message": "A matching wallet deposit is already being processed.",
-            "checkout_url": None,
-            "tx_ref": existing_transaction.tx_id,
-            "transaction_id": existing_transaction.id,
-        }
+        if existing_transaction:
+            return {
+                "status": "success",
+                "message": "A matching wallet deposit is already being processed.",
+                "checkout_url": None,
+                "tx_ref": existing_transaction.tx_id,
+                "transaction_id": existing_transaction.id,
+            }
     
     tx_ref = f"TX-{uuid.uuid4().hex[:8].upper()}"
 
     secret = os.getenv("CHAPA_SECRET_KEY")
     if not secret:
         raise HTTPException(status_code=503, detail="Chapa payment is not configured.")
+
+    marketplace_name = str(
+        _get_setting_value(db, "general", "marketplaceName", DEFAULT_SETTINGS_BLOCKS["general"]["marketplaceName"]) or DEFAULT_SETTINGS_BLOCKS["general"]["marketplaceName"]
+    ).strip()
+    cleaned_marketplace_name = marketplace_name[:16]
 
     name_parts = (student.name or "Student").strip().split(maxsplit=1)
     chapa_payload = {
@@ -5278,7 +5453,7 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         "tx_ref": tx_ref,
         "callback_url": os.getenv("CHAPA_CALLBACK_URL", "http://127.0.0.1:8000/api/admin/payments/webhook"),
         "return_url": os.getenv("CHAPA_RETURN_URL", "http://localhost:5173/"),
-        "customization": {"title": "Campus Market Wallet Deposit"},
+        "customization": {"title": cleaned_marketplace_name},
     }
 
     try:
@@ -5298,26 +5473,27 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         detail = response_payload.get("message", "Chapa did not return a checkout URL.") if isinstance(response_payload, dict) else "Invalid Chapa response."
         raise HTTPException(status_code=502, detail=f"Unable to initialize payment with Chapa: {detail}")
 
-    existing_transaction = (
-        db.query(Transaction)
-        .filter(
-            Transaction.student_id == student.student_id,
-            Transaction.type == "Wallet Deposit",
-            Transaction.status == "Pending",
-            Transaction.amount == amount_value,
-            Transaction.created_at >= duplicate_cutoff,
+    if payment_settings["security"]["duplicateTransactionProtection"]:
+        existing_transaction = (
+            db.query(Transaction)
+            .filter(
+                Transaction.student_id == student.student_id,
+                Transaction.type == "Wallet Deposit",
+                Transaction.status == "Pending",
+                Transaction.amount == amount_value,
+                Transaction.created_at >= duplicate_cutoff,
+            )
+            .order_by(Transaction.created_at.desc())
+            .first()
         )
-        .order_by(Transaction.created_at.desc())
-        .first()
-    )
-    if existing_transaction:
-        return {
-            "status": "success",
-            "message": "A matching wallet deposit is already being processed.",
-            "checkout_url": None,
-            "tx_ref": existing_transaction.tx_id,
-            "transaction_id": existing_transaction.id,
-        }
+        if existing_transaction:
+            return {
+                "status": "success",
+                "message": "A matching wallet deposit is already being processed.",
+                "checkout_url": None,
+                "tx_ref": existing_transaction.tx_id,
+                "transaction_id": existing_transaction.id,
+            }
 
     transaction = Transaction(
         student_id=student.student_id,
@@ -5547,7 +5723,7 @@ def get_admin_ai_analytics(db: Session = Depends(get_db)):
 
 @app.get("/api/admin/payments/gateway-status")
 def get_payment_gateway_status():
-    checked_at = datetime.utcnow().isoformat()
+    checked_at = datetime.now(timezone.utc).isoformat()
     secret_key = os.getenv("CHAPA_SECRET_KEY", "").strip()
     gateway = "Disconnected"
     if secret_key:
@@ -7198,21 +7374,36 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
 
 @app.post("/api/payment/webhook")
 @app.post("/api/admin/payments/webhook")
-def simulate_chapa_webhook(
+async def simulate_chapa_webhook(
     payload: dict,
+    request: Request,
     db: Session = Depends(get_db),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Webhook payload must be a JSON object.")
 
-    secret = os.getenv("CHAPA_WEBHOOK_SECRET") or os.getenv("CHAPA_SECRET_KEY", "campace_dev_secret")
-    callback_signature = authorization or payload.get("signature") or payload.get("x_chapa_signature")
-    if callback_signature:
-        expected = _compute_chapa_signature(secret, payload)
+    automatic_verification = _payment_security_enabled(db, "automaticVerification")
+    secret = os.getenv("CHAPA_WEBHOOK_SECRET", "").strip()
+    callback_signature = (
+        request.headers.get("x-chapa-signature")
+        or authorization
+        or payload.get("signature")
+        or payload.get("x_chapa_signature")
+    )
+    if automatic_verification:
+        if not secret:
+            raise HTTPException(status_code=503, detail="Webhook verification is not configured.")
+        if not callback_signature:
+            raise HTTPException(status_code=401, detail="Missing transaction signature.")
         if callback_signature.lower().startswith("bearer "):
-            callback_signature = callback_signature.split(" ", 1)[1]
-        if callback_signature != expected and callback_signature.lower() != expected.lower():
+            callback_signature = callback_signature.split(" ", 1)[1].strip()
+        raw_body_signature = _compute_chapa_body_signature(secret, await request.body())
+        canonical_signature = _compute_chapa_signature(secret, payload)
+        if not (
+            hmac.compare_digest(callback_signature.lower(), raw_body_signature.lower())
+            or hmac.compare_digest(callback_signature.lower(), canonical_signature.lower())
+        ):
             raise HTTPException(status_code=401, detail="Invalid transaction signature.")
 
     status_value = str(payload.get("status") or payload.get("state") or "pending").strip().lower()

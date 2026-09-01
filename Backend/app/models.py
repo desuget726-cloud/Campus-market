@@ -4,6 +4,24 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
 
+# Payment settings are stored as the JSON value of the ``payment`` system
+# setting. Keep the persisted shape explicit so API updates can normalize it.
+PAYMENT_SETTINGS_SCHEMA = {
+    "paymentProvider": "Chapa",
+    "currency": "ETB",
+    "paymentVerification": "Automatic",
+    "enableOnlinePayment": True,
+    "refundsEnabled": True,
+    "refundPolicy": "Admin approval required",
+    "maximumRefund": "100%",
+    "security": {
+        "automaticVerification": True,
+        "duplicateTransactionProtection": True,
+        "adminApprovalForRefunds": True,
+        "auditLogging": True,
+    },
+}
+
 class Student(Base):
     __tablename__ = "students"
 
@@ -259,6 +277,7 @@ class Report(Base):
     category = Column(String(100), nullable=True)
     issue = Column(String(1000), nullable=False)
     evidence_image = Column(String(255), nullable=True)
+    priority = Column(String(20), nullable=False, default="Low")
     status = Column(String(50), nullable=False, default="Open")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

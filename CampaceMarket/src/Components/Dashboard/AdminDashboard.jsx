@@ -237,8 +237,7 @@ const adminTabs = [
   { id: 'analytics', label: 'Analytics', icon: 'M5 19h14M9 15v-4M15 15V9' },
   { id: 'notifications', label: 'Notifications', icon: 'M18 13v-3a6 6 0 10-12 0v3l-2 2v1h16v-1l-2-2z M13.73 21a2 2 0 01-3.46 0' },
   { id: 'audit-logs', label: 'Audit Logs', icon: 'M6 4h12v4H6z M6 12h12v4H6z M10 20h4' },
-  { id: 'settings', label: 'Settings', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8z M4.93 4.93l2.12 2.12 M17.95 17.95l2.12 2.12 M4.93 19.07l2.12-2.12 M17.95 6.05l2.12-2.12' },
-  { id: 'logout', label: 'Logout', icon: 'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1' }
+  { id: 'settings', label: 'Settings', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8z M4.93 4.93l2.12 2.12 M17.95 17.95l2.12 2.12 M4.93 19.07l2.12-2.12 M17.95 6.05l2.12-2.12' }
 ];
 
 function AdminSecurityProfile({ user }) {
@@ -287,7 +286,7 @@ function AdminSecurityProfile({ user }) {
 
 function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(initialTab);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -1627,6 +1626,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
     setActiveTab(tabId);
     onTabChange?.(tabId);
+    setIsSidebarOpen(false);
   };
 
   const handleAddStudentSubmit = async (event) => {
@@ -6051,7 +6051,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       type="text"
                       value={announcementForm.title}
                       onChange={(e) => setAnnouncementForm({ ...announcementForm, title: e.target.value })}
-                      placeholder="Final exam schedule update"
+                      placeholder="User message schedule update"
                       className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-violet-500 focus:outline-none"
                     />
                   </div>
@@ -6843,14 +6843,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pt-20 lg:pt-8">
-      <div className="flex min-h-screen flex-col gap-2 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4">
+    <div className="min-h-screen bg-slate-50 text-slate-900 pt-[88px] lg:pt-[80px]">
+      <div className="flex min-h-screen flex-col gap-3 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4 lg:py-0">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
-        <aside className={`
-          fixed left-0 top-10 bottom-0 z-40 w-72 flex flex-col overflow-hidden bg-[#111c3a] p-4 text-white shadow-xl transition-all duration-300 ease-in-out sm:p-6
-          lg:static lg:translate-x-0 lg:h-full lg:overflow-visible lg:shrink-0 lg:shadow-none lg:inset-auto lg:left-auto lg:inset-y-auto
-          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:w-72 lg:ml-0'}
-        `}>
+        <aside className="hidden lg:flex lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
           <div className="mb-8 flex items-center justify-between">
             <div>
               <div className="rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
@@ -6905,8 +6901,44 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </nav>
         </aside>
 
+        <aside className={`fixed left-0 top-20 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+          <div className="mb-8 flex items-center justify-between">
+            <div className="rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
+              Admin Console
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsSidebarOpen(false)}
+              className="rounded-lg p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
+              aria-label="Close admin navigation"
+            >
+              ✕
+            </button>
+          </div>
+          <nav className="flex max-h-[calc(100vh-120px)] flex-col overflow-y-auto pr-1 scrollbar-thin scrollbar-track-slate-900/20 scrollbar-thumb-slate-600/60">
+            {adminTabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => handleTabClick(tab.id)}
+                  className={`mb-2 flex w-full items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
+                    ? 'bg-[#1d4ed8] text-white shadow-md'
+                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                    }`}
+                >
+                  <span>{tab.label}</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isActive ? 'text-white' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
+                  </svg>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
         {isSidebarOpen && (
-          <div onClick={() => setIsSidebarOpen(false)} className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
+          <div onClick={() => setIsSidebarOpen(false)} className="fixed top-20 bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
         )}
 
         {/* Main Panel Content Area */}
@@ -6914,14 +6946,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           <div className="mb-4 flex flex-col gap-4 rounded-[24px] border border-slate-200/40 bg-white p-4 text-slate-950 shadow-sm sm:mb-6 sm:rounded-[32px] sm:p-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-4">
-                {!isSidebarOpen && (
-                  <button onClick={() => setIsSidebarOpen(true)} className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 lg:flex cursor-pointer" aria-label="Open admin navigation">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4v16" />
-                    </svg>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                  className="block rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 lg:hidden"
+                  aria-label="Open admin navigation"
+                >
+                  ☰
+                </button>
                 <div>
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500 sm:text-sm sm:tracking-[0.24em]">Administrator</p>
                   <h2 className="mt-2 text-2xl font-bold sm:text-3xl">Campus Marketplace Admin</h2>
