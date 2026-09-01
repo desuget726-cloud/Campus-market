@@ -210,6 +210,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [depositAmount, setDepositAmount] = useState('');
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawBankCode, setWithdrawBankCode] = useState('telebirr');
+  const [withdrawAccountNumber, setWithdrawAccountNumber] = useState('');
+  const [withdrawError, setWithdrawError] = useState('');
+  const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [highlights, setHighlights] = useState({ aiPicks: 0, latestListings: 0, cartValue: 0.00, pendingMessages: 0 });
   const [recommendedProducts, setRecommendedProducts] = useState([]);
   const [recentCampusActivity, setRecentCampusActivity] = useState([]);
@@ -1250,6 +1256,65 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setDepositError(err.message || 'Could not start the payment flow.');
     } finally {
       setDepositLoading(false);
+    }
+  };
+
+  const handleWithdrawSubmit = async (e) => {
+    e.preventDefault();
+    setWithdrawError('');
+    const amount = Number(withdrawAmount);
+
+    if (!amount || amount <= 0) {
+      setWithdrawError('Please enter a valid withdrawal amount.');
+      return;
+    }
+
+    if (amount > Number(currentWalletBalance || 0)) {
+      setWithdrawError('Withdrawal amount cannot exceed your current wallet balance.');
+      return;
+    }
+
+    if (!withdrawBankCode || !withdrawAccountNumber.trim()) {
+      setWithdrawError('Please select a bank and enter your account number.');
+      return;
+    }
+
+    if (!user?.studentId) {
+      setWithdrawError('Student ID is missing. Please log in again.');
+      return;
+    }
+
+    setWithdrawLoading(true);
+    try {
+      const payload = {
+        student_id: user.studentId,
+        amount,
+        bank_code: withdrawBankCode,
+        account_number: withdrawAccountNumber.trim(),
+      };
+
+      const res = await fetch('http://127.0.0.1:8000/api/student/wallet/withdraw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || 'Withdrawal request failed.');
+      }
+
+      setShowWithdrawModal(false);
+      setWithdrawAmount('');
+      setWithdrawAccountNumber('');
+      setWithdrawBankCode('telebirr');
+      await fetchWalletBalance();
+      setPaymentInfo((prev) => ({ ...prev, recentTx: data.message || 'Withdrawal request processed.' }));
+    } catch (err) {
+      console.error('Withdrawal failed:', err);
+      setWithdrawError(err.message || 'Could not process the withdrawal.');
+    } finally {
+      setWithdrawLoading(false);
     }
   };
 
@@ -3204,31 +3269,45 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       </div>
 
                       <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                        <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Deposit via Chapa</h3>
-                        <p className="text-sm text-slate-500">Top up your wallet securely through Chapa checkout.</p>
-                        <form onSubmit={handleDepositSubmit} className="mt-5 space-y-4">
-                          <div>
-                            <label className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
-                            <input
-                              type="number"
-                              min="1"
-                              step="0.01"
-                              value={depositAmount}
-                              onChange={(e) => setDepositAmount(e.target.value)}
-                              placeholder="Enter amount to deposit"
-                              className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition"
-                            />
-                          </div>
-                          {depositError && <p className="text-sm text-red-600">{depositError}</p>}
+                        <div className="mb-4 flex items-center justify-between gap-3">
+                          <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-0 flex-1">Wallet Actions</h3>
                           <button
-                            type="submit"
-                            disabled={depositLoading || !isValidDepositAmount}
-                            className="w-full rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                            type="button"
+                            onClick={() => setShowWithdrawModal(true)}
+                            className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                           >
-                            {depositLoading ? 'Redirecting to Chapa…' : 'Deposit via Chapa'}
+                            Withdraw Funds
                           </button>
-                          <p className="text-xs text-slate-500">Your wallet is protected by a secure, student-friendly payment flow.</p>
-                        </form>
+                        </div>
+
+                        <div className="space-y-5">
+                          <div>
+                            <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Deposit via Chapa</h3>
+                            <p className="text-sm text-slate-500">Top up your wallet securely through Chapa checkout.</p>
+                            <form onSubmit={handleDepositSubmit} className="mt-5 space-y-4">
+                              <div>
+                                <label className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  step="0.01"
+                                  value={depositAmount}
+                                  onChange={(e) => setDepositAmount(e.target.value)}
+                                  placeholder="Enter amount to deposit"
+                                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition"
+                                />
+                              </div>
+                              {depositError && <p className="text-sm text-red-600">{depositError}</p>}
+                              <button
+                                type="submit"
+                                disabled={depositLoading || !isValidDepositAmount}
+                                className="w-full rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                              >
+                                {depositLoading ? 'Redirecting to Chapa…' : 'Deposit via Chapa'}
+                              </button>
+                            </form>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
