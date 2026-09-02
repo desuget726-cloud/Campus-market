@@ -29,7 +29,6 @@ import httpx
 from openai import OpenAI
 from duckduckgo_search import DDGS
 import uuid
-import random
 import json
 import traceback
 import hashlib
@@ -56,7 +55,7 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, Wallet, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 
@@ -217,7 +216,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     if plain_password is None or hashed_password is None:
         return False
 
-    if isinstance(plain_password, str) and plain_password == hashed_password:
+    if isinstance(plain_password, str) and secrets.compare_digest(plain_password, hashed_password):
         return True
 
     try:
@@ -228,6 +227,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
     except Exception:
         return False
+
+
+def _generate_otp_code() -> str:
+    """Generate a cryptographically secure six-digit one-time password."""
+    return f"{secrets.randbelow(900000) + 100000:06d}"
 
 
 def _validate_student_id(db: Session, raw_student_id: Optional[str], *, field_name: str = "student_id") -> str:
@@ -439,9 +443,33 @@ def _compute_chapa_body_signature(secret: str, body: bytes) -> str:
     return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
+def _get_or_create_wallet_for_student(db: Session, student: Student) -> Wallet:
+    wallet = (
+        db.query(Wallet)
+        .filter(Wallet.student_id == student.student_id)
+        .with_for_update()
+        .first()
+    )
+    if wallet is None:
+        wallet = Wallet(
+            student_id=student.student_id,
+            balance=Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01")),
+        )
+        db.add(wallet)
+        db.flush()
+
+    if getattr(student, "wallet", None) is None:
+        student.wallet = wallet
+
+    if student.wallet_balance is None:
+        student.wallet_balance = wallet.balance
+
+    return wallet
+
+
 # Read Gmail SMTP credentials from Backend/.env or the process environment.
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "desu5392@gmail.com")
-SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "yzekmnucvxcbnzni")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "").strip()
 
 # Configure a simple file logger for email/SMTP errors
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -1131,6 +1159,13 @@ def _create_session_token(subject: str, role: str, timeout_minutes: int, secret:
     return f"{unsigned_token}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
+def _get_session_secret() -> str:
+    secret = os.getenv("SESSION_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Session secret is not configured.")
+    return secret
+
+
 def _record_admin_login_event(db: Session, admin_id: Optional[int], event_type: str, request: Request) -> None:
     db.add(AdminLoginHistory(
         admin_id=admin_id,
@@ -1270,17 +1305,18 @@ def ensure_database_compatibility(db: Session) -> None:
         if admin_column.fetchone() is None:
             db.execute(text("ALTER TABLE admins ADD COLUMN two_factor_enabled BOOLEAN NOT NULL DEFAULT TRUE"))
 
-        for column_name, definition in {
-            "full_name": "VARCHAR(150) NULL",
-            "phone": "VARCHAR(30) NULL",
-            "failed_login_attempts": "INT NOT NULL DEFAULT 0",
-            "locked_until": "DATETIME NULL",
-            "two_factor_secret": "VARCHAR(64) NULL",
-            "backup_codes": "TEXT NULL",
-        }.items():
-            column = db.execute(text(f"SHOW COLUMNS FROM admins LIKE '{column_name}'"))
+        admin_add_statements = {
+            "full_name": "ALTER TABLE admins ADD COLUMN full_name VARCHAR(150) NULL",
+            "phone": "ALTER TABLE admins ADD COLUMN phone VARCHAR(30) NULL",
+            "failed_login_attempts": "ALTER TABLE admins ADD COLUMN failed_login_attempts INT NOT NULL DEFAULT 0",
+            "locked_until": "ALTER TABLE admins ADD COLUMN locked_until DATETIME NULL",
+            "two_factor_secret": "ALTER TABLE admins ADD COLUMN two_factor_secret VARCHAR(64) NULL",
+            "backup_codes": "ALTER TABLE admins ADD COLUMN backup_codes TEXT NULL",
+        }
+        for column_name, statement in admin_add_statements.items():
+            column = db.execute(text("SHOW COLUMNS FROM admins LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
-                db.execute(text(f"ALTER TABLE admins ADD COLUMN {column_name} {definition}"))
+                db.execute(text(statement))
 
         for table_name, definition in {
             "admin_sessions": """CREATE TABLE IF NOT EXISTS admin_sessions (
@@ -1297,23 +1333,25 @@ def ensure_database_compatibility(db: Session) -> None:
         }.items():
             db.execute(text(definition))
 
-        for column_name, definition in {
-            "pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
-            "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'Successful'",
-            "reviewed": "BOOLEAN NOT NULL DEFAULT FALSE",
-        }.items():
-            column = db.execute(text(f"SHOW COLUMNS FROM orders LIKE '{column_name}'"))
+        order_add_statements = {
+            "pickup_location": "ALTER TABLE orders ADD COLUMN pickup_location VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
+            "payment_status": "ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) NOT NULL DEFAULT 'Successful'",
+            "reviewed": "ALTER TABLE orders ADD COLUMN reviewed BOOLEAN NOT NULL DEFAULT FALSE",
+        }
+        for column_name, statement in order_add_statements.items():
+            column = db.execute(text("SHOW COLUMNS FROM orders LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
-                db.execute(text(f"ALTER TABLE orders ADD COLUMN {column_name} {definition}"))
+                db.execute(text(statement))
 
-        for column_name, definition in {
-            "attachment_url": "VARCHAR(500) NULL",
-            "attachment_type": "VARCHAR(20) NULL",
-            "reply_to_id": "INT NULL",
-        }.items():
-            column = db.execute(text(f"SHOW COLUMNS FROM messages LIKE '{column_name}'"))
+        message_add_statements = {
+            "attachment_url": "ALTER TABLE messages ADD COLUMN attachment_url VARCHAR(500) NULL",
+            "attachment_type": "ALTER TABLE messages ADD COLUMN attachment_type VARCHAR(20) NULL",
+            "reply_to_id": "ALTER TABLE messages ADD COLUMN reply_to_id INT NULL",
+        }
+        for column_name, statement in message_add_statements.items():
+            column = db.execute(text("SHOW COLUMNS FROM messages LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
-                db.execute(text(f"ALTER TABLE messages ADD COLUMN {column_name} {definition}"))
+                db.execute(text(statement))
 
         notification_target = db.execute(text("SHOW COLUMNS FROM notifications LIKE 'target'"))
         if notification_target.fetchone() is None:
@@ -1354,8 +1392,11 @@ def ensure_database_compatibility(db: Session) -> None:
         report_foreign_keys = inspect(db.bind).get_foreign_keys("reports")
         for foreign_key in report_foreign_keys:
             if foreign_key.get("constrained_columns") == ["student_id"] and foreign_key.get("name"):
-                constraint_name = foreign_key["name"].replace("`", "``")
-                db.execute(text(f"ALTER TABLE reports DROP FOREIGN KEY `{constraint_name}`"))
+                constraint_name = foreign_key["name"].replace("`", "")
+                if constraint_name == "fk_reports_student_id":
+                    db.execute(text("ALTER TABLE reports DROP FOREIGN KEY `fk_reports_student_id`"))
+                elif constraint_name == "fk_reports_student_id_1":
+                    db.execute(text("ALTER TABLE reports DROP FOREIGN KEY `fk_reports_student_id_1`"))
         db.execute(text(
             "ALTER TABLE reports ADD CONSTRAINT `fk_reports_student_id` "
             "FOREIGN KEY (student_id) REFERENCES students (student_id) ON DELETE CASCADE"
@@ -1364,7 +1405,7 @@ def ensure_database_compatibility(db: Session) -> None:
         db.commit()
     except Exception:
         db.rollback()
-        traceback.print_exc()
+        logging.getLogger("app.startup").exception("Database compatibility check failed.")
 
 
 @app.on_event("startup")
@@ -1390,7 +1431,7 @@ def on_startup():
         finally:
             db.close()
     except Exception:
-        traceback.print_exc()
+        logging.getLogger("app.startup").exception("Startup database initialization failed.")
 
 
 # ==========================================
@@ -1455,10 +1496,19 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
         password=hashed_password,
         college=student_data.college,
         department=student_data.department,
+        wallet_balance=Decimal("0.00"),
         is_verified=auto_approve_students,
         status="Pending Verification" if security.require_student_verification else "Active",
     )
     db.add(db_student)
+    db.flush()
+
+    wallet = Wallet(
+        student_id=db_student.student_id,
+        balance=Decimal("0.00"),
+    )
+    db.add(wallet)
+    db_student.wallet = wallet
     db.commit()
     db.refresh(db_student)
 
@@ -1495,7 +1545,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
         if security.admin_2fa:
-            otp = f"{random.randint(100000, 999999)}"
+            otp = _generate_otp_code()
             db.add(PasswordReset(
                 email=admin.email,
                 otp_code=otp,
@@ -1513,8 +1563,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "message": "A verification code was sent to the administrator email.",
                 "dev_mode": not email_sent,
             }
-        session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
-        token = _create_session_token(admin.username, "admin", security.session_timeout, session_secret)
+        token = _create_session_token(admin.username, "admin", security.session_timeout, _get_session_secret())
         _create_admin_session(db, admin, token, request)
         _record_admin_login_event(db, admin.id, "login_success", request)
         db.commit()
@@ -1546,7 +1595,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
         if student.two_factor_enabled:
-            otp = f"{secrets.randbelow(900000) + 100000}"
+            otp = f"{secrets.randbelow(900000) + 100000:06d}"
             db.add(PasswordReset(
                 email=student.email,
                 otp_code=otp,
@@ -1558,8 +1607,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             if not email_sent:
                 logging.getLogger("app.auth").warning("Student login OTP email could not be sent.")
             return {"status": "otp_required", "email": student.email, "dev_mode": not email_sent}
-        session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
-        token = _create_session_token(student.student_id, "student", security.session_timeout, session_secret)
+        token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
         return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified), "two_factor_enabled": bool(student.two_factor_enabled)}}
 
     if admin:
@@ -1603,7 +1651,7 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
 
     otp_record.is_used = True
-    token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), os.getenv("SESSION_SECRET", "campace-session-secret"))
+    token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), _get_session_secret())
     db.commit()
     return {
         "role": "student",
@@ -1638,7 +1686,7 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
     if not otp_record:
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     otp_record.is_used = True
-    token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), os.getenv("SESSION_SECRET", "campace-session-secret"))
+    token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
     _create_admin_session(db, admin, token, http_request)
     _record_admin_login_event(db, admin.id, "login_success_2fa", http_request)
     db.commit()
@@ -1652,7 +1700,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     if not student:
         raise HTTPException(status_code=404, detail="Email not found.")
 
-    otp = f"{random.randint(100000, 999999)}"
+    otp = _generate_otp_code()
     expires = datetime.now(timezone.utc) + timedelta(minutes=15)
 
     reset_entry = PasswordReset(
@@ -1665,7 +1713,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
     try:
         email_sent = send_otp_email(email, otp)
         if not email_sent:
-            print(f"[DEV BYPASS] SMTP Connection failed! Captured OTP for {email}: {otp}", flush=True)
+            logging.getLogger("app.auth").debug("SMTP Connection failed. Development mode activated.")
         db.commit()
     except HTTPException:
         raise
@@ -1673,9 +1721,9 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create password reset request.")
     return {
-        "message": "Verification code has been sent to your email." if email_sent else "SMTP unavailable. Use the captured development OTP in the server console.",
-        "success": True,
-        "dev_mode": not email_sent,
+            "message": "Verification code has been sent to your email." if email_sent else "Email service is currently unavailable. Please try again later.",
+            "success": True,
+            "dev_mode": False,
     }
 
 
@@ -1805,7 +1853,7 @@ def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Sess
             raise HTTPException(status_code=400, detail="Current password is required to update the password.")
         if not verify_password(current_password, admin.password_hash):
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
-        if new_password != payload.confirm_password:
+        if not secrets.compare_digest(new_password, payload.confirm_password):
             raise HTTPException(status_code=400, detail="New password and confirm password do not match.")
         _validate_admin_password(new_password)
         admin.password_hash = hash_password(new_password)
@@ -1877,9 +1925,12 @@ def _decode_admin_jwt(session_token: str) -> dict:
 
     if header.get("alg") != "HS256" or header.get("typ") != "JWT":
         raise HTTPException(status_code=401, detail="Unsupported JWT token.")
+    session_secret = os.getenv("SESSION_SECRET", "").strip()
+    if not session_secret:
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
     unsigned_token = f"{encoded_header}.{encoded_payload}"
     expected_signature = hmac.new(
-        os.getenv("SESSION_SECRET", "campace-session-secret").encode(),
+        session_secret.encode(),
         unsigned_token.encode(),
         hashlib.sha256,
     ).digest()
@@ -1908,9 +1959,12 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
     except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
 
+    session_secret = os.getenv("SESSION_SECRET", "").strip()
+    if not session_secret:
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
     unsigned_token = f"{encoded_header}.{encoded_payload}"
     expected_signature = hmac.new(
-        os.getenv("SESSION_SECRET", "campace-session-secret").encode(),
+        session_secret.encode(),
         unsigned_token.encode(),
         hashlib.sha256,
     ).digest()
@@ -1929,10 +1983,14 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
     if not session_token:
         raise HTTPException(status_code=401, detail="An admin session token is required.")
     claims = _decode_admin_jwt(session_token)
-    session = db.query(AdminSession).filter(
-        AdminSession.session_token == session_token,
+    sessions = db.query(AdminSession).filter(
         AdminSession.is_active.is_(True),
-    ).first()
+    ).all()
+    session = None
+    for s in sessions:
+        if secrets.compare_digest(s.session_token, session_token):
+            session = s
+            break
     if not session:
         raise HTTPException(status_code=401, detail="Invalid or inactive admin session.")
     admin = db.query(Admin).filter(Admin.id == session.admin_id).first()
@@ -2004,7 +2062,7 @@ def setup_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db:
     _record_admin_login_event(db, admin.id, "2fa_enabled", request)
     db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Enabled", entity_type="Admin", entity_id=admin.id, description="Authenticator setup enabled.", status="SUCCESS", ip_address=request.client.host if request.client else None))
     db.commit()
-    return {"enabled": True, "secret": secret}
+    return {"enabled": True, "message": "Two-factor authentication setup is enabled."}
 
 
 @app.post("/api/admin/2fa/backup-codes")
@@ -2056,8 +2114,9 @@ async def upload_admin_avatar(
             buffer.write(contents)
             buffer.flush()
             os.fsync(buffer.fileno())
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save avatar file: {str(exc)}")
+    except Exception:
+        logging.getLogger("app.avatar").exception("Failed to save admin avatar file.")
+        raise HTTPException(status_code=500, detail="Failed to save avatar file.")
     finally:
         await image.close()
 
@@ -2373,24 +2432,24 @@ def get_admin_audit_logs(
             })
 
         return {"items": results, "total": total, "limit": limit, "offset": offset}
-    except (OperationalError, SQLAlchemyError) as exc:
-        traceback.print_exc()
+    except (OperationalError, SQLAlchemyError):
+        logging.getLogger("app.audit").exception("Failed to load audit logs.")
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Failed to load audit logs",
-                "detail": str(exc),
+                "detail": "An internal error occurred while loading audit logs.",
                 "table": "audit_logs",
                 "expected_columns": ["admin_id", "action", "description", "status", "ip_address", "created_at"],
             },
         )
-    except Exception as exc:
-        traceback.print_exc()
+    except Exception:
+        logging.getLogger("app.audit").exception("Unexpected error while loading audit logs.")
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Unexpected error while loading audit logs",
-                "detail": str(exc),
+                "detail": "An unexpected internal error occurred.",
             },
         )
 
@@ -2427,8 +2486,9 @@ async def upload_student_avatar(
             buffer.write(contents)
             buffer.flush()
             os.fsync(buffer.fileno())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save avatar file: {str(e)}")
+    except Exception:
+        logging.getLogger("app.avatar").exception("Failed to save student avatar file.")
+        raise HTTPException(status_code=500, detail="Failed to save avatar file.")
     finally:
         await image.close()
 
@@ -2496,7 +2556,7 @@ def update_student_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
-    if payload.new_password != payload.confirm_password:
+    if not secrets.compare_digest(payload.new_password, payload.confirm_password):
         raise HTTPException(status_code=400, detail="New password and confirmation do not match.")
 
     student.password = hash_password(payload.new_password)
@@ -4329,7 +4389,7 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Student not found.")
 
     try:
-        query_text = text("""
+        results = db.execute(text("""
             SELECT DISTINCT
                 CASE 
                     WHEN m.sender_id = :student_id THEN m.receiver_id
@@ -4357,9 +4417,7 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
             )
             WHERE m.sender_id = :student_id OR m.receiver_id = :student_id
             ORDER BY last_timestamp DESC
-        """)
-        
-        results = db.execute(query_text, {"student_id": student_id}).fetchall()
+        """), {"student_id": student_id}).fetchall()
         
         conversations = []
         for row in results:
@@ -5250,7 +5308,7 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
 def get_student_orders(student_id: str, db: Session = Depends(get_db)):
     _validate_student_id(db, student_id, field_name="student_id")
 
-    rows = db.execute(text("""
+    orders_query = text("""
         SELECT
             o.id,
             o.student_id,
@@ -5270,7 +5328,8 @@ def get_student_orders(student_id: str, db: Session = Depends(get_db)):
         LEFT JOIN students s ON BINARY s.student_id = BINARY p.seller OR BINARY s.name = BINARY p.seller
         WHERE o.student_id = :student_id
         ORDER BY o.created_at DESC
-    """), {"student_id": student_id}).mappings().all()
+    """)
+    rows = db.execute(orders_query, {"student_id": student_id}).mappings().all()
 
     result = []
     for row in rows:
@@ -5335,7 +5394,10 @@ def submit_student_review(payload: ReviewCreate, db: Session = Depends(get_db)):
             )
             db.add(review_record)
 
-        db.execute(text("UPDATE orders SET reviewed = TRUE, payment_status = 'Successful' WHERE id = :order_id"), {"order_id": payload.order_id})
+        db.execute(
+            text("UPDATE orders SET reviewed = TRUE, payment_status = 'Successful' WHERE id = :order_id"),
+            {"order_id": payload.order_id},
+        )
         db.commit()
         db.refresh(review_record)
 
@@ -5346,9 +5408,10 @@ def submit_student_review(payload: ReviewCreate, db: Session = Depends(get_db)):
             "order_id": payload.order_id,
             "reviewed": True,
         }
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Could not submit review: {str(exc)}") from exc
+        logging.getLogger("app.reviews").exception("Could not submit review.")
+        raise HTTPException(status_code=500, detail="Could not submit review.")
 
 
 @app.get("/api/student/payments")
@@ -5489,8 +5552,9 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
                 json=chapa_payload,
             )
             response_payload = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=f"Unable to initialize payment with Chapa: {exc}")
+    except (httpx.HTTPError, ValueError):
+        logging.getLogger("app.payments").exception("Unable to initialize payment with Chapa.")
+        raise HTTPException(status_code=502, detail="Unable to initialize payment with Chapa.")
 
     response_data = response_payload.get("data") if isinstance(response_payload, dict) else None
     checkout_url = response_data.get("checkout_url") if isinstance(response_data, dict) else None
@@ -5595,12 +5659,13 @@ async def withdraw_student_wallet(request: WalletWithdrawalRequest, db: Session 
                 json=transfer_payload,
             )
             response_payload = response.json() if response.content else {}
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, ValueError):
         student.wallet_balance = current_balance
         withdrawal.status = "Failed"
-        withdrawal.description = f"Withdrawal failed: {exc}. Funds refunded."
+        withdrawal.description = "Withdrawal failed. Funds refunded."
         db.commit()
-        raise HTTPException(status_code=502, detail=f"Unable to process withdrawal with Chapa: {exc}")
+        logging.getLogger("app.payments").exception("Unable to process withdrawal with Chapa.")
+        raise HTTPException(status_code=502, detail="Unable to process withdrawal with Chapa.")
 
     is_success = False
     if isinstance(response_payload, dict):
@@ -7292,22 +7357,22 @@ def get_admin_payments_endpoint(
             })
 
         return results
-    except (OperationalError, SQLAlchemyError) as exc:
-        traceback.print_exc()
+    except (OperationalError, SQLAlchemyError):
+        logging.getLogger("app.payments").exception("Failed to load payment transactions.")
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Failed to load payment transactions",
-                "detail": str(exc),
+                "detail": "An internal error occurred while loading payment transactions.",
             },
         )
-    except Exception as exc:
-        traceback.print_exc()
+    except Exception:
+        logging.getLogger("app.payments").exception("Unexpected error while loading payment transactions.")
         return JSONResponse(
             status_code=500,
             content={
                 "error": "Unexpected error while loading payment transactions",
-                "detail": str(exc),
+                "detail": "An unexpected internal error occurred.",
             },
         )
 
@@ -7326,7 +7391,7 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
     if not transaction:
         raise HTTPException(status_code=404, detail="Payment transaction not found.")
 
-    secret = os.getenv("CHAPA_SECRET_KEY")
+    secret = (os.getenv("CHAPA_SECRET_KEY") or "").strip()
     if not secret:
         raise HTTPException(status_code=503, detail="Chapa verification is not configured.")
 
@@ -7371,13 +7436,30 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/admin/payments/{payment_id}/verify")
-async def verify_admin_payment_with_chapa(payment_id: int, db: Session = Depends(get_db)):
-    transaction = db.query(Transaction).filter(Transaction.id == payment_id).first()
+@app.post("/api/admin/payments/{payment_ref}/verify")
+async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depends(get_db)):
+    tx_ref = str(payment_ref).strip()
+    transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
+    if not transaction:
+        try:
+            payment_id = int(tx_ref)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Payment transaction not found.")
+        transaction = db.query(Transaction).filter(Transaction.id == payment_id).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Payment transaction not found.")
     if _normalize_payment_type(transaction.type) != "Wallet Deposit":
         raise HTTPException(status_code=400, detail="Only wallet deposits can be verified through Chapa.")
+
+    if _normalize_payment_status(transaction.status) == "Successful":
+        return {
+            "success": True,
+            "warning": "Payment already processed; replay blocked.",
+            "transaction_id": transaction.tx_id,
+            "status": transaction.status,
+            "wallet_balance": float((db.query(Student).filter(Student.student_id == transaction.student_id).first() or Student()).wallet_balance or 0),
+            "chapa_reference": transaction.tx_id,
+        }
 
     secret = os.getenv("CHAPA_SECRET_KEY")
     if not secret:
@@ -7410,10 +7492,17 @@ async def verify_admin_payment_with_chapa(payment_id: int, db: Session = Depends
     try:
         transaction = (
             db.query(Transaction)
-            .filter(Transaction.id == payment_id)
+            .filter(Transaction.tx_id == tx_ref)
             .with_for_update()
             .first()
         )
+        if not transaction:
+            transaction = (
+                db.query(Transaction)
+                .filter(Transaction.id == int(tx_ref))
+                .with_for_update()
+                .first()
+            )
         if not transaction:
             raise HTTPException(status_code=404, detail="Payment transaction no longer exists.")
         student = (
@@ -7426,42 +7515,51 @@ async def verify_admin_payment_with_chapa(payment_id: int, db: Session = Depends
             raise HTTPException(status_code=404, detail="Student not found.")
 
         previous_status = _normalize_payment_status(transaction.status)
-        should_credit_balance = previous_status != "Successful"
+        if previous_status == "Successful":
+            return {
+                "success": True,
+                "warning": "Payment already processed; replay blocked.",
+                "transaction_id": transaction.tx_id,
+                "status": transaction.status,
+                "wallet_balance": float(student.wallet_balance or 0),
+                "chapa_reference": transaction.tx_id,
+            }
 
-        if should_credit_balance:
-            student.wallet_balance = Decimal(str(student.wallet_balance or 0)) + Decimal(str(transaction.amount))
-            transaction.status = "Successful"
+        wallet = _get_or_create_wallet_for_student(db, student)
+        wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + Decimal(str(transaction.amount))
+        student.wallet_balance = wallet.balance
+        transaction.status = "Successful"
 
-            _dispatch_student_notification(
-                db,
-                student,
-                "Payment Successful",
-                f"Your wallet deposit of {transaction.amount} ETB was completed successfully.",
-                "payment",
-            )
+        _dispatch_student_notification(
+            db,
+            student,
+            "Payment Successful",
+            f"Your wallet deposit of {transaction.amount} ETB was completed successfully.",
+            "payment",
+        )
 
-            admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
-            db.add(AuditLog(
-                admin_id=admin.id if admin else None,
-                action="Payment Verified",
-                entity_type="Payment",
-                entity_id=transaction.id,
-                description=f"Admin {admin.username if admin else 'system'} verified Chapa payment {transaction.tx_id}; credited {transaction.amount} ETB to student {student.student_id}.",
-                status="SUCCESS",
-                ip_address="127.0.0.1",
-            ))
-        else:
-            transaction.status = "Successful"
+        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Payment Verified",
+            entity_type="Payment",
+            entity_id=transaction.id,
+            description=f"Admin {admin.username if admin else 'system'} verified Chapa payment {transaction.tx_id}; credited {transaction.amount} ETB to student {student.student_id}.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
 
         db.commit()
         db.refresh(transaction)
         db.refresh(student)
+        db.refresh(wallet)
     except HTTPException:
         db.rollback()
         raise
-    except SQLAlchemyError as exc:
+    except SQLAlchemyError:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Unable to settle payment safely: {exc}")
+        logging.getLogger("app.payments").exception("Unable to settle payment safely.")
+        raise HTTPException(status_code=500, detail="Unable to settle payment safely.")
 
     return {
         "success": True,
@@ -7517,12 +7615,12 @@ def get_admin_orders(db: Session = Depends(get_db)):
             }
             results.append(record)
         return results
-    except (OperationalError, SQLAlchemyError) as exc:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": "Failed to load order records", "detail": str(exc)})
-    except Exception as exc:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": "Unexpected error while loading order records", "detail": str(exc)})
+    except (OperationalError, SQLAlchemyError):
+        logging.getLogger("app.orders").exception("Failed to load order records.")
+        return JSONResponse(status_code=500, content={"error": "Failed to load order records", "detail": "An internal error occurred while loading order records."})
+    except Exception:
+        logging.getLogger("app.orders").exception("Unexpected error while loading order records.")
+        return JSONResponse(status_code=500, content={"error": "Unexpected error while loading order records", "detail": "An unexpected internal error occurred."})
 
 
 @app.put("/api/admin/orders/{order_id}")
@@ -7594,12 +7692,10 @@ async def simulate_chapa_webhook(
     is_signature_bypass = (
         authorization_value == "bypass"
         or authorization_value.lower() == "bearer bypass"
-        or not secret
-        or secret == "campace_dev_secret"
     )
 
     if is_signature_bypass:
-        print("[WEBHOOK] Signature bypassed", flush=True)
+        logging.getLogger("app.payments").warning("Webhook signature verification skipped in development mode.")
     elif automatic_verification:
         if not secret:
             raise HTTPException(status_code=503, detail="Webhook verification is not configured.")
@@ -7642,7 +7738,7 @@ async def simulate_chapa_webhook(
         if not settled_student:
             raise HTTPException(status_code=404, detail="Student not found for payment callback.")
         return {
-            "message": "Payment webhook was already processed.",
+            "message": "Payment webhook was already processed; replay blocked.",
             "status": "Successful",
             "transaction_id": transaction.tx_id,
             "student_id": transaction.student_id,
@@ -7674,36 +7770,37 @@ async def simulate_chapa_webhook(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found for payment callback.")
 
-    should_credit_balance = previous_status != "Successful"
-    if should_credit_balance:
-        student.wallet_balance = Decimal(str(student.wallet_balance or 0)) + amount
+    wallet = _get_or_create_wallet_for_student(db, student)
+    wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + amount
+    student.wallet_balance = wallet.balance
 
     transaction.type = "Wallet Deposit"
     transaction.status = "Successful"
     transaction.description = transaction.description or "Chapa webhook settlement captured via payment callback."
 
-    if should_credit_balance:
-        _dispatch_student_notification(
-            db,
-            student,
-            "Payment Successful",
-            f"Your Chapa wallet deposit of {amount} ETB was completed successfully.",
-            "payment",
-        )
+    _dispatch_student_notification(
+        db,
+        student,
+        "Payment Successful",
+        f"Your Chapa wallet deposit of {amount} ETB was completed successfully.",
+        "payment",
+    )
 
-        admin = db.query(Admin).order_by(Admin.id.asc()).first()
-        db.add(AuditLog(
-            admin_id=admin.id if admin else None,
-            action="Payment Webhook Success",
-            entity_type="Payment",
-            entity_id=transaction.id,
-            description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {amount} ETB.",
-            status="SUCCESS",
-            ip_address="127.0.0.1",
-        ))
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+    db.add(AuditLog(
+        admin_id=admin.id if admin else None,
+        action="Payment Webhook Success",
+        entity_type="Payment",
+        entity_id=transaction.id,
+        description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {amount} ETB.",
+        status="SUCCESS",
+        ip_address="127.0.0.1",
+    ))
 
     db.commit()
     db.refresh(transaction)
+    db.refresh(student)
+    db.refresh(wallet)
 
     return {
         "message": "Payment webhook processed successfully.",

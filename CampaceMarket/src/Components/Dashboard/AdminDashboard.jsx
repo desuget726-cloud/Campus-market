@@ -3626,7 +3626,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                         >
                           <option value="">Select college</option>
-                          {Object.keys(UNIVERSITY_STRUCTURE).map((college) => <option key={college} value={college}>{college}</option>)}
+                          {Object.keys(UNIVERSITY_STRUCTURE || {}).map((college) => <option key={college} value={college}>{college}</option>)}
                         </select>
                       </label>
                       <label className="block text-sm font-semibold text-slate-700">
@@ -3639,7 +3639,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <option value="">Select department</option>
-                          {(UNIVERSITY_STRUCTURE[addStudentForm.college] || []).map((department) => <option key={department} value={department}>{department}</option>)}
+                          {((UNIVERSITY_STRUCTURE || {})[addStudentForm.college] || []).map((department) => <option key={department} value={department}>{department}</option>)}
                         </select>
                       </label>
                     </div>

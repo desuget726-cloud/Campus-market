@@ -41,6 +41,7 @@ function SettingsCenter({
     avatarUploading,
     universityStructure,
 }) {
+    const safeUniversityStructure = universityStructure || {};
     const [notificationPrefs, setNotificationPrefs] = useState({
         messagesInApp: true,
         messagesEmail: true,
@@ -205,8 +206,8 @@ function SettingsCenter({
                             <Field label="Student ID"><input value={profileForm.studentId} disabled className={`${inputClass} bg-slate-100 text-slate-500`} /></Field>
                             <Field label="Campus Email"><input type="email" value={profileForm.email} disabled className={`${inputClass} bg-slate-100 text-slate-500`} /></Field>
                             <Field label="Phone Number"><input type="tel" value={profileForm.phone} onChange={(event) => handleProfileFieldChange('phone', event.target.value)} className={inputClass} /></Field>
-                            <Field label="Select College"><select value={profileForm.college} onChange={(event) => handleProfileFieldChange('college', event.target.value)} className={inputClass}><option value="">Select College</option>{Object.keys(universityStructure).map((college) => <option key={college} value={college}>{college}</option>)}</select></Field>
-                            <Field label="Select Department"><select value={profileForm.department} onChange={(event) => handleProfileFieldChange('department', event.target.value)} disabled={!profileForm.college} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}><option value="">Select Department</option>{profileForm.college && universityStructure[profileForm.college]?.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
+                            <Field label="Select College"><select value={profileForm.college} onChange={(event) => handleProfileFieldChange('college', event.target.value)} className={inputClass}><option value="">Select College</option>{Object.keys(safeUniversityStructure).map((college) => <option key={college} value={college}>{college}</option>)}</select></Field>
+                            <Field label="Select Department"><select value={profileForm.department} onChange={(event) => handleProfileFieldChange('department', event.target.value)} disabled={!profileForm.college} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}><option value="">Select Department</option>{profileForm.college && safeUniversityStructure[profileForm.college]?.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
                             <div className="sm:col-span-2">{profileMessage && <p className={`mb-4 text-sm font-semibold ${profileMessage.includes('successfully') ? 'text-emerald-600' : 'text-rose-600'}`}>{profileMessage}</p>}<button type="submit" disabled={profileSaving} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{profileSaving ? 'Saving...' : 'Save Changes'}</button></div>
                         </form>
                     </div>

@@ -1,4 +1,5 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
+from decimal import Decimal
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -33,7 +34,7 @@ class Student(Base):
     password = Column(String(255), nullable=False)
     college = Column(String(150), nullable=False)
     department = Column(String(150), nullable=False)
-    wallet_balance = Column(Numeric(10, 2), default=200.00)
+    wallet_balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
     status = Column(String(50), default="Active", nullable=False)
     restriction_reason = Column(Text, nullable=True)
     is_verified = Column(Boolean, default=False, nullable=False)
@@ -61,6 +62,20 @@ class Student(Base):
     transactions = relationship("Transaction", primaryjoin="Student.student_id == Transaction.student_id", back_populates="student", cascade="all, delete-orphan")
     reviews = relationship("Review", primaryjoin="Student.student_id == Review.student_id", back_populates="student", cascade="all, delete-orphan")
     ai_recommendation_logs = relationship("AIRecommendationLog", back_populates="student", cascade="all, delete-orphan")
+    wallet = relationship("Wallet", uselist=False, back_populates="student", cascade="all, delete-orphan")
+
+
+class Wallet(Base):
+    __tablename__ = "wallets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    student = relationship("Student", back_populates="wallet")
+
 
 class Category(Base):
     __tablename__ = "categories"
