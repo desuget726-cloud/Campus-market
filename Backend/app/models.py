@@ -63,6 +63,22 @@ class Student(Base):
     reviews = relationship("Review", primaryjoin="Student.student_id == Review.student_id", back_populates="student", cascade="all, delete-orphan")
     ai_recommendation_logs = relationship("AIRecommendationLog", back_populates="student", cascade="all, delete-orphan")
     wallet = relationship("Wallet", uselist=False, back_populates="student", cascade="all, delete-orphan")
+    seller_payment_account = relationship("SellerPaymentAccount", uselist=False, back_populates="student", cascade="all, delete-orphan")
+
+
+class SellerPaymentAccount(Base):
+    __tablename__ = "seller_payment_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    chapa_sub_account_id = Column(String(100), nullable=False)
+    business_name = Column(String(150), nullable=False)
+    bank_code = Column(String(50), nullable=False)
+    account_number = Column(String(100), nullable=False)
+    account_name = Column(String(150), nullable=False)
+    account_status = Column(String(30), default="Pending", nullable=False)
+
+    student = relationship("Student", back_populates="seller_payment_account")
 
 
 class Wallet(Base):

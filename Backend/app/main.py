@@ -27,7 +27,10 @@ import shutil
 import logging
 import httpx
 from openai import OpenAI
-from duckduckgo_search import DDGS
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    DDGS = None
 import uuid
 import json
 import traceback
@@ -45,7 +48,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
-import  bcrypt
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from deep_translator import GoogleTranslator
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -55,12 +58,12 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, Wallet, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 
 
-app = FastAPI(title="Campace Backend")
+app = FastAPI(title="Ecomerce Backend")
 
 
 class ChapaWebhookPayload(BaseModel):
@@ -195,6 +198,8 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+payment_scheduler: Optional[AsyncIOScheduler] = None
 
 # Password hashing helper functions using native bcrypt
 def hash_password(password: str) -> str:
@@ -467,6 +472,102 @@ def _get_or_create_wallet_for_student(db: Session, student: Student) -> Wallet:
     return wallet
 
 
+async def _reconcile_pending_payments() -> None:
+    """Verify pending Chapa wallet deposits and settle confirmed payments."""
+    secret = (os.getenv("CHAPA_SECRET_KEY") or "").strip()
+    if not secret:
+        logging.getLogger("app.payments").warning(
+            "Skipping pending payment reconciliation because Chapa is not configured."
+        )
+        return
+
+    db = SessionLocal()
+    try:
+        pending_transactions = (
+            db.query(Transaction)
+            .filter(
+                Transaction.status == "Pending",
+                Transaction.type == "Wallet Deposit",
+            )
+            .all()
+        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for pending_transaction in pending_transactions:
+                try:
+                    response = await client.get(
+                        f"https://api.chapa.co/v1/transaction/verify/{pending_transaction.tx_id}",
+                        headers={"Authorization": f"Bearer {secret}"},
+                    )
+                    chapa_payload = response.json()
+                except (httpx.HTTPError, ValueError):
+                    logging.getLogger("app.payments").exception(
+                        "Unable to verify pending transaction %s.", pending_transaction.tx_id
+                    )
+                    continue
+
+                gateway_data = chapa_payload.get("data") if isinstance(chapa_payload, dict) else None
+                gateway_status = str(
+                    gateway_data.get("status") if isinstance(gateway_data, dict)
+                    else chapa_payload.get("status", "") if isinstance(chapa_payload, dict)
+                    else ""
+                ).lower()
+                if response.is_error or gateway_status != "success":
+                    continue
+
+                locked_transaction = (
+                    db.query(Transaction)
+                    .filter(Transaction.id == pending_transaction.id)
+                    .with_for_update()
+                    .first()
+                )
+                if not locked_transaction or _normalize_payment_status(locked_transaction.status) == "Successful":
+                    continue
+
+                student = (
+                    db.query(Student)
+                    .filter(Student.student_id == locked_transaction.student_id)
+                    .with_for_update()
+                    .first()
+                )
+                if not student:
+                    logging.getLogger("app.payments").error(
+                        "Cannot settle transaction %s because its student is missing.",
+                        locked_transaction.tx_id,
+                    )
+                    db.rollback()
+                    continue
+
+                wallet = _get_or_create_wallet_for_student(db, student)
+                wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + Decimal(str(locked_transaction.amount))
+                student.wallet_balance = wallet.balance
+                locked_transaction.status = "Successful"
+                _dispatch_student_notification(
+                    db,
+                    student,
+                    "Payment Successful",
+                    f"Your wallet deposit of {locked_transaction.amount} ETB was completed successfully.",
+                    "payment",
+                )
+                db.add(AuditLog(
+                    admin_id=None,
+                    action="Payment Auto-Verified",
+                    entity_type="Payment",
+                    entity_id=locked_transaction.id,
+                    description=f"Automatically verified Chapa payment {locked_transaction.tx_id}; credited {locked_transaction.amount} ETB to student {student.student_id}.",
+                    status="SUCCESS",
+                    ip_address="127.0.0.1",
+                ))
+                db.commit()
+                logging.getLogger("app.payments").info(
+                    "Automatically settled Chapa transaction %s.", locked_transaction.tx_id
+                )
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Pending payment reconciliation failed.")
+    finally:
+        db.close()
+
+
 # Read Gmail SMTP credentials from Backend/.env or the process environment.
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
 SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "").strip()
@@ -632,6 +733,13 @@ class StudentRegister(BaseModel):
     password: str
     college: str
     department: str
+
+
+class SellerPayoutSetupRequest(BaseModel):
+    business_name: str
+    bank_code: str
+    account_number: str
+    account_name: str
 
 
 class LoginRequest(BaseModel):
@@ -1161,9 +1269,14 @@ def _create_session_token(subject: str, role: str, timeout_minutes: int, secret:
 
 def _get_session_secret() -> str:
     secret = os.getenv("SESSION_SECRET", "").strip()
-    if not secret:
-        raise HTTPException(status_code=503, detail="Session secret is not configured.")
-    return secret
+    if secret:
+        return secret
+
+    development_secret = "campace-development-session-secret"
+    logging.getLogger("app.auth").warning(
+        "SESSION_SECRET is missing; using the development fallback. Configure SESSION_SECRET in .env for production."
+    )
+    return development_secret
 
 
 def _record_admin_login_event(db: Session, admin_id: Optional[int], event_type: str, request: Request) -> None:
@@ -1409,7 +1522,8 @@ def ensure_database_compatibility(db: Session) -> None:
 
 
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
+    global payment_scheduler
     missing_gateway_variables = [
         variable_name for variable_name in ("CHAPA_SECRET_KEY", "CHAPA_WEBHOOK_SECRET")
         if not os.getenv(variable_name, "").strip()
@@ -1432,6 +1546,26 @@ def on_startup():
             db.close()
     except Exception:
         logging.getLogger("app.startup").exception("Startup database initialization failed.")
+
+    payment_scheduler = AsyncIOScheduler()
+    payment_scheduler.add_job(
+        _reconcile_pending_payments,
+        "interval",
+        minutes=10,
+        id="pending-payment-reconciliation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    payment_scheduler.start()
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    global payment_scheduler
+    if payment_scheduler is not None:
+        payment_scheduler.shutdown(wait=False)
+        payment_scheduler = None
 
 
 # ==========================================
@@ -2640,6 +2774,87 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
             "two_factor_enabled": bool(student.two_factor_enabled),
             "preferred_pickup_location": student.preferred_pickup_location,
         },
+    }
+
+
+@app.post("/api/student/seller/setup-payout")
+async def setup_seller_payout_account(
+    payload: SellerPayoutSetupRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    if not student.is_verified:
+        raise HTTPException(status_code=403, detail="Student verification is required before setting up payouts.")
+
+    existing_account = db.query(SellerPaymentAccount).filter(
+        SellerPaymentAccount.student_id == student.student_id,
+    ).first()
+    if existing_account and existing_account.account_status == "Active":
+        return {
+            "success": True,
+            "message": "Seller payout account is already active.",
+            "account_status": existing_account.account_status,
+            "subaccount_id": existing_account.chapa_sub_account_id,
+        }
+
+    secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Chapa payout setup is not configured.")
+
+    chapa_payload = {
+        "business_name": payload.business_name.strip(),
+        "bank_code": payload.bank_code.strip(),
+        "account_number": payload.account_number.strip(),
+        "account_name": payload.account_name.strip(),
+    }
+    if not all(chapa_payload.values()):
+        raise HTTPException(status_code=400, detail="All seller payout account fields are required.")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                "https://api.chapa.co/v1/subaccount",
+                headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+                json=chapa_payload,
+            )
+            response_data = response.json()
+    except (httpx.HTTPError, ValueError):
+        logging.getLogger("app.payments").exception("Unable to create seller payout account with Chapa.")
+        raise HTTPException(status_code=502, detail="Unable to create seller payout account with Chapa.")
+
+    response_data = response_data if isinstance(response_data, dict) else {}
+    chapa_data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
+    subaccount_id = chapa_data.get("subaccount_id") if isinstance(chapa_data, dict) else None
+    if response.is_error or not subaccount_id:
+        raise HTTPException(status_code=502, detail="Chapa did not create the seller payout account.")
+
+    if existing_account:
+        seller_account = existing_account
+    else:
+        seller_account = SellerPaymentAccount(student_id=student.student_id)
+        db.add(seller_account)
+
+    seller_account.chapa_sub_account_id = str(subaccount_id)
+    seller_account.business_name = chapa_payload["business_name"]
+    seller_account.bank_code = chapa_payload["bank_code"]
+    seller_account.account_number = chapa_payload["account_number"]
+    seller_account.account_name = chapa_payload["account_name"]
+    seller_account.account_status = "Active"
+
+    try:
+        db.commit()
+        db.refresh(seller_account)
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to save seller payout account.")
+        raise HTTPException(status_code=500, detail="Unable to save seller payout account.")
+
+    return {
+        "success": True,
+        "message": "Seller payout account set up successfully.",
+        "account_status": seller_account.account_status,
+        "subaccount_id": seller_account.chapa_sub_account_id,
     }
 
 
@@ -7448,6 +7663,7 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
         transaction = db.query(Transaction).filter(Transaction.id == payment_id).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Payment transaction not found.")
+    confirmed_id = transaction.id
     if _normalize_payment_type(transaction.type) != "Wallet Deposit":
         raise HTTPException(status_code=400, detail="Only wallet deposits can be verified through Chapa.")
 
@@ -7492,17 +7708,10 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
     try:
         transaction = (
             db.query(Transaction)
-            .filter(Transaction.tx_id == tx_ref)
+            .filter(Transaction.id == confirmed_id)
             .with_for_update()
             .first()
         )
-        if not transaction:
-            transaction = (
-                db.query(Transaction)
-                .filter(Transaction.id == int(tx_ref))
-                .with_for_update()
-                .first()
-            )
         if not transaction:
             raise HTTPException(status_code=404, detail="Payment transaction no longer exists.")
         student = (

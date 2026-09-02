@@ -8,5 +8,6 @@ python-dotenv
 scikit-learn
 openai
 httpx
+apscheduler
 deep-translator
 python-multipart

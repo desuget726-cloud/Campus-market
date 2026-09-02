@@ -11,7 +11,9 @@ import AdminDashboard from './Components/Dashboard/AdminDashboard';
 import StudentDashboard from './Components/Dashboard/StudentDashboard';
 import SuccessModal from './Components/Authontication/SuccessModal';
 import AuthInfoModal from './Components/Authontication/AuthInfoModal';
+import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
 import { LanguageProvider } from './context/LanguageContext';
+import { Toaster } from 'react-hot-toast';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
@@ -332,6 +334,30 @@ function AppContent() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-800">
+      <Toaster
+        position="top-center"
+        toastOptions={{
+          duration: 7000,
+          style: {
+            background: '#047857',
+            color: '#ffffff',
+            border: '2px solid #34d399',
+            borderRadius: '14px',
+            boxShadow: '0 16px 40px rgba(4, 120, 87, 0.35)',
+            fontSize: '16px',
+            fontWeight: 800,
+            maxWidth: 'min(92vw, 560px)',
+            padding: '16px 20px',
+          },
+          success: {
+            iconTheme: {
+              primary: '#ffffff',
+              secondary: '#047857',
+            },
+          },
+        }}
+      />
+      <PaymentSuccessToast />
       <Navbar
         onNavigate={handleNavigate}
         user={user}

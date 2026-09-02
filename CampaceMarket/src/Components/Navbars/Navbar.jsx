@@ -23,7 +23,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           <img src={logo1} alt="Campace Logo" className="h-10 w-10 rounded-full object-cover" />
           <div className="flex items-center gap-1 text-2xl font-black text-white">
 
-            <span className="text-slate-300">Campus</span>
+            <span className="text-slate-300">Ecomerce</span>
           </div>
           <button
             type="button"

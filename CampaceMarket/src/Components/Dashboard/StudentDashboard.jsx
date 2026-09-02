@@ -207,6 +207,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [cartBadgeCount, setCartBadgeCount] = useState(0);
   const [orders, setOrders] = useState([]);
   const [paymentInfo, setPaymentInfo] = useState({ balance: 0.00, recentTx: 'No transactions yet' });
+  const transactionStatusesRef = useRef(new Map());
+  const hasLoadedTransactionsRef = useRef(false);
   const [depositAmount, setDepositAmount] = useState('');
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
@@ -430,6 +432,33 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const nextBalance = Number(payData?.balance ?? payData?.walletBalance ?? payData?.wallet_balance ?? 0);
         const normalizedBalance = Number.isFinite(nextBalance) ? nextBalance : 0;
         const normalizedTransactions = Array.isArray(payData?.transactions) ? payData.transactions : [];
+
+        if (hasLoadedTransactionsRef.current) {
+          normalizedTransactions.forEach((transaction) => {
+            const transactionId = transaction.id ?? transaction.transaction_id ?? transaction.tx_id;
+            const previousStatus = transactionStatusesRef.current.get(String(transactionId));
+            const currentStatus = String(transaction.status || '').trim().toLowerCase();
+            if (previousStatus === 'pending' && currentStatus === 'successful') {
+              const amount = Number(transaction.amount ?? transaction.value ?? 0);
+              const formattedAmount = amount.toLocaleString('en-US', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 2,
+              });
+              window.dispatchEvent(new CustomEvent('campace:payment-verified', {
+                detail: {
+                  message: `Payment Verified! ${formattedAmount} ETB has been added to your wallet.`,
+                },
+              }));
+            }
+          });
+        }
+        transactionStatusesRef.current = new Map(
+          normalizedTransactions.map((transaction) => [
+            String(transaction.id ?? transaction.transaction_id ?? transaction.tx_id),
+            String(transaction.status || '').trim().toLowerCase(),
+          ]),
+        );
+        hasLoadedTransactionsRef.current = true;
 
         setPaymentInfo({
           balance: normalizedBalance,
