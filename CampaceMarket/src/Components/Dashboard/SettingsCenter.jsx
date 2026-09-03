@@ -2,8 +2,22 @@ import { useState, useEffect } from 'react';
 
 const settingsSections = [
     ['account', 'Account'],
+    ['payout', 'Payouts'],
     ['security', 'Security'],
     ['notifications', 'Notifications'],
+];
+
+const ethiopianBanks = [
+    ['CBE', 'Commercial Bank of Ethiopia'],
+    ['Awash', 'Awash Bank'],
+    ['Dashen', 'Dashen Bank'],
+    ['Abyssinia', 'Bank of Abyssinia'],
+    ['Birhan', 'Berhan Bank'],
+    ['Cooperative', 'Cooperative Bank of Oromia'],
+    ['NIB', 'Nib International Bank'],
+    ['PRIDE', 'PRIDE Microfinance'],
+    ['Wegagen', 'Wegagen Bank'],
+    ['ZamZam', 'ZamZam Bank'],
 ];
 
 const inputClass = 'mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white';
@@ -40,6 +54,7 @@ function SettingsCenter({
     avatarUploadMessage,
     avatarUploading,
     universityStructure,
+    setSellerData,
 }) {
     const safeUniversityStructure = universityStructure || {};
     const [notificationPrefs, setNotificationPrefs] = useState({
@@ -69,8 +84,50 @@ function SettingsCenter({
         browser: 'Loading...',
         operating_system: 'Loading...',
     });
+    const [payoutForm, setPayoutForm] = useState({
+        business_name: '',
+        account_name: '',
+        bank_code: '',
+        account_number: '',
+    });
+    const [payoutMessage, setPayoutMessage] = useState('');
+    const [payoutError, setPayoutError] = useState('');
+    const [payoutSaving, setPayoutSaving] = useState(false);
 
     const updatePref = (key) => setNotificationPrefs((previous) => ({ ...previous, [key]: !previous[key] }));
+
+    const handlePayoutSubmit = async (event) => {
+        event.preventDefault();
+        setPayoutMessage('');
+        setPayoutError('');
+        const studentId = user?.studentId || user?.student_id || '';
+        const token = getStudentSessionToken();
+        if (!studentId || !token) {
+            setPayoutError('Your authenticated student session is required. Please sign in again.');
+            return;
+        }
+
+        setPayoutSaving(true);
+        try {
+            const response = await fetch('http://127.0.0.1:8000/api/student/seller/setup-payout', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ ...payoutForm, student_id: studentId }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data?.detail || 'Unable to configure payout account.');
+
+            setPayoutMessage(data?.message || 'Payout account configured successfully.');
+            setSellerData?.((previous) => ({ ...previous, account_status: data?.account_status || 'Active' }));
+        } catch (error) {
+            setPayoutError(error.message || 'Unable to configure payout account.');
+        } finally {
+            setPayoutSaving(false);
+        }
+    };
 
     const getStudentSessionToken = () => {
         if (user?.access_token) return user.access_token;
@@ -409,6 +466,20 @@ function SettingsCenter({
                             </div>
                         </div>
                     )}
+                </>
+            );
+        }
+        if (settingsTab === 'payout') {
+            return (
+                <>
+                    <PanelHeader eyebrow="Seller Payouts" title="Get paid directly from campus sales" text="Connect your Ethiopian bank account before publishing products for split payments." />
+                    <form onSubmit={handlePayoutSubmit} className="mt-6 grid gap-4 sm:grid-cols-2">
+                        <Field label="Business Name"><input required value={payoutForm.business_name} onChange={(event) => setPayoutForm((previous) => ({ ...previous, business_name: event.target.value }))} className={inputClass} placeholder="Your seller or business name" /></Field>
+                        <Field label="Account Name"><input required value={payoutForm.account_name} onChange={(event) => setPayoutForm((previous) => ({ ...previous, account_name: event.target.value }))} className={inputClass} placeholder="Name on bank account" /></Field>
+                        <Field label="Ethiopian Bank"><select required value={payoutForm.bank_code} onChange={(event) => setPayoutForm((previous) => ({ ...previous, bank_code: event.target.value }))} className={inputClass}><option value="">Select your bank</option>{ethiopianBanks.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></Field>
+                        <Field label="Account Number"><input required inputMode="numeric" value={payoutForm.account_number} onChange={(event) => setPayoutForm((previous) => ({ ...previous, account_number: event.target.value }))} className={inputClass} placeholder="Enter account number" /></Field>
+                        <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-2"><button type="submit" disabled={payoutSaving} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">{payoutSaving ? 'Connecting...' : 'Save Payout Account'}</button>{payoutMessage && <p className="text-sm font-semibold text-emerald-600">{payoutMessage}</p>}{payoutError && <p className="text-sm font-semibold text-rose-600">{payoutError}</p>}</div>
+                    </form>
                 </>
             );
         }

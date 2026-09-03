@@ -549,7 +549,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         totalRevenue: Number(stats.completed_revenue) || 0,
         pendingOrders: Number(alerts.pending_orders) || 0,
         incomingOrders: orders,
-        activeListings: listings
+        activeListings: listings,
+        account_status: data.account_status || 'Pending',
       });
     } catch (err) {
       console.error('Error fetching seller dashboard data:', err);
@@ -3355,7 +3356,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   resetProductForm();
                   setShowProductModal(true);
                 }}
-                onNavigate={onTabChange}
+                onNavigate={(target, payload) => {
+                  if (target === 'payout-settings') {
+                    setActiveTab('settings');
+                    setSettingsTab('payout');
+                    return;
+                  }
+                  onTabChange?.(target, payload);
+                }}
                 onViewProduct={handleViewProductFromChat}
                 sellerDashboardData={sellerDashboardData}
                 onEditProduct={handleEditProduct}
@@ -4303,6 +4311,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 avatarUploadMessage={avatarUploadMessage}
                 avatarUploading={avatarUploading}
                 universityStructure={universityStructure}
+                setSellerData={setSellerData}
                 currentWalletBalance={currentWalletBalance}
                 transactionLedger={transactionLedger}
                 onNavigate={setActiveTab}

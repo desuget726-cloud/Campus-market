@@ -7,6 +7,7 @@ function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, s
     const [chartMetric, setChartMetric] = useState('Revenue');
     const dashboardStats = sellerDashboardData?.stats || {};
     const dashboardAlerts = sellerDashboardData?.alerts || {};
+    const payoutStatus = String(sellerData?.account_status || sellerDashboardData?.account_status || 'Pending').toLowerCase();
     const performance = sellerDashboardData?.performance || {};
     const listings = Array.isArray(sellerDashboardData?.my_listings)
         ? sellerDashboardData.my_listings
@@ -93,6 +94,8 @@ function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, s
                     <div className="flex flex-wrap gap-2"><button type="button" onClick={onAddProduct} className="rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600">+ Add Product</button><button type="button" onClick={() => document.getElementById('seller-orders')?.scrollIntoView({ behavior: 'smooth' })} className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10">Manage Orders</button><button type="button" onClick={() => onNavigate('messages')} className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10">Messages</button><button type="button" onClick={() => document.getElementById('seller-analytics')?.scrollIntoView({ behavior: 'smooth' })} className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10">View Analytics</button><button type="button" onClick={onPaymentHistory} className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10">Payment History</button></div>
                 </div>
             </section>
+
+            {payoutStatus !== 'active' && <section className="flex flex-col gap-4 rounded-[24px] border border-amber-200 bg-amber-50 p-5 text-amber-950 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-700">Payout setup required</p><h3 className="mt-1 text-lg font-black">Configure your bank account to receive sales payouts.</h3><p className="mt-1 text-sm text-amber-800">Your seller account is currently {sellerData?.account_status || sellerDashboardData?.account_status || 'Pending'}.</p></div><button type="button" onClick={() => onNavigate('payout-settings')} className="shrink-0 rounded-full bg-amber-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-amber-600">Configure Payouts</button></section>}
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{[
                 ['My Listings', Number(dashboardStats.total_listings ?? listings.length), `${counts.active} Active · ${counts.pending} Pending · ${counts.sold} Sold`, '▣', 'text-sky-600'],

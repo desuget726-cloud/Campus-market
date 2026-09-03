@@ -41,7 +41,7 @@ import math
 import mimetypes
 import base64
 import secrets
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import smtplib
@@ -472,6 +472,84 @@ def _get_or_create_wallet_for_student(db: Session, student: Student) -> Wallet:
     return wallet
 
 
+def _settle_verified_chapa_transaction(
+    db: Session,
+    tx_ref: str,
+    expected_amount: Optional[Decimal] = None,
+) -> Dict[str, Any]:
+    """Atomically settle a verified Chapa wallet deposit exactly once."""
+    # Verification requests may have performed reads before reaching this helper.
+    db.rollback()
+    try:
+        with db.begin():
+            transaction = (
+                db.query(Transaction)
+                .filter(Transaction.tx_id == tx_ref)
+                .with_for_update()
+                .first()
+            )
+            if not transaction:
+                raise HTTPException(status_code=404, detail="Payment transaction not found.")
+
+            student = (
+                db.query(Student)
+                .filter(Student.student_id == transaction.student_id)
+                .with_for_update()
+                .first()
+            )
+            if not student:
+                raise HTTPException(status_code=404, detail="Student not found for payment settlement.")
+
+            wallet = (
+                db.query(Wallet)
+                .filter(Wallet.student_id == student.student_id)
+                .with_for_update()
+                .first()
+            )
+            if wallet is None:
+                wallet = Wallet(
+                    student_id=student.student_id,
+                    balance=Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01")),
+                )
+                db.add(wallet)
+                db.flush()
+
+            if _normalize_payment_status(transaction.status) == "Successful":
+                return {
+                    "transaction_id": transaction.tx_id,
+                    "student_id": student.student_id,
+                    "amount": Decimal(str(transaction.amount)).quantize(Decimal("0.01")),
+                    "wallet_balance": Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")),
+                    "already_settled": True,
+                }
+
+            amount = Decimal(str(transaction.amount)).quantize(Decimal("0.01"))
+            if amount <= 0:
+                raise HTTPException(status_code=400, detail="Payment transaction amount must be greater than 0.")
+            if expected_amount is not None and amount != expected_amount.quantize(Decimal("0.01")):
+                raise HTTPException(status_code=400, detail="Payment callback amount does not match the transaction.")
+
+            wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + amount
+            student.wallet_balance = wallet.balance
+            transaction.type = "Wallet Deposit"
+            transaction.status = "Successful"
+
+            return {
+                "transaction_id": transaction.tx_id,
+                "student_id": student.student_id,
+                "amount": amount,
+                "wallet_balance": wallet.balance,
+                "already_settled": False,
+            }
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to settle Chapa payment safely.")
+        raise HTTPException(status_code=500, detail="Unable to settle payment safely.")
+
+
 async def _reconcile_pending_payments() -> None:
     """Verify pending Chapa wallet deposits and settle confirmed payments."""
     secret = (os.getenv("CHAPA_SECRET_KEY") or "").strip()
@@ -514,38 +592,28 @@ async def _reconcile_pending_payments() -> None:
                 if response.is_error or gateway_status != "success":
                     continue
 
-                locked_transaction = (
-                    db.query(Transaction)
-                    .filter(Transaction.id == pending_transaction.id)
-                    .with_for_update()
-                    .first()
-                )
-                if not locked_transaction or _normalize_payment_status(locked_transaction.status) == "Successful":
+                settlement = _settle_verified_chapa_transaction(db, pending_transaction.tx_id)
+                if settlement["already_settled"]:
                     continue
 
-                student = (
-                    db.query(Student)
-                    .filter(Student.student_id == locked_transaction.student_id)
-                    .with_for_update()
-                    .first()
-                )
-                if not student:
+                locked_transaction = db.query(Transaction).filter(
+                    Transaction.tx_id == settlement["transaction_id"]
+                ).first()
+                student = db.query(Student).filter(
+                    Student.student_id == settlement["student_id"]
+                ).first()
+                if not locked_transaction or not student:
                     logging.getLogger("app.payments").error(
-                        "Cannot settle transaction %s because its student is missing.",
-                        locked_transaction.tx_id,
+                        "Settlement records disappeared for transaction %s.",
+                        pending_transaction.tx_id,
                     )
                     db.rollback()
                     continue
-
-                wallet = _get_or_create_wallet_for_student(db, student)
-                wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + Decimal(str(locked_transaction.amount))
-                student.wallet_balance = wallet.balance
-                locked_transaction.status = "Successful"
                 _dispatch_student_notification(
                     db,
                     student,
                     "Payment Successful",
-                    f"Your wallet deposit of {locked_transaction.amount} ETB was completed successfully.",
+                    f"Your wallet deposit of {settlement['amount']} ETB was completed successfully.",
                     "payment",
                 )
                 db.add(AuditLog(
@@ -553,7 +621,7 @@ async def _reconcile_pending_payments() -> None:
                     action="Payment Auto-Verified",
                     entity_type="Payment",
                     entity_id=locked_transaction.id,
-                    description=f"Automatically verified Chapa payment {locked_transaction.tx_id}; credited {locked_transaction.amount} ETB to student {student.student_id}.",
+                    description=f"Automatically verified Chapa payment {locked_transaction.tx_id}; credited {settlement['amount']} ETB to student {student.student_id}.",
                     status="SUCCESS",
                     ip_address="127.0.0.1",
                 ))
@@ -974,6 +1042,7 @@ class DepositRequest(BaseModel):
     student_id: str
     amount: float
     email: Optional[str] = None
+    product_id: Optional[int] = None
 
 
 class WalletWithdrawalRequest(BaseModel):
@@ -3497,8 +3566,12 @@ def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
         if received_orders else 0
     )
     on_time_pickup = (len(completed_orders) / len(received_orders) * 100) if received_orders else 0
+    payout_account = db.query(SellerPaymentAccount).filter(
+        SellerPaymentAccount.student_id == student.student_id,
+    ).first()
 
     return {
+        "account_status": payout_account.account_status if payout_account else "Pending",
         "stats": {
             "total_listings": len(listings),
             "active_listings": active_listings,
@@ -5696,7 +5769,7 @@ def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/payment/initialize")
 async def initialize_payment(request: DepositRequest, db: Session = Depends(get_db)):
-    """Initialize a payment / deposit gateway session for student wallet."""
+    """Initialize a wallet deposit or a Chapa split payment for a product purchase."""
     payment_settings = get_payment_settings(db)
     if not payment_settings["enableOnlinePayment"]:
         raise HTTPException(status_code=503, detail="Online payment is currently disabled.")
@@ -5712,6 +5785,31 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         raise HTTPException(status_code=400, detail="The deposit amount must not exceed 1,000,000 ETB.")
 
     amount_value = Decimal(str(amount))
+    product = None
+    seller_account = None
+    if request.product_id is not None:
+        product = db.query(Product).filter(Product.id == request.product_id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found.")
+
+        product_amount = Decimal(str(_parse_price_to_etb(product.price))).quantize(Decimal("0.01"))
+        if product_amount <= 0 or amount_value.quantize(Decimal("0.01")) != product_amount:
+            raise HTTPException(status_code=400, detail="Payment amount does not match the product price.")
+        if not product.seller:
+            raise HTTPException(status_code=400, detail="This product does not have a valid seller.")
+
+        seller = db.query(Student).filter(
+            or_(Student.student_id == product.seller, Student.name == product.seller)
+        ).first()
+        if not seller or seller.student_id == student.student_id:
+            raise HTTPException(status_code=400, detail="A valid seller is required for this purchase.")
+        seller_account = db.query(SellerPaymentAccount).filter(
+            SellerPaymentAccount.student_id == seller.student_id,
+            SellerPaymentAccount.account_status == "Active",
+        ).first()
+        if not seller_account or not seller_account.chapa_sub_account_id:
+            raise HTTPException(status_code=409, detail="The seller has not completed Chapa payout setup.")
+
     duplicate_cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
     if payment_settings["security"]["duplicateTransactionProtection"]:
         existing_transaction = (
@@ -5758,6 +5856,19 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         "return_url": os.getenv("CHAPA_RETURN_URL", "http://localhost:5173/"),
         "customization": {"title": cleaned_marketplace_name},
     }
+    if seller_account:
+        try:
+            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "3"))
+        except (InvalidOperation, ValueError):
+            commission_percent = Decimal("3")
+        if commission_percent < 0 or commission_percent >= 100:
+            raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
+        seller_percent = (Decimal("100") - commission_percent).quantize(Decimal("0.01"))
+        chapa_payload["subaccounts"] = [{
+            "id": seller_account.chapa_sub_account_id,
+            "split_type": "percentage",
+            "split_value": str(seller_percent),
+        }]
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -5926,67 +6037,153 @@ async def withdraw_student_wallet(request: WalletWithdrawalRequest, db: Session 
 
 @app.get("/api/admin/users/{id}/audit-balance")
 def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.id == id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
+    db.rollback()
+    try:
+        with db.begin():
+            student = db.query(Student).filter(Student.id == id).with_for_update().first()
+            if not student:
+                raise HTTPException(status_code=404, detail="Student not found.")
 
-    deposit_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.student_id == student.student_id,
-        Transaction.type == "Wallet Deposit",
-        Transaction.status == "Successful",
-    ).scalar() or 0
+            wallet = db.query(Wallet).filter(
+                Wallet.student_id == student.student_id,
+            ).with_for_update().first()
+            if not wallet:
+                raise HTTPException(status_code=404, detail="Student wallet not found.")
 
-    spending_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.student_id == student.student_id,
-        Transaction.type != "Wallet Deposit",
-        Transaction.status.in_(["Successful", "Completed"]),
-    ).scalar() or 0
+            successful_transactions = db.query(Transaction).filter(
+                Transaction.student_id == student.student_id,
+                func.lower(Transaction.status) == "successful",
+            ).all()
+            total_deposits = sum(
+                (Decimal(str(transaction.amount or 0))
+                 for transaction in successful_transactions
+                 if _normalize_payment_type(transaction.type) == "Wallet Deposit"),
+                Decimal("0.00"),
+            )
+            debit_types = {
+                "Product Purchase",
+                "Wallet Withdrawal",
+                "Seller Payout",
+            }
+            total_debits = sum(
+                (Decimal(str(transaction.amount or 0))
+                 for transaction in successful_transactions
+                 if _normalize_payment_type(transaction.type) in debit_types),
+                Decimal("0.00"),
+            )
 
-    total_deposits = Decimal(str(deposit_total))
-    total_spend = Decimal(str(spending_total))
-    expected_balance = total_deposits - total_spend
-    stored_balance = Decimal(str(student.wallet_balance or 0))
+            expected_balance = (total_deposits - total_debits).quantize(Decimal("0.01"))
+            stored_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
 
-    if stored_balance == expected_balance:
+            if stored_balance == expected_balance:
+                return {
+                    "status": "consistent",
+                    "verified": True,
+                    "student_id": student.student_id,
+                    "expected_balance": float(expected_balance),
+                    "stored_balance": float(stored_balance),
+                    "total_deposits": float(total_deposits),
+                    "total_withdrawals_and_purchases": float(total_debits),
+                }
+
+            student.status = "Suspended"
+            admin = db.query(Admin).order_by(Admin.id.asc()).first()
+            db.add(AuditLog(
+                admin_id=admin.id if admin else None,
+                action="Wallet Balance Reconciliation Alert",
+                entity_type="Student",
+                entity_id=student.id,
+                description=(
+                    f"Critical wallet balance mismatch detected for student {student.student_id}. "
+                    f"Stored Wallet.balance: {stored_balance}, expected: {expected_balance}. "
+                    f"Successful deposits: {total_deposits}, successful debits: {total_debits}."
+                ),
+                status="ALERT",
+                severity="CRITICAL",
+                ip_address="127.0.0.1",
+            ))
+
+            return {
+                "status": "compromised",
+                "verified": False,
+                "student_id": student.student_id,
+                "expected_balance": float(expected_balance),
+                "stored_balance": float(stored_balance),
+                "total_deposits": float(total_deposits),
+                "total_withdrawals_and_purchases": float(total_debits),
+                "account_status": "Suspended",
+            }
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to audit student wallet balance safely.")
+        raise HTTPException(status_code=500, detail="Unable to audit student wallet balance safely.")
+
+
+@app.post("/api/admin/wallets/reconcile")
+def reconcile_student_wallets(db: Session = Depends(get_db)):
+    """Rebuild every wallet balance from successful deposit and purchase transactions."""
+    db.rollback()
+    reconciled_wallets = []
+
+    try:
+        with db.begin():
+            students = db.query(Student).with_for_update().all()
+            for student in students:
+                successful_deposits = db.query(
+                    func.coalesce(func.sum(Transaction.amount), 0)
+                ).filter(
+                    Transaction.student_id == student.student_id,
+                    func.lower(Transaction.status) == "successful",
+                    func.lower(Transaction.type) == "wallet deposit",
+                ).scalar() or 0
+
+                successful_purchases = db.query(
+                    func.coalesce(func.sum(Transaction.amount), 0)
+                ).filter(
+                    Transaction.student_id == student.student_id,
+                    func.lower(Transaction.status) == "successful",
+                    func.lower(Transaction.type).in_(["purchase", "product purchase"]),
+                ).scalar() or 0
+
+                calculated_balance = (
+                    Decimal(str(successful_deposits))
+                    - Decimal(str(successful_purchases))
+                ).quantize(Decimal("0.01"))
+
+                wallet = (
+                    db.query(Wallet)
+                    .filter(Wallet.student_id == student.student_id)
+                    .with_for_update()
+                    .first()
+                )
+                if wallet is None:
+                    wallet = Wallet(
+                        student_id=student.student_id,
+                        balance=calculated_balance,
+                    )
+                    db.add(wallet)
+                    db.flush()
+                else:
+                    wallet.balance = calculated_balance
+
+                student.wallet_balance = calculated_balance
+                reconciled_wallets.append({
+                    "student_id": student.student_id,
+                    "balance": float(calculated_balance),
+                })
+
         return {
-            "status": "consistent",
-            "verified": True,
-            "student_id": student.student_id,
-            "expected_balance": float(expected_balance),
-            "stored_balance": float(stored_balance),
-            "total_deposits": float(total_deposits),
-            "total_withdrawals_and_purchases": float(total_spend),
+            "success": True,
+            "reconciled_count": len(reconciled_wallets),
+            "wallets": reconciled_wallets,
         }
-
-    student.status = "Suspended"
-    admin = db.query(Admin).order_by(Admin.id.asc()).first()
-    db.add(AuditLog(
-        admin_id=admin.id if admin else None,
-        action="Wallet Balance Reconciliation Alert",
-        entity_type="Student",
-        entity_id=student.id,
-        description=(
-            f"Wallet balance mismatch detected for student {student.student_id}. "
-            f"Stored balance: {stored_balance}, expected: {expected_balance}. "
-            f"Deposits: {total_deposits}, outbound spend: {total_spend}."
-        ),
-        status="ALERT",
-        severity="CRITICAL",
-        ip_address="127.0.0.1",
-    ))
-    db.commit()
-    db.refresh(student)
-
-    return {
-        "status": "compromised",
-        "verified": False,
-        "student_id": student.student_id,
-        "expected_balance": float(expected_balance),
-        "stored_balance": float(stored_balance),
-        "total_deposits": float(total_deposits),
-        "total_withdrawals_and_purchases": float(total_spend),
-        "account_status": student.status,
-    }
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to reconcile student wallets safely.")
+        raise HTTPException(status_code=500, detail="Unable to reconcile student wallets safely.")
 
 
 # ==========================================
@@ -7706,44 +7903,26 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
         }
 
     try:
-        transaction = (
-            db.query(Transaction)
-            .filter(Transaction.id == confirmed_id)
-            .with_for_update()
-            .first()
-        )
-        if not transaction:
-            raise HTTPException(status_code=404, detail="Payment transaction no longer exists.")
-        student = (
-            db.query(Student)
-            .filter(Student.student_id == transaction.student_id)
-            .with_for_update()
-            .first()
-        )
-        if not student:
-            raise HTTPException(status_code=404, detail="Student not found.")
-
-        previous_status = _normalize_payment_status(transaction.status)
-        if previous_status == "Successful":
+        settlement = _settle_verified_chapa_transaction(db, transaction.tx_id)
+        if settlement["already_settled"]:
             return {
                 "success": True,
                 "warning": "Payment already processed; replay blocked.",
-                "transaction_id": transaction.tx_id,
-                "status": transaction.status,
-                "wallet_balance": float(student.wallet_balance or 0),
-                "chapa_reference": transaction.tx_id,
+                "transaction_id": settlement["transaction_id"],
+                "status": "Successful",
+                "wallet_balance": float(settlement["wallet_balance"]),
+                "chapa_reference": settlement["transaction_id"],
             }
 
-        wallet = _get_or_create_wallet_for_student(db, student)
-        wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + Decimal(str(transaction.amount))
-        student.wallet_balance = wallet.balance
-        transaction.status = "Successful"
-
+        transaction = db.query(Transaction).filter(Transaction.tx_id == settlement["transaction_id"]).first()
+        student = db.query(Student).filter(Student.student_id == settlement["student_id"]).first()
+        if not transaction or not student:
+            raise HTTPException(status_code=404, detail="Settled payment records could not be loaded.")
         _dispatch_student_notification(
             db,
             student,
             "Payment Successful",
-            f"Your wallet deposit of {transaction.amount} ETB was completed successfully.",
+            f"Your wallet deposit of {settlement['amount']} ETB was completed successfully.",
             "payment",
         )
 
@@ -7753,15 +7932,13 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
             action="Payment Verified",
             entity_type="Payment",
             entity_id=transaction.id,
-            description=f"Admin {admin.username if admin else 'system'} verified Chapa payment {transaction.tx_id}; credited {transaction.amount} ETB to student {student.student_id}.",
+            description=f"Admin {admin.username if admin else 'system'} verified Chapa payment {transaction.tx_id}; credited {settlement['amount']} ETB to student {student.student_id}.",
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
 
         db.commit()
         db.refresh(transaction)
-        db.refresh(student)
-        db.refresh(wallet)
     except HTTPException:
         db.rollback()
         raise
@@ -7937,23 +8114,9 @@ async def simulate_chapa_webhook(
     except Exception:
         amount = Decimal("0")
 
-    transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).with_for_update().first()
+    transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Pending payment transaction not found for callback.")
-
-    previous_status = _normalize_payment_status(transaction.status)
-    if previous_status == "Successful":
-        settled_student = db.query(Student).filter(Student.student_id == transaction.student_id).first()
-        if not settled_student:
-            raise HTTPException(status_code=404, detail="Student not found for payment callback.")
-        return {
-            "message": "Payment webhook was already processed; replay blocked.",
-            "status": "Successful",
-            "transaction_id": transaction.tx_id,
-            "student_id": transaction.student_id,
-            "wallet_balance": float(settled_student.wallet_balance or 0),
-            "amount": float(transaction.amount),
-        }
 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payment callback amount must be greater than 0.")
@@ -7973,25 +8136,31 @@ async def simulate_chapa_webhook(
             or student_identifier.get("studentId")
         )
 
-    student = db.query(Student).filter(Student.student_id == transaction.student_id).with_for_update().first()
     if student_identifier and str(student_identifier) != str(transaction.student_id):
         raise HTTPException(status_code=400, detail="Payment callback student does not match the transaction.")
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found for payment callback.")
 
-    wallet = _get_or_create_wallet_for_student(db, student)
-    wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + amount
-    student.wallet_balance = wallet.balance
+    settlement = _settle_verified_chapa_transaction(db, tx_ref, expected_amount=amount)
+    if settlement["already_settled"]:
+        return {
+            "message": "Payment webhook was already processed; replay blocked.",
+            "status": "Successful",
+            "transaction_id": settlement["transaction_id"],
+            "student_id": settlement["student_id"],
+            "wallet_balance": float(settlement["wallet_balance"]),
+            "amount": float(settlement["amount"]),
+        }
 
-    transaction.type = "Wallet Deposit"
-    transaction.status = "Successful"
+    transaction = db.query(Transaction).filter(Transaction.tx_id == settlement["transaction_id"]).first()
+    student = db.query(Student).filter(Student.student_id == settlement["student_id"]).first()
+    if not transaction or not student:
+        raise HTTPException(status_code=404, detail="Settled payment records could not be loaded.")
     transaction.description = transaction.description or "Chapa webhook settlement captured via payment callback."
 
     _dispatch_student_notification(
         db,
         student,
         "Payment Successful",
-        f"Your Chapa wallet deposit of {amount} ETB was completed successfully.",
+        f"Your Chapa wallet deposit of {settlement['amount']} ETB was completed successfully.",
         "payment",
     )
 
@@ -8001,7 +8170,7 @@ async def simulate_chapa_webhook(
         action="Payment Webhook Success",
         entity_type="Payment",
         entity_id=transaction.id,
-        description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {amount} ETB.",
+        description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {settlement['amount']} ETB.",
         status="SUCCESS",
         ip_address="127.0.0.1",
     ))
@@ -8009,7 +8178,6 @@ async def simulate_chapa_webhook(
     db.commit()
     db.refresh(transaction)
     db.refresh(student)
-    db.refresh(wallet)
 
     return {
         "message": "Payment webhook processed successfully.",
@@ -8017,7 +8185,7 @@ async def simulate_chapa_webhook(
         "transaction_id": transaction.tx_id,
         "student_id": student.student_id,
         "wallet_balance": float(student.wallet_balance),
-        "amount": float(amount),
+        "amount": float(settlement["amount"]),
     }
 
 
