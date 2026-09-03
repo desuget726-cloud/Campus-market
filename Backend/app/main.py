@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import SQLAlchemyError, OperationalError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 import bcrypt
 from typing import Optional, List, Dict, Tuple, Any, cast
 from dataclasses import dataclass
@@ -48,6 +48,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
+import socket
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from deep_translator import GoogleTranslator
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -656,58 +657,76 @@ if not email_logger.handlers:
 
 def send_otp_email(receiver_email: str, otp: str) -> bool:
     """Send ONLY the raw 6-digit OTP number as a plain-text email body."""
+    normalized_sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
+    normalized_sender_password = os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip().replace(" ", "")
+
     try:
         if not _notifications_enabled(None, "emailNotifs"):
-            email_logger.info("OTP email skipped because email notifications are disabled.")
+            message = "OTP email skipped: the emailNotifs system setting is disabled."
+            email_logger.warning(message)
+            print(f"[EMAIL WARNING] {message}", flush=True)
             return True
-        if not SENDER_EMAIL or not SENDER_PASSWORD:
-            email_logger.error("OTP email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.")
+        if not receiver_email:
+            message = "OTP email was not sent: receiver_email is empty."
+            email_logger.error(message)
+            print(f"[EMAIL ERROR] {message}", flush=True)
             return False
-        if any(char.isspace() for char in SENDER_PASSWORD):
-            email_logger.warning("SENDER_PASSWORD contains whitespace; verify the Google App Password is configured without spaces.")
+        if not normalized_sender_email or not normalized_sender_password:
+            message = "OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env."
+            email_logger.error(message)
+            print(f"[EMAIL ERROR] {message}", flush=True)
+            return False
 
         body = str(otp)
 
         msg = MIMEMultipart()
         msg["Subject"] = "Campace Verification Code"
-        msg["From"] = SENDER_EMAIL
+        msg["From"] = normalized_sender_email
         msg["To"] = receiver_email
         msg.attach(MIMEText(body, "plain"))
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, receiver_email, msg.as_string())
+            server.login(normalized_sender_email, normalized_sender_password)
+            server.sendmail(normalized_sender_email, receiver_email, msg.as_string())
 
         return True
-    except smtplib.SMTPAuthenticationError as e:
-        error_message = f"SMTP authentication error while sending raw OTP email to {receiver_email}: {e}"
+    except smtplib.SMTPAuthenticationError as error:
+        error_message = (
+            f"SMTP authentication failed for {normalized_sender_email}: {error}. "
+            "Check that 2-Step Verification is enabled and SENDER_PASSWORD is a current Google App Password without spaces."
+        )
         email_logger.exception(error_message)
-        print(error_message, flush=True)
+        print(f"[EMAIL AUTH ERROR] {error_message}", flush=True)
         return False
-    except smtplib.SMTPConnectError as e:
-        error_message = f"SMTP connection error to smtp.gmail.com while sending raw OTP email to {receiver_email}: {e}"
+    except smtplib.SMTPConnectError as error:
+        error_message = f"Could not connect to smtp.gmail.com:465 while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
-        print(error_message, flush=True)
+        print(f"[EMAIL CONNECTION ERROR] {error_message}", flush=True)
         return False
-    except smtplib.SMTPServerDisconnected as e:
-        error_message = f"SMTP server disconnected while sending raw OTP email to {receiver_email}: {e}"
+    except socket.timeout as error:
+        error_message = f"Timed out connecting to smtp.gmail.com:465 while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
-        print(error_message, flush=True)
+        print(f"[EMAIL TIMEOUT] {error_message}", flush=True)
         return False
-    except smtplib.SMTPException as e:
-        error_message = f"SMTP error while sending raw OTP email to {receiver_email}: {e}"
+    except smtplib.SMTPServerDisconnected as error:
+        error_message = f"Gmail SMTP disconnected while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
-        print(error_message, flush=True)
+        print(f"[EMAIL DISCONNECT ERROR] {error_message}", flush=True)
         return False
-    except (TimeoutError, OSError) as e:
-        error_message = f"Network error connecting to smtp.gmail.com while sending raw OTP email to {receiver_email}: {e}"
+    except smtplib.SMTPException as error:
+        error_message = f"Gmail SMTP error while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
-        print(error_message, flush=True)
+        print(f"[EMAIL SMTP ERROR] {error_message}", flush=True)
         return False
-    except Exception as e:
-        error_message = f"Failed to send raw OTP email to {receiver_email}: {e}"
+    except (TimeoutError, OSError) as error:
+        error_message = f"Network error reaching smtp.gmail.com:465 while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
-        print(error_message, flush=True)
+        print(f"[EMAIL NETWORK ERROR] {error_message}", flush=True)
+        return False
+    except Exception as error:
+        error_message = f"Unexpected error while sending OTP to {receiver_email}: {error}"
+        email_logger.exception(error_message)
+        print(f"[EMAIL UNEXPECTED ERROR] {error_message}", flush=True)
         return False
 
 
@@ -2162,9 +2181,7 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
     except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
 
-    session_secret = os.getenv("SESSION_SECRET", "").strip()
-    if not session_secret:
-        raise HTTPException(status_code=401, detail="Invalid JWT token.")
+    session_secret = _get_session_secret()
     unsigned_token = f"{encoded_header}.{encoded_payload}"
     expected_signature = hmac.new(
         session_secret.encode(),
@@ -2879,6 +2896,18 @@ async def setup_seller_payout_account(
     }
     if not all(chapa_payload.values()):
         raise HTTPException(status_code=400, detail="All seller payout account fields are required.")
+
+    try:
+        commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "3"))
+    except (InvalidOperation, ValueError):
+        commission_percent = Decimal("3")
+    if commission_percent < 0 or commission_percent >= 100:
+        raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
+    seller_split = ((Decimal("100") - commission_percent) / Decimal("100")).quantize(Decimal("0.0001"))
+    chapa_payload.update({
+        "split_type": "percentage",
+        "split_value": str(seller_split),
+    })
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -5483,11 +5512,11 @@ def delete_cart_item(item_id: int, db: Session = Depends(get_db)):
     """Remove a specific item from student's cart."""
     item = db.query(CartItem).filter(CartItem.id == item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Cart item not found.")
+        return {"message": "Cart item was already removed.", "id": item_id, "deleted": False}
     
     db.delete(item)
     db.commit()
-    return {"message": "Cart item removed successfully.", "id": item_id}
+    return {"message": "Cart item removed successfully.", "id": item_id, "deleted": True}
 
 
 @app.post("/api/student/cart/checkout")
@@ -5696,6 +5725,14 @@ def submit_student_review(payload: ReviewCreate, db: Session = Depends(get_db)):
             "order_id": payload.order_id,
             "reviewed": True,
         }
+    except IntegrityError:
+        db.rollback()
+        logging.getLogger("app.reviews").warning(
+            "Duplicate review rejected for order %s and student %s.",
+            payload.order_id,
+            payload.student_id,
+        )
+        raise HTTPException(status_code=409, detail="A review has already been submitted for this order.")
     except SQLAlchemyError:
         db.rollback()
         logging.getLogger("app.reviews").exception("Could not submit review.")
@@ -8021,6 +8058,7 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
     updated_order_status = _normalize_order_status(payload.get("order_status") or order.status)
     updated_payment_status = _normalize_payment_status(payload.get("payment_status") or payload.get("pay_status") or "Pending")
     pickup_location = str(payload.get("pickup_location") or "Main Library")
+    status_changed = order.status != updated_order_status
 
     order.status = updated_order_status
     if hasattr(order, "payment_status"):
@@ -8029,7 +8067,7 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
         order.pickup_location = pickup_location
 
     buyer = db.query(Student).filter(Student.student_id == order.student_id).first()
-    if buyer:
+    if buyer and status_changed:
         order_message = (
             f"Your order #{order.id} is now marked as {updated_order_status}."
             if updated_order_status != "Processing"

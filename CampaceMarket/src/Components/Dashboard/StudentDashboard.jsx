@@ -255,6 +255,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [wishlistMessage, setWishlistMessage] = useState('');
   const [cartMessage, setCartMessage] = useState('');
   const [reviewOrderId, setReviewOrderId] = useState(null);
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
     stats: {
@@ -293,6 +294,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!possiblePrice) return 0;
     const numeric = parseFloat(String(possiblePrice).replace(/[^0-9.]/g, ''));
     return Number.isFinite(numeric) ? numeric : 0;
+  };
+
+  const normalizeCheckoutPrice = (possiblePrice) => {
+    if (typeof possiblePrice === 'number') return possiblePrice;
+    if (!possiblePrice) return 0;
+
+    const priceText = String(possiblePrice).trim();
+    const numeric = parseFloat(priceText.replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(numeric)) return 0;
+
+    return /\$|usd/i.test(priceText) ? numeric * 56 : numeric;
   };
 
   const formatETB = (value) => {
@@ -368,7 +380,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
-  const cartTotal = cart.reduce((total, item) => total + normalizePrice(item.price), 0);
+  const cartTotal = cart.reduce(
+    (total, item) => total + normalizeCheckoutPrice(item.price) * Number(item.quantity || 1),
+    0
+  );
   const derivedCartItemCount = cart.length;
   const cartItemCount = cartBadgeCount || derivedCartItemCount;
   const wishlistCount = wishlistBadgeCount || wishlist.length;
@@ -1202,6 +1217,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setReviewFeedback('Please choose an order and add a comment.');
       return;
     }
+    if (isSubmittingReview) return;
+
+    setIsSubmittingReview(true);
     try {
       const res = await fetch('http://127.0.0.1:8000/api/student/review', {
         method: 'POST',
@@ -1225,6 +1243,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (err) {
       console.error('Error submitting review:', err);
       setReviewFeedback('Connection error. Please try again.');
+    } finally {
+      setIsSubmittingReview(false);
     }
   };
 
@@ -1715,52 +1735,34 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       const result = await res.json().catch(() => null);
       if (res.ok) {
+        setCartMessage('Checkout successful.');
         setCart([]);
+        const nextWalletBalance = Number(result?.wallet_balance);
+        if (Number.isFinite(nextWalletBalance)) {
+          walletBalanceRef.current = nextWalletBalance;
+          setWalletBalance(nextWalletBalance);
+          setPaymentInfo((prev) => ({
+            ...prev,
+            balance: nextWalletBalance,
+            recentTx: `Checkout complete for ${formatETB(result?.total || 0)}`
+          }));
+        }
         if (result?.orders && Array.isArray(result.orders)) {
           setOrders(result.orders);
         }
         setBuyerTab('orders');
+      } else {
+        setCartMessage(result?.detail || result?.message || 'Checkout could not be completed.');
       }
     } catch (err) {
       console.error("Error completing checkout:", err);
-    }
-  };
-
-  const handleSecureCheckout = async () => {
-    if (!verifiedStudent || !cart.length || !walletHasSufficientFunds) return;
-
-    const secureTotal = checkoutTotal;
-    const nextWalletBalance = Math.max(currentWalletBalance - secureTotal, 0);
-
-    try {
-      setCart([]);
-      setWalletBalance(nextWalletBalance);
-      setPaymentInfo((prev) => ({
-        ...prev,
-        balance: nextWalletBalance,
-        recentTx: `Secure checkout complete for ${formatETB(secureTotal)}`
-      }));
-      setOrders((prev) => [
-        {
-          id: Date.now(),
-          title: cart[0]?.title || 'Campus purchase',
-          status: 'Processing',
-          price: secureTotal,
-          reviewed: false,
-          pickup_location: 'Campus Bookstore'
-        },
-        ...prev,
-      ]);
-      setBuyerTab('orders');
-    } catch (err) {
-      console.error('Secure checkout simulation failed:', err);
+      setCartMessage('Connection error. Please try again.');
     }
   };
 
   const walletShortfall = Math.max(0, checkoutTotal - currentWalletBalance);
 
   const handleTopUpFromCart = () => {
-    if (!verifiedStudent) return;
     const nextDeposit = Math.ceil(walletShortfall || 500);
     setBuyerTab('payments');
     setDepositAmount(String(nextDeposit));
@@ -3035,7 +3037,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               </p>
                             )}
                             <button
-                              onClick={handleSecureCheckout}
+                              onClick={handleCheckout}
                               disabled={!verifiedStudent || !cart.length || !walletHasSufficientFunds}
                               className="w-full rounded-full bg-emerald-500 py-3.5 font-bold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-emerald-300"
                             >
@@ -3220,9 +3222,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       <button
                                         type="button"
                                         onClick={() => handleSubmitReview(order.id)}
-                                        className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600"
+                                        disabled={isSubmittingReview}
+                                        className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
                                       >
-                                        Submit Review
+                                        {isSubmittingReview ? 'Submitting...' : 'Submit Review'}
                                       </button>
                                     </div>
                                   ) : (

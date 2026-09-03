@@ -7,17 +7,18 @@ const settingsSections = [
     ['notifications', 'Notifications'],
 ];
 
-const ethiopianBanks = [
-    ['CBE', 'Commercial Bank of Ethiopia'],
-    ['Awash', 'Awash Bank'],
-    ['Dashen', 'Dashen Bank'],
-    ['Abyssinia', 'Bank of Abyssinia'],
-    ['Birhan', 'Berhan Bank'],
-    ['Cooperative', 'Cooperative Bank of Oromia'],
-    ['NIB', 'Nib International Bank'],
-    ['PRIDE', 'PRIDE Microfinance'],
-    ['Wegagen', 'Wegagen Bank'],
-    ['ZamZam', 'ZamZam Bank'],
+const BANKS = [
+    ['946', 'Commercial Bank of Ethiopia (CBE)'],
+    ['656', 'Awash Bank'],
+    ['571', 'Berhan Bank'],
+    ['836', 'Cooperative Bank of Oromia (COOP)'],
+    ['979', 'Nib International Bank'],
+    ['472', 'Wegagen Bank'],
+];
+
+const MOBILE_WALLETS = [
+    ['855', 'telebirr'],
+    ['128', 'CBEBirr'],
 ];
 
 const inputClass = 'mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white';
@@ -93,6 +94,9 @@ function SettingsCenter({
     const [payoutMessage, setPayoutMessage] = useState('');
     const [payoutError, setPayoutError] = useState('');
     const [payoutSaving, setPayoutSaving] = useState(false);
+    const [payoutType, setPayoutType] = useState('bank');
+
+    const payoutOptions = payoutType === 'mobile' ? MOBILE_WALLETS : BANKS;
 
     const updatePref = (key) => setNotificationPrefs((previous) => ({ ...previous, [key]: !previous[key] }));
 
@@ -106,6 +110,10 @@ function SettingsCenter({
             setPayoutError('Your authenticated student session is required. Please sign in again.');
             return;
         }
+        if (payoutType === 'mobile' && !/^\d{10}$/.test(payoutForm.account_number)) {
+            setPayoutError('Enter a valid 10-digit phone number for the mobile wallet.');
+            return;
+        }
 
         setPayoutSaving(true);
         try {
@@ -117,6 +125,11 @@ function SettingsCenter({
                 },
                 body: JSON.stringify({ ...payoutForm, student_id: studentId }),
             });
+            if (response.status === 401) {
+                setPayoutError('Your session is unauthorized or expired. Please log out and log back in, then try again.');
+                setPayoutSaving(false);
+                return;
+            }
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data?.detail || 'Unable to configure payout account.');
 
@@ -130,13 +143,12 @@ function SettingsCenter({
     };
 
     const getStudentSessionToken = () => {
-        if (user?.access_token) return user.access_token;
-
         try {
             const savedSession = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-            return savedSession?.user?.access_token || savedSession?.access_token || '';
+            const storedToken = savedSession?.user?.access_token || savedSession?.access_token || '';
+            return storedToken || user?.access_token || '';
         } catch (error) {
-            return '';
+            return user?.access_token || '';
         }
     };
 
@@ -474,10 +486,30 @@ function SettingsCenter({
                 <>
                     <PanelHeader eyebrow="Seller Payouts" title="Get paid directly from campus sales" text="Connect your Ethiopian bank account before publishing products for split payments." />
                     <form onSubmit={handlePayoutSubmit} className="mt-6 grid gap-4 sm:grid-cols-2">
+                        <div className="sm:col-span-2 flex gap-2 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Payout type">
+                            {[
+                                ['bank', 'Traditional Banks'],
+                                ['mobile', 'Mobile Wallets'],
+                            ].map(([type, label]) => (
+                                <button
+                                    key={type}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={payoutType === type}
+                                    onClick={() => {
+                                        setPayoutType(type);
+                                        setPayoutForm((previous) => ({ ...previous, bank_code: '', account_number: '' }));
+                                    }}
+                                    className={`flex-1 rounded-xl px-4 py-3 text-sm font-bold transition ${payoutType === type ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                >
+                                    {label}
+                                </button>
+                            ))}
+                        </div>
                         <Field label="Business Name"><input required value={payoutForm.business_name} onChange={(event) => setPayoutForm((previous) => ({ ...previous, business_name: event.target.value }))} className={inputClass} placeholder="Your seller or business name" /></Field>
                         <Field label="Account Name"><input required value={payoutForm.account_name} onChange={(event) => setPayoutForm((previous) => ({ ...previous, account_name: event.target.value }))} className={inputClass} placeholder="Name on bank account" /></Field>
-                        <Field label="Ethiopian Bank"><select required value={payoutForm.bank_code} onChange={(event) => setPayoutForm((previous) => ({ ...previous, bank_code: event.target.value }))} className={inputClass}><option value="">Select your bank</option>{ethiopianBanks.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></Field>
-                        <Field label="Account Number"><input required inputMode="numeric" value={payoutForm.account_number} onChange={(event) => setPayoutForm((previous) => ({ ...previous, account_number: event.target.value }))} className={inputClass} placeholder="Enter account number" /></Field>
+                        <Field label={payoutType === 'mobile' ? 'Mobile Wallet' : 'Ethiopian Bank'}><select required value={payoutForm.bank_code} onChange={(event) => setPayoutForm((previous) => ({ ...previous, bank_code: event.target.value }))} className={inputClass}><option value="">{payoutType === 'mobile' ? 'Select your mobile wallet' : 'Select your bank'}</option>{payoutOptions.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></Field>
+                        <Field label={payoutType === 'mobile' ? '10-Digit Phone Number' : 'Account Number'}><input required inputMode="numeric" pattern={payoutType === 'mobile' ? '\\d{10}' : undefined} minLength={payoutType === 'mobile' ? 10 : undefined} maxLength={payoutType === 'mobile' ? 10 : undefined} value={payoutForm.account_number} onChange={(event) => setPayoutForm((previous) => ({ ...previous, account_number: event.target.value }))} className={inputClass} placeholder={payoutType === 'mobile' ? 'Enter a valid 10-digit phone number' : 'Enter account number'} /></Field>
                         <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-2"><button type="submit" disabled={payoutSaving} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">{payoutSaving ? 'Connecting...' : 'Save Payout Account'}</button>{payoutMessage && <p className="text-sm font-semibold text-emerald-600">{payoutMessage}</p>}{payoutError && <p className="text-sm font-semibold text-rose-600">{payoutError}</p>}</div>
                     </form>
                 </>

@@ -48,6 +48,17 @@ def init_db() -> None:
     """
     Base.metadata.create_all(bind=engine)
     inspector = inspect(engine)
+    if "reviews" in inspector.get_table_names():
+        review_constraints = {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints("reviews")
+        }
+        if "uq_reviews_order_student" not in review_constraints:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "ALTER TABLE reviews ADD CONSTRAINT uq_reviews_order_student "
+                    "UNIQUE (order_id, student_id)"
+                ))
     if "products" in inspector.get_table_names() and "condition" not in {
         column["name"] for column in inspector.get_columns("products")
     }:

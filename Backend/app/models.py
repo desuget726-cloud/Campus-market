@@ -1,6 +1,6 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -200,6 +200,9 @@ class Transaction(Base):
 
 class Review(Base):
     __tablename__ = "reviews"
+    __table_args__ = (
+        UniqueConstraint("order_id", "student_id", name="uq_reviews_order_student"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
