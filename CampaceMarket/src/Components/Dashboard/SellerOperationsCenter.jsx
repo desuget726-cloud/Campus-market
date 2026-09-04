@@ -2,7 +2,7 @@ import { useState } from 'react';
 
 const formatSellerEtb = (value) => `${Number(value || 0).toLocaleString('en-ET')} ETB`;
 
-function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, setMyListings, setSellerData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice }) {
+function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, setMyListings, setSellerData, setSellerDashboardData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice }) {
     const [chartRange, setChartRange] = useState('3 Months');
     const [chartMetric, setChartMetric] = useState('Revenue');
     const dashboardStats = sellerDashboardData?.stats || {};
@@ -75,14 +75,19 @@ function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, s
                 String(item.id ?? item.order_id ?? item.orderId) === orderId ? { ...item, status } : item,
             ),
         }));
+        setSellerDashboardData?.((previous) => ({
+            ...previous,
+            received_orders: (previous.received_orders || []).map((item) =>
+                String(item.id ?? item.order_id ?? item.orderId) === orderId ? { ...item, status } : item,
+            ),
+        }));
     };
 
     const orderAction = (order) => {
-        const status = String(order.status || 'Pending').toLowerCase();
-        if (status === 'pending') return <div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateOrder(order, 'Accepted')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Accept</button><button type="button" onClick={() => updateOrder(order, 'Rejected')} className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100">Reject</button></div>;
-        if (status === 'accepted') return <button type="button" onClick={() => updateOrder(order, 'Preparing')} className="rounded-full bg-sky-500 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600">Mark as Preparing</button>;
-        if (status === 'preparing') return <button type="button" onClick={() => updateOrder(order, 'Ready for Pickup')} className="rounded-full bg-sky-500 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600">Mark as Ready for Pickup</button>;
-        if (status === 'ready' || status === 'ready for pickup') return <button type="button" onClick={() => updateOrder(order, 'Completed')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Confirm Handover</button>;
+        const status = String(order.status || 'Pending').trim().toLowerCase();
+        if (status === 'pending') return <div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateOrder(order, 'Processing')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Accept</button><button type="button" onClick={() => updateOrder(order, 'Cancelled')} className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100">Reject</button></div>;
+        if (status === 'processing') return <button type="button" onClick={() => updateOrder(order, 'Ready for Pickup')} className="rounded-full bg-sky-500 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600">Mark as Ready for Pickup</button>;
+        if (status === 'ready for pickup') return <button type="button" onClick={() => updateOrder(order, 'Completed')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Confirm Delivery</button>;
         return <span className="text-xs font-semibold text-slate-400">No action required</span>;
     };
 

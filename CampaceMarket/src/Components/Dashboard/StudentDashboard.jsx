@@ -86,7 +86,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       unread: 2,
       product: {
         id: 18,
-        title: 'Final Year Project Prototype Kit',
+        title: 'Ecommerce Project Prototype Kit',
         price: 7800,
         image: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80'
       },
@@ -123,7 +123,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       unread: 0,
       product: {
         id: 29,
-        title: 'Smart Attendance Sensor Kit',
+        title: 'Ecommerce Project Prototype Kit',
         price: 6400,
         image: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80'
       },
@@ -203,6 +203,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   // የገዢው ዳሽቦርድ መረጃዎችን ከዳታቤዝ ለመጥራት የተዘጋጁ ስቴቶች (Buyer States)
   const [wishlist, setWishlist] = useState([]);
   const [cart, setCart] = useState([]);
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [wishlistBadgeCount, setWishlistBadgeCount] = useState(0);
   const [cartBadgeCount, setCartBadgeCount] = useState(0);
   const [orders, setOrders] = useState([]);
@@ -1726,7 +1727,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const handleCheckout = async () => {
-    if (!verifiedStudent) return;
+    if (!verifiedStudent || isCheckingOut) return;
+    setIsCheckingOut(true);
     try {
       const res = await fetch('http://127.0.0.1:8000/api/student/cart/checkout', {
         method: 'POST',
@@ -1757,6 +1759,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (err) {
       console.error("Error completing checkout:", err);
       setCartMessage('Connection error. Please try again.');
+    } finally {
+      setIsCheckingOut(false);
     }
   };
 
@@ -3038,10 +3042,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             )}
                             <button
                               onClick={handleCheckout}
-                              disabled={!verifiedStudent || !cart.length || !walletHasSufficientFunds}
+                              disabled={!verifiedStudent || !cart.length || !walletHasSufficientFunds || isCheckingOut}
                               className="w-full rounded-full bg-emerald-500 py-3.5 font-bold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-emerald-300"
                             >
-                              {walletHasSufficientFunds ? 'Pay with Wallet' : 'Insufficient Wallet Balance'}
+                              {isCheckingOut ? 'Processing...' : walletHasSufficientFunds ? 'Pay with Wallet' : 'Insufficient Wallet Balance'}
                             </button>
 
                             <button
@@ -3352,6 +3356,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'seller' && (
               <SellerOperationsCenter
                 sellerData={sellerData}
+                setSellerDashboardData={setSellerDashboardData}
                 myListings={myListings}
                 setMyListings={setMyListings}
                 setSellerData={setSellerData}

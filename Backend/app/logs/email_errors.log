@@ -787,3 +787,190 @@ Traceback (most recent call last):
   File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
     raise SMTPAuthenticationError(code, resp)
 smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce58d1c9esm57622765e9.0 - gsmtp')
+2026-09-03 23:40:10,304 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cee5f912esm132011105e9.4 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cee5f912esm132011105e9.4 - gsmtp')
+2026-09-03 23:40:13,100 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce5952560sm159609245e9.3 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce5952560sm159609245e9.3 - gsmtp')
+2026-09-03 23:40:15,719 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cee6023edsm129418575e9.7 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cee6023edsm129418575e9.7 - gsmtp')
+2026-09-03 23:40:18,014 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-485885be1c1sm3961573f8f.32 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-485885be1c1sm3961573f8f.32 - gsmtp')
+2026-09-03 23:41:31,724 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce4761dd1sm125596435e9.0 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce4761dd1sm125596435e9.0 - gsmtp')
+2026-09-03 23:47:30,655 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-4858ac2b4cdsm2584113f8f.16 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-4858ac2b4cdsm2584113f8f.16 - gsmtp')
+2026-09-03 23:47:33,368 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-485883a9a56sm3432234f8f.15 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-485883a9a56sm3432234f8f.15 - gsmtp')
+2026-09-03 23:47:36,536 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cfbdacc45sm19865325e9.11 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cfbdacc45sm19865325e9.11 - gsmtp')
+2026-09-03 23:47:38,740 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cf7703cefsm65908785e9.5 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49cf7703cefsm65908785e9.5 - gsmtp')
+2026-09-03 23:49:51,735 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-485885cb03asm3930572f8f.37 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-485885cb03asm3930572f8f.37 - gsmtp')
+2026-09-03 23:49:52,900 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce592b019sm25581705e9.2 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\mau\Documents\Campus-market\backend\app\main.py", line 1452, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 764, in login
+    raise last_exception
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\mau\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 671, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49ce592b019sm25581705e9.2 - gsmtp')

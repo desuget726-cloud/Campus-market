@@ -1427,6 +1427,15 @@ def _add_student_notification(db: Session, student: Student, title: str, message
     preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
     if not preference_fields or not getattr(student, preference_fields[0], True):
         return False
+    duplicate_cutoff = datetime.now() - timedelta(seconds=10)
+    duplicate_notification = db.query(Notification).filter(
+        Notification.student_id == student.student_id,
+        Notification.title == title,
+        Notification.message == message,
+        Notification.created_at >= duplicate_cutoff,
+    ).first()
+    if duplicate_notification:
+        return False
     db.add(Notification(
         student_id=student.student_id,
         title=title,
@@ -5521,7 +5530,7 @@ def delete_cart_item(item_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/student/cart/checkout")
 def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == data.student_id).first()
+    student = db.query(Student).filter(Student.student_id == data.student_id).with_for_update().first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
     require_student_verification = get_security_settings(db).require_student_verification
@@ -5531,7 +5540,7 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
             detail="ID verification is required to complete purchases.",
         )
 
-    cart_items = db.query(CartItem).filter(CartItem.student_id == data.student_id).all()
+    cart_items = db.query(CartItem).filter(CartItem.student_id == data.student_id).with_for_update().all()
     if not cart_items:
         raise HTTPException(status_code=400, detail="Cart is empty.")
 
