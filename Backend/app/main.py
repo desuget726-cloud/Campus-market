@@ -8,9 +8,9 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY:
-    print("🟢 OpenAI Client initialized successfully")
+    print("OpenAI Client initialized successfully")
 else:
-    print("⚠️ OpenAI API Key is missing. Running in local-only mode")
+    print("OpenAI API Key is missing. Running in local-only mode")
 
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,10 +27,6 @@ import shutil
 import logging
 import httpx
 from openai import OpenAI
-try:
-    from duckduckgo_search import DDGS
-except ImportError:
-    DDGS = None
 import uuid
 import json
 import traceback
@@ -3881,35 +3877,67 @@ def format_products_for_response(products: List[Product]) -> str:
 
 
 def perform_web_search(query: str) -> str:
-    """Perform a live web search and return a concise summary of the top results."""
+    """Perform a Google Custom Search and return a concise summary of top results."""
     cleaned_query = (query or '').strip()
     if not cleaned_query:
         return "No web search was performed because the query was empty."
 
+    logger = logging.getLogger("ai_advisor")
+    api_key = os.getenv("GOOGLE_API_KEY")
+    search_engine_id = os.getenv("GOOGLE_CSE_ID")
+    if not api_key or not search_engine_id:
+        logger.warning(
+            "Google Custom Search is not configured: GOOGLE_API_KEY or GOOGLE_CSE_ID is missing."
+        )
+        return "Live web search is unavailable because Google Custom Search is not configured."
+
     try:
-        if DDGS is None:
-            return "Live web search is unavailable because the duckduckgo_search package is not installed."
-
-        with DDGS() as ddgs:
-            results = ddgs.text(cleaned_query, region="wt-wt", safesearch="Moderate", max_results=4)
-
+        response = httpx.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={"key": api_key, "cx": search_engine_id, "q": cleaned_query, "num": 4},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        results = response.json().get("items", [])
         if not results:
             return "No live web search results were found for this query."
 
         formatted_results = []
         for index, item in enumerate(results[:4], start=1):
             title = item.get("title") or "Web result"
-            link = item.get("href") or item.get("link") or "https://example.com"
-            snippet = item.get("body") or item.get("snippet") or "No summary available."
+            link = item.get("link") or "https://example.com"
+            snippet = item.get("snippet") or "No summary available."
             formatted_results.append(
                 f"{index}. {title}\n   Link: {link}\n   Summary: {snippet}"
             )
 
         return "\n\n".join(formatted_results)
-    except Exception as exc:
-        logger = logging.getLogger("ai_advisor")
-        logger.warning("Web search failed for query '%s': %s", cleaned_query, exc)
-        return "Live web search is temporarily unavailable. Use the marketplace data and local guidance when needed."
+    except httpx.TimeoutException:
+        logger.warning("Google Custom Search timed out for query '%s'.", cleaned_query)
+    except httpx.HTTPStatusError as exc:
+        error_details = ""
+        try:
+            error_details = response.json().get("error", {}).get("message", "")
+        except (ValueError, AttributeError):
+            pass
+        logger.warning(
+            "Google Custom Search request failed with HTTP %s for query '%s': %s",
+            exc.response.status_code,
+            cleaned_query,
+            error_details or exc,
+        )
+    except httpx.RequestError as exc:
+        logger.warning("Google Custom Search connection failed for query '%s': %s", cleaned_query, exc)
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("Google Custom Search returned an invalid response for query '%s': %s", cleaned_query, exc)
+
+    return "Live web search is temporarily unavailable. Use the marketplace data and local guidance when needed."
+
+
+AI_ADVISOR_OFFLINE_MESSAGE = (
+    "The AI Advisor is currently offline. Please try local search queries like "
+    "'I want to buy a laptop' or 'How much should I sell a book for?'"
+)
 
 
 def _openai_advisor_response(
@@ -3921,9 +3949,12 @@ def _openai_advisor_response(
     database_context: Optional[str] = None,
     web_context: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Ask OpenAI for a response when configured; return None to use the local fallback."""
+    """Ask OpenAI for a response when configured; return None to use local guidance."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or OpenAI is None:
+        logging.getLogger("ai_advisor").warning(
+            "OpenAI advisor client is not initialized: OPENAI_API_KEY is missing or the OpenAI package is unavailable."
+        )
         return None
 
     try:
@@ -3983,7 +4014,12 @@ def _openai_advisor_response(
             "provider": "openai",
         }
     except Exception as error:
-        logging.getLogger("ai_advisor").warning("OpenAI advisor unavailable; using local fallback: %s", error)
+        advisor_logger = logging.getLogger("ai_advisor")
+        error_text = str(error).lower()
+        if "quota" in error_text or "insufficient_quota" in error_text or getattr(error, "status_code", None) == 429:
+            advisor_logger.warning("OpenAI advisor quota error; using local guidance: %s", error)
+        else:
+            advisor_logger.warning("OpenAI advisor request failed; using local guidance: %s", error)
         return None
 
 
@@ -3997,7 +4033,17 @@ def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
     logger = logging.getLogger("ai_advisor")
     logger.info(f"[AI ADVISOR] Query from {request.student_id}: {message[:100]}")
 
-    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY")) if os.getenv("OPENAI_API_KEY") else None
+    openai_client = None
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key and OpenAI is not None:
+        try:
+            openai_client = OpenAI(api_key=api_key)
+        except Exception as error:
+            logger.warning("OpenAI advisor client initialization failed; using local guidance: %s", error)
+    else:
+        logger.warning(
+            "OpenAI advisor client is not initialized: OPENAI_API_KEY is missing or the OpenAI package is unavailable."
+        )
 
     try:
         intent = detect_intent(message)
@@ -4135,23 +4181,10 @@ Ready to list your item? Create a detailed listing in the Seller Hub!"""
                 }
         
         else:
-            if openai_client is None:
-                reply = """⚠️ **AI Advisor is currently offline**
-
-This Campus AI Advisor is running in local-only mode because the OPENAI_API_KEY is missing from your .env file.
-
-Please add your API key to the environment and restart the backend to enable live AI responses for marketplace and general academic questions."""
-                return {
-                    "reply": reply,
-                    "intent": intent,
-                    "message_type": "offline_guidance"
-                }
-
-            reply = """I can help with marketplace items, academic questions, and broader student advice once the AI model responds. Please try again in a moment."""
             return {
-                "reply": reply,
+                "reply": AI_ADVISOR_OFFLINE_MESSAGE,
                 "intent": intent,
-                "message_type": "general_guidance"
+                "message_type": "offline_guidance"
             }
     
     except Exception as e:

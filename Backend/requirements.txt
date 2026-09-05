@@ -2,7 +2,6 @@ apscheduler
 bcrypt
 cryptography
 deep-translator
-duckduckgo-search
 fastapi
 httpx
 openai
