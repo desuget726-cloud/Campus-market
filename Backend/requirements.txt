@@ -5,10 +5,12 @@ deep-translator
 fastapi
 httpx
 openai
+passlib[bcrypt]
 pydantic
 pymysql
 python-dotenv
 python-multipart
+requests
 scikit-learn
 sqlalchemy
 uvicorn[standard]

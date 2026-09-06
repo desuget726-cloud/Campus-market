@@ -1,15 +1,9 @@
 # C:\xampp\htdocs\Backend\seed_admin.py
-import pymysql
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from passlib.context import CryptContext
 from app.models import Base, Admin
+from app.database import engine, SessionLocal
 
 # የ MySQL ማገናኛ ሊንክ (XAMPP MySQL)
-DATABASE_URL = "mysql+pymysql://root:@127.0.0.1:3306/campusmarket_db"
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def seed_admin():

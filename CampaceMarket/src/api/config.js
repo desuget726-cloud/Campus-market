@@ -1,3 +1,4 @@
-// Configure API base URL for Vite-powered React app.
-// Use `VITE_API_BASE` in your environment (.env) to override default.
-export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+// Configure the Railway API URL at Vite build time.
+export const API_BASE = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
+
+export const apiUrl = (path) => `${API_BASE}${path}`;

@@ -14,7 +14,6 @@ else:
 
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
 
-app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -88,9 +87,10 @@ origins = [
     "http://127.0.0.1:5173",     
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
 ]
+configured_origins = os.getenv("CORS_ORIGINS", "")
+if configured_origins:
+    origins = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,6 +112,11 @@ os.makedirs(ID_CARD_DIR, exist_ok=True)
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 
 class ConnectionManager:

@@ -1,14 +1,6 @@
-import pymysql
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 # የእርስዎን ሞዴሎች እዚህ ጋር ይጠሩ
 from app.models import Base, Category, SubCategory
-
-# የ MySQL ማገናኛ ሊንክ (XAMPP MySQL)
-DATABASE_URL = "mysql+pymysql://root:@127.0.0.1:3306/campusmarket_db"
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+from app.database import engine, SessionLocal
 
 # 16ቱን ምድቦች እና ሁሉንም ንዑሳን ዕቃዎች የያዘ የዳታ ዝርዝር (Database Seeding)
 directory_data = [

@@ -1,19 +1,35 @@
 import os
 from typing import Generator
+from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
-# Read full DATABASE_URL from env or build from components
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = os.getenv("DB_PORT", "3306")
-DB_NAME = os.getenv("DB_NAME", "campusmarket_db")
-
-# Prefer an explicit local XAMPP connection string for development. Allow
-# overriding it via the DATABASE_URL environment variable when needed.
-DATABASE_URL = os.getenv("DATABASE_URL") or "mysql+pymysql://root:@127.0.0.1:3306/campusmarket_db"
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("MYSQL_URL")
+if not DATABASE_URL:
+    db_user = os.getenv("MYSQLUSER") or os.getenv("DB_USER")
+    db_password = os.getenv("MYSQLPASSWORD") or os.getenv("DB_PASSWORD")
+    db_host = os.getenv("MYSQLHOST") or os.getenv("DB_HOST")
+    db_port = os.getenv("MYSQLPORT") or os.getenv("DB_PORT")
+    db_name = os.getenv("MYSQLDATABASE") or os.getenv("DB_NAME")
+    missing_variables = [
+        name for name, value in {
+            "MYSQLUSER/DB_USER": db_user,
+            "MYSQLPASSWORD/DB_PASSWORD": db_password,
+            "MYSQLHOST/DB_HOST": db_host,
+            "MYSQLPORT/DB_PORT": db_port,
+            "MYSQLDATABASE/DB_NAME": db_name,
+        }.items() if not value
+    ]
+    if missing_variables:
+        raise RuntimeError(
+            "Database configuration is missing. Set DATABASE_URL or Railway MySQL variables: "
+            + ", ".join(missing_variables)
+        )
+    DATABASE_URL = (
+        f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
+        f"@{db_host}:{db_port}/{db_name}"
+    )
 
 
 # Create SQLAlchemy engine and session factory
