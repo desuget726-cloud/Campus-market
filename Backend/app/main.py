@@ -13,6 +13,8 @@ else:
     print("OpenAI API Key is missing. Running in local-only mode")
 
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
+
+app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1818,7 +1820,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             raise HTTPException(status_code=403, detail="Student verification is required before login.")
         _reset_login_attempts(db, identifier)
         avatar_filename = f"{student.student_id}.jpg"
-        avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
+        avatar_url = f"http://127.0.0.1:8001/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
         if student.two_factor_enabled:
