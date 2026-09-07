@@ -258,6 +258,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [cartMessage, setCartMessage] = useState('');
   const [reviewOrderId, setReviewOrderId] = useState(null);
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [disputeOrderId, setDisputeOrderId] = useState(null);
+  const [disputeReason, setDisputeReason] = useState('');
+  const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
+  const [disputeFeedback, setDisputeFeedback] = useState('');
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
     stats: {
@@ -320,6 +324,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!raw) return 'Processing';
     const normalized = raw.toLowerCase();
     if (normalized.includes('complete')) return 'Completed';
+    if (normalized.includes('disput')) return 'Disputed';
     if (normalized.includes('ready')) return 'Ready for Pickup';
     if (normalized.includes('process')) return 'Processing';
     if (normalized.includes('placed')) return 'Order Placed';
@@ -390,10 +395,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const cartItemCount = cartBadgeCount || derivedCartItemCount;
   const wishlistCount = wishlistBadgeCount || wishlist.length;
   const orderCount = orders.length;
-  const currentWalletBalance = Number(paymentInfo?.balance ?? 0);
+  const currentWalletBalance = Number(walletBalance ?? paymentInfo?.balance ?? 0);
   const platformFee = cartTotal * 0.035;
   const checkoutTotal = cartTotal + platformFee;
-  const walletHasSufficientFunds = currentWalletBalance >= checkoutTotal;
+  const walletHasSufficientFunds = currentWalletBalance > 0 && currentWalletBalance >= checkoutTotal;
+  const withdrawAmountValue = Number(withdrawAmount);
+  const withdrawExceedsBalance = withdrawAmount !== '' && Number.isFinite(withdrawAmountValue) && withdrawAmountValue > currentWalletBalance;
 
   const transactionLedger = Array.isArray(paymentInfo?.transactions) ? paymentInfo.transactions : [];
   const depositAmountValue = Number(depositAmount);
@@ -509,12 +516,32 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const verifyReturnedPayment = async () => {
       try {
-        const response = await fetch(
-          `http://127.0.0.1:8000/api/payment/verify/${encodeURIComponent(transactionReference)}`,
-        );
+        const response = await fetch('http://127.0.0.1:8000/api/payment/verify/' + transactionReference);
         const data = await response.json().catch(() => ({}));
 
         if (response.ok && String(data?.status || '').trim().toLowerCase() === 'successful') {
+          const verifiedBalance = Number(data?.wallet_balance ?? data?.walletBalance ?? data?.balance);
+          if (Number.isFinite(verifiedBalance)) {
+            walletBalanceRef.current = verifiedBalance;
+            setWalletBalance(verifiedBalance);
+            setPaymentInfo((previousPaymentInfo) => ({
+              ...previousPaymentInfo,
+              balance: verifiedBalance,
+            }));
+          }
+
+          transactionStatusesRef.current.set(String(transactionReference), 'successful');
+          const verifiedAmount = Number(data?.amount ?? 0);
+          const formattedAmount = Number.isFinite(verifiedAmount) && verifiedAmount > 0
+            ? ` ${verifiedAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`
+            : '';
+          window.dispatchEvent(new CustomEvent('campace:payment-verified', {
+            detail: {
+              message: `Payment Verified!${formattedAmount} has been added to your wallet.`,
+            },
+          }));
+          window.alert(`Payment successful!${formattedAmount} has been added to your wallet.`);
+
           await fetchBuyerDashboardData();
 
           callbackUrl.searchParams.delete('trx_ref');
@@ -1287,6 +1314,74 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
+  const handleSubmitDispute = async (event) => {
+    event.preventDefault();
+    const targetOrderId = Number(disputeOrderId);
+    const reason = disputeReason.trim();
+    if (!targetOrderId || !reason || isSubmittingDispute) return;
+
+    setIsSubmittingDispute(true);
+    setDisputeFeedback('');
+    try {
+      const token = user?.access_token || user?.accessToken || '';
+      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${targetOrderId}/dispute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ reason }),
+      });
+
+      if (!response.ok) {
+        setDisputeFeedback(await getErrorString(response));
+        return;
+      }
+
+      setOrders((previous) => previous.map((order) => (
+        Number(order.id) === targetOrderId
+          ? { ...order, status: 'Disputed', fulfillment_status: 'Disputed', dispute_reason: reason }
+          : order
+      )));
+      setDisputeOrderId(null);
+      setDisputeReason('');
+      setDisputeFeedback('Dispute raised. An Admin is reviewing the case.');
+    } catch (error) {
+      console.error('Error raising dispute:', error);
+      setDisputeFeedback('Connection error. Please try again.');
+    } finally {
+      setIsSubmittingDispute(false);
+    }
+  };
+
+  const handleChatInitiate = (sellerId, sellerName) => {
+    const normalizedSellerId = String(sellerId || '').trim();
+    if (!normalizedSellerId) return;
+
+    const existingConversation = conversationsList.find((conversation) => (
+      String(conversation.studentId || conversation.student_id || '').trim() === normalizedSellerId
+    ));
+    if (existingConversation) {
+      setActiveConversationId(existingConversation.id);
+    } else {
+      const newConversation = {
+        id: `conv-${normalizedSellerId}`,
+        studentId: normalizedSellerId,
+        name: sellerName || normalizedSellerId,
+        status: 'offline',
+        unread: 0,
+        lastMessage: 'Start a conversation with this seller.',
+        timestamp: 'now',
+        product: null,
+        messages: [],
+      };
+      setConversationsList((previousConversations) => [newConversation, ...previousConversations]);
+      setActiveConversationId(newConversation.id);
+      setActiveChatMessages([]);
+    }
+    setActiveTab('messages');
+  };
+
   const handleDepositSubmit = async (e) => {
     e.preventDefault();
     setDepositError('');
@@ -1353,8 +1448,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setWithdrawError('');
     const amount = Number(withdrawAmount);
 
-    if (!amount || amount <= 0) {
-      setWithdrawError('Please enter a valid withdrawal amount.');
+    if (!amount || amount < 100) {
+      setWithdrawError('Withdrawal amount must be at least 100 ETB.');
       return;
     }
 
@@ -1393,12 +1488,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         throw new Error(data.detail || data.message || 'Withdrawal request failed.');
       }
 
+      const nextBalance = Number(data.wallet_balance ?? data.walletBalance ?? data.balance);
+      if (Number.isFinite(nextBalance)) {
+        walletBalanceRef.current = nextBalance;
+        setWalletBalance(nextBalance);
+        setPaymentInfo((previousPaymentInfo) => ({
+          ...previousPaymentInfo,
+          balance: nextBalance,
+          recentTx: data.message || 'Withdrawal request processed.',
+        }));
+      }
       setShowWithdrawModal(false);
       setWithdrawAmount('');
       setWithdrawAccountNumber('');
       setWithdrawBankCode('telebirr');
       await fetchWalletBalance();
-      setPaymentInfo((prev) => ({ ...prev, recentTx: data.message || 'Withdrawal request processed.' }));
     } catch (err) {
       console.error('Withdrawal failed:', err);
       setWithdrawError(err.message || 'Could not process the withdrawal.');
@@ -1787,9 +1891,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             recentTx: `Checkout complete for ${formatETB(result?.total || 0)}`
           }));
         }
-        if (result?.orders && Array.isArray(result.orders)) {
-          setOrders(result.orders);
-        }
+        await fetchBuyerDashboardData();
         setBuyerTab('orders');
       } else {
         setCartMessage(result?.detail || result?.message || 'Checkout could not be completed.');
@@ -2958,6 +3060,52 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         })}
                       </div>
                     )}
+
+                    {disputeOrderId && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-labelledby="dispute-modal-title">
+                        <form onSubmit={handleSubmitDispute} className="w-full max-w-lg rounded-[28px] bg-white p-6 shadow-2xl">
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-600">Order dispute</p>
+                              <h4 id="dispute-modal-title" className="mt-2 text-2xl font-bold text-slate-900">Why are you raising a dispute?</h4>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setDisputeOrderId(null)}
+                              className="rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-50"
+                            >
+                              Close
+                            </button>
+                          </div>
+                          <textarea
+                            autoFocus
+                            required
+                            rows="5"
+                            value={disputeReason}
+                            onChange={(event) => setDisputeReason(event.target.value)}
+                            placeholder="Describe the issue with this order..."
+                            className="mt-5 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white"
+                          />
+                          <p className="mt-2 text-xs text-slate-500">An Admin will review the case before the funds are refunded or released.</p>
+                          <div className="mt-5 flex justify-end gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setDisputeOrderId(null)}
+                              className="rounded-full border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={isSubmittingDispute || !disputeReason.trim()}
+                              className="rounded-full bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isSubmittingDispute ? 'Submitting...' : 'Submit Dispute'}
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -3059,6 +3207,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <span>Total</span>
                               <span>{formatETB(checkoutTotal)}</span>
                             </div>
+                            {!walletHasSufficientFunds && (
+                              <p className="text-sm font-semibold text-amber-700">
+                                Insufficient balance. Please top up your wallet.
+                              </p>
+                            )}
                           </div>
 
                           <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50 p-3">
@@ -3080,7 +3233,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             )}
                             <button
                               onClick={handleCheckout}
-                              disabled={!verifiedStudent || !cart.length || !walletHasSufficientFunds || isCheckingOut}
+                              disabled={!verifiedStudent || !cart.length || currentWalletBalance <= 0 || currentWalletBalance < checkoutTotal || isCheckingOut}
                               className="w-full rounded-full bg-emerald-500 py-3.5 font-bold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-emerald-300"
                             >
                               {isCheckingOut ? 'Processing...' : walletHasSufficientFunds ? 'Pay with Wallet' : 'Insufficient Wallet Balance'}
@@ -3108,7 +3261,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <h3 className="border-b border-slate-200 pb-2 text-xl font-bold text-slate-900">Your Orders</h3>
                         <p className="mt-3 text-sm text-slate-500">Track fulfillment, pickup details, and post-purchase feedback for every order.</p>
                       </div>
-                      {reviewFeedback && <p className="rounded-full bg-sky-50 px-4 py-2 text-sm text-sky-700">{reviewFeedback}</p>}
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {reviewFeedback && <p className="rounded-full bg-sky-50 px-4 py-2 text-sm text-sky-700">{reviewFeedback}</p>}
+                        {disputeFeedback && <p className="rounded-full bg-rose-50 px-4 py-2 text-sm text-rose-700">{disputeFeedback}</p>}
+                      </div>
                     </div>
 
                     {orders.length === 0 ? (
@@ -3131,6 +3287,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         {orders.map((order) => {
                           const orderStatus = normalizeOrderStatus(order.fulfillment_status || order.status || 'Processing');
                           const paymentStatus = normalizePaymentStatus(order.payment_status || order.paymentStatus || order.pay_status || 'Successful');
+                          const sellerId = order.seller_id || order.sellerId || order.seller;
                           const sellerName = order.seller_name || order.sellerName || order.seller || 'Campus Seller';
                           const pickupLocation = order.pickup_location || order.pickupLocation || 'Engineering Building';
                           const timelineSteps = ['Order Placed', 'Processing', 'Ready for Pickup', 'Completed'];
@@ -3151,7 +3308,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <h4 className="mt-2 text-xl font-bold text-slate-900">{order.title || order.product_title || 'Campus Purchase'}</h4>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <span className="rounded-full bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700">{orderStatus}</span>
+                                  <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${orderStatus === 'Disputed' ? 'bg-rose-100 text-rose-700' : 'bg-blue-50 text-blue-700'}`}>{orderStatus}</span>
                                   <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">{paymentStatus}</span>
                                 </div>
                               </div>
@@ -3166,13 +3323,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Seller</p>
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      if (onNavigate) {
-                                        onNavigate('student-dashboard-profile');
-                                      } else {
-                                        setActiveTab('profile');
-                                      }
-                                    }}
+                                    onClick={() => handleChatInitiate(sellerId, sellerName)}
                                     className="mt-2 inline-flex items-center rounded-full bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-800 transition hover:bg-slate-200"
                                   >
                                     {sellerName}
@@ -3197,6 +3348,34 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 </div>
                                 <p className="mt-3 text-sm text-slate-600">Collect your item from <span className="font-semibold text-slate-800">{pickupLocation}</span> on campus.</p>
                               </div>
+
+                              {orderStatus === 'Disputed' && (
+                                <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+                                  <p className="text-sm font-semibold text-rose-800">An Admin is reviewing this case.</p>
+                                  <p className="mt-1 text-sm text-rose-700">Confirm Pickup is disabled while this dispute is active.</p>
+                                  <button
+                                    type="button"
+                                    disabled
+                                    className="mt-3 rounded-full border border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed"
+                                  >
+                                    Confirm Pickup
+                                  </button>
+                                </div>
+                              )}
+
+                              {orderStatus === 'Processing' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setDisputeOrderId(order.id);
+                                    setDisputeReason('');
+                                    setDisputeFeedback('');
+                                  }}
+                                  className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
+                                >
+                                  Raise Dispute
+                                </button>
+                              )}
 
                               <div className="mt-6">
                                 <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Trade Progress</p>
@@ -4369,6 +4548,88 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </section>
         </main>
       </div>
+
+      {showWithdrawModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
+          <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <h2 className="text-xl font-bold text-slate-950">Withdraw Funds</h2>
+                <p className="mt-1 text-sm text-slate-500">Available balance: {formatETB(currentWalletBalance)}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowWithdrawModal(false);
+                  setWithdrawError('');
+                }}
+                className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
+              >
+                Close
+              </button>
+            </div>
+
+            <form onSubmit={handleWithdrawSubmit} className="space-y-5 px-6 py-6">
+              <div>
+                <label htmlFor="withdraw-amount" className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
+                <input
+                  id="withdraw-amount"
+                  type="number"
+                  min="100"
+                  max={currentWalletBalance}
+                  step="0.01"
+                  value={withdrawAmount}
+                  onChange={(event) => setWithdrawAmount(event.target.value)}
+                  placeholder="Enter withdrawal amount"
+                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="withdraw-bank" className="block text-sm font-semibold text-slate-700">Payout method</label>
+                <select
+                  id="withdraw-bank"
+                  value={withdrawBankCode}
+                  onChange={(event) => setWithdrawBankCode(event.target.value)}
+                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
+                >
+                  <option value="comari">CBE</option>
+                  <option value="telebirr">Telebirr</option>
+                  <option value="abyssi">Abyssinia</option>
+                  <option value="awash">Awash</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="withdraw-account" className="block text-sm font-semibold text-slate-700">Account or phone number</label>
+                <input
+                  id="withdraw-account"
+                  type="text"
+                  value={withdrawAccountNumber}
+                  onChange={(event) => setWithdrawAccountNumber(event.target.value)}
+                  placeholder="Enter account or phone number"
+                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              {withdrawExceedsBalance && (
+                <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                  Insufficient wallet balance for this withdrawal.
+                </p>
+              )}
+              {withdrawError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{withdrawError}</p>}
+
+              <button
+                type="submit"
+                disabled={withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
+                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-emerald-300"
+              >
+                {withdrawLoading ? 'Processing...' : 'Submit Withdrawal'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showProductModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">

@@ -178,6 +178,9 @@ class Order(Base):
     title = Column(String(150), nullable=False)
     price = Column(String(50), nullable=False)
     status = Column(String(50), default="Processing", nullable=False)
+    pickup_code = Column(Integer, nullable=False)
+    is_funds_released = Column(Boolean, default=False, nullable=False)
+    dispute_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Order.student_id == Student.student_id", back_populates="orders")

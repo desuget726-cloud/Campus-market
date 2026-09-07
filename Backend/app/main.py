@@ -69,14 +69,22 @@ class ChapaWebhookPayload(BaseModel):
     tx_ref: str = "TX-64BE9960"
     amount: float = 12345.0
     student_id: str = "MAU1600007"
+    reference: Optional[str] = None
+    email: Optional[str] = None
+    currency: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
 
     class Config:
+        extra = "allow"
         json_schema_extra = {
             "example": {
                 "status": "success",
                 "tx_ref": "TX-64BE9960",
                 "amount": 12345.0,
                 "student_id": "MAU1600007",
+                "reference": "CHAPA-REFERENCE",
+                "email": "student@example.com",
+                "currency": "ETB",
             }
         }
 
@@ -409,6 +417,7 @@ def _normalize_order_status(raw_value: Optional[str]) -> str:
         "completed": "Completed",
         "success": "Completed",
         "successful": "Completed",
+        "disputed": "Disputed",
         "cancelled": "Cancelled",
         "canceled": "Cancelled",
         "returned": "Returned",
@@ -638,6 +647,95 @@ async def _reconcile_pending_payments() -> None:
         logging.getLogger("app.payments").exception("Pending payment reconciliation failed.")
     finally:
         db.close()
+
+
+async def _expire_processing_orders() -> None:
+    """Cancel and refund processing orders that were not picked up in time."""
+    cutoff = datetime.now() - timedelta(hours=24)
+    db = SessionLocal()
+    try:
+        expired_order_ids = [order_id for (order_id,) in db.query(Order.id).filter(
+            Order.status == "Processing",
+            Order.created_at < cutoff,
+        ).all()]
+    finally:
+        db.close()
+
+    for order_id in expired_order_ids:
+        order_db = SessionLocal()
+        try:
+            order = order_db.query(Order).filter(
+                Order.id == order_id,
+                Order.status == "Processing",
+                Order.created_at < cutoff,
+            ).with_for_update().first()
+            if not order:
+                continue
+
+            buyer = order_db.query(Student).filter(
+                Student.student_id == order.student_id
+            ).with_for_update().first()
+            product = order_db.query(Product).filter(
+                Product.id == order.product_id
+            ).with_for_update().first()
+            if not buyer or not product:
+                logging.getLogger("app.orders").error(
+                    "Unable to expire order %s because its buyer or product is missing.", order.id
+                )
+                order_db.rollback()
+                continue
+
+            refund_amount = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
+            if refund_amount > 0:
+                buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
+                order_db.add(Transaction(
+                    student_id=buyer.student_id,
+                    tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
+                    type="Refund",
+                    amount=refund_amount,
+                    description=f"Automatic expiration refund for order #{order.id}",
+                    status="Successful",
+                ))
+
+            escrow_hold = order_db.query(Transaction).filter(
+                Transaction.student_id == order.student_id,
+                Transaction.type == "Escrow Hold",
+                Transaction.status == "Held",
+                Transaction.description == f"Escrow hold for order #{order.id}",
+            ).with_for_update().first()
+            if escrow_hold:
+                escrow_hold.status = "Cancelled"
+
+            order.status = "Cancelled"
+            order.is_funds_released = False
+            product.status = "Approved"
+            _dispatch_student_notification(
+                order_db,
+                buyer,
+                "Order Expired",
+                f"Your order for '{order.title}' expired after 24 hours. {refund_amount} ETB was refunded to your wallet.",
+                "order",
+            )
+
+            seller = order_db.query(Student).filter(
+                (Student.student_id == product.seller) | (Student.name == product.seller)
+            ).first() if product.seller else None
+            if seller and seller.student_id != buyer.student_id:
+                _dispatch_student_notification(
+                    order_db,
+                    seller,
+                    "Order Expired",
+                    f"The order for '{order.title}' expired after 24 hours and the product is available again.",
+                    "order",
+                )
+
+            order_db.commit()
+            logging.getLogger("app.orders").info("Expired and refunded order %s.", order.id)
+        except SQLAlchemyError:
+            order_db.rollback()
+            logging.getLogger("app.orders").exception("Unable to expire order %s.", order_id)
+        finally:
+            order_db.close()
 
 
 # Read Gmail SMTP credentials from Backend/.env or the process environment.
@@ -1085,6 +1183,23 @@ class CheckoutRequest(BaseModel):
     student_id: str
 
 
+class PickupVerificationRequest(BaseModel):
+    order_id: int
+    input_code: int
+
+
+class OrderCancellationRequest(BaseModel):
+    student_id: str
+
+
+class DisputeCreateRequest(BaseModel):
+    reason: str
+
+
+class DisputeResolutionRequest(BaseModel):
+    decision: str
+
+
 class AIChatRequest(BaseModel):
     message: str
 
@@ -1513,7 +1628,11 @@ def _seed_default_system_settings(db: Session) -> None:
         return
 
     for key, value in DEFAULT_SETTINGS_BLOCKS.items():
-        db.add(SystemSetting(key=key, value=json.dumps(value, ensure_ascii=False)))
+        setting_value = value
+        if key == "payment":
+            setting_value = json.loads(json.dumps(value, ensure_ascii=False))
+            setting_value.setdefault("security", {})["automaticVerification"] = True
+        db.add(SystemSetting(key=key, value=json.dumps(setting_value, ensure_ascii=False)))
 
     db.commit()
 
@@ -1557,6 +1676,9 @@ def ensure_database_compatibility(db: Session) -> None:
             "pickup_location": "ALTER TABLE orders ADD COLUMN pickup_location VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
             "payment_status": "ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) NOT NULL DEFAULT 'Successful'",
             "reviewed": "ALTER TABLE orders ADD COLUMN reviewed BOOLEAN NOT NULL DEFAULT FALSE",
+            "pickup_code": "ALTER TABLE orders ADD COLUMN pickup_code INT NOT NULL DEFAULT 1000",
+            "is_funds_released": "ALTER TABLE orders ADD COLUMN is_funds_released BOOLEAN NOT NULL DEFAULT FALSE",
+            "dispute_reason": "ALTER TABLE orders ADD COLUMN dispute_reason TEXT NULL",
         }
         for column_name, statement in order_add_statements.items():
             column = db.execute(text("SHOW COLUMNS FROM orders LIKE :column_name"), {"column_name": column_name})
@@ -1660,6 +1782,15 @@ async def on_startup():
         "interval",
         minutes=10,
         id="pending-payment-reconciliation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    payment_scheduler.add_job(
+        _expire_processing_orders,
+        "interval",
+        hours=1,
+        id="expire-processing-orders",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -5740,24 +5871,26 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
     cart_total = Decimal("0.00")
     order_payload = []
 
+    locked_products = {}
     for cart_item in cart_items:
-        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
+        product = db.query(Product).filter(Product.id == cart_item.product_id).with_for_update().first()
         if not product:
-            continue
+            raise HTTPException(status_code=400, detail="One or more products in the cart are no longer available.")
+        if str(product.status or "").strip().lower() == "sold":
+            raise HTTPException(status_code=400, detail=f"{product.title} is already sold.")
+        locked_products[product.id] = product
 
         unit_price_etb = Decimal(str(_parse_price_to_etb(product.price)))
         cart_total += unit_price_etb * Decimal(int(cart_item.quantity or 1))
 
     current_wallet_balance = Decimal(str(student.wallet_balance or 0))
-    if current_wallet_balance < cart_total:
-        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
+    if current_wallet_balance <= Decimal("0.00") or current_wallet_balance < cart_total:
+        raise HTTPException(status_code=400, detail="Insufficient wallet balance")
 
     student.wallet_balance = current_wallet_balance - cart_total
 
     for cart_item in cart_items:
-        product = db.query(Product).filter(Product.id == cart_item.product_id).first()
-        if not product:
-            continue
+        product = locked_products[cart_item.product_id]
 
         order = Order(
             student_id=data.student_id,
@@ -5765,10 +5898,20 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
             title=product.title,
             price=product.price,
             status="Processing",
+            pickup_code=secrets.randbelow(9000) + 1000,
+            is_funds_released=False,
         )
         product.status = "Sold"
         db.add(order)
         db.flush()
+        db.add(Transaction(
+            student_id=data.student_id,
+            tx_id=f"ESCROW-{uuid.uuid4().hex[:10].upper()}",
+            type="Escrow Hold",
+            amount=unit_price_etb * Decimal(int(cart_item.quantity or 1)),
+            description=f"Escrow hold for order #{order.id}",
+            status="Held",
+        ))
         recent_click = db.query(AIRecommendationLog.id).filter(
             AIRecommendationLog.student_id == data.student_id,
             AIRecommendationLog.product_id == product.id,
@@ -5823,6 +5966,110 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
     }
 
 
+def release_escrow_funds(order_id: int, db: Session) -> Decimal:
+    """Release an order's held funds to its seller after pickup verification."""
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if order.is_funds_released:
+        return Decimal("0.00")
+
+    hold = db.query(Transaction).filter(
+        Transaction.student_id == order.student_id,
+        Transaction.type == "Escrow Hold",
+        Transaction.status == "Held",
+        Transaction.description == f"Escrow hold for order #{order.id}",
+    ).with_for_update().first()
+    if not hold:
+        raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
+
+    product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
+    seller = db.query(Student).filter(
+        (Student.student_id == product.seller) | (Student.name == product.seller)
+    ).with_for_update().first() if product and product.seller else None
+    if not seller:
+        raise HTTPException(status_code=409, detail="Seller not found for order.")
+
+    total_price = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
+    commission_rate = Decimal("0.02")
+    platform_cut = (total_price * commission_rate).quantize(Decimal("0.01"))
+    seller_final_amount = total_price - platform_cut
+
+    system_wallet = db.query(SystemSetting).filter(
+        SystemSetting.key == "system_wallet_balance"
+    ).with_for_update().first()
+    current_system_balance = Decimal(str(system_wallet.value if system_wallet else "0.00"))
+    if system_wallet:
+        system_wallet.value = str((current_system_balance + platform_cut).quantize(Decimal("0.01")))
+    else:
+        db.add(SystemSetting(
+            key="system_wallet_balance",
+            value=str(platform_cut),
+        ))
+
+    seller.wallet_balance = Decimal(str(seller.wallet_balance or 0)).quantize(Decimal("0.01")) + seller_final_amount
+    hold.status = "Released"
+    order.is_funds_released = True
+    db.add(Transaction(
+        student_id=seller.student_id,
+        tx_id=f"RELEASE-{uuid.uuid4().hex[:10].upper()}",
+        type="Escrow Release",
+        amount=seller_final_amount,
+        description=f"Escrow release for order #{order.id}; platform commission {platform_cut} ETB",
+        status="Successful",
+    ))
+    return seller_final_amount
+
+
+def refund_escrow_funds(order_id: int, db: Session) -> Decimal:
+    """Refund an order's held funds to the buyer and close its escrow hold."""
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+
+    hold = db.query(Transaction).filter(
+        Transaction.student_id == order.student_id,
+        Transaction.type == "Escrow Hold",
+        Transaction.status == "Held",
+        Transaction.description == f"Escrow hold for order #{order.id}",
+    ).with_for_update().first()
+    if not hold:
+        raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
+
+    buyer = db.query(Student).filter(
+        Student.student_id == order.student_id
+    ).with_for_update().first()
+    if not buyer:
+        raise HTTPException(status_code=409, detail="Buyer not found for order.")
+
+    amount = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
+    buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + amount
+    hold.status = "Refunded"
+    order.is_funds_released = False
+    db.add(Transaction(
+        student_id=buyer.student_id,
+        tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
+        type="Refund",
+        amount=amount,
+        description=f"Dispute refund for order #{order.id}",
+        status="Successful",
+    ))
+    return amount
+
+
+def _notify_admins_of_order_event(db: Session, order: Order, action: str, description: str) -> None:
+    for admin in db.query(Admin).all():
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action=action,
+            entity_type="Order",
+            entity_id=order.id,
+            description=description,
+            status="SUCCESS",
+            ip_address=None,
+        ))
+
+
 @app.get("/api/student/orders")
 def get_student_orders(student_id: str, db: Session = Depends(get_db)):
     _validate_student_id(db, student_id, field_name="student_id")
@@ -5835,6 +6082,7 @@ def get_student_orders(student_id: str, db: Session = Depends(get_db)):
             o.title,
             o.price,
             o.status,
+            o.pickup_code,
             o.created_at,
             COALESCE(o.pickup_location, '') AS pickup_location,
             COALESCE(o.payment_status, 'Successful') AS payment_status,
@@ -5864,16 +6112,176 @@ def get_student_orders(student_id: str, db: Session = Depends(get_db)):
             "title": row["title"] or row["product_title"] or "Campus Purchase",
             "status": _normalize_order_status(row["status"] or "Processing"),
             "fulfillment_status": _normalize_order_status(row["status"] or "Processing"),
+            "pickup_code": row["pickup_code"],
             "price": row["price"],
             "created_at": row["created_at"],
             "pickup_location": pickup_location,
             "payment_status": payment_status,
+            "seller_id": row["seller_id"],
             "seller_name": seller_name,
             "seller": seller_name,
             "reviewed": bool(row["reviewed"]),
         })
 
     return result
+
+
+@app.post("/api/student/orders/{id}/cancel")
+def cancel_student_order(
+    id: int,
+    payload: OrderCancellationRequest,
+    db: Session = Depends(get_db),
+):
+    order = db.query(Order).filter(
+        Order.id == id,
+        Order.student_id == payload.student_id,
+    ).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if str(order.status or "").strip().lower() != "processing":
+        raise HTTPException(status_code=400, detail="Only Processing orders can be cancelled.")
+
+    student = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
+    product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
+    if not student or not product:
+        raise HTTPException(status_code=404, detail="Order records could not be loaded.")
+
+    refund_amount = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
+    if refund_amount <= 0:
+        raise HTTPException(status_code=400, detail="Order price is not refundable.")
+
+    try:
+        student.wallet_balance = Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
+        order.status = "Cancelled"
+        escrow_hold = db.query(Transaction).filter(
+            Transaction.student_id == order.student_id,
+            Transaction.type == "Escrow Hold",
+            Transaction.status == "Held",
+            Transaction.description == f"Escrow hold for order #{order.id}",
+        ).with_for_update().first()
+        if escrow_hold:
+            escrow_hold.status = "Cancelled"
+        product.status = "Approved"
+        db.add(Transaction(
+            student_id=student.student_id,
+            tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
+            type="Refund",
+            amount=refund_amount,
+            description=f"Refund for cancelled order #{order.id}",
+            status="Successful",
+        ))
+        _dispatch_student_notification(
+            db,
+            student,
+            "Order Cancelled",
+            f"Your order for '{order.title}' was cancelled and {refund_amount} ETB was refunded to your wallet.",
+            "order",
+        )
+        db.commit()
+        db.refresh(order)
+        db.refresh(student)
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.orders").exception("Unable to cancel order %s and refund wallet.", id)
+        raise HTTPException(status_code=500, detail="Unable to cancel order and refund wallet.")
+
+    return {
+        "success": True,
+        "message": "Order cancelled and wallet refunded successfully.",
+        "order_id": order.id,
+        "status": order.status,
+        "product_status": product.status,
+        "refund_amount": float(refund_amount),
+        "wallet_balance": float(student.wallet_balance),
+    }
+
+
+@app.post("/api/student/orders/{id}/dispute")
+def raise_order_dispute(
+    id: int,
+    payload: DisputeCreateRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    buyer = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(
+        Order.id == id,
+        Order.student_id == buyer.student_id,
+    ).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if not payload.reason or not payload.reason.strip():
+        raise HTTPException(status_code=400, detail="Dispute reason is required.")
+    if str(order.status or "").strip().lower() in {"completed", "cancelled", "disputed"}:
+        raise HTTPException(status_code=400, detail="This order cannot be disputed in its current state.")
+
+    product = db.query(Product).filter(Product.id == order.product_id).first()
+    order.status = "Disputed"
+    order.dispute_reason = payload.reason.strip()
+    dispute_message = f"Order #{order.id} has been disputed. Reason: {order.dispute_reason}"
+    _dispatch_student_notification(db, buyer, "Order Disputed", dispute_message, "order")
+
+    seller = db.query(Student).filter(
+        (Student.student_id == product.seller) | (Student.name == product.seller)
+    ).first() if product and product.seller else None
+    if seller and seller.student_id != buyer.student_id:
+        _dispatch_student_notification(
+            db,
+            seller,
+            "Order Disputed",
+            f"Order #{order.id} for '{order.title}' was disputed by the buyer and is awaiting admin resolution.",
+            "order",
+        )
+    _notify_admins_of_order_event(db, order, "Order Dispute Raised", dispute_message)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Dispute raised successfully.",
+        "order_id": order.id,
+        "status": order.status,
+        "dispute_reason": order.dispute_reason,
+    }
+
+
+@app.post("/api/student/orders/verify-pickup")
+def verify_order_pickup(
+    payload: PickupVerificationRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    seller = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(Order.id == payload.order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+
+    product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found for order.")
+
+    if not seller or str(product.seller or "").strip() not in {seller.student_id, seller.name}:
+        raise HTTPException(status_code=403, detail="Only the seller can verify this pickup.")
+
+    if int(order.pickup_code or 0) != payload.input_code:
+        raise HTTPException(status_code=400, detail="Invalid pickup code.")
+    if str(order.status or "").strip().lower() == "completed":
+        raise HTTPException(status_code=400, detail="This order has already been completed.")
+
+    released_amount = release_escrow_funds(order.id, db)
+    order.status = "Completed"
+    product.status = "Sold"
+    db.commit()
+    db.refresh(order)
+
+    return {
+        "success": True,
+        "message": "Pickup verified successfully.",
+        "order_id": order.id,
+        "status": order.status,
+        "product_status": product.status,
+        "released_amount": float(released_amount),
+        "is_funds_released": order.is_funds_released,
+    }
 
 
 @app.post("/api/student/review")
@@ -6091,7 +6499,10 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         "first_name": name_parts[0],
         "last_name": name_parts[1] if len(name_parts) > 1 else name_parts[0],
         "tx_ref": tx_ref,
-        "callback_url": os.getenv("CHAPA_CALLBACK_URL", "http://127.0.0.1:8000/api/admin/payments/webhook"),
+        "callback_url": os.getenv(
+            "CHAPA_CALLBACK_URL",
+            "http://127.0.0.1:8000/api/payment/webhook",
+        ).strip(),
         "return_url": os.getenv("CHAPA_RETURN_URL", "http://localhost:5173/"),
         "customization": {"title": cleaned_marketplace_name},
     }
@@ -6170,18 +6581,20 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
 
 @app.post("/api/student/wallet/withdraw")
 async def withdraw_student_wallet(request: WalletWithdrawalRequest, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == request.student_id).first()
+    student = db.query(Student).filter(Student.student_id == request.student_id).with_for_update().first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    amount = float(request.amount)
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Withdrawal amount must be greater than 0.")
-    if not request.bank_code or not request.account_number:
+    amount = Decimal(str(request.amount)).quantize(Decimal("0.01"))
+    if amount < Decimal("100.00"):
+        raise HTTPException(status_code=400, detail="Withdrawal amount must be at least 100 ETB.")
+    bank_code = str(request.bank_code or "").strip()
+    account_number = str(request.account_number or "").strip()
+    if not bank_code or not account_number:
         raise HTTPException(status_code=400, detail="Bank code and account number are required.")
 
-    current_balance = Decimal(str(student.wallet_balance or 0))
-    if current_balance < Decimal(str(amount)):
+    current_balance = Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01"))
+    if current_balance < amount:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance for withdrawal.")
 
     tx_ref = f"PAYOUT-{uuid.uuid4().hex[:10].upper()}"
@@ -6189,28 +6602,44 @@ async def withdraw_student_wallet(request: WalletWithdrawalRequest, db: Session 
         student_id=student.student_id,
         tx_id=tx_ref,
         type="Wallet Withdrawal",
-        amount=Decimal(str(amount)),
+        amount=amount,
         description="Pending Withdrawal",
         status="Pending",
     )
     db.add(withdrawal)
 
-    student.wallet_balance = current_balance - Decimal(str(amount))
+    # Commit the debit before contacting Chapa so concurrent requests cannot reuse these funds.
+    student.wallet_balance = current_balance - amount
+    db.flush()
     db.commit()
     db.refresh(withdrawal)
 
-    secret = os.getenv("CHAPA_SECRET_KEY")
-    if not secret:
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
+
+    def refund_with_failure(message: str, status_code: int = 400):
         student.wallet_balance = current_balance
         withdrawal.status = "Failed"
-        withdrawal.description = "Withdrawal failed: Chapa transfer secret missing. Funds refunded."
+        withdrawal.description = message
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Wallet Withdrawal Failed",
+            entity_type="Transaction",
+            entity_id=withdrawal.id,
+            description=f"Withdrawal {withdrawal.tx_id} failed for student {student.student_id}: {message}",
+            status="FAILED",
+            ip_address="127.0.0.1",
+        ))
         db.commit()
-        raise HTTPException(status_code=503, detail="Chapa transfer is not configured.")
+        raise HTTPException(status_code=status_code, detail=message)
+
+    secret = os.getenv("CHAPA_SECRET_KEY")
+    if not secret:
+        refund_with_failure("Withdrawal failed: Chapa transfer is not configured. Funds refunded.", 503)
 
     transfer_payload = {
         "account_name": student.name or "Student",
-        "account_number": str(request.account_number).strip(),
-        "bank_code": str(request.bank_code).strip(),
+        "account_number": account_number,
+        "bank_code": bank_code,
         "amount": f"{amount:.2f}",
         "currency": "ETB",
         "reference": tx_ref,
@@ -6225,41 +6654,35 @@ async def withdraw_student_wallet(request: WalletWithdrawalRequest, db: Session 
             )
             response_payload = response.json() if response.content else {}
     except (httpx.HTTPError, ValueError):
-        student.wallet_balance = current_balance
-        withdrawal.status = "Failed"
-        withdrawal.description = "Withdrawal failed. Funds refunded."
-        db.commit()
         logging.getLogger("app.payments").exception("Unable to process withdrawal with Chapa.")
-        raise HTTPException(status_code=502, detail="Unable to process withdrawal with Chapa.")
+        refund_with_failure("Unable to process withdrawal with Chapa. Funds refunded.", 502)
 
     is_success = False
     if isinstance(response_payload, dict):
-        status_value = str(response_payload.get("status") or response_payload.get("data", {}).get("status") or "").lower()
+        response_data = response_payload.get("data") if isinstance(response_payload.get("data"), dict) else {}
+        status_value = str(response_payload.get("status") or response_data.get("status") or "").lower()
         if response.status_code < 400 and status_value in {"success", "successful", "paid", "completed"}:
             is_success = True
-    if not is_success and response.is_error:
-        student.wallet_balance = current_balance
-        withdrawal.status = "Failed"
-        withdrawal.description = response_payload.get("message", "Withdrawal failed. Funds refunded.") if isinstance(response_payload, dict) else "Withdrawal failed. Funds refunded."
-        db.commit()
-        return JSONResponse(
-            status_code=400,
-            content={
-                "success": False,
-                "message": withdrawal.description,
-                "wallet_balance": float(student.wallet_balance),
-                "status": withdrawal.status,
-            },
+
+    if not is_success:
+        failure_message = (
+            response_payload.get("message", "Withdrawal failed. Funds refunded.")
+            if isinstance(response_payload, dict)
+            else "Withdrawal failed. Funds refunded."
         )
+        refund_with_failure(str(failure_message), 400)
 
-    if is_success:
-        withdrawal.status = "Successful"
-        withdrawal.description = "Wallet withdrawal processed successfully."
-    else:
-        student.wallet_balance = current_balance
-        withdrawal.status = "Failed"
-        withdrawal.description = response_payload.get("message", "Withdrawal failed. Funds refunded.") if isinstance(response_payload, dict) else "Withdrawal failed. Funds refunded."
-
+    withdrawal.status = "Successful"
+    withdrawal.description = "Wallet withdrawal processed successfully."
+    db.add(AuditLog(
+        admin_id=admin.id if admin else None,
+        action="Wallet Withdrawal Successful",
+        entity_type="Transaction",
+        entity_id=withdrawal.id,
+        description=f"Withdrawal {withdrawal.tx_id} completed for student {student.student_id}: {amount} ETB.",
+        status="SUCCESS",
+        ip_address="127.0.0.1",
+    ))
     db.commit()
     db.refresh(withdrawal)
     db.refresh(student)
@@ -6742,8 +7165,8 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         month_end = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
         months_labels.append(month_start.strftime("%b %y"))
         monthly_revenue.append(float(db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.status.ilike("Successful"),
-            Transaction.type.ilike("%Purchase%"),
+            func.lower(Transaction.status) == "successful",
+            func.lower(Transaction.type).in_(("purchase", "product purchase")),
             Transaction.created_at >= month_start,
             Transaction.created_at < month_end,
         ).scalar() or 0))
@@ -6863,13 +7286,28 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     revenue_trend = []
     current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     history_months_limit = 6
+    month_windows = []
     for month_offset in range(history_months_limit - 1, -1, -1):
         month_index = current_month.month - month_offset
         year = current_month.year + (month_index - 1) // 12
         month = (month_index - 1) % 12 + 1
         target_date = datetime(year, month, 1)
         next_month = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
+        month_windows.append((target_date, next_month))
 
+    revenue_rows = db.query(Transaction.created_at, Transaction.amount).filter(
+        Transaction.created_at >= month_windows[0][0],
+        Transaction.created_at < month_windows[-1][1],
+        func.lower(Transaction.status) == "successful",
+        func.lower(Transaction.type).in_(("purchase", "product purchase")),
+    ).all()
+    revenue_by_month = {}
+    for created_at, amount in revenue_rows:
+        month_key = (created_at.year, created_at.month)
+        revenue_by_month[month_key] = revenue_by_month.get(month_key, 0) + float(amount or 0)
+
+    for target_date, next_month in month_windows:
+        month_key = (target_date.year, target_date.month)
         trend_months.append(target_date.strftime("%b %y"))
         user_growth.append(db.query(Student).filter(
             Student.created_at >= target_date,
@@ -6879,12 +7317,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             Product.created_at >= target_date,
             Product.created_at < next_month,
         ).count())
-        monthly_revenue = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-            Transaction.created_at >= target_date,
-            Transaction.created_at < next_month,
-            Transaction.status.ilike("Successful"),
-        ).scalar() or 0
-        revenue_trend.append(float(monthly_revenue))
+        revenue_trend.append(revenue_by_month.get(month_key, 0.0))
 
     return {
         "total_students": total_students,
@@ -6922,7 +7355,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             for day_offset in range(7)
         ],
         "productUploadsTrend": product_uploads_trend,
-        "monthlyRevenue": monthly_revenue,
+        "monthlyRevenue": revenue_trend,
         "monthlyOrderCounts": monthly_order_counts,
         "monthsLabels": months_labels,
         "orderStatus": status_distribution,
@@ -7684,54 +8117,10 @@ def update_admin_product_details(
     payload: AdminProductDetailsUpdate,
     db: Session = Depends(get_db),
 ):
-    product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found.")
-
-    details = {
-        "title": payload.title.strip(),
-        "price": payload.price.strip(),
-        "category": payload.category.strip(),
-        "subcategory": payload.subcategory.strip() if payload.subcategory else None,
-        "description": payload.description.strip() if payload.description else None,
-        "condition": payload.condition.strip() if payload.condition else None,
-    }
-    if not details["title"] or not details["price"] or not details["category"]:
-        raise HTTPException(status_code=400, detail="Title, price, and category are required.")
-
-    try:
-        changes = []
-        for field, new_value in details.items():
-            old_value = getattr(product, field)
-            if old_value != new_value:
-                changes.append(f'{field} changed from "{old_value or ""}" to "{new_value or ""}"')
-                setattr(product, field, new_value)
-
-        if changes:
-            admin = db.query(Admin).order_by(Admin.id.asc()).first()
-            db.add(AuditLog(
-                admin_id=admin.id if admin else None,
-                action="Product Details Updated",
-                entity_type="Product",
-                entity_id=product.id,
-                description=f"Admin updated product {product.title} ({product.id}): {'; '.join(changes)}.",
-                status="SUCCESS",
-                ip_address="127.0.0.1",
-            ))
-        db.commit()
-        db.refresh(product)
-        return {"message": "Product details updated successfully.", "product": {
-            "id": product.id,
-            "title": product.title,
-            "price": product.price,
-            "category": product.category,
-            "subcategory": product.subcategory,
-            "description": product.description,
-            "condition": product.condition,
-        }}
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to update product details.")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admins are not allowed to edit listing details.",
+    )
 
 
 @app.get("/api/admin/products")
@@ -7811,7 +8200,12 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
         raise HTTPException(status_code=400, detail="Status is required.")
 
     action_label = normalized_status.lower()
-    product.status = normalized_status
+    current_status = str(product.status or "").strip().lower()
+    if current_status == "sold" and action_label != "sold":
+        raise HTTPException(
+            status_code=400,
+            detail="Sold products cannot be moved back to another status.",
+        )
 
     reason_text = None
     if data.reason and data.reason.strip():
@@ -7822,6 +8216,8 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
         if reason_text is None:
             raise HTTPException(status_code=400, detail="A rejection reason is required when flagging or rejecting a product.")
 
+    product.status = normalized_status
+
     seller_id = product.seller or None
     seller_student = None
     if seller_id:
@@ -7831,9 +8227,13 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
 
     try:
         if action_label in {"flagged", "rejected", "flag", "rejected_flagged"}:
+            moderation_label = "flagged for review" if action_label in {"flagged", "flag"} else "rejected"
             notification_message = (
-                f"Your listing '{product.title}' was flagged by the admin moderation team. "
-                f"Reason: {reason_text}. Please review and update the listing before it is re-approved."
+                f"Your previously approved listing '{product.title}' has been {moderation_label} by the admin moderation team. "
+                f"Reason: {reason_text}. Please review and update the listing before requesting approval again."
+                if current_status == "approved"
+                else f"Your listing '{product.title}' was {moderation_label} by the admin moderation team. "
+                f"Reason: {reason_text}. Please review and update the listing before requesting approval again."
             )
             if _notifications_enabled(db, "approvalNotifs"):
                 if seller_student:
@@ -8059,7 +8459,9 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
 
     gateway_data = chapa_payload.get("data") if isinstance(chapa_payload, dict) else {}
     gateway_status = _normalize_payment_status(
-        (gateway_data or {}).get("status") if isinstance(gateway_data, dict) else None
+        (gateway_data or {}).get("status")
+        if isinstance(gateway_data, dict) and (gateway_data or {}).get("status") is not None
+        else chapa_payload.get("status") if isinstance(chapa_payload, dict) else None
     )
     if response.is_error and gateway_status == "Pending":
         gateway_status = "Failed"
@@ -8067,9 +8469,10 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
     settlement = None
     try:
         if gateway_status == "Successful":
-            # Settle before marking the transaction successful so the helper
-            # can distinguish a new credit from an already-settled retry.
+            # Verified Chapa success always settles immediately; this path
+            # intentionally does not depend on an admin setting.
             settlement = _settle_verified_chapa_transaction(db, tx_ref)
+            db.commit()
             transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
         else:
             transaction.status = gateway_status
@@ -8255,6 +8658,7 @@ def get_admin_orders(db: Session = Depends(get_db)):
                 "order_status": order_status,
                 "payment_status": payment_status,
                 "pay_status": payment_status,
+                "dispute_reason": order.dispute_reason,
                 "pickup_location": "Main Library",
                 "date": order.created_at.isoformat() if order.created_at else None,
                 "price": f"{amount_value:,.0f} ETB",
@@ -8271,6 +8675,75 @@ def get_admin_orders(db: Session = Depends(get_db)):
     except Exception:
         logging.getLogger("app.orders").exception("Unexpected error while loading order records.")
         return JSONResponse(status_code=500, content={"error": "Unexpected error while loading order records", "detail": "An unexpected internal error occurred."})
+
+
+@app.post("/api/admin/orders/{order_id}/resolve-dispute")
+def resolve_order_dispute(
+    order_id: int,
+    payload: DisputeResolutionRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin_token = _extract_admin_token(authorization, session_token)
+    admin, _ = _admin_for_session(db, admin_token)
+    decision = str(payload.decision or "").strip().upper()
+    if decision not in {"REFUND", "RELEASE"}:
+        raise HTTPException(status_code=400, detail="Decision must be REFUND or RELEASE.")
+
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if str(order.status or "").strip().lower() != "disputed":
+        raise HTTPException(status_code=400, detail="Only disputed orders can be resolved.")
+
+    buyer = db.query(Student).filter(
+        Student.student_id == order.student_id
+    ).with_for_update().first()
+    product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
+    if not buyer or not product:
+        raise HTTPException(status_code=404, detail="Order records could not be loaded.")
+
+    try:
+        if decision == "REFUND":
+            amount = refund_escrow_funds(order.id, db)
+            order.status = "Cancelled"
+            product.status = "Approved"
+            resolution_message = f"Dispute for order #{order.id} resolved with a {amount} ETB refund."
+        else:
+            amount = release_escrow_funds(order.id, db)
+            order.status = "Completed"
+            product.status = "Sold"
+            resolution_message = f"Dispute for order #{order.id} resolved with seller payout of {amount} ETB."
+
+        _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order")
+        seller = db.query(Student).filter(
+            (Student.student_id == product.seller) | (Student.name == product.seller)
+        ).first() if product.seller else None
+        if seller and seller.student_id != buyer.student_id:
+            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order")
+        _notify_admins_of_order_event(
+            db,
+            order,
+            "Order Dispute Resolved",
+            f"Admin {admin.username}: {resolution_message}",
+        )
+        db.commit()
+        db.refresh(order)
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.orders").exception("Unable to resolve dispute for order %s.", order_id)
+        raise HTTPException(status_code=500, detail="Unable to resolve order dispute.")
+
+    return {
+        "success": True,
+        "message": "Order dispute resolved successfully.",
+        "order_id": order.id,
+        "decision": decision,
+        "status": order.status,
+        "amount": float(amount),
+        "product_status": product.status,
+    }
 
 
 @app.put("/api/admin/orders/{order_id}")
@@ -8328,9 +8801,25 @@ async def simulate_chapa_webhook(
     db: Session = Depends(get_db),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    payload_dict = payload.dict() if hasattr(payload, "dict") else dict(payload)
+    raw_body = await request.body()
+    try:
+        incoming_payload = await request.json()
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        incoming_payload = {}
+    logging.getLogger("app.payments").info("Incoming Chapa webhook body: %s", incoming_payload)
+    raw_payload = incoming_payload
+    if not raw_payload and raw_body:
+        try:
+            raw_payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raw_payload = {}
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+    payload_dict = raw_payload if isinstance(raw_payload, dict) else (
+        payload.dict() if hasattr(payload, "dict") else dict(payload)
+    )
+    callback_data = payload_dict.get("data") if isinstance(payload_dict.get("data"), dict) else {}
 
-    automatic_verification = _payment_security_enabled(db, "automaticVerification")
     secret = os.getenv("CHAPA_WEBHOOK_SECRET", "").strip()
     callback_signature = (
         request.headers.get("x-chapa-signature")
@@ -8339,31 +8828,35 @@ async def simulate_chapa_webhook(
         or payload_dict.get("x_chapa_signature")
     )
 
-    authorization_value = authorization.strip() if authorization else ""
-    is_signature_bypass = (
-        authorization_value == "bypass"
-        or authorization_value.lower() == "bearer bypass"
-    )
+    # A success callback is allowed to settle automatically only after its
+    # signature is verified. Admin review remains the fallback for rejected
+    # or invalid callbacks; it is never required for a valid success callback.
+    if not secret:
+        raise HTTPException(status_code=503, detail="Webhook verification is not configured.")
+    if not callback_signature:
+        raise HTTPException(status_code=401, detail="Missing transaction signature.")
+    if callback_signature.lower().startswith("bearer "):
+        callback_signature = callback_signature.split(" ", 1)[1].strip()
+    raw_body_signature = _compute_chapa_body_signature(secret, raw_body)
+    canonical_signature = _compute_chapa_signature(secret, payload_dict)
+    if not (
+        hmac.compare_digest(callback_signature.lower(), raw_body_signature.lower())
+        or hmac.compare_digest(callback_signature.lower(), canonical_signature.lower())
+    ):
+        logging.getLogger("app.payments").warning(
+            "Rejected Chapa callback with an invalid signature for transaction %s.",
+            payload_dict.get("tx_ref") or payload_dict.get("transaction_id") or payload_dict.get("tx_id"),
+        )
+        raise HTTPException(status_code=401, detail="Invalid transaction signature. Admin verification is required.")
 
-    if is_signature_bypass:
-        logging.getLogger("app.payments").warning("Webhook signature verification skipped in development mode.")
-    elif automatic_verification:
-        if not secret:
-            raise HTTPException(status_code=503, detail="Webhook verification is not configured.")
-        if not callback_signature:
-            raise HTTPException(status_code=401, detail="Missing transaction signature.")
-        if callback_signature.lower().startswith("bearer "):
-            callback_signature = callback_signature.split(" ", 1)[1].strip()
-        raw_body_signature = _compute_chapa_body_signature(secret, await request.body())
-        canonical_signature = _compute_chapa_signature(secret, payload_dict)
-        if not (
-            hmac.compare_digest(callback_signature.lower(), raw_body_signature.lower())
-            or hmac.compare_digest(callback_signature.lower(), canonical_signature.lower())
-        ):
-            raise HTTPException(status_code=401, detail="Invalid transaction signature.")
-
-    status_value = str(payload_dict.get("status") or payload_dict.get("state") or "pending").strip().lower()
-    if status_value not in {"success", "successful", "paid", "completed"}:
+    status_value = str(
+        payload_dict.get("status")
+        or payload_dict.get("state")
+        or callback_data.get("status")
+        or payload_dict.get("event")
+        or "pending"
+    ).strip().lower()
+    if status_value not in {"success", "successful", "paid", "completed", "charge.success"}:
         raise HTTPException(status_code=400, detail="Payment callback status is not successful.")
 
     tx_ref = str(
@@ -8371,9 +8864,19 @@ async def simulate_chapa_webhook(
         or payload_dict.get("transaction_id")
         or payload_dict.get("tx_id")
         or payload_dict.get("reference")
+        or callback_data.get("tx_ref")
+        or callback_data.get("transaction_id")
+        or callback_data.get("tx_id")
+        or callback_data.get("reference")
         or "TX-UNKNOWN"
     )
-    amount_value = payload_dict.get("amount") or payload_dict.get("total_amount") or 0
+    amount_value = (
+        payload_dict.get("amount")
+        or payload_dict.get("total_amount")
+        or callback_data.get("amount")
+        or callback_data.get("total_amount")
+        or 0
+    )
     try:
         amount = Decimal(str(amount_value)).quantize(Decimal("0.01"))
     except Exception:
@@ -8393,6 +8896,10 @@ async def simulate_chapa_webhook(
         or payload_dict.get("buyer_id")
         or payload_dict.get("studentId")
         or payload_dict.get("customer")
+        or callback_data.get("student_id")
+        or callback_data.get("buyer_id")
+        or callback_data.get("studentId")
+        or callback_data.get("customer")
     )
     if isinstance(student_identifier, dict):
         student_identifier = (
@@ -8404,45 +8911,55 @@ async def simulate_chapa_webhook(
     if student_identifier and str(student_identifier) != str(transaction.student_id):
         raise HTTPException(status_code=400, detail="Payment callback student does not match the transaction.")
 
-    settlement = _settle_verified_chapa_transaction(db, tx_ref, expected_amount=amount)
-    if settlement["already_settled"]:
-        return {
-            "message": "Payment webhook was already processed; replay blocked.",
-            "status": "Successful",
-            "transaction_id": settlement["transaction_id"],
-            "student_id": settlement["student_id"],
-            "wallet_balance": float(settlement["wallet_balance"]),
-            "amount": float(settlement["amount"]),
-        }
+    try:
+        # A valid success callback always settles immediately; automatic
+        # verification is intentionally enabled for this trusted path.
+        settlement = _settle_verified_chapa_transaction(db, tx_ref, expected_amount=amount)
+        if settlement["already_settled"]:
+            return {
+                "message": "Payment webhook was already processed; replay blocked.",
+                "status": "Successful",
+                "transaction_id": settlement["transaction_id"],
+                "student_id": settlement["student_id"],
+                "wallet_balance": float(settlement["wallet_balance"]),
+                "amount": float(settlement["amount"]),
+            }
 
-    transaction = db.query(Transaction).filter(Transaction.tx_id == settlement["transaction_id"]).first()
-    student = db.query(Student).filter(Student.student_id == settlement["student_id"]).first()
-    if not transaction or not student:
-        raise HTTPException(status_code=404, detail="Settled payment records could not be loaded.")
-    transaction.description = transaction.description or "Chapa webhook settlement captured via payment callback."
+        transaction = db.query(Transaction).filter(Transaction.tx_id == settlement["transaction_id"]).first()
+        student = db.query(Student).filter(Student.student_id == settlement["student_id"]).first()
+        if not transaction or not student:
+            raise HTTPException(status_code=404, detail="Settled payment records could not be loaded.")
+        transaction.description = transaction.description or "Chapa webhook settlement captured via payment callback."
 
-    _dispatch_student_notification(
-        db,
-        student,
-        "Payment Successful",
-        f"Your Chapa wallet deposit of {settlement['amount']} ETB was completed successfully.",
-        "payment",
-    )
+        _dispatch_student_notification(
+            db,
+            student,
+            "Payment Successful",
+            f"Your Chapa wallet deposit of {settlement['amount']} ETB was completed successfully.",
+            "payment",
+        )
 
-    admin = db.query(Admin).order_by(Admin.id.asc()).first()
-    db.add(AuditLog(
-        admin_id=admin.id if admin else None,
-        action="Payment Webhook Success",
-        entity_type="Payment",
-        entity_id=transaction.id,
-        description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {settlement['amount']} ETB.",
-        status="SUCCESS",
-        ip_address="127.0.0.1",
-    ))
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
+        db.add(AuditLog(
+            admin_id=admin.id if admin else None,
+            action="Payment Webhook Success",
+            entity_type="Payment",
+            entity_id=transaction.id,
+            description=f"Chapa webhook processed successfully for student {student.student_id}, tx_ref {tx_ref}, amount {settlement['amount']} ETB.",
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
 
-    db.commit()
-    db.refresh(transaction)
-    db.refresh(student)
+        db.commit()
+        db.refresh(transaction)
+        db.refresh(student)
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to settle signed Chapa webhook %s safely.", tx_ref)
+        raise HTTPException(status_code=500, detail="Unable to settle payment webhook safely.")
 
     return {
         "message": "Payment webhook processed successfully.",

@@ -90,6 +90,18 @@ def init_db() -> None:
             if column_name not in report_columns:
                 with engine.begin() as connection:
                     connection.execute(text(f"ALTER TABLE reports ADD COLUMN `{column_name}` {column_definition}"))
+    if "orders" in inspector.get_table_names():
+        order_columns = {column["name"] for column in inspector.get_columns("orders")}
+        missing_order_columns = {
+            "is_funds_released": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "dispute_reason": "TEXT NULL",
+        }
+        for column_name, column_definition in missing_order_columns.items():
+            if column_name not in order_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        f"ALTER TABLE orders ADD COLUMN `{column_name}` {column_definition}"
+                    ))
     if "students" in inspector.get_table_names():
         student_columns = {column["name"] for column in inspector.get_columns("students")}
         missing_student_columns = {

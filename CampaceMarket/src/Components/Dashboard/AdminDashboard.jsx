@@ -405,9 +405,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReason, setRejectReason] = useState('Inappropriate Image');
   const [pendingRejectProduct, setPendingRejectProduct] = useState(null);
-  const [editingProduct, setEditingProduct] = useState(null);
-  const [editProductForm, setEditProductForm] = useState(null);
-  const [isSavingProduct, setIsSavingProduct] = useState(false);
 
   // 4. Category Management States
   const [categoriesList, setCategoriesList] = useState([]);
@@ -426,6 +423,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [orderPage, setOrderPage] = useState(1);
   const ORDERS_PER_PAGE = 10;
   const [selectedOrderDetails, setSelectedOrderDetails] = useState(null);
+  const [disputeResolutionMessage, setDisputeResolutionMessage] = useState('');
+  const [resolvingDisputeId, setResolvingDisputeId] = useState(null);
 
   const calculatedOrderMetrics = useMemo(() => {
     const processingStatuses = new Set(['Processing', 'Pending', 'Ready for Pickup', 'Out for Delivery']);
@@ -1121,6 +1120,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       const popularCategories = data?.popular_categories ?? data?.categories ?? [];
       const hasDatabaseActivity = totalStudents > 0 || totalProducts > 0 || totalOrders > 0 || Number(data?.total_revenue ?? 0) > 0;
       const emptyTrends = [0, 0, 0, 0, 0, 0];
+      const revenueTrendData = Array.isArray(data?.revenueTrend)
+        ? data.revenueTrend
+        : Array.isArray(data?.monthlyRevenue)
+          ? data.monthlyRevenue
+          : Array.isArray(trends.revenue)
+            ? trends.revenue
+            : emptyTrends;
 
       setMetrics({
         totalStudents,
@@ -1139,10 +1145,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           lastSuccessfulTransaction: null,
         },
         trends: {
-          months: data?.monthsLabels ?? trends.months ?? data?.months ?? getDynamicMonths(),
+          months: Array.isArray(trends.months)
+            ? trends.months
+            : Array.isArray(data?.monthsLabels)
+              ? data.monthsLabels
+              : data?.months ?? getDynamicMonths(),
           user_growth: hasDatabaseActivity ? (data?.registrations ?? data?.userGrowth ?? trends.user_growth ?? emptyTrends) : emptyTrends,
           product_uploads: hasDatabaseActivity ? (data?.productUploadsTrend ?? data?.productUploads ?? trends.product_uploads ?? data?.salesTrend ?? emptyTrends) : emptyTrends,
-          revenue: hasDatabaseActivity ? (data?.monthlyRevenue ?? trends.revenue ?? data?.revenueTrend ?? emptyTrends) : emptyTrends,
+          revenue: hasDatabaseActivity ? revenueTrendData : emptyTrends,
         },
         registrationLabels: Array.isArray(data?.registrationLabels) ? data.registrationLabels : [],
         registrations: Array.isArray(data?.registrations) ? data.registrations : [],
@@ -1219,7 +1229,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const userGrowthTrend = Array.isArray(metrics.trends?.user_growth) ? metrics.trends.user_growth : [];
   const productUploadsTrend = Array.isArray(metrics.trends?.product_uploads) ? metrics.trends.product_uploads : [];
-  const revenueTrend = (Array.isArray(metrics.trends?.revenue) ? metrics.trends.revenue : []).slice(-6);
+  const revenueTrend = (Array.isArray(metrics.trends?.revenue) ? metrics.trends.revenue : [])
+    .slice(-6)
+    .map((value) => Number(value) || 0);
   const lineMaxValue = Math.max(
     ...userGrowthTrend.map((value) => Number(value) || 0),
     ...productUploadsTrend.map((value) => Number(value) || 0),
@@ -1228,11 +1240,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const userGrowthSvgPath = generateSvgPath(userGrowthTrend, lineMaxValue);
   const productUploadsSvgPath = generateSvgPath(productUploadsTrend, lineMaxValue);
   const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, lineMaxValue);
-  const maxRevenue = Math.max(...revenueTrend.map((value) => Number(value) || 0), 1);
+  const maxRevenue = Math.max(...revenueTrend, 1);
+  const totalRevenueTrend = revenueTrend.reduce((total, value) => total + (Number(value) || 0), 0);
   const overviewOrderStatus = metrics.order_status_breakdown ?? [];
   const overviewCategories = metrics.popular_categories ?? [];
   const collegeActivity = metrics.college_activity ?? [];
-  const trendMonths = metrics.trends?.months ?? getDynamicMonths();
+  const trendMonths = (Array.isArray(metrics.trends?.months) ? metrics.trends.months : getDynamicMonths()).slice(-6);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -1544,6 +1557,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           order_status: order.order_status || 'Pending',
           payment_status: order.payment_status || order.pay_status || 'Pending',
           pickup_location: order.pickup_location || 'Main Library',
+          dispute_reason: order.dispute_reason || '',
           date: order.date || new Date().toISOString()
         })));
       }
@@ -1616,6 +1630,49 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         order_status: previousOrderStatus,
         payment_status: previousPaymentStatus
       } : item));
+    }
+  };
+
+  const handleResolveDispute = async (order, decision) => {
+    const decisionLabel = decision === 'REFUND' ? 'refund the buyer' : 'release the funds to the seller';
+    const confirmed = window.confirm(
+      `Resolve order #${order.id} and ${decisionLabel}? This permanently changes wallet balances and cannot be undone.`,
+    );
+    if (!confirmed || resolvingDisputeId) return;
+
+    setResolvingDisputeId(order.id);
+    setDisputeResolutionMessage('');
+    try {
+      const token = getAdminSessionToken();
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/orders/${order.id}/resolve-dispute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ decision }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || 'Unable to resolve order dispute.');
+      }
+
+      const nextStatus = decision === 'REFUND' ? 'Cancelled' : 'Completed';
+      setOrdersList((previous) => previous.map((item) => (
+        item.id === order.id
+          ? {
+            ...item,
+            order_status: nextStatus,
+            payment_status: decision === 'REFUND' ? 'Refunded' : 'Successful',
+          }
+          : item
+      )));
+      setDisputeResolutionMessage(`Order #${order.id} resolved: ${decisionLabel}.`);
+      if (selectedOrderDetails?.id === order.id) setSelectedOrderDetails(null);
+    } catch (error) {
+      setDisputeResolutionMessage(error.message || 'Unable to resolve order dispute.');
+    } finally {
+      setResolvingDisputeId(null);
     }
   };
 
@@ -2012,45 +2069,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setPendingRejectProduct(product);
     setRejectReason('Inappropriate Image');
     setShowRejectModal(true);
-  };
-
-  const handleOpenEditProduct = (product) => {
-    setEditingProduct(product);
-    setEditProductForm({
-      title: product.title || '',
-      price: product.price || '',
-      category: product.category || '',
-      subcategory: product.subcategory || '',
-      description: product.description || '',
-      condition: product.condition || 'New',
-    });
-  };
-
-  const handleSaveProductDetails = async (event) => {
-    event.preventDefault();
-    if (!editingProduct || !editProductForm) return;
-    setIsSavingProduct(true);
-    try {
-      const response = await fetch(`http://localhost:8000/api/admin/products/${editingProduct.id}/details`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editProductForm),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.detail || 'Unable to update product details.');
-
-      setProductsList((products) => products.map((product) => product.id === editingProduct.id
-        ? { ...product, ...editProductForm }
-        : product));
-      setEditingProduct(null);
-      setEditProductForm(null);
-      window.alert('Product details updated successfully.');
-    } catch (error) {
-      console.error('Failed to update product details:', error);
-      window.alert(error.message || 'Unable to update product details.');
-    } finally {
-      setIsSavingProduct(false);
-    }
   };
 
   const handleDeleteProduct = async (product) => {
@@ -3052,15 +3070,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">Sales & Revenue Trend</h3>
-                {Number(metrics.totalRevenue ?? metrics.total_revenue ?? 0) === 0 ? (
+                {totalRevenueTrend === 0 ? (
                   <div className="flex h-44 items-center justify-center text-center text-sm font-semibold text-slate-500">
-                    Revenue activity will appear here after successful transactions are recorded.
+                    No sales data recorded
                   </div>
                 ) : (
                   <div className="h-44 w-full flex items-end justify-between gap-3 px-2 mt-2">
                     {revenueTrend.map((value, index) => {
-                      const numericValue = Number(value) || 0;
-                      const height = (numericValue / maxRevenue) * 100;
+                      const height = (value / maxRevenue) * 100;
                       return (
                         <div key={`revenue-${index}`} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
                           <div className="w-full rounded-t-lg bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all duration-300" style={{ height: `${height}%` }} />
@@ -3957,7 +3974,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             product.title?.toLowerCase().includes(prodSearch.toLowerCase()) ||
             product.seller?.toLowerCase().includes(prodSearch.toLowerCase()) ||
             product.seller_id?.toLowerCase().includes(prodSearch.toLowerCase());
-          const matchesStatus = prodStatusFilter ? product.status === prodStatusFilter : true;
+          const matchesStatus = prodStatusFilter
+            ? String(product.status || '').trim().toLowerCase() === prodStatusFilter.toLowerCase()
+            : true;
           const matchesCategory = productCategoryFilter === 'All' || product.category === productCategoryFilter;
           const matchesSubcategory = productSubcategoryFilter === 'All' || product.subcategory === productSubcategoryFilter;
           return matchesSearch && matchesStatus && matchesCategory && matchesSubcategory;
@@ -4052,6 +4071,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <option value="Pending">Pending Review</option>
                   <option value="Approved">Approved</option>
                   <option value="Flagged">Flagged</option>
+                  <option value="Sold">Sold</option>
                 </select>
               </div>
             </div>
@@ -4138,20 +4158,20 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                             >
                               View Details
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenRejectModal(product)}
-                              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
-                            >
-                              Reject/Flag
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEditProduct(product)}
-                              className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100 transition cursor-pointer"
-                            >
-                              Edit
-                            </button>
+                            {['pending', 'approved', 'flagged'].includes(String(product.status || '').trim().toLowerCase()) && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenRejectModal(product)}
+                                className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
+                              >
+                                Reject/Flag
+                              </button>
+                            )}
+                            {String(product.status || '').trim().toLowerCase() === 'sold' && (
+                              <span className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-bold text-slate-500">
+                                Item Sold Out
+                              </span>
+                            )}
                             <button
                               type="button"
                               onClick={() => handleDeleteProduct(product)}
@@ -4159,7 +4179,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                             >
                               Delete
                             </button>
-                            {product.status !== 'Approved' && (
+                            {['pending', 'flagged'].includes(String(product.status || '').trim().toLowerCase()) && (
                               <button
                                 type="button"
                                 onClick={() => handleProductApproval(product.id)}
@@ -4243,55 +4263,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     Close Preview
                   </button>
                 </div>
-              </div>
-            )}
-
-            {editingProduct && editProductForm && (
-              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1002] flex items-center justify-center p-4">
-                <form onSubmit={handleSaveProductDetails} className="max-h-[90vh] overflow-y-auto bg-white rounded-[28px] p-6 max-w-2xl w-full shadow-2xl border border-slate-100 animate-fade-in">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-5">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-sky-500 font-bold">Edit Listing</p>
-                      <h4 className="text-xl font-black text-slate-900 mt-1">{editingProduct.title}</h4>
-                    </div>
-                    <button type="button" onClick={() => { setEditingProduct(null); setEditProductForm(null); }} className="rounded-full bg-slate-100 p-2 hover:bg-slate-200 transition text-slate-500 font-bold" aria-label="Close edit form">✕</button>
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    {[
-                      ['title', 'Title', 'text'],
-                      ['price', 'Price', 'text'],
-                    ].map(([field, label, type]) => (
-                      <label key={field} className="block text-sm font-bold text-slate-700">
-                        {label}
-                        <input required type={type} value={editProductForm[field]} onChange={(event) => setEditProductForm((form) => ({ ...form, [field]: event.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition" />
-                      </label>
-                    ))}
-                    <label className="block text-sm font-bold text-slate-700">Category
-                      <select required value={editProductForm.category} onChange={(event) => setEditProductForm((form) => ({ ...form, category: event.target.value, subcategory: '' }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition">
-                        <option value="">Select category</option>
-                        {dbCategories.map((category) => <option key={category.id ?? category.name} value={category.name}>{category.name}</option>)}
-                      </select>
-                    </label>
-                    <label className="block text-sm font-bold text-slate-700">Subcategory
-                      <select value={editProductForm.subcategory} onChange={(event) => setEditProductForm((form) => ({ ...form, subcategory: event.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition">
-                        <option value="">None</option>
-                        {(dbCategories.find((category) => category.name === editProductForm.category)?.subcategories || []).map((subcategory) => <option key={subcategory.id ?? subcategory.name} value={subcategory.name}>{subcategory.name}</option>)}
-                      </select>
-                    </label>
-                    <label className="block text-sm font-bold text-slate-700">Condition
-                      <select value={editProductForm.condition} onChange={(event) => setEditProductForm((form) => ({ ...form, condition: event.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition">
-                        <option>New</option><option>Like New</option><option>Gently Used</option><option>Good</option><option>Fair</option>
-                      </select>
-                    </label>
-                    <label className="block text-sm font-bold text-slate-700 sm:col-span-2">Description
-                      <textarea value={editProductForm.description} onChange={(event) => setEditProductForm((form) => ({ ...form, description: event.target.value }))} rows="4" className="mt-2 block w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal focus:border-sky-500 focus:bg-white focus:outline-none transition" />
-                    </label>
-                  </div>
-                  <div className="mt-6 flex gap-3">
-                    <button type="button" onClick={() => { setEditingProduct(null); setEditProductForm(null); }} className="flex-1 rounded-full border border-slate-200 bg-white px-4 py-3 font-bold text-slate-700 hover:bg-slate-50 transition">Cancel</button>
-                    <button type="submit" disabled={isSavingProduct} className="flex-1 rounded-full bg-sky-600 px-4 py-3 font-bold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60 transition">{isSavingProduct ? 'Saving...' : 'Save Changes'}</button>
-                  </div>
-                </form>
               </div>
             )}
 
@@ -4563,6 +4534,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         });
         const totalOrderPages = Math.max(1, Math.ceil(filteredOrders.length / ORDERS_PER_PAGE));
         const displayedOrders = filteredOrders.slice((orderPage - 1) * ORDERS_PER_PAGE, orderPage * ORDERS_PER_PAGE);
+        const disputedOrders = ordersList.filter((order) => order.order_status === 'Disputed');
         const handleExportOrdersCSV = () => exportCSVFile('orders.csv', ['Order ID', 'Buyer ID', 'Seller ID', 'Product Title', 'Total Amount', 'Order Status', 'Payment Status', 'Date'], filteredOrders.map((order) => [
           String(order.id || ''), String(order.buyer_id || order.buyer || ''), String(order.seller_id || order.seller || ''),
           String(order.product_title || order.item || ''), String(order.total_amount || order.price || ''), String(order.order_status || ''),
@@ -4635,6 +4607,63 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </p>
             </div>
 
+            {disputeResolutionMessage && (
+              <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">
+                {disputeResolutionMessage}
+              </div>
+            )}
+
+            <section className="rounded-[32px] border border-rose-200 bg-rose-50/60 p-6 shadow-sm">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-600">Needs review</p>
+                  <h3 className="mt-1 text-xl font-black text-slate-950">Disputed Orders</h3>
+                  <p className="mt-1 text-sm text-rose-800">Review the buyer’s reason before permanently moving the escrowed funds.</p>
+                </div>
+                <span className="rounded-full bg-rose-100 px-3 py-1.5 text-xs font-bold text-rose-700">{disputedOrders.length} open</span>
+              </div>
+
+              {disputedOrders.length === 0 ? (
+                <p className="mt-5 rounded-2xl border border-dashed border-rose-200 bg-white/70 p-5 text-sm text-slate-500">No disputed orders require resolution.</p>
+              ) : (
+                <div className="mt-5 space-y-3">
+                  {disputedOrders.map((order) => (
+                    <div key={order.id} className="rounded-2xl border border-rose-200 bg-white p-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-sm font-black text-slate-900">Order #{order.id}</span>
+                            <span className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-bold uppercase text-rose-700">Disputed</span>
+                          </div>
+                          <p className="mt-2 font-semibold text-slate-800">{order.product_title || order.item || 'Campus product'}</p>
+                          <p className="mt-1 text-xs text-slate-500">Buyer: {order.buyer_id || order.buyer} · Seller: {order.seller_id || order.seller}</p>
+                          <p className="mt-2 text-sm text-slate-700"><span className="font-bold">Reason:</span> {order.dispute_reason || 'No reason provided.'}</p>
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleResolveDispute(order, 'REFUND')}
+                            disabled={resolvingDisputeId === order.id}
+                            className="rounded-full bg-rose-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Refund Buyer
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleResolveDispute(order, 'RELEASE')}
+                            disabled={resolvingDisputeId === order.id}
+                            className="rounded-full bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Release to Seller
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="grid gap-3 md:grid-cols-3">
                 <input
@@ -4655,6 +4684,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <option value="Processing">Processing</option>
                   <option value="Ready for Pickup">Ready for Pickup</option>
                   <option value="Out for Delivery">Out for Delivery</option>
+                  <option value="Disputed">Disputed</option>
                   <option value="Completed">Completed</option>
                   <option value="Cancelled">Cancelled</option>
                   <option value="Returned">Returned</option>
@@ -4803,6 +4833,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <option value="Processing">Processing</option>
                         <option value="Ready for Pickup">Ready for Pickup</option>
                         <option value="Out for Delivery">Out for Delivery</option>
+                        <option value="Disputed">Disputed</option>
                         <option value="Completed">Completed</option>
                         <option value="Cancelled">Cancelled</option>
                         <option value="Returned">Returned</option>
