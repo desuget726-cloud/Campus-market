@@ -169,6 +169,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
   const socketRef = useRef(null);
   const activePeerIdRef = useRef('');
+  const paymentVerificationStartedRef = useRef(false);
   const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const walletBalanceRef = useRef(walletBalance);
@@ -496,6 +497,43 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       console.error('Error fetching buyer data:', err);
     }
   };
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || paymentVerificationStartedRef.current) return;
+
+    const callbackUrl = new URL(window.location.href);
+    const transactionReference = callbackUrl.searchParams.get('trx_ref') || callbackUrl.searchParams.get('tx_ref');
+    if (!transactionReference) return;
+
+    paymentVerificationStartedRef.current = true;
+
+    const verifyReturnedPayment = async () => {
+      try {
+        const response = await fetch(
+          `http://127.0.0.1:8000/api/payment/verify/${encodeURIComponent(transactionReference)}`,
+        );
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok && String(data?.status || '').trim().toLowerCase() === 'successful') {
+          await fetchBuyerDashboardData();
+
+          callbackUrl.searchParams.delete('trx_ref');
+          callbackUrl.searchParams.delete('tx_ref');
+          window.history.replaceState(
+            {},
+            document.title,
+            `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
+          );
+        }
+      } catch (error) {
+        console.error('Returned payment verification failed:', error);
+      }
+    };
+
+    verifyReturnedPayment();
+    // The dashboard refresh function is intentionally excluded because it is recreated on render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const buyerSubTabs = [
     { id: 'search', label: 'Search / Browse', badge: 0 },

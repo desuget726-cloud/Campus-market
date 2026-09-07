@@ -18,6 +18,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [chatStatus, setChatStatus] = useState('');
+  const [cartStatus, setCartStatus] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [isChatEnabled, setIsChatEnabled] = useState(true);
   const [messageText, setMessageText] = useState('');
@@ -175,6 +176,39 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       console.error(error);
     } finally {
       setChatLoading(false);
+    }
+  };
+
+  const handleAddToCartFromSearch = async (productId) => {
+    const response = await fetch('http://127.0.0.1:8000/api/student/cart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        student_id: currentUser.studentId,
+        product_id: Number(productId),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.detail || 'Unable to add this product to your cart.');
+    }
+  };
+
+  const handleAddToCart = async () => {
+    const studentId = String(currentUser?.studentId || '').trim();
+    if (!studentId) {
+      window.alert('እባክዎ መጀመሪያ ይግቡ! (Please log in first to add items to your cart.)');
+      return;
+    }
+
+    setCartStatus('');
+    try {
+      await handleAddToCartFromSearch(item?.id || product?.id);
+      setCartStatus('Product added to cart successfully.');
+    } catch (error) {
+      setCartStatus(error.message || 'Unable to add this product to your cart.');
+      console.error(error);
     }
   };
 
@@ -395,8 +429,18 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                   </button>
                 </>
               )}
+              <button
+                type="button"
+                onClick={handleAddToCart}
+                className="w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                Add to Cart
+              </button>
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
+              )}
+              {cartStatus && (
+                <p className="text-sm text-blue-700">{cartStatus}</p>
               )}
               {allowStudentReports && currentUser && (
                 <div className="border-t border-slate-100 pt-4">

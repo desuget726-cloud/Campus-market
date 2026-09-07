@@ -1,10 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ForgotPasswordModal from './ForgotPasswordModal';
 import AuthInfoModal from './AuthInfoModal';
-import logo1 from '../../assets/logo1.jpg';
 import { useLanguage } from '../../context/LanguageContext';
+import { apiUrl } from '../../api/config';
 
-function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
+const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const googleRedirectUri = import.meta.env.VITE_GOOGLE_REDIRECT_URI || `${window.location.origin}/login`;
+const microsoftClientId = import.meta.env.VITE_MICROSOFT_CLIENT_ID || '';
+const microsoftRedirectUri = import.meta.env.VITE_MICROSOFT_REDIRECT_URI || `${window.location.origin}/login`;
+
+const toBase64Url = (bytes) => {
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+};
+
+const createPkcePair = async () => {
+  const verifierBytes = new Uint8Array(32);
+  window.crypto.getRandomValues(verifierBytes);
+  const verifier = toBase64Url(verifierBytes);
+  const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return { verifier, challenge: toBase64Url(new Uint8Array(digest)) };
+};
+
+function LoginForm({ onLoginSuccess, onToggleRegister }) {
   const { t } = useLanguage();
   const [formData, setFormData] = useState({ studentId: '', password: '' });
   const [error, setError] = useState('');
@@ -18,6 +39,66 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+
+  useEffect(() => {
+    const callbackUrl = new URL(window.location.href);
+    const code = callbackUrl.searchParams.get('code');
+    const returnedState = callbackUrl.searchParams.get('state');
+    const oauthError = callbackUrl.searchParams.get('error_description') || callbackUrl.searchParams.get('error');
+    const provider = sessionStorage.getItem('campaceOAuthProvider');
+    const expectedState = sessionStorage.getItem('campaceOAuthState');
+
+    if (!code && !oauthError) return;
+
+    callbackUrl.searchParams.delete('code');
+    callbackUrl.searchParams.delete('state');
+    callbackUrl.searchParams.delete('error');
+    callbackUrl.searchParams.delete('error_description');
+    window.history.replaceState({}, document.title, `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`);
+
+    if (oauthError) {
+      queueMicrotask(() => setError(`Social login failed: ${oauthError}`));
+      return;
+    }
+
+    if (!code || !provider || !returnedState || returnedState !== expectedState) {
+      window.alert('Security verification failed. Please start the login again.');
+      queueMicrotask(() => setError('Social login could not be verified. Please try again.'));
+      return;
+    }
+
+    const codeVerifier = sessionStorage.getItem('campaceOAuthCodeVerifier');
+    sessionStorage.removeItem('campaceOAuthProvider');
+    sessionStorage.removeItem('campaceOAuthState');
+    sessionStorage.removeItem('campaceOAuthCodeVerifier');
+
+    if (!codeVerifier) {
+      window.alert('Security verification failed. Please start the login again.');
+      queueMicrotask(() => setError('The secure login verifier is missing. Please try again.'));
+      return;
+    }
+
+    const callbackPath = provider === 'microsoft'
+      ? '/api/auth/microsoft-callback'
+      : '/api/auth/google-callback';
+    const redirectUri = provider === 'microsoft' ? microsoftRedirectUri : googleRedirectUri;
+
+    fetch(apiUrl(callbackPath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: redirectUri }),
+    })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Social login failed.');
+        onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
+        setIsSuccess(true);
+      })
+      .catch((error) => {
+        setError(error.message || 'Social login failed.');
+      });
+  }, [onLoginSuccess]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -125,112 +206,135 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
     }
   };
 
+  const beginOAuthLogin = async (provider, clientId, redirectUri, authorizationEndpoint, scope) => {
+    if (!clientId) {
+      setError(`${provider} login is not configured.`);
+      return;
+    }
+
+    try {
+      const stateBytes = new Uint8Array(32);
+      window.crypto.getRandomValues(stateBytes);
+      const state = toBase64Url(stateBytes);
+      const { verifier, challenge } = await createPkcePair();
+      sessionStorage.setItem('campaceOAuthProvider', provider);
+      sessionStorage.setItem('campaceOAuthState', state);
+      sessionStorage.setItem('campaceOAuthCodeVerifier', verifier);
+
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope,
+        state,
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        ...(provider === 'microsoft' ? { response_mode: 'query' } : {}),
+      });
+      window.location.assign(`${authorizationEndpoint}?${params.toString()}`);
+    } catch (error) {
+      console.error('Unable to start secure OAuth login:', error);
+      setError('Secure social login could not be started. Please try again.');
+    }
+  };
+
+  const handleGoogleLogin = () => {
+    beginOAuthLogin(
+      'google',
+      googleClientId,
+      googleRedirectUri,
+      'https://accounts.google.com/o/oauth2/v2/auth',
+      'openid email profile',
+    );
+  };
+
+  const handleMicrosoftLogin = () => {
+    beginOAuthLogin(
+      'microsoft',
+      microsoftClientId,
+      microsoftRedirectUri,
+      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+      'openid profile email User.Read',
+    );
+  };
+
 
   return (
     <>
-      <div className="grid min-h-screen grid-cols-1 overflow-hidden bg-white md:grid-cols-2">
-        <section className="relative hidden items-center justify-center overflow-hidden bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-950 px-8 py-16 text-white md:flex">
-          <div className="relative z-10 max-w-lg text-center">
-            <img src={logo1} alt="Campus Portal logo" className="mx-auto mb-8 h-28 w-28 rounded-3xl object-cover shadow-2xl ring-4 ring-white/20" />
-            <h1 className="text-4xl font-black tracking-tight lg:text-5xl">{t('auth.campusPortal')}</h1>
-            <p className="mx-auto mt-5 max-w-md text-base leading-7 text-blue-100 lg:text-lg">
-              {t('auth.secureLoginDescription')}
-            </p>
-            <svg className="mx-auto mt-12 h-52 w-full max-w-sm text-blue-100/90" viewBox="0 0 420 230" fill="none" aria-label="Students exchanging items through a campus marketplace" role="img">
-              <rect x="70" y="32" width="280" height="166" rx="18" fill="white" fillOpacity=".12" stroke="currentColor" strokeWidth="3" />
-              <rect x="98" y="62" width="224" height="102" rx="10" fill="#361754" stroke="currentColor" strokeWidth="3" />
-              <path d="M126 96h78M126 116h126M126 136h52" stroke="currentColor" strokeWidth="8" strokeLinecap="round" />
-              <circle cx="210" cy="184" r="8" fill="currentColor" />
-              <path d="M55 183c22-18 42-18 62 0M303 183c22-18 42-18 62 0" stroke="currentColor" strokeWidth="8" strokeLinecap="round" />
-              <path d="M44 190h84M292 190h84" stroke="currentColor" strokeWidth="5" strokeLinecap="round" />
-              <path d="M183 25c10-13 25-13 35 0M218 25c10-13 25-13 35 0" stroke="#93C5FD" strokeWidth="4" strokeLinecap="round" />
-            </svg>
-          </div>
-          <div className="absolute -bottom-24 -left-16 h-64 w-64 rounded-full border border-white/10" />
-          <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full border border-white/10" />
-        </section>
+      <div className="flex min-h-screen flex-col bg-slate-50 px-4 py-10 sm:px-6">
+        <main className="my-auto w-full max-w-md self-center animate-fade-in rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+          <header className="mb-8">
+            <h1 className="text-3xl font-bold tracking-tight text-slate-900">Welcome Back</h1>
+            <p className="mt-2 text-sm text-slate-500">Sign in to your Campus Marketplace account.</p>
+          </header>
 
-        <section className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-10 sm:px-8">
-          <div className="w-full max-w-md rounded-[28px] border border-slate-200/60 bg-white p-8 shadow-sm animate-fade-in">
-            <div className="mb-6 flex flex-col items-center text-center md:hidden">
-              <img src={logo1} alt="Campus Portal logo" className="h-16 w-16 rounded-2xl object-cover shadow-md ring-2 ring-blue-100" />
-              <p className="mt-3 text-lg font-bold text-blue-800">{t('auth.campusPortal')}</p>
+          {error && (
+            <div className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+              {error}
             </div>
-            <div className="mb-6 text-center">
-              <h2 className="text-2xl font-semibold text-slate-900">{t('auth.welcomeBack')}</h2>
-              <p className="mt-2 text-sm text-slate-500">{t('auth.loginDescription')}</p>
+          )}
+
+          {isSuccess && (
+            <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              <p className="font-semibold">{t('auth.loginSuccessful')}</p>
+              <p className="mt-1">
+                {t('auth.studentId')}: <span className="font-medium">{formData.studentId.trim()}</span>
+              </p>
+              <p>
+                {t('auth.password')}: <span className="font-medium">{formData.password.trim()}</span>
+              </p>
             </div>
+          )}
 
-            {error && (
-              <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-                {error}
-              </div>
-            )}
-
-            {isSuccess && (
-              <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                <p className="font-semibold">{t('auth.loginSuccessful')}</p>
-                <p className="mt-1">
-                  {t('auth.studentId')}: <span className="font-medium">{formData.studentId.trim()}</span>
-                </p>
-                <p>
-                  {t('auth.password')}: <span className="font-medium">{formData.password.trim()}</span>
-                </p>
-              </div>
-            )}
-
-            {showOtpModal && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-                <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
-                  <div className="mb-4 flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-600">Two-step verification</p>
-                      <h3 className="mt-2 text-xl font-bold text-slate-900">Verify your login code</h3>
-                    </div>
-                    <button type="button" onClick={() => setShowOtpModal(false)} className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600">✕</button>
+          {showOtpModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+              <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-600">Two-step verification</p>
+                    <h2 className="mt-2 text-xl font-bold text-slate-900">Verify your login code</h2>
                   </div>
-
-                  <p className="mb-4 text-sm leading-6 text-slate-600">
-                    Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.
-                  </p>
-
-                  <form onSubmit={handleOtpSubmit} className="space-y-4">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={6}
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                      placeholder="000000"
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
-                    />
-                    <button type="submit" className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white">{t('auth.verifyCode')}</button>
-                  </form>
+                  <button type="button" onClick={() => setShowOtpModal(false)} className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600">✕</button>
                 </div>
-              </div>
-            )}
 
-            {!showOtpModal && (
-              <form onSubmit={handleSubmit} className="space-y-4">
+                <p className="mb-4 text-sm leading-6 text-slate-600">
+                  Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.
+                </p>
+
+                <form onSubmit={handleOtpSubmit} className="space-y-4">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="000000"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  />
+                  <button type="submit" className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">{t('auth.verifyCode')}</button>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {!showOtpModal && (
+            <>
+              <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">
-                    {t('auth.studentId')}
-                  </label>
+                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">Student ID</label>
                   <input
                     id="studentId"
                     name="studentId"
                     type="text"
                     value={formData.studentId}
                     onChange={handleChange}
-                    placeholder={t('auth.enterStudentId')}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                    placeholder="Enter your student ID"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">
-                    {t('auth.password')}
-                  </label>
+                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">Password</label>
                   <div className="relative">
                     <input
                       id="password"
@@ -238,56 +342,73 @@ function LoginForm({ onLoginSuccess, onCancel, onToggleRegister }) {
                       type={showPasswordLogin ? 'text' : 'password'}
                       value={formData.password}
                       onChange={handleChange}
-                      placeholder={t('auth.enterPassword')}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 pr-20 text-sm text-slate-800 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                      placeholder="Enter your password"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 pr-20 text-sm text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                     />
                     <button
                       type="button"
                       onClick={() => setShowPasswordLogin((s) => !s)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-600"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-slate-500 hover:text-slate-800"
                     >
-                      {showPasswordLogin ? t('auth.hide') : t('auth.show')}
+                      {showPasswordLogin ? 'Hide' : 'Show'}
                     </button>
                   </div>
                 </div>
 
                 <button
                   type="submit"
-                  className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+                  className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
                 >
-                  {t('auth.login')}
+                  Login
                 </button>
               </form>
-            )}
+              <div className="my-7 flex items-center gap-3 text-xs font-medium text-slate-400">
+                <span className="h-px flex-1 bg-slate-200" />
+                <span>OR</span>
+                <span className="h-px flex-1 bg-slate-200" />
+              </div>
 
-            <div className="mt-6 space-y-2 border-t border-slate-100 pt-5 text-center text-[11px] font-medium text-slate-400">
-              <p>🔒 {t('auth.securedByChapa')}</p>
-              <p className="text-emerald-600">✓ {t('auth.verifiedStudents')}</p>
-            </div>
-
-            <div className="mt-6 flex items-center justify-between text-sm text-slate-500">
-              <button type="button" onClick={onCancel} className="font-medium text-slate-600 hover:text-emerald-700">
-                {t('auth.cancel')}
-              </button>
-              <div className="flex items-center gap-4">
-                <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="font-medium text-emerald-600 hover:text-emerald-700">
-                  {t('auth.forgotPassword')}
+              <div className="space-y-3">
+                <button type="button" onClick={handleGoogleLogin} className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+                    <path fill="#4285F4" d="M21.35 12.23c0-.72-.06-1.42-.18-2.09H12v3.96h5.24a4.48 4.48 0 0 1-1.94 2.94v2.45h3.14c1.84-1.7 2.91-4.2 2.91-7.26Z" />
+                    <path fill="#34A853" d="M12 21.6c2.63 0 4.84-.87 6.45-2.36l-3.14-2.45c-.87.58-1.98.93-3.31.93-2.54 0-4.7-1.72-5.47-4.03H3.29v2.53A9.74 9.74 0 0 0 12 21.6Z" />
+                    <path fill="#FBBC05" d="M6.53 13.69a5.86 5.86 0 0 1 0-3.38V7.78H3.29a9.75 9.75 0 0 0 0 8.44l3.24-2.53Z" />
+                    <path fill="#EA4335" d="M12 6.28c1.43 0 2.71.49 3.72 1.45l2.79-2.79C16.83 3.38 14.63 2.4 12 2.4a9.74 9.74 0 0 0-8.71 5.38l3.24 2.53C7.3 8 9.46 6.28 12 6.28Z" />
+                  </svg>
+                  Continue with Google
                 </button>
-                <button type="button" onClick={onToggleRegister} className="font-medium text-emerald-600 hover:text-emerald-700">
-                  {t('auth.createAccountLink')}
+                <button type="button" onClick={handleMicrosoftLogin} className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+                  <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+                    <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
+                    <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
+                    <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
+                    <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
+                  </svg>
+                  Continue with Microsoft
                 </button>
               </div>
-            </div>
-          </div>
-          <footer className="mt-auto pt-8 text-center text-xs text-slate-400">
-            <button type="button" onClick={() => setShowTerms(true)} className="transition hover:text-slate-600">{t('auth.terms')}</button>
-            <span className="mx-2">•</span>
-            <button type="button" onClick={() => setShowPrivacy(true)} className="transition hover:text-slate-600">{t('auth.privacy')}</button>
-            <span className="mx-2">•</span>
-            <button type="button" onClick={() => setShowHelp(true)} className="transition hover:text-slate-600">{t('auth.needHelp')}</button>
-          </footer>
-        </section>
+
+              <div className="mt-7 flex flex-col items-center justify-center gap-3 text-sm sm:flex-row sm:gap-6">
+                <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="font-medium text-slate-600 transition hover:text-emerald-700">
+                  Forgot password?
+                </button>
+                <button type="button" onClick={onToggleRegister} className="font-medium text-emerald-700 transition hover:text-emerald-800">
+                  Create account
+                </button>
+              </div>
+            </>
+          )}
+        </main>
       </div>
+
+      <footer className="mt-6 text-center text-xs text-slate-400">
+        <button type="button" onClick={() => setShowTerms(true)} className="transition hover:text-slate-600">{t('auth.terms')}</button>
+        <span className="mx-2">•</span>
+        <button type="button" onClick={() => setShowPrivacy(true)} className="transition hover:text-slate-600">{t('auth.privacy')}</button>
+        <span className="mx-2">•</span>
+        <button type="button" onClick={() => setShowHelp(true)} className="transition hover:text-slate-600">{t('auth.needHelp')}</button>
+      </footer>
 
       {(showTerms || showPrivacy || showHelp) && (
         <AuthInfoModal

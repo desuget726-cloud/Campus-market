@@ -12,7 +12,7 @@ if OPENAI_API_KEY:
 else:
     print("OpenAI API Key is missing. Running in local-only mode")
 
-from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, Response, WebSocket, WebSocketDisconnect
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -668,7 +668,7 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
             message = "OTP email skipped: the emailNotifs system setting is disabled."
             email_logger.warning(message)
             print(f"[EMAIL WARNING] {message}", flush=True)
-            return True
+            return False
         if not receiver_email:
             message = "OTP email was not sent: receiver_email is empty."
             email_logger.error(message)
@@ -688,7 +688,8 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
         msg["To"] = receiver_email
         msg.attach(MIMEText(body, "plain"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.starttls()
             server.login(normalized_sender_email, normalized_sender_password)
             server.sendmail(normalized_sender_email, receiver_email, msg.as_string())
 
@@ -702,12 +703,12 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
         print(f"[EMAIL AUTH ERROR] {error_message}", flush=True)
         return False
     except smtplib.SMTPConnectError as error:
-        error_message = f"Could not connect to smtp.gmail.com:465 while sending OTP to {receiver_email}: {error}"
+        error_message = f"Could not connect to smtp.gmail.com:587 while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
         print(f"[EMAIL CONNECTION ERROR] {error_message}", flush=True)
         return False
     except socket.timeout as error:
-        error_message = f"Timed out connecting to smtp.gmail.com:465 while sending OTP to {receiver_email}: {error}"
+        error_message = f"Timed out connecting to smtp.gmail.com:587 while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
         print(f"[EMAIL TIMEOUT] {error_message}", flush=True)
         return False
@@ -722,7 +723,7 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
         print(f"[EMAIL SMTP ERROR] {error_message}", flush=True)
         return False
     except (TimeoutError, OSError) as error:
-        error_message = f"Network error reaching smtp.gmail.com:465 while sending OTP to {receiver_email}: {error}"
+        error_message = f"Network error reaching smtp.gmail.com:587 while sending OTP to {receiver_email}: {error}"
         email_logger.exception(error_message)
         print(f"[EMAIL NETWORK ERROR] {error_message}", flush=True)
         return False
@@ -835,6 +836,12 @@ class SellerPayoutSetupRequest(BaseModel):
 class LoginRequest(BaseModel):
     id_or_email: str
     password: str
+
+
+class OAuthCallbackRequest(BaseModel):
+    code: str
+    code_verifier: str
+    redirect_uri: str
 
 
 class AdminLoginOtpRequest(BaseModel):
@@ -1825,7 +1832,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             raise HTTPException(status_code=403, detail="Student verification is required before login.")
         _reset_login_attempts(db, identifier)
         avatar_filename = f"{student.student_id}.jpg"
-        avatar_url = f"http://127.0.0.1:8001/static/uploads/avatars/{avatar_filename}"
+        avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
         if student.two_factor_enabled:
@@ -1858,6 +1865,152 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         db.commit()
     _record_failed_login(db, identifier, security)
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
+
+
+async def _exchange_oauth_code(token_url: str, payload: dict) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(token_url, data=payload)
+    except httpx.RequestError as error:
+        logging.getLogger("app.auth").error("OAuth token exchange failed: %s", error)
+        raise HTTPException(status_code=502, detail="OAuth provider is unavailable.") from error
+
+    token_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    if not response.is_success or not token_data.get("access_token"):
+        logging.getLogger("app.auth").warning("OAuth token exchange rejected by provider: %s", response.status_code)
+        raise HTTPException(status_code=400, detail="The OAuth authorization code is invalid or expired.")
+    return token_data
+
+
+def _create_secure_session_for_student(student: Student, response: Response, db: Session) -> dict:
+    security = get_security_settings(db)
+    token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        max_age=security.session_timeout * 60,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+
+    avatar_filename = f"{student.student_id}.jpg"
+    avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
+    if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
+        avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+
+    return {
+        "role": "student",
+        "access_token": token,
+        "user": {
+            "name": student.name,
+            "studentId": student.student_id,
+            "email": student.email,
+            "avatarUrl": avatar_url,
+            "is_verified": bool(student.is_verified),
+            "two_factor_enabled": bool(student.two_factor_enabled),
+        },
+    }
+
+
+def _get_pre_registered_student(email: str, db: Session) -> Student:
+    normalized_email = email.strip().lower()
+    student = db.query(Student).filter(Student.email == normalized_email).first()
+    if not student:
+        raise HTTPException(status_code=403, detail="Access denied. Only pre-registered university students are allowed.")
+
+    security = get_security_settings(db)
+    if security.require_student_verification and not student.is_verified:
+        raise HTTPException(status_code=403, detail="Student verification is required before login.")
+    return student
+
+
+@app.post("/api/auth/google-callback")
+async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, db: Session = Depends(get_db)):
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+    configured_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+    if not client_id or not client_secret or not configured_redirect_uri:
+        raise HTTPException(status_code=503, detail="Google OAuth is not configured on the server.")
+    if data.redirect_uri.strip() != configured_redirect_uri:
+        raise HTTPException(status_code=400, detail="Invalid Google OAuth redirect URI.")
+
+    token_data = await _exchange_oauth_code(
+        "https://oauth2.googleapis.com/token",
+        {
+            "code": data.code,
+            "code_verifier": data.code_verifier,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": configured_redirect_uri,
+            "grant_type": "authorization_code",
+        },
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+            )
+    except httpx.RequestError as error:
+        logging.getLogger("app.auth").error("Google userinfo request failed: %s", error)
+        raise HTTPException(status_code=502, detail="Google identity service is unavailable.") from error
+
+    if not response.is_success:
+        raise HTTPException(status_code=400, detail="Google identity verification failed.")
+    profile = response.json()
+    if not profile.get("email") or profile.get("email_verified") is not True:
+        raise HTTPException(status_code=400, detail="Google did not return a verified email address.")
+
+    student = _get_pre_registered_student(profile["email"], db)
+    return _create_secure_session_for_student(student, response, db)
+
+
+@app.post("/api/auth/microsoft-callback")
+async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Response, db: Session = Depends(get_db)):
+    client_id = os.getenv("MICROSOFT_CLIENT_ID", "").strip()
+    client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "").strip()
+    configured_redirect_uri = os.getenv("MICROSOFT_REDIRECT_URI", "").strip()
+    tenant = os.getenv("MICROSOFT_TENANT", "common").strip() or "common"
+    if not client_id or not client_secret or not configured_redirect_uri:
+        raise HTTPException(status_code=503, detail="Microsoft OAuth is not configured on the server.")
+    if data.redirect_uri.strip() != configured_redirect_uri:
+        raise HTTPException(status_code=400, detail="Invalid Microsoft OAuth redirect URI.")
+
+    token_data = await _exchange_oauth_code(
+        f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+        {
+            "code": data.code,
+            "code_verifier": data.code_verifier,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": configured_redirect_uri,
+            "grant_type": "authorization_code",
+            "scope": "openid profile email User.Read",
+        },
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName",
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+            )
+    except httpx.RequestError as error:
+        logging.getLogger("app.auth").error("Microsoft profile request failed: %s", error)
+        raise HTTPException(status_code=502, detail="Microsoft identity service is unavailable.") from error
+
+    if not response.is_success:
+        raise HTTPException(status_code=400, detail="Microsoft identity verification failed.")
+    profile = response.json()
+    email = profile.get("mail") or profile.get("userPrincipalName")
+    if not email:
+        raise HTTPException(status_code=400, detail="Microsoft did not return an email address.")
+
+    student = _get_pre_registered_student(email, db)
+    return _create_secure_session_for_student(student, response, db)
 
 
 @app.post("/api/auth/verify-login-otp")
@@ -6574,7 +6727,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             "name": category_name or "General",
             "product_count": int(product_count),
             "percentage": percentage,
-            "color": category_colors[index]
+            "color": category_colors[index % len(category_colors)]
         })
 
     monthly_revenue = []
@@ -7911,27 +8064,52 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
     if response.is_error and gateway_status == "Pending":
         gateway_status = "Failed"
 
-    transaction.status = gateway_status
-    admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
-    if admin:
-        db.add(AuditLog(
-            admin_id=admin.id,
-            action="Payment Verification Retried",
-            entity_type="Payment",
-            entity_id=transaction.id,
-            description=f"Admin {admin.username} retried Chapa verification for {tx_ref}; status changed from {previous_status} to {gateway_status}.",
-            status="SUCCESS",
-            ip_address="127.0.0.1",
-        ))
+    settlement = None
+    try:
+        if gateway_status == "Successful":
+            # Settle before marking the transaction successful so the helper
+            # can distinguish a new credit from an already-settled retry.
+            settlement = _settle_verified_chapa_transaction(db, tx_ref)
+            transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
+        else:
+            transaction.status = gateway_status
 
-    db.commit()
-    db.refresh(transaction)
-    return {
-        "success": not response.is_error,
-        "transaction_id": transaction.tx_id,
-        "status": gateway_status,
-        "chapa_reference": transaction.tx_id,
-    }
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Payment transaction not found after verification.")
+
+        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        if admin:
+            db.add(AuditLog(
+                admin_id=admin.id,
+                action="Payment Verification Retried",
+                entity_type="Payment",
+                entity_id=transaction.id,
+                description=f"Admin {admin.username} retried Chapa verification for {tx_ref}; status changed from {previous_status} to {gateway_status}.",
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+
+        db.commit()
+        db.refresh(transaction)
+        wallet_balance = settlement["wallet_balance"] if settlement else (
+            db.query(Student.wallet_balance)
+            .filter(Student.student_id == transaction.student_id)
+            .scalar()
+        )
+        return {
+            "success": not response.is_error,
+            "transaction_id": transaction.tx_id,
+            "status": gateway_status,
+            "chapa_reference": transaction.tx_id,
+            "wallet_balance": float(wallet_balance or 0),
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to verify and settle Chapa payment %s safely.", tx_ref)
+        raise HTTPException(status_code=500, detail="Unable to verify and settle payment safely.")
 
 
 @app.post("/api/admin/payments/{payment_ref}/verify")

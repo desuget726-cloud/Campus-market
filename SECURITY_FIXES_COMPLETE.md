@@ -152,3 +152,42 @@ if is_signature_bypass:
 - [ ] Test authentication flows with timing-safe comparisons
 - [ ] Monitor application logs for webhook bypass warnings (should not appear)
 - [ ] Consider enabling security headers and CORS validation
+
+---
+
+## Automatic Fraud Detection and Self-Healing Financial Ledger Reconciliation Engine
+
+The marketplace implements an integrity-control mechanism for detecting and correcting unauthorized wallet-balance manipulation. This mechanism treats the transaction history as the authoritative financial ledger and treats the persisted wallet balance as a materialized operational value that must remain derivable from that ledger. Consequently, a direct database alteration, such as replacing a student's legitimate balance with `99,999,999.99 ETB`, is detectable because it is not supported by the student's recorded successful financial activity.
+
+### Detection and Balance Derivation
+
+The endpoint `GET /api/admin/users/{id}/audit-balance` obtains a row-level lock for the student and wallet before performing the comparison. It then selects the student's transactions whose status is `Successful` and calculates two aggregates:
+
+1. **Legitimate credits:** the sum of successful transactions normalized as `Wallet Deposit`.
+2. **Legitimate debits:** the sum of successful transactions normalized as `Product Purchase`, `Wallet Withdrawal`, or `Seller Payout`.
+
+The expected balance is calculated as:
+
+$$
+	ext{ExpectedBalance} = \sum \text{SuccessfulDeposits} - \sum \text{SuccessfulDebits}
+$$
+
+Both the calculated value and the stored wallet value are normalized to two decimal places before comparison. If the values are equal, the audit returns a `consistent` result and marks the account as verified. If they differ, the condition is classified as a balance-integrity compromise. This comparison is resilient to superficial changes in the wallet row because it derives the expected value from independently persisted transaction records rather than trusting the potentially modified balance column.
+
+### Automatic Mitigation and Self-Healing
+
+When a mismatch is detected, the audit workflow performs three protective actions within a database transaction:
+
+* **Account containment:** the affected student's status is changed to `Suspended`, preventing continued use of an account whose financial state cannot currently be trusted.
+* **Forensic recording:** an audit entry is appended to `audit_logs` with the action `Wallet Balance Reconciliation Alert`, the affected student as the entity, status `ALERT`, and severity `CRITICAL`. The description records the stored balance, expected balance, successful deposits, and successful debits, providing an auditable explanation of the anomaly.
+* **Ledger-based restoration:** the administrative reconciliation operation `POST /api/admin/wallets/reconcile` reconstructs every wallet from successful deposit and purchase transactions, writes the calculated value to both the wallet record and the student's denormalized wallet-balance field, and returns a reconciliation summary. This restores the operational balance to its legitimate historical value rather than preserving an administrator-unverified database value.
+
+The targeted audit recognizes wallet withdrawals and seller payouts as debit classes when evaluating an individual account. The current bulk reconciliation endpoint explicitly rebuilds balances from successful wallet deposits and product purchases; withdrawal and payout handling should therefore remain part of the institution's reconciliation policy and be extended in the endpoint if those transaction classes can independently alter the persisted wallet balance.
+
+The design deliberately separates detection from bulk restoration: the targeted audit endpoint first contains and records the incident, while the reconciliation endpoint performs the controlled ledger rebuild. Both operations use row-level locking and transaction boundaries to reduce race conditions during investigation and repair. In the tampering example, the fabricated `99,999,999.99 ETB` value is therefore rejected as inconsistent, the student is suspended, a critical alert is preserved, and the balance is subsequently replaced by the deposit-minus-debit value supported by the historical ledger.
+
+### Append-Only Auditability
+
+The `audit_logs` table is protected as an append-only record. SQLAlchemy session hooks reject updates and deletions of existing audit entries. Attempts to delete an audit row are themselves recorded as blocked security events, and raw SQL `UPDATE` or `DELETE` statements targeting `audit_logs` are rejected. This protects the evidentiary record needed to explain when a wallet anomaly was detected, which account was contained, what values were compared, and whether an attempt was made to tamper with the audit trail itself.
+
+This combination of independent balance derivation, immediate account containment, critical append-only alerting, and deterministic ledger reconstruction constitutes a self-healing financial control. It provides both preventive resistance to continued misuse and a reproducible method for returning the marketplace wallet state to a value justified by its historical transactions.

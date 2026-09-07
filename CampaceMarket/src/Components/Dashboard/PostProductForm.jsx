@@ -17,24 +17,7 @@ const PostProductForm = () => {
     'Food & Beverages', 'Other'
   ];
 
-  const universities = [
-    'Addis Ababa University',
-    'Adama University',
-    'Bahir Dar University',
-    'Dire Dawa University',
-    'Haramaya University',
-    'Hawassa University',
-    'Jimma University',
-    'Mekelle University',
-    'Wolaita Sodo University',
-    'Wollega University',
-    'Debre Birhan University',
-    'Debre Markos University',
-    'Arba Minch University',
-    'Samara University',
-    'Assosa University',
-    'Kombolcha University'
-  ];
+  
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
