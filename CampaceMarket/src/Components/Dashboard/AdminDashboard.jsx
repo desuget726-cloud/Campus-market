@@ -1607,7 +1607,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       });
 
       if (!response.ok) {
-        throw new Error('Failed to persist order status update');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to persist order status update');
       }
 
       setOrdersList(prev => prev.map(item => item.id === orderId ? {
@@ -1625,6 +1626,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setSelectedOrderDetails(null);
     } catch (err) {
       console.error('Error saving order status updates:', err);
+      setDisputeResolutionMessage(err.message || 'Failed to persist order status update.');
       setOrdersList(prev => prev.map(item => item.id === orderId ? {
         ...item,
         order_status: previousOrderStatus,
@@ -4644,6 +4646,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <div className="flex shrink-0 flex-wrap gap-2">
                           <button
                             type="button"
+                            onClick={() => setSelectedOrderDetails(order)}
+                            className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-bold text-sky-700 transition hover:bg-sky-100"
+                          >
+                            Review Dispute →
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => handleResolveDispute(order, 'REFUND')}
                             disabled={resolvingDisputeId === order.id}
                             className="rounded-full bg-rose-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
@@ -4823,6 +4832,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </div>
                   </div>
 
+                  {selectedOrderDetails.dispute_status && <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-5">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-600">Dispute Details</p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div><p className="text-xs font-bold text-slate-500">Reason</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.dispute_reason || 'Not provided'}</p></div>
+                      <div><p className="text-xs font-bold text-slate-500">Status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.dispute_status}</p></div>
+                      <div><p className="text-xs font-bold text-slate-500">Created date</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.dispute_created_at ? new Date(selectedOrderDetails.dispute_created_at).toLocaleString() : 'Unavailable'}</p></div>
+                      <div><p className="text-xs font-bold text-slate-500">Escrow status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.escrow_status || 'Unavailable'}</p></div>
+                      <div><p className="text-xs font-bold text-slate-500">Seller payout status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.seller_payout_status || 'Unavailable'}</p></div>
+                    </div>
+                    <div className="mt-4 rounded-xl bg-white p-4"><p className="text-xs font-bold text-slate-500">Description</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{selectedOrderDetails.dispute_description || 'No description provided.'}</p></div>
+                    {selectedOrderDetails.seller_response && <div className="mt-4 rounded-xl bg-white p-4"><p className="text-xs font-bold text-slate-500">Seller response</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{selectedOrderDetails.seller_response}</p></div>}
+                  </div>}
+
                   <div className="mt-6 grid gap-4 md:grid-cols-2">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Update Order Status</label>
@@ -4836,7 +4858,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         <option value="Ready for Pickup">Ready for Pickup</option>
                         <option value="Out for Delivery">Out for Delivery</option>
                         <option value="Disputed">Disputed</option>
-                        <option value="Completed">Completed</option>
+                        <option value="Completed" disabled={['OPEN', 'UNDER_REVIEW'].includes(String(selectedOrderDetails.dispute_status || '').toUpperCase())}>Completed</option>
                         <option value="Cancelled">Cancelled</option>
                         <option value="Returned">Returned</option>
                       </select>
@@ -4856,6 +4878,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       </select>
                     </div>
                   </div>
+
+                  {['OPEN', 'UNDER_REVIEW'].includes(String(selectedOrderDetails.dispute_status || '').toUpperCase()) && <p className="mt-3 text-sm font-semibold text-rose-700">Resolve the active dispute using Refund Buyer or Release to Seller before completing this order.</p>}
 
                   <div className="mt-6 flex justify-end gap-3">
                     <button

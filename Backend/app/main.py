@@ -146,19 +146,29 @@ class ConnectionManager:
     async def connect(self, student_id: str, websocket: WebSocket, student_name: Optional[str] = None):
         """Register a student connection and log session."""
         await websocket.accept()
+        previous_connection = None
         async with self._lock:
+            previous_connection = self.active_connections.get(student_id)
             self.active_connections[student_id] = websocket
             self.student_sessions[student_id] = {
                 "connected_at": datetime.now(),
                 "name": student_name,
                 "message_count": 0,
             }
+        if previous_connection is not None and previous_connection is not websocket:
+            try:
+                await previous_connection.close(code=1000, reason="Replaced by a newer connection")
+            except Exception:
+                pass
         self.logger.info(f"[CHAT] Student {student_id} connected. Active: {len(self.active_connections)}")
 
-    async def disconnect(self, student_id: str):
+    async def disconnect(self, student_id: str, websocket: Optional[WebSocket] = None) -> bool:
         """Unregister a student connection and log session end."""
         session_info = None
         async with self._lock:
+            current_connection = self.active_connections.get(student_id)
+            if websocket is not None and current_connection is not websocket:
+                return False
             session_info = self.student_sessions.pop(student_id, {})
             self.active_connections.pop(student_id, None)
         
@@ -168,6 +178,7 @@ class ConnectionManager:
             self.logger.info(
                 f"[CHAT] Student {student_id} disconnected. Duration: {duration.total_seconds():.2f}s, Messages: {msg_count}"
             )
+            return session_info is not None
 
     async def send_personal_message(self, student_id: str, payload: dict) -> bool:
         """Send message to online student. Returns True if delivered."""
@@ -184,7 +195,7 @@ class ConnectionManager:
                 return True
             except Exception as e:
                 self.logger.error(f"[CHAT ERROR] Failed to send to {student_id}: {str(e)}")
-                await self.disconnect(student_id)
+                await self.disconnect(student_id, websocket)
                 return False
         return False
 
@@ -201,7 +212,10 @@ class ConnectionManager:
             try:
                 await websocket.send_json(message)
             except Exception as exc:
-                self.logger.error(f"[CHAT BROADCAST ERROR] Failed to notify {student_id}: {str(exc)}")
+                # A client may disconnect after the recipient snapshot is taken.
+                # Remove only this socket so a newer connection is preserved.
+                await self.disconnect(student_id, websocket)
+                self.logger.debug(f"[CHAT BROADCAST] Skipped disconnected student {student_id}: {exc}")
 
     def is_online(self, student_id: str) -> bool:
         """Check if a student is currently online."""
@@ -418,9 +432,9 @@ def _normalize_order_status(raw_value: Optional[str]) -> str:
         "ready for pickup": "Ready for Pickup",
         "ready_for_pickup": "Ready for Pickup",
         "pickup": "Ready for Pickup",
-        "out for delivery": "Out for Delivery",
-        "out_for_delivery": "Out for Delivery",
-        "delivery": "Out for Delivery",
+        "out for delivery": "Ready for Pickup",
+        "out_for_delivery": "Ready for Pickup",
+        "delivery": "Ready for Pickup",
         "completed": "Completed",
         "success": "Completed",
         "successful": "Completed",
@@ -722,6 +736,7 @@ async def _expire_processing_orders() -> None:
                 "Order Expired",
                 f"Your order for '{order.title}' expired after 24 hours. {refund_amount} ETB was refunded to your wallet.",
                 "order",
+                order_id=order.id,
             )
 
             seller = order_db.query(Student).filter(
@@ -734,6 +749,7 @@ async def _expire_processing_orders() -> None:
                     "Order Expired",
                     f"The order for '{order.title}' expired after 24 hours and the product is available again.",
                     "order",
+                    order_id=order.id,
                 )
 
             order_db.commit()
@@ -1129,6 +1145,7 @@ class WishlistCreate(BaseModel):
 class CartItemCreate(BaseModel):
     student_id: str
     product_id: int
+    quantity: int = 1
 
 
 class CartItemQuantityUpdate(BaseModel):
@@ -1178,6 +1195,7 @@ class StudentProductUpdate(BaseModel):
     category: Optional[str] = None
     subcategory: Optional[str] = None
     price: Optional[str] = None
+    quantity: Optional[int] = None
     description: Optional[str] = None
     status: Optional[str] = None
 
@@ -1617,7 +1635,7 @@ NOTIFICATION_PREFERENCE_FIELDS = {
 }
 
 
-def _add_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str) -> bool:
+def _add_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str, target: Optional[str] = None) -> bool:
     preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
     if not preference_fields or not getattr(student, preference_fields[0], True):
         return False
@@ -1635,6 +1653,7 @@ def _add_student_notification(db: Session, student: Student, title: str, message
         title=title,
         message=message,
         type=notification_type,
+        target=target,
         is_read=False,
     ))
     return True
@@ -1660,8 +1679,18 @@ def _send_student_notification_email(student: Student, subject: str, message: st
         return False
 
 
-def _dispatch_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str) -> None:
-    _add_student_notification(db, student, title, message, notification_type)
+def _dispatch_student_notification(
+    db: Session,
+    student: Student,
+    title: str,
+    message: str,
+    notification_type: str,
+    target: Optional[str] = None,
+    order_id: Optional[int] = None,
+) -> None:
+    if notification_type == "order" and order_id is not None and not target:
+        target = json.dumps({"kind": "order", "order_id": int(order_id)})
+    _add_student_notification(db, student, title, message, notification_type, target)
     _send_student_notification_email(student, title, message, notification_type)
 
 
@@ -1797,6 +1826,7 @@ def ensure_database_compatibility(db: Session) -> None:
         order_add_statements = {
             "pickup_location": "ALTER TABLE orders ADD COLUMN pickup_location VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
             "payment_status": "ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) NOT NULL DEFAULT 'Successful'",
+            "quantity": "ALTER TABLE orders ADD COLUMN quantity INT NOT NULL DEFAULT 1",
             "reviewed": "ALTER TABLE orders ADD COLUMN reviewed BOOLEAN NOT NULL DEFAULT FALSE",
             "pickup_code": "ALTER TABLE orders ADD COLUMN pickup_code INT NOT NULL DEFAULT 1000",
             "buyer_confirmed": "ALTER TABLE orders ADD COLUMN buyer_confirmed BOOLEAN NOT NULL DEFAULT FALSE",
@@ -1808,6 +1838,10 @@ def ensure_database_compatibility(db: Session) -> None:
             column = db.execute(text("SHOW COLUMNS FROM orders LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
                 db.execute(text(statement))
+
+        product_stock = db.execute(text("SHOW COLUMNS FROM products LIKE 'stock'"))
+        if product_stock.fetchone() is None:
+            db.execute(text("ALTER TABLE products ADD COLUMN stock INT NOT NULL DEFAULT 1"))
 
         message_add_statements = {
             "attachment_url": "ALTER TABLE messages ADD COLUMN attachment_url VARCHAR(500) NULL",
@@ -2615,7 +2649,7 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
     if payload.get("role") != "student" or not payload.get("sub") or not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
         raise HTTPException(status_code=401, detail="Invalid or expired student session.")
 
-    student = db.query(Student).filter(Student.student_id == payload["sub"]).first()
+    student = db.query(Student).filter(func.lower(Student.student_id) == str(payload["sub"]).strip().lower()).first()
     if not student:
         raise HTTPException(status_code=401, detail="Student session is no longer valid.")
     return student
@@ -3940,6 +3974,7 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
         "image": product.image,
         "description": product.description,
         "seller": product.seller,
+        "seller_id": seller.student_id if seller else product.seller,
         "seller_phone": seller.phone if seller else None,
         "seller_name": seller.name if seller else product.seller,
         "seller_dept": seller.department if seller else None,
@@ -3991,6 +4026,7 @@ def create_product(
     category: str = Form(...),
     subcategory: Optional[str] = Form(None),
     price: str = Form(...),
+    quantity: int = Form(1),
     description: Optional[str] = Form(None),
     seller: Optional[str] = Form(None),
     student_id: Optional[str] = Form(None),  # <-- ADDED: Capture student_id from frontend Form
@@ -4008,6 +4044,8 @@ def create_product(
             raise HTTPException(status_code=422, detail="Product title is required.")
         if not price_value:
             raise HTTPException(status_code=422, detail="Product price is required.")
+        if quantity <= 0:
+            raise HTTPException(status_code=422, detail="Product quantity must be at least 1.")
 
         image_url = None
         max_images_per_product = _get_setting_value(
@@ -4113,6 +4151,7 @@ def create_product(
             category=category,
             subcategory=subcategory,
             price=price_value,
+            stock=quantity,
             image=image_url,
             description=description,
             seller=seller_value,  # <-- Use resolved seller identity
@@ -4161,12 +4200,15 @@ def update_student_product(product_id: int, payload: StudentProductUpdate, db: S
         raise HTTPException(status_code=404, detail="Product not found.")
     if str(payload.student_id).strip() != str(product.seller or "").strip():
         raise HTTPException(status_code=403, detail="You can only update your own products.")
+    if payload.quantity is not None and payload.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Product quantity must be at least 1.")
 
     update_fields = {
         "title": payload.title,
         "category": payload.category,
         "subcategory": payload.subcategory,
         "price": payload.price,
+        "stock": payload.quantity,
         "description": payload.description,
         "status": payload.status,
     }
@@ -4184,6 +4226,7 @@ def update_student_product(product_id: int, payload: StudentProductUpdate, db: S
             "category": product.category,
             "subcategory": product.subcategory,
             "price": product.price,
+            "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
             "status": product.status,
             "image": product.image,
@@ -4273,11 +4316,15 @@ def get_student_listings(student_id: str, db: Session = Depends(get_db)):
 
 # 21. የሻጭ ስታቲስቲክስ እና የደረሱ ትዕዛዞች መጥሪያ ኤፒአይ (GET /api/student/seller/dashboard-data) - Database-driven
 @app.get("/api/student/seller/dashboard-data")
-def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
+def get_seller_dashboard_data(
+    student_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
     """Return database-backed seller KPIs, alerts, listings, and received orders."""
-    student = db.query(Student).filter(Student.student_id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student record not found.")
+    student = _student_from_authorization(authorization, db)
+    if student.student_id.strip().lower() != str(student_id).strip().lower():
+        raise HTTPException(status_code=403, detail="You can only view your own seller dashboard.")
 
     seller_filter = (Product.seller == student.student_id) | (Product.seller == student.name)
 
@@ -4356,6 +4403,7 @@ def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
                 "title": listing.title,
                 "category": listing.category,
                 "price": listing.price,
+                "stock": int(getattr(listing, "stock", 1) or 0),
                 "image": listing.image,
                 "status": listing.status,
                 "created_at": listing.created_at,
@@ -4363,17 +4411,7 @@ def get_seller_dashboard_data(student_id: str, db: Session = Depends(get_db)):
             for listing in listings
         ],
         "received_orders": [
-            {
-                "id": o.id,
-                "title": o.title,
-                "price": o.price,
-                "status": o.status,
-                "buyer_confirmed": bool(o.buyer_confirmed),
-                "seller_confirmed": bool(o.seller_confirmed),
-                "is_funds_released": bool(o.is_funds_released),
-                "buyer_id": o.student_id,
-                "created_at": o.created_at.strftime("%Y-%m-%d %H:%M") if o.created_at else "Recent"
-            }
+            _serialize_order(db, o, include_pickup_code=False)
             for o in received_orders
         ]
     }
@@ -5332,6 +5370,30 @@ def get_student_recent_activity(student_id: str, db: Session = Depends(get_db)):
     return activity
 
 
+def _notification_target(db: Session, notification: Notification) -> Optional[str]:
+    if notification.target:
+        return notification.target
+    if str(notification.title or "").strip().lower() != "order disputed":
+        return None
+    match = re.search(r"order\s+#(\d+)", notification.message or "", re.IGNORECASE)
+    if not match:
+        return None
+    order_id = int(match.group(1))
+    dispute = db.query(Dispute).filter(Dispute.order_id == order_id).order_by(Dispute.created_at.desc()).first()
+    return json.dumps({"kind": "dispute", "dispute_id": dispute.id, "order_id": order_id}) if dispute else None
+
+
+def _notification_order_id(db: Session, notification: Notification) -> Optional[int]:
+    target = _notification_target(db, notification)
+    if not target:
+        return None
+    try:
+        order_id = json.loads(target).get("order_id")
+        return int(order_id) if order_id is not None else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
 @app.get("/api/student/notifications")
 def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
@@ -5349,6 +5411,8 @@ def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
             "title": item.title,
             "message": item.message,
             "type": item.type,
+            "target": _notification_target(db, item),
+            "order_id": _notification_order_id(db, item),
             "is_read": item.is_read,
             "created_at": item.created_at,
         }
@@ -5362,6 +5426,8 @@ def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
             "title": item.title,
             "message": item.message,
             "type": item.type,
+            "target": _notification_target(db, item),
+            "order_id": _notification_order_id(db, item),
             "is_read": item.is_read,
             "created_at": item.created_at,
         }
@@ -5702,13 +5768,13 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 logger.exception(f"[WS SETTINGS ERROR] Failed to refresh chat settings for {student_id}: {exc}")
                 await websocket.send_json({"success": False, "error": "Unable to load chat settings."})
                 await websocket.close(code=1011, reason="Unable to load chat settings")
-                await manager.disconnect(student_id)
+                await manager.disconnect(student_id, websocket)
                 break
 
             if not chat_enabled:
                 await websocket.send_json({"success": False, "error": "Chat is currently disabled."})
                 await websocket.close(code=1008, reason="Chat is currently disabled")
-                await manager.disconnect(student_id)
+                await manager.disconnect(student_id, websocket)
                 break
             
             try:
@@ -5844,24 +5910,26 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"[WS DISCONNECT] {student_id} closed connection")
-        await manager.disconnect(student_id)
-        await manager.broadcast({
-            "type": "online_status",
-            "student_id": student_id,
-            "status": "offline",
-        }, exclude_student_id=student_id)
+        removed = await manager.disconnect(student_id, websocket)
+        if removed:
+            await manager.broadcast({
+                "type": "online_status",
+                "student_id": student_id,
+                "status": "offline",
+            }, exclude_student_id=student_id)
     except Exception as exc:
         logger.error(f"[WS FATAL ERROR] {student_id}: {str(exc)}", exc_info=True)
         try:
             await websocket.send_json({"success": False, "error": "WebSocket error"})
         except Exception:
             pass
-        await manager.disconnect(student_id)
-        await manager.broadcast({
-            "type": "online_status",
-            "student_id": student_id,
-            "status": "offline",
-        }, exclude_student_id=student_id)
+        removed = await manager.disconnect(student_id, websocket)
+        if removed:
+            await manager.broadcast({
+                "type": "online_status",
+                "student_id": student_id,
+                "status": "offline",
+            }, exclude_student_id=student_id)
     finally:
         if db:
             db.close()
@@ -5956,25 +6024,35 @@ def _resolve_pickup_location(db: Session, product: Optional[Product]) -> str:
     return "Student Center"
 
 
-def _build_order_timeline(order_status: Optional[str], pickup_location: str) -> List[Dict[str, object]]:
+def _build_order_timeline(
+    order_status: Optional[str],
+    pickup_location: str,
+    payment_status: Optional[str] = None,
+    buyer_confirmed: bool = False,
+    seller_confirmed: bool = False,
+) -> List[Dict[str, object]]:
     normalized = _normalize_order_status(order_status)
     steps = [
         "Order Placed",
+        "Payment Successful",
         "Processing",
-        f"Ready for Pickup at {pickup_location}",
+        "Ready for Pickup",
+        "Item Received",
+        "Buyer Confirmed + Seller Confirmed",
         "Completed",
     ]
 
-    index_map = {
-        "Pending": 0,
-        "Order Placed": 0,
-        "Processing": 1,
-        "Ready for Pickup": 2,
-        "Out for Delivery": 2,
-        "Completed": 3,
-    }
-
-    current_index = index_map.get(normalized, 0)
+    current_index = 1 if _normalize_payment_status(payment_status) == "Successful" else 0
+    if normalized in {"Processing", "Ready for Pickup", "Completed"}:
+        current_index = max(current_index, 2)
+    if normalized in {"Ready for Pickup", "Completed"} or seller_confirmed:
+        current_index = max(current_index, 3)
+    if buyer_confirmed:
+        current_index = max(current_index, 4)
+    if normalized == "Completed" and buyer_confirmed and seller_confirmed:
+        current_index = 6
+    elif buyer_confirmed and seller_confirmed:
+        current_index = 5
     timeline = []
     for i, step in enumerate(steps):
         timeline.append({
@@ -5983,6 +6061,101 @@ def _build_order_timeline(order_status: Optional[str], pickup_location: str) -> 
             "current": i == current_index,
         })
     return timeline
+
+
+def _normalize_product_image(raw_image: Optional[object]) -> Optional[str]:
+    if raw_image is None:
+        return None
+
+    image_value = raw_image
+    if isinstance(raw_image, str):
+        text_value = raw_image.strip()
+        if text_value.startswith("["):
+            try:
+                image_value = json.loads(text_value)
+            except json.JSONDecodeError:
+                image_value = text_value
+
+    if isinstance(image_value, list):
+        image_value = next((item for item in image_value if str(item).strip()), None)
+    if not image_value:
+        return None
+
+    image_url = str(image_value).strip()
+    if image_url.startswith(("http://", "https://", "data:")):
+        return image_url
+    if image_url.startswith("/static/"):
+        return f"http://127.0.0.1:8000{image_url}"
+    if image_url.startswith("static/"):
+        return f"http://127.0.0.1:8000/{image_url}"
+    return f"http://127.0.0.1:8000/static/uploads/{image_url.lstrip('/')}"
+
+
+def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = True) -> dict:
+    product = db.query(Product).filter(Product.id == order.product_id).first()
+    seller = db.query(Student).filter(
+        or_(Student.student_id == product.seller, Student.name == product.seller)
+    ).first() if product and product.seller else None
+    buyer = db.query(Student).filter(Student.student_id == order.student_id).first()
+    seller_account = db.query(SellerPaymentAccount).filter(
+        SellerPaymentAccount.student_id == seller.student_id,
+    ).first() if seller else None
+    pickup_location = str(getattr(order, "pickup_location", "") or "").strip()
+    if not pickup_location:
+        pickup_location = _resolve_pickup_location(db, product)
+    status = _normalize_order_status(order.status or "Pending")
+    dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
+    product_image = _normalize_product_image(product.image if product else None)
+
+    payload = {
+        "id": order.id,
+        "order_id": order.id,
+        "student_id": order.student_id,
+        "buyer_id": order.student_id,
+        "buyer_name": buyer.name if buyer else order.student_id,
+        "product_id": order.product_id,
+        "title": order.title or (product.title if product else "Campus Purchase"),
+        "product_title": product.title if product else order.title,
+        "image": product_image,
+        "product_image": product_image,
+        "condition": product.condition if product else None,
+        "quantity": int(getattr(order, "quantity", 1) or 1),
+        "seller_id": seller.student_id if seller else (product.seller if product else None),
+        "seller_name": seller.name if seller else (product.seller if product else "Campus Seller"),
+        "seller_business_name": seller_account.business_name if seller_account else None,
+        "price": order.price,
+        "unit_price": _parse_price_to_etb(order.price),
+        "status": status,
+        "fulfillment_status": status,
+        "payment_status": _normalize_payment_status(getattr(order, "payment_status", None) or "Successful"),
+        "item_total": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
+        "subtotal": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
+        "fees": 0,
+        "total_paid": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
+        "total": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
+        "pickup_location": pickup_location,
+        "pickup_code": order.pickup_code if include_pickup_code else None,
+        "buyer_confirmed": bool(order.buyer_confirmed),
+        "seller_confirmed": bool(order.seller_confirmed),
+        "is_funds_released": bool(order.is_funds_released),
+        "payout_status": "Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold"),
+        "reviewed": bool(getattr(order, "reviewed", False)),
+        "created_at": order.created_at,
+        "dispute": _serialize_dispute(dispute) if dispute else None,
+        "dispute_status": dispute.status if dispute else None,
+        "dispute_reason": dispute.reason if dispute else None,
+        "dispute_description": dispute.description if dispute else None,
+        "dispute_created_at": dispute.created_at.isoformat() if dispute and dispute.created_at else None,
+    }
+    payload["required_seller_action"] = {
+        "Pending": "Accept or reject order",
+        "Processing": "Prepare order",
+        "Ready for Pickup": "Confirm handover with pickup code",
+        "Completed": "Completed",
+        "Disputed": "Respond to dispute",
+        "Cancelled": "No action required",
+    }.get(status, "Review order")
+    return payload
 
 
 # 7. የተማሪ ዊሽሊስት የተለጠፈ ኤፒአይ (GET /api/student/wishlist)
@@ -6008,6 +6181,7 @@ def get_student_wishlist(student_id: str, db: Session = Depends(get_db)):
             "created_at": item.created_at,
             "title": product.title,
             "price": product.price,
+            "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
             "image": product.image,
             "category": product.category,
@@ -6109,6 +6283,7 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
             "created_at": item.created_at,
             "title": product.title,
             "price": product.price,
+            "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
             "image": product.image,
             "category": product.category,
@@ -6135,12 +6310,19 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/student/cart")
-def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
+def add_to_cart(
+    data: CartItemCreate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    authenticated_student = _student_from_authorization(authorization, db)
     raw_student_id = data.student_id
     normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
 
     if not normalized_student_id:
         raise HTTPException(status_code=400, detail="student_id is required.")
+    if authenticated_student.student_id.strip().lower() != normalized_student_id.lower():
+        raise HTTPException(status_code=403, detail="You can only update your own cart.")
 
     student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
     if not student:
@@ -6149,9 +6331,18 @@ def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
             detail="Invalid student_id. The student does not exist in the students table."
         )
 
-    product = db.query(Product).filter(Product.id == data.product_id).first()
+    if data.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be at least 1.")
+
+    product = db.query(Product).filter(Product.id == data.product_id).with_for_update().first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    seller = db.query(Student).filter(
+        or_(Student.student_id == product.seller, Student.name == product.seller)
+    ).first() if product.seller else None
+    seller_identifier = seller.student_id if seller else product.seller
+    if seller_identifier and str(seller_identifier).strip().lower() == authenticated_student.student_id.strip().lower():
+        raise HTTPException(status_code=409, detail="You cannot purchase your own material.")
     if str(product.status or "").strip().lower() == "sold":
         raise HTTPException(status_code=400, detail="This product is already sold and cannot be added to the cart.")
 
@@ -6174,11 +6365,16 @@ def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
 
     moved_from_wishlist = False
     message = "Item added to cart."
+    existing_quantity = int(existing_cart_item.quantity or 0) if existing_cart_item else 0
+    requested_quantity = existing_quantity + int(data.quantity)
+    available_stock = int(getattr(product, "stock", 1) or 0)
+    if requested_quantity > available_stock:
+        raise HTTPException(status_code=409, detail=f"Not enough stock. Only {available_stock} available.")
 
     try:
         if wishlist_item:
             if existing_cart_item:
-                existing_cart_item.quantity = (existing_cart_item.quantity or 1) + 1
+                existing_cart_item.quantity = requested_quantity
                 cart_item = existing_cart_item
             else:
                 cart_item = CartItem(
@@ -6195,7 +6391,7 @@ def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
             message = "Item moved from wishlist to cart."
         else:
             if existing_cart_item:
-                existing_cart_item.quantity = (existing_cart_item.quantity or 1) + 1
+                existing_cart_item.quantity = requested_quantity
                 cart_item = existing_cart_item
                 db.commit()
                 db.refresh(cart_item)
@@ -6217,7 +6413,10 @@ def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail="Unexpected error while updating cart.")
 
-    cart_count = db.query(CartItem).filter(CartItem.student_id == data.student_id).count()
+    cart_count = sum(
+        int(item.quantity or 1)
+        for item in db.query(CartItem).filter(CartItem.student_id == data.student_id).all()
+    )
     wishlist_count = db.query(WishlistItem).filter(WishlistItem.student_id == data.student_id).count()
 
     return {
@@ -6241,7 +6440,13 @@ def add_to_cart(data: CartItemCreate, db: Session = Depends(get_db)):
 
 
 @app.put("/api/student/cart/{item_id}/quantity")
-def update_student_cart_item_quantity(item_id: int, payload: CartItemQuantityUpdate, db: Session = Depends(get_db)):
+def update_student_cart_item_quantity(
+    item_id: int,
+    payload: CartItemQuantityUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    authenticated_student = _student_from_authorization(authorization, db)
     new_quantity = payload.quantity
     if new_quantity is None:
         raise HTTPException(status_code=400, detail="quantity is required.")
@@ -6251,9 +6456,11 @@ def update_student_cart_item_quantity(item_id: int, payload: CartItemQuantityUpd
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="quantity must be an integer.")
 
-    cart_item = db.query(CartItem).filter(CartItem.id == item_id).first()
+    cart_item = db.query(CartItem).filter(CartItem.id == item_id).with_for_update().first()
     if not cart_item:
         raise HTTPException(status_code=404, detail="Cart item not found.")
+    if cart_item.student_id != authenticated_student.student_id:
+        raise HTTPException(status_code=403, detail="You can only update your own cart.")
 
     if new_quantity <= 0:
         db.delete(cart_item)
@@ -6268,6 +6475,11 @@ def update_student_cart_item_quantity(item_id: int, payload: CartItemQuantityUpd
                 "quantity": 0,
             },
         }
+
+    product = db.query(Product).filter(Product.id == cart_item.product_id).with_for_update().first()
+    available_stock = int(getattr(product, "stock", 1) or 0) if product else 0
+    if not product or new_quantity > available_stock:
+        raise HTTPException(status_code=409, detail=f"Not enough stock. Only {available_stock} available.")
 
     cart_item.quantity = new_quantity
     db.commit()
@@ -6298,10 +6510,16 @@ def delete_cart_item(item_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/student/cart/checkout")
-def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
+def checkout_student_cart(
+    data: CheckoutRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    if student.student_id.strip().lower() != str(data.student_id).strip().lower():
+        raise HTTPException(status_code=403, detail="You can only check out your own cart.")
+    data.student_id = student.student_id
     student = db.query(Student).filter(Student.student_id == data.student_id).with_for_update().first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
     require_student_verification = get_security_settings(db).require_student_verification
     if require_student_verification and not student.is_verified:
         raise HTTPException(
@@ -6321,11 +6539,20 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
         product = db.query(Product).filter(Product.id == cart_item.product_id).with_for_update().first()
         if not product:
             raise HTTPException(status_code=400, detail="One or more products in the cart are no longer available.")
-        if str(product.status or "").strip().lower() == "sold":
-            raise HTTPException(status_code=400, detail=f"{product.title} is already sold.")
         seller = db.query(Student).filter(
             or_(Student.student_id == product.seller, Student.name == product.seller)
         ).first() if product.seller else None
+        seller_identifier = seller.student_id if seller else product.seller
+        if seller_identifier and str(seller_identifier).strip().lower() == student.student_id.strip().lower():
+            raise HTTPException(status_code=409, detail="You cannot purchase your own material.")
+        if str(product.status or "").strip().lower() == "sold":
+            raise HTTPException(status_code=400, detail=f"{product.title} is already sold.")
+        requested_quantity = int(cart_item.quantity or 0)
+        available_stock = int(getattr(product, "stock", 1) or 0)
+        if requested_quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"{product.title} quantity must be at least 1.")
+        if requested_quantity > available_stock:
+            raise HTTPException(status_code=409, detail=f"Not enough stock for {product.title}. Only {available_stock} available.")
         seller_account = db.query(SellerPaymentAccount).filter(
             SellerPaymentAccount.student_id == seller.student_id,
         ).first() if seller else None
@@ -6357,13 +6584,18 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
             product_id=product.id,
             title=product.title,
             price=product.price,
+            quantity=int(cart_item.quantity or 1),
             status="Pending",
             pickup_code=secrets.randbelow(9000) + 1000,
+            pickup_location=_resolve_pickup_location(db, product),
+            payment_status="Successful",
             buyer_confirmed=False,
             seller_confirmed=False,
             is_funds_released=False,
         )
-        product.status = "Sold"
+        product.stock = max(0, int(product.stock or 0) - int(cart_item.quantity or 0))
+        if product.stock == 0:
+            product.status = "Sold"
         db.add(order)
         db.flush()
         db.add(Transaction(
@@ -6387,22 +6619,15 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
                 action_type="purchase",
             ))
         order_message = f"Your order for '{product.title}' has been placed successfully."
-        _dispatch_student_notification(db, student, "Order Placed", order_message, "order")
+        _dispatch_student_notification(db, student, "Order Placed", order_message, "order", order_id=order.id)
         seller_student = db.query(Student).filter(
             (Student.student_id == product.seller) | (Student.name == product.seller)
         ).first() if product.seller else None
         if seller_student and seller_student.student_id != data.student_id:
             _dispatch_student_notification(
-                db, seller_student, "New Order", f"You received a new order for '{product.title}'.", "order"
+                db, seller_student, "New Order", f"You received a new order for '{product.title}'.", "order", order_id=order.id
             )
-        order_payload.append({
-            "id": order.id,
-            "student_id": order.student_id,
-            "product_id": order.product_id,
-            "title": order.title,
-            "status": order.status,
-            "price": order.price,
-        })
+        order_payload.append(_serialize_order(db, order))
 
     tx_id = f"TX-{uuid.uuid4().hex[:8].upper()}"
     transaction = Transaction(
@@ -6546,67 +6771,35 @@ def get_student_orders(
     db: Session = Depends(get_db),
 ):
     buyer = _student_from_authorization(authorization, db)
-    if buyer.student_id != student_id:
+    if buyer.student_id.strip().lower() != str(student_id).strip().lower():
         raise HTTPException(status_code=403, detail="You can only view your own orders.")
+    student_id = buyer.student_id
 
-    orders_query = text("""
-        SELECT
-            o.id,
-            o.student_id,
-            o.product_id,
-            o.title,
-            o.price,
-            o.status,
-            o.pickup_code,
-            o.buyer_confirmed,
-            o.seller_confirmed,
-            o.created_at,
-            COALESCE(o.pickup_location, '') AS pickup_location,
-            COALESCE(o.payment_status, 'Successful') AS payment_status,
-            COALESCE(o.reviewed, FALSE) AS reviewed,
-            p.seller AS seller_id,
-            s.name AS seller_name,
-            p.title AS product_title
-        FROM orders o
-        LEFT JOIN products p ON p.id = o.product_id
-        LEFT JOIN students s ON BINARY s.student_id = BINARY p.seller OR BINARY s.name = BINARY p.seller
-        WHERE o.student_id = :student_id
-        ORDER BY o.created_at DESC
-    """)
-    rows = db.execute(orders_query, {"student_id": student_id}).mappings().all()
+    orders = db.query(Order).filter(Order.student_id == student_id).order_by(Order.created_at.desc()).all()
+    return [_serialize_order(db, order) for order in orders]
 
-    result = []
-    for row in rows:
-        product = db.query(Product).filter(Product.id == row["product_id"]).first()
-        dispute = db.query(Dispute).filter(Dispute.order_id == row["id"]).order_by(Dispute.created_at.desc()).first()
-        pickup_location = (row["pickup_location"] or "").strip() or _resolve_pickup_location(db, product)
-        payment_status = _normalize_payment_status(row["payment_status"] or "Successful")
-        seller_name = row["seller_name"] or row["seller_id"] or "Campus Seller"
 
-        result.append({
-            "id": row["id"],
-            "student_id": row["student_id"],
-            "product_id": row["product_id"],
-            "title": row["title"] or row["product_title"] or "Campus Purchase",
-            "status": _normalize_order_status(row["status"] or "Processing"),
-            "fulfillment_status": _normalize_order_status(row["status"] or "Processing"),
-            "pickup_code": row["pickup_code"],
-            "buyer_confirmed": bool(row["buyer_confirmed"]),
-            "seller_confirmed": bool(row["seller_confirmed"]),
-            "price": row["price"],
-            "created_at": row["created_at"],
-            "pickup_location": pickup_location,
-            "payment_status": payment_status,
-            "seller_id": row["seller_id"],
-            "seller_name": seller_name,
-            "seller": seller_name,
-            "reviewed": bool(row["reviewed"]),
-            "dispute": _serialize_dispute(dispute) if dispute else None,
-            "dispute_status": dispute.status if dispute else None,
-            "dispute_reason": dispute.reason if dispute else None,
-        })
+@app.get("/api/student/orders/detail/{order_id}")
+def get_student_order_details(
+    order_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    viewer = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
 
-    return result
+    product = db.query(Product).filter(Product.id == order.product_id).first()
+    seller = db.query(Student).filter(
+        or_(Student.student_id == product.seller, Student.name == product.seller)
+    ).first() if product and product.seller else None
+    is_buyer = viewer.student_id.strip().lower() == order.student_id.strip().lower()
+    is_seller = bool(seller and seller.student_id.strip().lower() == viewer.student_id.strip().lower())
+    if not is_buyer and not is_seller:
+        raise HTTPException(status_code=403, detail="You are not authorized to view this order.")
+
+    return _serialize_order(db, order, include_pickup_code=is_buyer)
 
 
 @app.post("/api/student/orders/{id}/cancel")
@@ -6659,6 +6852,7 @@ def cancel_student_order(
             "Order Cancelled",
             f"Your order for '{order.title}' was cancelled and {refund_amount} ETB was refunded to your wallet.",
             "order",
+            order_id=order.id,
         )
         db.commit()
         db.refresh(order)
@@ -6681,13 +6875,16 @@ def cancel_student_order(
 
 DISPUTE_REASONS = {
     "Item not received",
+    "Wrong item",
+    "Item damaged",
+    "Item differs from description",
+    "Seller did not show up",
+    "Other",
     "Item is different from description",
     "Item is damaged",
     "Wrong item received",
-    "Seller did not show up",
     "Seller refused to hand over the item",
     "Payment/order problem",
-    "Other",
 }
 ACTIVE_DISPUTE_STATUSES = {"OPEN", "UNDER_REVIEW"}
 
@@ -6771,7 +6968,8 @@ def raise_order_dispute(
     order.status = "Disputed"
     order.dispute_reason = reason
     dispute_message = f"Order #{order.id} has been disputed. Reason: {order.dispute_reason}"
-    _dispatch_student_notification(db, buyer, "Order Disputed", dispute_message, "order")
+    dispute_target = json.dumps({"kind": "dispute", "dispute_id": dispute.id, "order_id": order.id})
+    _dispatch_student_notification(db, buyer, "Order Disputed", dispute_message, "order", dispute_target)
 
     if seller and seller.student_id != buyer.student_id:
         _dispatch_student_notification(
@@ -6780,6 +6978,7 @@ def raise_order_dispute(
             "Order Disputed",
             f"Order #{order.id} for '{order.title}' was disputed by the buyer and is awaiting admin resolution.",
             "order",
+            dispute_target,
         )
     _notify_admins_of_order_event(db, order, "Order Dispute Raised", dispute_message)
     try:
@@ -6840,7 +7039,7 @@ def respond_to_dispute(
     dispute.status = "UNDER_REVIEW"
     buyer = db.query(Student).filter(Student.student_id == dispute.buyer_id).first()
     if buyer:
-        _dispatch_student_notification(db, buyer, "Dispute Updated", f"The seller responded to dispute #{dispute.id}.", "order")
+        _dispatch_student_notification(db, buyer, "Dispute Updated", f"The seller responded to dispute #{dispute.id}.", "order", order_id=dispute.order_id)
     db.commit()
     db.refresh(dispute)
     return {"success": True, "message": "Dispute response submitted.", "dispute": _serialize_dispute(dispute)}
@@ -6915,10 +7114,6 @@ def resolve_dispute(
         raise HTTPException(status_code=404, detail="Dispute order records could not be loaded.")
 
     try:
-        dispute.status = "RESOLVED"
-        dispute.resolution = decision
-        dispute.resolved_by = admin.id
-        dispute.resolved_at = datetime.now(timezone.utc)
         if decision == "BUYER":
             amount = refund_escrow_funds(order.id, db)
             order.status = "Refunded"
@@ -6926,18 +7121,26 @@ def resolve_dispute(
             resolution_message = f"Dispute #{dispute.id} resolved in your favor. {amount} ETB was refunded to your wallet."
         else:
             order.status = "Completed"
+            dispute.status = "RESOLVED"
             amount = release_escrow_funds(order.id, db)
             product.status = "Sold"
             resolution_message = f"Dispute #{dispute.id} was resolved in the seller's favor and the order was completed."
+        dispute.status = "RESOLVED"
+        dispute.resolution = decision
+        dispute.resolved_by = admin.id
+        dispute.resolved_at = datetime.now(timezone.utc)
         buyer = db.query(Student).filter(Student.student_id == dispute.buyer_id).first()
         seller = db.query(Student).filter(Student.student_id == dispute.seller_id).first()
         if buyer:
-            _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order")
+            _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order", order_id=order.id)
         if seller:
-            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order")
+            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order", order_id=order.id)
         _notify_admins_of_order_event(db, order, "Dispute Resolved", f"Admin {admin.username} resolved dispute #{dispute.id} in favor of {decision}.")
         db.commit()
         db.refresh(dispute)
+    except HTTPException:
+        db.rollback()
+        raise
     except SQLAlchemyError:
         db.rollback()
         logging.getLogger("app.disputes").exception("Unable to resolve dispute %s.", dispute_id)
@@ -7153,7 +7356,13 @@ def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
     for order in orders:
         product = db.query(Product).filter(Product.id == order.product_id).first()
         pickup_location = _resolve_pickup_location(db, product)
-        timeline = _build_order_timeline(order.status, pickup_location)
+        timeline = _build_order_timeline(
+            order.status,
+            pickup_location,
+            order.payment_status,
+            order.buyer_confirmed,
+            order.seller_confirmed,
+        )
         order_payload.append({
             "id": order.id,
             "title": order.title or (product.title if product else "Campus Purchase"),
@@ -9468,6 +9677,11 @@ def get_admin_orders(db: Session = Depends(get_db)):
 
             product = db.query(Product).filter(Product.id == order.product_id).first()
             dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
+            escrow_hold = db.query(Transaction).filter(
+                Transaction.student_id == order.student_id,
+                Transaction.type == "Escrow Hold",
+                Transaction.description == f"Escrow hold for order #{order.id}",
+            ).order_by(Transaction.created_at.desc()).first()
             buyer = db.query(Student).filter(Student.student_id == order.student_id).first()
             seller = db.query(Student).filter(
                 (Student.student_id == (product.seller if product else None))
@@ -9493,8 +9707,12 @@ def get_admin_orders(db: Session = Depends(get_db)):
                 "pay_status": payment_status,
                 "dispute_reason": order.dispute_reason,
                 "dispute_status": dispute.status if dispute else None,
+                "dispute_id": dispute.id if dispute else None,
                 "dispute_description": dispute.description if dispute else None,
+                "dispute_created_at": dispute.created_at.isoformat() if dispute and dispute.created_at else None,
                 "seller_response": dispute.seller_response if dispute else None,
+                "escrow_status": escrow_hold.status if escrow_hold else ("Released" if order.is_funds_released else "Unavailable"),
+                "seller_payout_status": "Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold"),
                 "buyer_name": buyer.name if buyer else buyer_id,
                 "seller_name": seller.name if seller else seller_id,
                 "pickup_location": "Main Library",
@@ -9566,12 +9784,12 @@ def resolve_order_dispute(
             product.status = "Sold"
             resolution_message = f"Dispute for order #{order.id} resolved with seller payout of {amount} ETB."
 
-        _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order")
+        _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order", order_id=dispute.order_id)
         seller = db.query(Student).filter(
             (Student.student_id == product.seller) | (Student.name == product.seller)
         ).first() if product.seller else None
         if seller and seller.student_id != buyer.student_id:
-            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order")
+            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order", order_id=dispute.order_id)
         _notify_admins_of_order_event(
             db,
             order,
@@ -9638,6 +9856,7 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
             "Order Update",
             order_message,
             "order",
+            order_id=order.id,
         )
 
     db.commit()

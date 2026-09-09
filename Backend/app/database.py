@@ -62,7 +62,35 @@ def init_db() -> None:
 
     Call this from an application startup event or a separate setup script.
     """
-    Base.metadata.create_all(bind=engine)
+    dispute_table = Base.metadata.tables.get("disputes")
+    tables = [table for table in Base.metadata.sorted_tables if table is not dispute_table]
+    Base.metadata.create_all(bind=engine, tables=tables)
+    if dispute_table is not None:
+        with engine.begin() as connection:
+            connection.execute(text("""
+                CREATE TABLE IF NOT EXISTS disputes (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    order_id INT NOT NULL,
+                    buyer_id VARCHAR(50) NOT NULL,
+                    seller_id VARCHAR(50) NOT NULL,
+                    reason VARCHAR(120) NOT NULL,
+                    description TEXT NOT NULL,
+                    evidence_image VARCHAR(500) NULL,
+                    seller_response TEXT NULL,
+                    seller_evidence VARCHAR(500) NULL,
+                    previous_order_status VARCHAR(50) NOT NULL,
+                    status VARCHAR(30) NOT NULL DEFAULT 'OPEN',
+                    resolution VARCHAR(30) NULL,
+                    resolved_by INT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    resolved_at DATETIME NULL,
+                    INDEX ix_disputes_order_status (order_id, status),
+                    INDEX ix_disputes_status_created (status, created_at),
+                    INDEX ix_disputes_buyer_id (buyer_id),
+                    INDEX ix_disputes_seller_id (seller_id)
+                )
+            """))
     inspector = inspect(engine)
     if "reviews" in inspector.get_table_names():
         review_constraints = {

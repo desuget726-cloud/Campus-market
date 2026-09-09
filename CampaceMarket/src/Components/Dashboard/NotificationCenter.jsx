@@ -78,6 +78,29 @@ const formatNotificationDate = (createdAt) => {
         : date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 };
 
+const getDisputeTarget = (notification) => {
+    if (typeof notification.target !== "string") return null;
+    try {
+        const target = JSON.parse(notification.target);
+        return target?.kind === "dispute" && target.order_id ? target : null;
+    } catch {
+        return null;
+    }
+};
+
+const getOrderId = (notification) => {
+    const directOrderId = notification.order_id ?? notification.orderId;
+    if (directOrderId !== undefined && directOrderId !== null && directOrderId !== "") {
+        return directOrderId;
+    }
+    if (typeof notification.target !== "string") return null;
+    try {
+        return JSON.parse(notification.target)?.order_id ?? null;
+    } catch {
+        return null;
+    }
+};
+
 function NotificationCenter({
     notifications,
     unreadCount,
@@ -85,7 +108,9 @@ function NotificationCenter({
     onMarkAllRead,
     onNavigate,
     onBuyerOrders,
+    onOrder,
     onBuyerPayments,
+    onDispute,
     onDeleteNotification,
 }) {
     const [activeFilter, setActiveFilter] = useState("All");
@@ -108,9 +133,16 @@ function NotificationCenter({
         .filter((group) => group.items.length > 0);
 
     const handleAction = (notification) => {
+        const disputeTarget = getDisputeTarget(notification);
+        if (disputeTarget) {
+            onDispute?.(disputeTarget);
+            return;
+        }
         const category = getCategory(notification);
         if (category === "Orders") {
-            if (onBuyerOrders) onBuyerOrders();
+            const orderId = getOrderId(notification);
+            if (orderId && onOrder) onOrder(orderId);
+            else if (onBuyerOrders) onBuyerOrders();
             return;
         }
         if (category === "Payments") {
@@ -256,7 +288,7 @@ function NotificationCenter({
                                                             className={`text-sm font-black ${isRead ? "text-sky-600 hover:text-sky-800" : "text-sky-700 hover:text-sky-900"}`}
                                                         >
                                                             {category === "Orders"
-                                                                ? "View Order →"
+                                                                ? (getDisputeTarget(notification) ? "View Dispute →" : "View Order →")
                                                                 : "View Payment →"}
                                                         </button>
                                                     )}

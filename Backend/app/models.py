@@ -1,6 +1,6 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -114,8 +114,8 @@ class PayoutTransaction(Base):
     provider_reference = Column(String(150), nullable=True, index=True)
     internal_reference = Column(String(100), unique=True, nullable=False, index=True)
     failure_reason = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(), nullable=False)
 
     student = relationship("Student")
     wallet = relationship("Wallet")
@@ -163,6 +163,7 @@ class Product(Base):
     category = Column(String(100), nullable=False)
     subcategory = Column(String(100), nullable=True)
     price = Column(String(50), nullable=False)
+    stock = Column(Integer, default=1, nullable=False)
     condition = Column(String(50), nullable=True)
     image = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
@@ -220,8 +221,12 @@ class Order(Base):
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(150), nullable=False)
     price = Column(String(50), nullable=False)
+    quantity = Column(Integer, default=1, nullable=False)
     status = Column(String(50), default="Processing", nullable=False)
     pickup_code = Column(Integer, nullable=False)
+    pickup_location = Column(String(255), default="Student Center", nullable=False)
+    payment_status = Column(String(50), default="Successful", nullable=False)
+    reviewed = Column(Boolean, default=False, nullable=False)
     buyer_confirmed = Column(Boolean, default=False, nullable=False)
     seller_confirmed = Column(Boolean, default=False, nullable=False)
     is_funds_released = Column(Boolean, default=False, nullable=False)

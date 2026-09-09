@@ -23,6 +23,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [isChatEnabled, setIsChatEnabled] = useState(true);
   const [messageText, setMessageText] = useState('');
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
+  const [selectedQuantity, setSelectedQuantity] = useState(1);
   const [allowStudentReports, setAllowStudentReports] = useState(false);
   const [showReportForm, setShowReportForm] = useState(false);
   const [reportText, setReportText] = useState('');
@@ -48,6 +49,10 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     };
 
     fetchProductDetails();
+  }, [product?.id]);
+
+  useEffect(() => {
+    setSelectedQuantity(1);
   }, [product?.id]);
 
   useEffect(() => {
@@ -179,13 +184,18 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     }
   };
 
-  const handleAddToCartFromSearch = async (productId) => {
+  const handleAddToCartFromSearch = async (productId, quantity = 1) => {
+    const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
     const response = await fetch('http://127.0.0.1:8000/api/student/cart', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token || session.user?.access_token || ''}`,
+      },
       body: JSON.stringify({
         student_id: currentUser.studentId,
         product_id: Number(productId),
+        quantity: Number(quantity),
       }),
     });
     const data = await response.json().catch(() => ({}));
@@ -201,10 +211,14 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       window.alert('እባክዎ መጀመሪያ ይግቡ! (Please log in first to add items to your cart.)');
       return;
     }
+    if (isOwnProduct) {
+      setCartStatus('This is your material. You cannot purchase your own material.');
+      return;
+    }
 
     setCartStatus('');
     try {
-      await handleAddToCartFromSearch(item?.id || product?.id);
+      await handleAddToCartFromSearch(item?.id || product?.id, selectedQuantity);
       setCartStatus('Product added to cart successfully.');
     } catch (error) {
       setCartStatus(error.message || 'Unable to add this product to your cart.');
@@ -254,6 +268,11 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
 
   const item = detailedProduct || product;
   const sellerPayoutBlocked = String(item?.seller_payout_status || '').trim().toLowerCase() !== 'active';
+  const currentStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim().toLowerCase();
+  const productSellerId = String(item?.seller_id || item?.seller || '').trim().toLowerCase();
+  const isOwnProduct = Boolean(currentStudentId && productSellerId && currentStudentId === productSellerId);
+  const availableStock = Math.max(0, Number(item?.stock ?? 1));
+  const purchaseBlocked = sellerPayoutBlocked || isOwnProduct || availableStock === 0 || selectedQuantity > availableStock;
 
   const productTitle = String(item?.title || '').trim();
   const displayTitle = productTitle.length >= 3
@@ -373,6 +392,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
             <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">
               Negotiable / ድርድር አለው
             </div>
+            <div className="mt-5 flex items-center justify-center gap-4">
+              <button type="button" onClick={() => setSelectedQuantity((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
+              <span className="min-w-8 text-center text-lg font-black text-slate-900">{selectedQuantity}</span>
+              <button type="button" onClick={() => setSelectedQuantity((value) => Math.min(availableStock, value + 1))} disabled={selectedQuantity >= availableStock} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Increase quantity">+</button>
+            </div>
+            <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>
+            {selectedQuantity > availableStock && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock</p>}
           </div>
 
           {/* የሻጩ ካርድ (ከስልክ ቁጥር መደበቂያ ጋር) */}
@@ -433,7 +459,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <button
                 type="button"
                 onClick={handleAddToCart}
-                disabled={sellerPayoutBlocked}
+                disabled={purchaseBlocked}
                 className="w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 Add to Cart
@@ -441,12 +467,17 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <button
                 type="button"
                 onClick={handleAddToCart}
-                disabled={sellerPayoutBlocked}
+                disabled={purchaseBlocked}
                 className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 Buy Now
               </button>
-              {sellerPayoutBlocked && (
+              {isOwnProduct && (
+                <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">
+                  This is your material. You cannot purchase your own material.
+                </span>
+              )}
+              {sellerPayoutBlocked && !isOwnProduct && (
                 <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">
                   Seller Payout Setup Required - Purchase Disabled
                 </span>

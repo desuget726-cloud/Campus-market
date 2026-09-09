@@ -1,13 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import OrderDetailsView from './OrderDetailsView';
 
 const formatSellerEtb = (value) => `${Number(value || 0).toLocaleString('en-ET')} ETB`;
 
-function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListings, setMyListings, setSellerData, setSellerDashboardData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice }) {
+function SellerOperationsCenter({ user, sellerData, sellerDashboardData, sellerOrdersLoading, sellerOrdersError, onRefreshOrders, myListings, setMyListings, setSellerData, setSellerDashboardData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice, openOrderId, onOpenOrderHandled }) {
     const [chartRange, setChartRange] = useState('3 Months');
     const [chartMetric, setChartMetric] = useState('Revenue');
     const [pickupCodes, setPickupCodes] = useState({});
     const [completionState, setCompletionState] = useState({});
     const [disputeResponseState, setDisputeResponseState] = useState({});
+    const [selectedOrder, setSelectedOrder] = useState(null);
+    const [selectedOrderLoading, setSelectedOrderLoading] = useState(false);
+    const [selectedOrderError, setSelectedOrderError] = useState('');
     const dashboardStats = sellerDashboardData?.stats || {};
     const dashboardAlerts = sellerDashboardData?.alerts || {};
     const payoutStatus = String(sellerData?.account_status || sellerDashboardData?.account_status || 'Pending').toLowerCase();
@@ -100,10 +104,34 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListi
         return token;
     };
 
-    const performSellerAction = async (order, action) => {
+    const fetchSellerOrderDetails = async (orderId) => {
+        setSelectedOrderLoading(true);
+        setSelectedOrderError('');
+        try {
+            const response = await fetch(`http://127.0.0.1:8000/api/student/orders/detail/${encodeURIComponent(orderId)}`, {
+                headers: { Authorization: `Bearer ${getSessionToken()}` },
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.detail || 'Unable to load order details.');
+            setSelectedOrder(result);
+        } catch (error) {
+            setSelectedOrderError(error.message || 'Unable to load order details.');
+        } finally {
+            setSelectedOrderLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (!openOrderId) return;
+        setSelectedOrder({ id: openOrderId });
+        fetchSellerOrderDetails(openOrderId);
+        onOpenOrderHandled?.();
+    }, [openOrderId]);
+
+    const performSellerAction = async (order, action, providedCode = '') => {
         const orderId = order.id ?? order.order_id ?? order.orderId;
         const state = completionState[orderId] || {};
-        const inputCode = String(pickupCodes[orderId] || '').trim();
+        const inputCode = String(providedCode || pickupCodes[orderId] || '').trim();
         if (action === 'handover' && !/^\d{4}$/.test(inputCode)) {
             setCompletionState((previous) => ({ ...previous, [orderId]: { error: 'Enter the buyer pickup code.' } }));
             return;
@@ -111,6 +139,26 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListi
 
         setCompletionState((previous) => ({ ...previous, [orderId]: { loading: true } }));
         try {
+            const latestOrderResponse = await fetch(`http://127.0.0.1:8000/api/student/orders/detail/${encodeURIComponent(orderId)}`, {
+                headers: { Authorization: `Bearer ${getSessionToken()}` },
+            });
+            const latestOrder = await latestOrderResponse.json().catch(() => ({}));
+            if (!latestOrderResponse.ok) throw new Error(latestOrder.detail || 'Unable to refresh the order status.');
+
+            const latestStatus = String(latestOrder.status || '').trim().toLowerCase();
+            const expectedStatus = { accept: 'pending', reject: 'pending', ready: 'processing', handover: 'ready for pickup' }[action];
+            if (expectedStatus && latestStatus !== expectedStatus) {
+                updateOrder(order, latestOrder.status, {
+                    buyer_confirmed: latestOrder.buyer_confirmed,
+                    seller_confirmed: latestOrder.seller_confirmed,
+                    is_funds_released: latestOrder.is_funds_released,
+                });
+                setSelectedOrder((previous) => previous?.id === latestOrder.id ? latestOrder : previous);
+                await onRefreshOrders?.();
+                setCompletionState((previous) => ({ ...previous, [orderId]: { success: `Order is already ${latestOrder.status}.` } }));
+                return;
+            }
+
             const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${orderId}/seller-action`, {
                 method: 'POST',
                 headers: {
@@ -129,15 +177,17 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListi
                 seller_confirmed: result.seller_confirmed,
                 is_funds_released: result.is_funds_released,
             });
+            await onRefreshOrders?.();
+            await fetchSellerOrderDetails(orderId);
             setCompletionState((previous) => ({ ...previous, [orderId]: { success: result.message || 'Order updated.' } }));
         } catch (error) {
             setCompletionState((previous) => ({ ...previous, [orderId]: { error: error.message || 'Unable to update order.' } }));
         }
     };
 
-    const respondToDispute = async (dispute) => {
+    const respondToDispute = async (dispute, responseTextOverride = '') => {
         const state = disputeResponseState[dispute.id] || {};
-        const responseText = String(state.response || '').trim();
+        const responseText = String(responseTextOverride || state.response || '').trim();
         if (!responseText || state.loading) return;
         setDisputeResponseState((previous) => ({ ...previous, [dispute.id]: { ...state, loading: true, error: '' } }));
         try {
@@ -149,8 +199,12 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListi
             const result = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(result.detail || 'Unable to respond to dispute.');
             setDisputeResponseState((previous) => ({ ...previous, [dispute.id]: { response: '', success: 'Response submitted.' } }));
+            await onRefreshOrders?.();
+            await fetchSellerOrderDetails(dispute.order_id);
+            return result;
         } catch (error) {
             setDisputeResponseState((previous) => ({ ...previous, [dispute.id]: { ...state, error: error.message } }));
+            throw error;
         }
     };
 
@@ -166,11 +220,25 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListi
             {status === 'completed' && <span className="text-xs font-semibold text-emerald-600">Completed and paid out</span>}
             {state.error && <p className="text-xs font-bold text-rose-600">{state.error}</p>}
             {state.success && <p className="animate-pulse text-xs font-bold text-emerald-600">{state.success}</p>}
-        </div>;
-    };
+                </div>;
+            };
+
+    if (selectedOrder) {
+        return <OrderDetailsView
+            order={selectedOrder}
+            role="seller"
+            loading={selectedOrderLoading}
+            error={selectedOrderError}
+            onBack={() => setSelectedOrder(null)}
+            onRefresh={() => fetchSellerOrderDetails(selectedOrder.id)}
+            onSellerAction={(order, action, inputCode) => performSellerAction(order, action, inputCode)}
+            onDisputeResponse={respondToDispute}
+        />;
+    }
 
     return (
         <div className="space-y-6">
+            {orders.length > 0 && <button type="button" onClick={() => { setSelectedOrder({ id: orders[0].id ?? orders[0].order_id }); fetchSellerOrderDetails(orders[0].id ?? orders[0].order_id); }} className="rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700">Open latest order details</button>}
             <section className="rounded-[30px] border border-white/5 bg-[#16224f] p-6 text-white shadow-[0_20px_40px_rgba(10,14,35,0.28)] sm:p-8">
                 <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
                     <div><p className="text-xs font-bold uppercase tracking-[0.24em] text-emerald-300">Seller Hub</p><h2 className="mt-2 text-3xl font-black">Seller Operations Center</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">Monitor listings, fulfill customer orders, and turn marketplace activity into measurable campus sales.</p></div>
@@ -194,7 +262,7 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListi
                 <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Seller Performance</p><h3 className="mt-2 text-3xl font-black text-slate-950">{Number(performance.rating || 0).toFixed(1)} / 5.0 ⭐</h3><div className="mt-6 space-y-4">{[['Response Rate', Number(performance.response_rate || 0)], ['Order Completion', Number(performance.order_completion || 0)], ['On-time Pickup', Number(performance.on_time_pickup || 0)]].map(([label, value]) => <div key={label}><div className="flex justify-between text-sm font-bold text-slate-700"><span>{label}</span><span className="text-emerald-600">{value}%</span></div><div className="mt-2 h-2 rounded-full bg-slate-100"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(value, 100)}%` }} /></div></div>)}</div></section>
             </div>
 
-            <section id="seller-orders" className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Fulfillment Queue</p><h3 className="mt-1 text-xl font-black text-slate-950">Incoming Customer Orders</h3></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{orders.length} orders</span></div>{orders.length === 0 ? <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">No incoming customer orders yet.</p> : <div className="mt-5 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500"><tr><th className="px-3 py-3">Order</th><th className="px-3 py-3">Customer</th><th className="px-3 py-3">Product</th><th className="px-3 py-3">Amount</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Action</th></tr></thead><tbody>{orders.map((order) => <tr key={order.id ?? order.order_id} className="border-b border-slate-100"><td className="px-3 py-4 font-bold text-slate-900">{order.id ?? order.order_id}</td><td className="px-3 py-4 text-slate-600">{order.customerId ?? order.customer_id ?? 'Student'}</td><td className="px-3 py-4 text-slate-700">{order.product ?? order.productName ?? order.title ?? 'Campus product'}</td><td className="px-3 py-4 font-bold text-slate-900">{formatSellerEtb(order.price)}</td><td className="px-3 py-4"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">{order.status || 'Pending'}</span></td><td className="px-3 py-4">{orderAction(order)}</td></tr>)}</tbody></table></div>}</section>
+            <section id="seller-orders" className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Fulfillment Queue</p><h3 className="mt-1 text-xl font-black text-slate-950">Incoming Customer Orders</h3></div><span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{orders.length} orders</span></div>{sellerOrdersLoading ? <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm font-semibold text-slate-600">Loading seller orders...</p> : sellerOrdersError ? <p className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-sm font-semibold text-rose-700">{sellerOrdersError}</p> : orders.length === 0 ? <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">No incoming customer orders yet.</p> : <div className="mt-5 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500"><tr><th className="px-3 py-3">Order</th><th className="px-3 py-3">Customer</th><th className="px-3 py-3">Product</th><th className="px-3 py-3">Amount</th><th className="px-3 py-3">Payment</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Pickup</th><th className="px-3 py-3">Action</th></tr></thead><tbody>{orders.map((order) => <tr key={order.id ?? order.order_id} className="border-b border-slate-100"><td className="px-3 py-4 font-bold text-slate-900">{order.id ?? order.order_id}</td><td className="px-3 py-4 text-slate-600">{order.buyer_name || order.buyer_id || 'Student'}</td><td className="px-3 py-4 text-slate-700"><div className="flex items-center gap-2">{order.image && <img src={order.image} alt="" className="h-10 w-10 rounded-lg object-cover" />}<span>{order.product_title || order.title || 'Campus product'}</span></div></td><td className="px-3 py-4 font-bold text-slate-900">{formatSellerEtb(order.price)}</td><td className="px-3 py-4 text-slate-600">{order.payment_status || 'Successful'}</td><td className="px-3 py-4"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">{String(order.status || 'Pending').toLowerCase() === 'pending' ? 'New Order' : order.status}</span></td><td className="px-3 py-4 text-slate-600"><p>{order.pickup_location || 'Student Center'}</p><p className="mt-1 text-xs">{order.required_seller_action || 'Review order'}</p></td><td className="px-3 py-4">{orderAction(order)}</td></tr>)}</tbody></table></div>}</section>
 
             <section className="rounded-[28px] border border-rose-200 bg-rose-50 p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">Seller Hub</p><h3 className="mt-1 text-xl font-black text-slate-950">Disputes</h3></div><span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-rose-700">{disputes.filter((item) => ['OPEN', 'UNDER_REVIEW'].includes(item.status)).length} active</span></div>{disputes.length === 0 ? <p className="mt-5 text-sm text-slate-600">No disputes have been raised against your orders.</p> : <div className="mt-5 space-y-4">{disputes.map((dispute) => { const state = disputeResponseState[dispute.id] || {}; return <article key={dispute.id} className="rounded-2xl border border-rose-100 bg-white p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Order #{dispute.order_id} · {dispute.product?.title || dispute.order?.title || 'Product'}</p><h4 className="mt-1 font-black text-slate-900">{dispute.reason}</h4></div><span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-bold text-rose-700">{dispute.status}</span></div><p className="mt-3 text-sm leading-6 text-slate-700">{dispute.description}</p>{dispute.status === 'OPEN' || dispute.status === 'UNDER_REVIEW' ? <div className="mt-4"><textarea rows="3" value={state.response || ''} onChange={(event) => setDisputeResponseState((previous) => ({ ...previous, [dispute.id]: { ...state, response: event.target.value } }))} placeholder="Provide your explanation or evidence..." className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-rose-400" /><button type="button" onClick={() => respondToDispute(dispute)} disabled={!String(state.response || '').trim() || state.loading} className="mt-2 rounded-full bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300">{state.loading ? 'Submitting...' : 'Respond to dispute'}</button>{state.error && <p className="mt-2 text-xs font-bold text-rose-700">{state.error}</p>}{state.success && <p className="mt-2 text-xs font-bold text-emerald-700">{state.success}</p>}</div> : <p className="mt-3 text-xs font-semibold text-slate-500">Seller response: {dispute.seller_response || 'No response recorded.'}</p>}</article>; })}</div>}</section>
 
