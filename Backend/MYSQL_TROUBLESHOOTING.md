@@ -5,7 +5,7 @@
 This project uses the following local development connection by default:
 
 ```text
-mysql+pymysql://root:@127.0.0.1:3306/campusmarket_db
+mysql+pymysql://root:@127.0.0.1:3306/campusmarket
 ```
 
 That means:
@@ -14,7 +14,7 @@ That means:
 - Port: `3306`
 - User: `root`
 - Password: empty by default in this project
-- Database: `campusmarket_db`
+- Database: `campusmarket`
 
 ## 1. Start MySQL in XAMPP
 
@@ -77,7 +77,7 @@ Get-Process -Id <PID>
 A running MySQL service can still fail during FastAPI startup if the configured database does not exist. Open XAMPP's **Shell** or another MySQL client and run:
 
 ```sql
-CREATE DATABASE IF NOT EXISTS campusmarket_db;
+CREATE DATABASE IF NOT EXISTS campusmarket;
 ```
 
 You can verify it with:
@@ -95,7 +95,7 @@ mysql -h 127.0.0.1 -P 3306 -u root -p
 Enter the password when prompted, then select the database:
 
 ```sql
-USE campusmarket_db;
+USE campusmarket;
 ```
 
 An empty XAMPP root password is common in local installations, but it is not universal. Do not assume it is empty if you changed it or if your XAMPP installation configured one.
@@ -116,7 +116,7 @@ $env:DB_NAME
 For a MySQL server using a password, set a complete URL before starting Uvicorn. URL-encode special characters in the password, such as `@`, `:`, `/`, or `#`.
 
 ```powershell
-$env:DATABASE_URL = "mysql+pymysql://root:YOUR_PASSWORD@127.0.0.1:3306/campusmarket_db"
+$env:DATABASE_URL = "mysql+pymysql://root:YOUR_PASSWORD@127.0.0.1:3306/campusmarket"
 ```
 
 The backend also defines these component variables for compatibility with other environments, but its current fallback URL remains the explicit local XAMPP URL. For this project, use `DATABASE_URL` when you need to change the host, port, user, password, or database:
@@ -126,7 +126,7 @@ $env:DB_HOST = "127.0.0.1"
 $env:DB_PORT = "3306"
 $env:DB_USER = "root"
 $env:DB_PASSWORD = ""
-$env:DB_NAME = "campusmarket_db"
+$env:DB_NAME = "campusmarket"
 ```
 
 Use the actual values from `my.ini` and your MySQL user account. `127.0.0.1` avoids ambiguity between IPv4 and IPv6 resolution that can sometimes occur with `localhost`.
@@ -153,7 +153,7 @@ http://127.0.0.1:8000/docs
 
 - **`WinError 10061` / `Can't connect to MySQL server`**: MySQL is stopped, the host is wrong, or no process is listening on the selected port.
 - **`Can't connect ... (using password: YES)`**: The server is reachable, but the username or password is probably wrong.
-- **`Unknown database 'campusmarket_db'`**: Create the database or correct `DB_NAME` / `DATABASE_URL`.
+- **`Unknown database 'campusmarket'`**: Create the database or correct `DB_NAME` / `DATABASE_URL`.
 - **`Access denied for user`**: Fix the MySQL account, password, host permission, or URL encoding.
 - **`ModuleNotFoundError: No module named 'pymysql'`**: Activate the backend virtual environment and run `pip install -r requirements.txt`.
 - **The port is occupied and XAMPP cannot start MySQL**: Stop the conflicting service or change the XAMPP MySQL port, then update the backend URL to match.
@@ -163,7 +163,7 @@ http://127.0.0.1:8000/docs
 1. MySQL is green and running in XAMPP.
 2. XAMPP's `my.ini` confirms the server port.
 3. `Test-NetConnection 127.0.0.1 -Port 3306` succeeds, or the configured alternate port is used.
-4. `campusmarket_db` exists.
+4. `campusmarket` exists.
 5. The credentials in `DATABASE_URL` match the MySQL account.
 6. `pymysql` is installed in the active FastAPI environment.
 7. Uvicorn is started from `Backend` with `uvicorn app.main:app --reload`.

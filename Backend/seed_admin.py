@@ -22,7 +22,15 @@ def create_admin_if_missing():
             return
 
         hashed = pwd_context.hash("admin123")
-        admin = Admin(username="mau9999", email="admin@campace.edu", password=hashed)
+        admin = Admin(
+            username="mau9999",
+            email="admin@campace.edu",
+            full_name="System Administrator",
+            password_hash=hashed,
+            role="Admin",
+            status="Active",
+            two_factor_enabled=False,
+        )
         db.add(admin)
         db.commit()
         print("Admin created:", admin.username)

@@ -17,8 +17,12 @@ def seed_admin():
             hashed_password = pwd_context.hash("admin123") # admin123 የሚለውን ቃል ያመጥረዋል
             db_admin = Admin(
                 username="mau9999",
-                email="admin@campace.com",
-                password=hashed_password
+                email="admin@campace.edu",
+                full_name="System Administrator",
+                password_hash=hashed_password,
+                role="Admin",
+                status="Active",
+                two_factor_enabled=False,
             )
             db.add(db_admin)
             db.commit()

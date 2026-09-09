@@ -94,6 +94,8 @@ def init_db() -> None:
         order_columns = {column["name"] for column in inspector.get_columns("orders")}
         missing_order_columns = {
             "pickup_code": "INT NOT NULL DEFAULT 1000",
+            "buyer_confirmed": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "seller_confirmed": "BOOLEAN NOT NULL DEFAULT FALSE",
             "is_funds_released": "BOOLEAN NOT NULL DEFAULT FALSE",
             "dispute_reason": "TEXT NULL",
         }

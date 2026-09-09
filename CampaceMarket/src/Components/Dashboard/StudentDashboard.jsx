@@ -4,6 +4,16 @@ import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+const disputeReasons = [
+  'Item not received',
+  'Item is different from description',
+  'Item is damaged',
+  'Wrong item received',
+  'Seller did not show up',
+  'Seller refused to hand over the item',
+  'Payment/order problem',
+  'Other',
+];
 
 const universityStructure = {
   "College of Computing and Informatics (CCI)": [
@@ -216,8 +226,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [depositLoading, setDepositLoading] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
-  const [withdrawBankCode, setWithdrawBankCode] = useState('telebirr');
-  const [withdrawAccountNumber, setWithdrawAccountNumber] = useState('');
+  const [payoutAccount, setPayoutAccount] = useState(null);
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [highlights, setHighlights] = useState({ aiPicks: 0, latestListings: 0, cartValue: 0.00, pendingMessages: 0 });
@@ -260,8 +269,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [disputeOrderId, setDisputeOrderId] = useState(null);
   const [disputeReason, setDisputeReason] = useState('');
+  const [disputeDescription, setDisputeDescription] = useState('');
   const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
   const [disputeFeedback, setDisputeFeedback] = useState('');
+  const [receiptState, setReceiptState] = useState({});
+  const [revealedPickupCodes, setRevealedPickupCodes] = useState({});
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
     stats: {
@@ -429,7 +441,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const [wishRes, cartRes, orderRes, payRes] = await Promise.all([
         fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${studentId}`),
         fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${studentId}`),
-        fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${studentId}`),
+        fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${studentId}`, {
+          headers: { Authorization: `Bearer ${user?.access_token || user?.accessToken || ''}` },
+        }),
         fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`),
       ]);
 
@@ -1318,7 +1332,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     event.preventDefault();
     const targetOrderId = Number(disputeOrderId);
     const reason = disputeReason.trim();
-    if (!targetOrderId || !reason || isSubmittingDispute) return;
+    const description = disputeDescription.trim();
+    if (!targetOrderId || !reason || !description || isSubmittingDispute) return;
 
     setIsSubmittingDispute(true);
     setDisputeFeedback('');
@@ -1330,27 +1345,51 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason, description }),
       });
 
       if (!response.ok) {
         setDisputeFeedback(await getErrorString(response));
         return;
       }
+      const result = await response.json().catch(() => ({}));
 
       setOrders((previous) => previous.map((order) => (
         Number(order.id) === targetOrderId
-          ? { ...order, status: 'Disputed', fulfillment_status: 'Disputed', dispute_reason: reason }
+          ? { ...order, status: 'Disputed', fulfillment_status: 'Disputed', dispute_reason: reason, dispute_status: 'OPEN', dispute: result.dispute }
           : order
       )));
       setDisputeOrderId(null);
       setDisputeReason('');
-      setDisputeFeedback('Dispute raised. An Admin is reviewing the case.');
+      setDisputeDescription('');
+      setDisputeFeedback('Dispute submitted. Status: Open.');
     } catch (error) {
       console.error('Error raising dispute:', error);
       setDisputeFeedback('Connection error. Please try again.');
     } finally {
       setIsSubmittingDispute(false);
+    }
+  };
+
+  const handleConfirmItemReceived = async (order) => {
+    const orderId = Number(order.id);
+    const token = user?.access_token || user?.accessToken || '';
+    setReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${orderId}/confirm-received`, {
+        method: 'POST',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Unable to confirm receipt.');
+      setOrders((previous) => previous.map((item) => (
+        Number(item.id) === orderId
+          ? { ...item, status: 'Completed', fulfillment_status: 'Completed', buyer_confirmed: true, seller_confirmed: true, is_funds_released: true }
+          : item
+      )));
+      setReceiptState((previous) => ({ ...previous, [orderId]: { success: result.message || 'Item received and order completed.' } }));
+    } catch (error) {
+      setReceiptState((previous) => ({ ...previous, [orderId]: { error: error.message || 'Unable to confirm receipt.' } }));
     }
   };
 
@@ -1458,8 +1497,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
-    if (!withdrawBankCode || !withdrawAccountNumber.trim()) {
-      setWithdrawError('Please select a bank and enter your account number.');
+    if (!payoutAccount?.id) {
+      setWithdrawError('Set up an active payout account in Account Settings before withdrawing.');
       return;
     }
 
@@ -1471,15 +1510,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setWithdrawLoading(true);
     try {
       const payload = {
-        student_id: user.studentId,
         amount,
-        bank_code: withdrawBankCode,
-        account_number: withdrawAccountNumber.trim(),
+        payout_account_id: payoutAccount.id,
       };
 
       const res = await fetch('http://127.0.0.1:8000/api/student/wallet/withdraw', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.access_token || user?.accessToken || ''}`,
+        },
         body: JSON.stringify(payload)
       });
       const data = await res.json();
@@ -1500,8 +1540,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
       setShowWithdrawModal(false);
       setWithdrawAmount('');
-      setWithdrawAccountNumber('');
-      setWithdrawBankCode('telebirr');
       await fetchWalletBalance();
     } catch (err) {
       console.error('Withdrawal failed:', err);
@@ -1510,6 +1548,19 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setWithdrawLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!showWithdrawModal) return undefined;
+    const token = user?.access_token || user?.accessToken || '';
+    if (!token) return undefined;
+    fetch('http://127.0.0.1:8000/api/student/seller/payout-account', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => response.json())
+      .then((data) => setPayoutAccount(data?.account || null))
+      .catch(() => setPayoutAccount(null));
+    return undefined;
+  }, [showWithdrawModal, user]);
 
   const isWishlistItemAvailable = (item) => {
     const statusValue = String(item?.status || '').trim().toLowerCase();
@@ -3080,14 +3131,26 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               Close
                             </button>
                           </div>
-                          <textarea
-                            autoFocus
+                          <label className="mt-5 block text-sm font-semibold text-slate-700" htmlFor="dispute-reason">Reason</label>
+                          <select
+                            id="dispute-reason"
                             required
-                            rows="5"
                             value={disputeReason}
                             onChange={(event) => setDisputeReason(event.target.value)}
+                            className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white"
+                          >
+                            <option value="">Select a reason</option>
+                            {disputeReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}
+                          </select>
+                          <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="dispute-description">Description/details</label>
+                          <textarea
+                            id="dispute-description"
+                            required
+                            rows="5"
+                            value={disputeDescription}
+                            onChange={(event) => setDisputeDescription(event.target.value)}
                             placeholder="Describe the issue with this order..."
-                            className="mt-5 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white"
+                            className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white"
                           />
                           <p className="mt-2 text-xs text-slate-500">An Admin will review the case before the funds are refunded or released.</p>
                           <div className="mt-5 flex justify-end gap-3">
@@ -3100,7 +3163,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             </button>
                             <button
                               type="submit"
-                              disabled={isSubmittingDispute || !disputeReason.trim()}
+                              disabled={isSubmittingDispute || !disputeReason.trim() || !disputeDescription.trim()}
                               className="rounded-full bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {isSubmittingDispute ? 'Submitting...' : 'Submit Dispute'}
@@ -3293,14 +3356,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           const sellerId = order.seller_id || order.sellerId || order.seller;
                           const sellerName = order.seller_name || order.sellerName || order.seller || 'Campus Seller';
                           const pickupLocation = order.pickup_location || order.pickupLocation || 'Engineering Building';
-                          const timelineSteps = ['Order Placed', 'Processing', 'Ready for Pickup', 'Completed'];
+                          const timelineSteps = ['Order Placed', 'Payment Successful', 'Processing', 'Ready for Pickup', 'Completed'];
                           const stepIndexMap = {
                             'Order Placed': 0,
-                            'Processing': 1,
-                            'Ready for Pickup': 2,
-                            'Completed': 3,
+                            'Pending': 0,
+                            'Processing': 2,
+                            'Ready for Pickup': 3,
+                            'Completed': 4,
                           };
-                          const currentStep = stepIndexMap[orderStatus] ?? 0;
+                          const currentStep = orderStatus === 'Pending' && paymentStatus === 'Successful'
+                            ? 1
+                            : (stepIndexMap[orderStatus] ?? 0);
                           const currentFillIndex = Math.max(0, Math.min(timelineSteps.length - 1, currentStep));
 
                           return (
@@ -3352,15 +3418,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 <p className="mt-3 text-sm text-slate-600">Collect your item from <span className="font-semibold text-slate-800">{pickupLocation}</span> on campus.</p>
                               </div>
 
-                              {orderStatus === 'Processing' && (
+                              {orderStatus === 'Ready for Pickup' && (
                                 <div className="mt-5 rounded-2xl border-2 border-amber-300 bg-amber-50 p-5">
                                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                                     <div>
                                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Pickup Code</p>
-                                      <p className="mt-2 text-4xl font-black tracking-[0.3em] text-amber-950">{String(order.pickup_code ?? '').padStart(4, '0')}</p>
+                                      {revealedPickupCodes[order.id] ? <p className="mt-2 text-4xl font-black tracking-[0.3em] text-amber-950">{String(order.pickup_code ?? '').padStart(4, '0')}</p> : <button type="button" onClick={() => setRevealedPickupCodes((previous) => ({ ...previous, [order.id]: true }))} className="mt-2 rounded-full bg-amber-500 px-4 py-2 text-sm font-bold text-white hover:bg-amber-600">I received and inspected the item</button>}
                                     </div>
-                                    <p className="max-w-md text-sm font-semibold leading-6 text-amber-900">Only give this code to the seller AFTER you have received and inspected the item.</p>
+                                    <p className="max-w-md text-sm font-semibold leading-6 text-amber-900">Reveal and give this code to the seller only after you have received and inspected the item.</p>
                                   </div>
+                                </div>
+                              )}
+
+                              {orderStatus === 'Ready for Pickup' && (
+                                <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                                  {order.seller_confirmed ? <><p className="text-sm font-semibold text-sky-900">Seller confirmed the handover. Confirm that you received the item in the expected condition.</p><button type="button" onClick={() => handleConfirmItemReceived(order)} disabled={receiptState[order.id]?.loading} className="mt-3 rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600 disabled:bg-slate-300">{receiptState[order.id]?.loading ? 'Confirming...' : 'Confirm Item Received'}</button></> : <p className="text-sm font-semibold text-sky-800">Waiting for the seller to confirm handover with your pickup code.</p>}
+                                  {receiptState[order.id]?.error && <p className="mt-2 text-sm font-bold text-rose-600">{receiptState[order.id].error}</p>}
+                                  {receiptState[order.id]?.success && <p className="mt-2 text-sm font-bold text-emerald-600">{receiptState[order.id].success}</p>}
                                 </div>
                               )}
 
@@ -3391,6 +3465,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   onClick={() => {
                                     setDisputeOrderId(order.id);
                                     setDisputeReason('');
+                                    setDisputeDescription('');
                                     setDisputeFeedback('');
                                   }}
                                   className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
@@ -4608,31 +4683,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 />
               </div>
 
-              <div>
-                <label htmlFor="withdraw-bank" className="block text-sm font-semibold text-slate-700">Payout method</label>
-                <select
-                  id="withdraw-bank"
-                  value={withdrawBankCode}
-                  onChange={(event) => setWithdrawBankCode(event.target.value)}
-                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
-                >
-                  <option value="comari">CBE</option>
-                  <option value="telebirr">Telebirr</option>
-                  <option value="abyssi">Abyssinia</option>
-                  <option value="awash">Awash</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="withdraw-account" className="block text-sm font-semibold text-slate-700">Account or phone number</label>
-                <input
-                  id="withdraw-account"
-                  type="text"
-                  value={withdrawAccountNumber}
-                  onChange={(event) => setWithdrawAccountNumber(event.target.value)}
-                  placeholder="Enter account or phone number"
-                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
-                />
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                {payoutAccount ? (
+                  <><span className="font-bold">Payout account:</span> {payoutAccount.provider_name || 'Configured provider'} ({payoutAccount.payout_type === 'wallet' ? 'Mobile Wallet' : 'Bank'})</>
+                ) : (
+                  <span>Set up an active payout account in Account Settings before withdrawing.</span>
+                )}
               </div>
 
               {withdrawExceedsBalance && (

@@ -4636,8 +4636,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                             <span className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-bold uppercase text-rose-700">Disputed</span>
                           </div>
                           <p className="mt-2 font-semibold text-slate-800">{order.product_title || order.item || 'Campus product'}</p>
-                          <p className="mt-1 text-xs text-slate-500">Buyer: {order.buyer_id || order.buyer} · Seller: {order.seller_id || order.seller}</p>
+                          <p className="mt-1 text-xs text-slate-500">Buyer: {order.buyer_name || order.buyer_id || order.buyer} · Seller: {order.seller_name || order.seller_id || order.seller}</p>
                           <p className="mt-2 text-sm text-slate-700"><span className="font-bold">Reason:</span> {order.dispute_reason || 'No reason provided.'}</p>
+                          {order.dispute_description && <p className="mt-2 text-sm text-slate-600"><span className="font-bold">Buyer description:</span> {order.dispute_description}</p>}
+                          {order.seller_response && <p className="mt-2 text-sm text-slate-600"><span className="font-bold">Seller response:</span> {order.seller_response}</p>}
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2">
                           <button

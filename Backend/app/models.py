@@ -1,6 +1,6 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, UniqueConstraint
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, UniqueConstraint, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -66,19 +66,61 @@ class Student(Base):
     seller_payment_account = relationship("SellerPaymentAccount", uselist=False, back_populates="student", cascade="all, delete-orphan")
 
 
+class PayoutProvider(Base):
+    __tablename__ = "payout_providers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), nullable=False)
+    type = Column(String(30), nullable=False, index=True)
+    code = Column(String(50), nullable=False, unique=True, index=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    integration_status = Column(String(30), default="unavailable", nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    seller_payment_accounts = relationship("SellerPaymentAccount", back_populates="provider")
+
+
 class SellerPaymentAccount(Base):
     __tablename__ = "seller_payment_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
-    chapa_sub_account_id = Column(String(100), nullable=False)
+    provider_id = Column(Integer, ForeignKey("payout_providers.id", ondelete="SET NULL"), nullable=True, index=True)
+    chapa_sub_account_id = Column(String(100), nullable=True)
     business_name = Column(String(150), nullable=False)
+    payout_type = Column(String(30), default="bank", nullable=False)
     bank_code = Column(String(50), nullable=False)
-    account_number = Column(String(100), nullable=False)
+    account_number = Column(String(100), nullable=True)
+    phone_number = Column(String(30), nullable=True)
     account_name = Column(String(150), nullable=False)
     account_status = Column(String(30), default="Pending", nullable=False)
 
     student = relationship("Student", back_populates="seller_payment_account")
+    provider = relationship("PayoutProvider", back_populates="seller_payment_accounts")
+
+
+class PayoutTransaction(Base):
+    __tablename__ = "payout_transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    wallet_id = Column(Integer, ForeignKey("wallets.id", ondelete="RESTRICT"), nullable=True, index=True)
+    payout_account_id = Column(Integer, ForeignKey("seller_payment_accounts.id", ondelete="RESTRICT"), nullable=False, index=True)
+    provider_id = Column(Integer, ForeignKey("payout_providers.id", ondelete="RESTRICT"), nullable=False, index=True)
+    amount = Column(Numeric(12, 2), nullable=False)
+    currency = Column(String(10), default="ETB", nullable=False)
+    status = Column(String(30), default="pending", nullable=False, index=True)
+    provider_reference = Column(String(150), nullable=True, index=True)
+    internal_reference = Column(String(100), unique=True, nullable=False, index=True)
+    failure_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    student = relationship("Student")
+    wallet = relationship("Wallet")
+    payout_account = relationship("SellerPaymentAccount")
+    provider = relationship("PayoutProvider")
 
 
 class Wallet(Base):
@@ -91,6 +133,7 @@ class Wallet(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
     student = relationship("Student", back_populates="wallet")
+    transactions = relationship("Transaction", back_populates="wallet")
 
 
 class Category(Base):
@@ -179,6 +222,8 @@ class Order(Base):
     price = Column(String(50), nullable=False)
     status = Column(String(50), default="Processing", nullable=False)
     pickup_code = Column(Integer, nullable=False)
+    buyer_confirmed = Column(Boolean, default=False, nullable=False)
+    seller_confirmed = Column(Boolean, default=False, nullable=False)
     is_funds_released = Column(Boolean, default=False, nullable=False)
     dispute_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -186,12 +231,44 @@ class Order(Base):
     student = relationship("Student", primaryjoin="Order.student_id == Student.student_id", back_populates="orders")
     product = relationship("Product", back_populates="orders")
     reviews = relationship("Review", back_populates="order", cascade="all, delete-orphan")
+    disputes = relationship("Dispute", back_populates="order", cascade="all, delete-orphan")
+
+
+class Dispute(Base):
+    __tablename__ = "disputes"
+    __table_args__ = (
+        Index("ix_disputes_order_status", "order_id", "status"),
+        Index("ix_disputes_status_created", "status", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    buyer_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    reason = Column(String(120), nullable=False)
+    description = Column(Text, nullable=False)
+    evidence_image = Column(String(500), nullable=True)
+    seller_response = Column(Text, nullable=True)
+    seller_evidence = Column(String(500), nullable=True)
+    previous_order_status = Column(String(50), nullable=False)
+    status = Column(String(30), nullable=False, default="OPEN", index=True)
+    resolution = Column(String(30), nullable=True)
+    resolved_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+
+    order = relationship("Order", back_populates="disputes")
+    buyer = relationship("Student", foreign_keys=[buyer_id])
+    seller = relationship("Student", foreign_keys=[seller_id])
+    resolver = relationship("Admin", foreign_keys=[resolved_by])
 
 class Transaction(Base):
     __tablename__ = "transactions"
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    wallet_id = Column(Integer, ForeignKey("wallets.id", ondelete="SET NULL"), nullable=True, index=True)
     tx_id = Column(String(50), unique=True, nullable=False)
     type = Column(String(50), nullable=False)
     amount = Column(Numeric(10, 2), nullable=False)
@@ -200,6 +277,7 @@ class Transaction(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Transaction.student_id == Student.student_id", back_populates="transactions")
+    wallet = relationship("Wallet", back_populates="transactions")
 
 class Review(Base):
     __tablename__ = "reviews"

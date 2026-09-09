@@ -338,7 +338,7 @@ categories_data = [
 
 
 def seed_categories():
-    print("Connecting to campusmarket_db and seeding categories...")
+    print("Connecting to campusmarket and seeding categories...")
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
