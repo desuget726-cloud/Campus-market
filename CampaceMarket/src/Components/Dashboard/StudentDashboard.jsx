@@ -2447,7 +2447,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   return (
-    <div className="min-h-0 w-full bg-slate-50 pt-10 text-slate-900">
+    <div className="min-h-0 w-full bg-slate-100 pt-10 text-slate-900">
       <div className="flex min-h-0 w-full flex-col gap-3 lg:h-[calc(100vh-160px)] lg:overflow-hidden lg:flex-row lg:items-start lg:gap-3 lg:pt-1 lg:pb-2">
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
@@ -2899,6 +2899,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <div className="space-y-4">
                           {searchResults.map((item) => {
                             const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
+                            const sellerPayoutBlocked = String(item.seller_payout_status || '').trim().toLowerCase() !== 'active';
                             const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
                             const backendOrigin = 'http://127.0.0.1:8000';
                             let displayImage = fallbackImage;
@@ -2946,7 +2947,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   </div>
                                 </div>
                                 <div className="flex flex-wrap gap-2">
-                                  <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition">Add to Cart</button>
+                                  {sellerPayoutBlocked && <span className="basis-full rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] font-bold text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
+                                  <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={sellerPayoutBlocked} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>
+                                  <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={sellerPayoutBlocked} className="rounded-full bg-sky-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 transition disabled:cursor-not-allowed disabled:bg-slate-300">Buy Now</button>
                                   {isInWishlist ? (
                                     <button type="button" disabled className="rounded-full border border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
                                   ) : (
@@ -3349,6 +3352,25 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 <p className="mt-3 text-sm text-slate-600">Collect your item from <span className="font-semibold text-slate-800">{pickupLocation}</span> on campus.</p>
                               </div>
 
+                              {orderStatus === 'Processing' && (
+                                <div className="mt-5 rounded-2xl border-2 border-amber-300 bg-amber-50 p-5">
+                                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Pickup Code</p>
+                                      <p className="mt-2 text-4xl font-black tracking-[0.3em] text-amber-950">{String(order.pickup_code ?? '').padStart(4, '0')}</p>
+                                    </div>
+                                    <p className="max-w-md text-sm font-semibold leading-6 text-amber-900">Only give this code to the seller AFTER you have received and inspected the item.</p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {orderStatus === 'Completed' && (
+                                <div className="mt-5 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-800">
+                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-xl font-bold text-white" aria-hidden="true">✓</span>
+                                  <p className="text-base font-bold">Verified Transaction</p>
+                                </div>
+                              )}
+
                               {orderStatus === 'Disputed' && (
                                 <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4">
                                   <p className="text-sm font-semibold text-rose-800">An Admin is reviewing this case.</p>
@@ -3572,6 +3594,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {/* 3. ገጽ 3፦ የሻጭ ሰሌዳ - አዲስ ምርት መለጠፊያ (Seller Hub) */}
             {activeTab === 'seller' && (
               <SellerOperationsCenter
+                user={user}
                 sellerData={sellerData}
                 setSellerDashboardData={setSellerDashboardData}
                 myListings={myListings}

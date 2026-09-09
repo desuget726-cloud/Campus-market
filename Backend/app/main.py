@@ -2789,6 +2789,57 @@ def test_chapa_connection(db: Session = Depends(get_db)):
     return {"success": connected, "provider": "Chapa", "status": "Connected" if connected else "Not connected", "detail": detail}
 
 
+@app.get("/api/banks")
+@app.get("/api/payment/banks")
+async def get_chapa_banks():
+    """Return Chapa's current bank list without exposing the server-side secret."""
+    secret_key = os.getenv("CHAPA_SECRET_KEY", "").strip()
+    if not secret_key:
+        raise HTTPException(status_code=503, detail="Chapa bank list is not configured.")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://api.chapa.co/v1/banks",
+                headers={"Authorization": f"Bearer {secret_key}"},
+            )
+            response_data = response.json()
+    except httpx.TimeoutException as error:
+        logging.getLogger("app.payments").error("Chapa bank-list request timed out: %s", error)
+        raise HTTPException(status_code=502, detail="Chapa bank list request timed out.") from error
+    except httpx.RequestError as error:
+        logging.getLogger("app.payments").error("Unable to connect to Chapa for bank list: %s", error)
+        raise HTTPException(status_code=502, detail="Unable to reach Chapa for the bank list.") from error
+    except ValueError as error:
+        logging.getLogger("app.payments").exception("Unable to fetch Chapa bank list.")
+        raise HTTPException(status_code=502, detail="Chapa returned invalid bank-list JSON.") from error
+
+    if response.is_error:
+        chapa_message = response_data.get("message") if isinstance(response_data, dict) else None
+        detail = str(chapa_message).strip() if chapa_message else "Chapa rejected the bank-list request."
+        raise HTTPException(status_code=502, detail=detail)
+
+    raw_banks = response_data.get("data", []) if isinstance(response_data, dict) else []
+    if not isinstance(raw_banks, list):
+        raise HTTPException(status_code=502, detail="Chapa returned an invalid bank list.")
+
+    banks = []
+    for bank in raw_banks:
+        if not isinstance(bank, dict):
+            continue
+        code = bank.get("code") or bank.get("bank_code") or bank.get("id")
+        name = bank.get("name") or bank.get("bank_name")
+        if code is not None and name:
+            bank_type = bank.get("type") or bank.get("category") or bank.get("account_type")
+            banks.append({
+                "code": str(code),
+                "name": str(name),
+                "type": str(bank_type).strip().lower() if bank_type else None,
+            })
+
+    return banks
+
+
 @app.get("/api/admin/settings/{id}")
 def get_setting_by_id(id: int):
     return {"id": id, "value": True, "message": "Setting retrieved successfully"}
@@ -3193,16 +3244,28 @@ async def setup_seller_payout_account(
     if not all(chapa_payload.values()):
         raise HTTPException(status_code=400, detail="All seller payout account fields are required.")
 
+    if not re.fullmatch(r"[a-z0-9_-]+", chapa_payload["bank_code"].lower()):
+        raise HTTPException(status_code=400, detail="A valid Chapa bank code is required.")
+    chapa_payload["bank_code"] = chapa_payload["bank_code"].lower()
+
+    account_number = chapa_payload["account_number"]
+    if not account_number.isdigit():
+        raise HTTPException(status_code=400, detail="Account number must contain digits only.")
+    if chapa_payload["bank_code"] == "comari" and len(account_number) != 13:
+        raise HTTPException(status_code=400, detail="Commercial Bank of Ethiopia accounts must be exactly 13 digits.")
+    if chapa_payload["bank_code"] != "comari" and not 10 <= len(account_number) <= 15:
+        raise HTTPException(status_code=400, detail="Account number must be between 10 and 15 digits for this bank.")
+
     try:
         commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "3"))
     except (InvalidOperation, ValueError):
         commission_percent = Decimal("3")
     if commission_percent < 0 or commission_percent >= 100:
         raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
-    seller_split = ((Decimal("100") - commission_percent) / Decimal("100")).quantize(Decimal("0.0001"))
+    commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
     chapa_payload.update({
         "split_type": "percentage",
-        "split_value": str(seller_split),
+        "split_value": str(commission_fraction),
     })
 
     try:
@@ -3221,7 +3284,9 @@ async def setup_seller_payout_account(
     chapa_data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
     subaccount_id = chapa_data.get("subaccount_id") if isinstance(chapa_data, dict) else None
     if response.is_error or not subaccount_id:
-        raise HTTPException(status_code=502, detail="Chapa did not create the seller payout account.")
+        chapa_message = response_data.get("message") if isinstance(response_data, dict) else None
+        detail = str(chapa_message).strip() if chapa_message else "Chapa did not create the seller payout account."
+        raise HTTPException(status_code=502, detail=f"Unable to create seller payout account with Chapa: {detail}")
 
     if existing_account:
         seller_account = existing_account
@@ -3385,6 +3450,23 @@ def get_locations():
 # --- Products Catalog & Seller Endpoints ---
 # ==========================================
 
+def _seller_payout_status(db: Session, seller_identifier: Optional[str]) -> str:
+    if not seller_identifier:
+        return "Pending"
+
+    seller = db.query(Student).filter(
+        or_(Student.student_id == seller_identifier, Student.name == seller_identifier)
+    ).first()
+    if not seller:
+        return "Pending"
+
+    account = db.query(SellerPaymentAccount).filter(
+        SellerPaymentAccount.student_id == seller.student_id,
+    ).first()
+    if not account or account.account_status != "Active" or not account.chapa_sub_account_id:
+        return "Pending"
+    return "Active"
+
 # 4. የዕቃዎች ማውጫ እና ማጣሪያ ኤፒአይ (GET /api/products)
 @app.get("/api/products")
 def get_products(
@@ -3486,7 +3568,17 @@ def get_products(
         query = query.limit(limit)
 
     try:
-        return query.all()
+        products = query.all()
+        return [
+            {
+                **{
+                    column.name: getattr(product, column.name)
+                    for column in Product.__table__.columns
+                },
+                "seller_payout_status": _seller_payout_status(db, product.seller),
+            }
+            for product in products
+        ]
     except Exception as error:
         db.rollback()
         logger.exception("Failed to fetch products: %s", error)
@@ -3518,6 +3610,7 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
         "seller_phone": seller.phone if seller else None,
         "seller_name": seller.name if seller else product.seller,
         "seller_dept": seller.department if seller else None,
+        "seller_payout_status": _seller_payout_status(db, product.seller),
         "status": product.status,
         "created_at": product.created_at,
     }
@@ -5878,6 +5971,21 @@ def checkout_student_cart(data: CheckoutRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="One or more products in the cart are no longer available.")
         if str(product.status or "").strip().lower() == "sold":
             raise HTTPException(status_code=400, detail=f"{product.title} is already sold.")
+        seller = db.query(Student).filter(
+            or_(Student.student_id == product.seller, Student.name == product.seller)
+        ).first() if product.seller else None
+        seller_account = db.query(SellerPaymentAccount).filter(
+            SellerPaymentAccount.student_id == seller.student_id,
+        ).first() if seller else None
+        if (
+            not seller_account
+            or seller_account.account_status != "Active"
+            or not seller_account.chapa_sub_account_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="This item cannot be purchased because the seller has not configured their payout account yet.",
+            )
         locked_products[product.id] = product
 
         unit_price_etb = Decimal(str(_parse_price_to_etb(product.price)))
@@ -6262,10 +6370,11 @@ def verify_order_pickup(
     if not seller or str(product.seller or "").strip() not in {seller.student_id, seller.name}:
         raise HTTPException(status_code=403, detail="Only the seller can verify this pickup.")
 
+    order_status = str(order.status or "").strip().lower()
+    if order_status not in {"pending", "processing", "ready for pickup"}:
+        raise HTTPException(status_code=400, detail="This order is not ready for pickup verification.")
     if int(order.pickup_code or 0) != payload.input_code:
         raise HTTPException(status_code=400, detail="Invalid pickup code.")
-    if str(order.status or "").strip().lower() == "completed":
-        raise HTTPException(status_code=400, detail="This order has already been completed.")
 
     released_amount = release_escrow_funds(order.id, db)
     order.status = "Completed"
@@ -6452,10 +6561,16 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
             raise HTTPException(status_code=400, detail="A valid seller is required for this purchase.")
         seller_account = db.query(SellerPaymentAccount).filter(
             SellerPaymentAccount.student_id == seller.student_id,
-            SellerPaymentAccount.account_status == "Active",
         ).first()
-        if not seller_account or not seller_account.chapa_sub_account_id:
-            raise HTTPException(status_code=409, detail="The seller has not completed Chapa payout setup.")
+        if (
+            not seller_account
+            or seller_account.account_status != "Active"
+            or not seller_account.chapa_sub_account_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="This item cannot be purchased because the seller has not configured their payout account yet.",
+            )
 
     duplicate_cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
     if payment_settings["security"]["duplicateTransactionProtection"]:
@@ -6513,11 +6628,11 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
             commission_percent = Decimal("3")
         if commission_percent < 0 or commission_percent >= 100:
             raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
-        seller_percent = (Decimal("100") - commission_percent).quantize(Decimal("0.01"))
+        commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
         chapa_payload["subaccounts"] = [{
             "id": seller_account.chapa_sub_account_id,
             "split_type": "percentage",
-            "split_value": str(seller_percent),
+            "split_value": str(commission_fraction),
         }]
 
     try:

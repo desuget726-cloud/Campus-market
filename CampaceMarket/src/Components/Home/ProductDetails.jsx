@@ -253,6 +253,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   };
 
   const item = detailedProduct || product;
+  const sellerPayoutBlocked = String(item?.seller_payout_status || '').trim().toLowerCase() !== 'active';
 
   const productTitle = String(item?.title || '').trim();
   const displayTitle = productTitle.length >= 3
@@ -432,10 +433,24 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <button
                 type="button"
                 onClick={handleAddToCart}
-                className="w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700"
+                disabled={sellerPayoutBlocked}
+                className="w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 Add to Cart
               </button>
+              <button
+                type="button"
+                onClick={handleAddToCart}
+                disabled={sellerPayoutBlocked}
+                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                Buy Now
+              </button>
+              {sellerPayoutBlocked && (
+                <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">
+                  Seller Payout Setup Required - Purchase Disabled
+                </span>
+              )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
               )}

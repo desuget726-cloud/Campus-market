@@ -93,6 +93,7 @@ def init_db() -> None:
     if "orders" in inspector.get_table_names():
         order_columns = {column["name"] for column in inspector.get_columns("orders")}
         missing_order_columns = {
+            "pickup_code": "INT NOT NULL DEFAULT 1000",
             "is_funds_released": "BOOLEAN NOT NULL DEFAULT FALSE",
             "dispute_reason": "TEXT NULL",
         }

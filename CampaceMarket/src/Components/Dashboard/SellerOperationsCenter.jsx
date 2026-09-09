@@ -2,9 +2,11 @@ import { useState } from 'react';
 
 const formatSellerEtb = (value) => `${Number(value || 0).toLocaleString('en-ET')} ETB`;
 
-function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, setMyListings, setSellerData, setSellerDashboardData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice }) {
+function SellerOperationsCenter({ user, sellerData, sellerDashboardData, myListings, setMyListings, setSellerData, setSellerDashboardData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice }) {
     const [chartRange, setChartRange] = useState('3 Months');
     const [chartMetric, setChartMetric] = useState('Revenue');
+    const [pickupCodes, setPickupCodes] = useState({});
+    const [completionState, setCompletionState] = useState({});
     const dashboardStats = sellerDashboardData?.stats || {};
     const dashboardAlerts = sellerDashboardData?.alerts || {};
     const payoutStatus = String(sellerData?.account_status || sellerDashboardData?.account_status || 'Pending').toLowerCase();
@@ -83,11 +85,73 @@ function SellerOperationsCenter({ sellerData, sellerDashboardData, myListings, s
         }));
     };
 
+    const completeTrade = async (order) => {
+        const orderId = order.id ?? order.order_id ?? order.orderId;
+        const inputCode = String(pickupCodes[orderId] || '').trim();
+        if (!/^\d{4}$/.test(inputCode)) {
+            setCompletionState((previous) => ({ ...previous, [orderId]: { error: 'Invalid Code' } }));
+            return;
+        }
+
+        let token = user?.access_token || user?.accessToken || '';
+        if (!token && typeof window !== 'undefined') {
+            try {
+                const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+                token = session?.user?.access_token || session?.access_token || session?.user?.accessToken || '';
+            } catch {
+                token = '';
+            }
+        }
+
+        setCompletionState((previous) => ({ ...previous, [orderId]: { loading: true } }));
+        try {
+            const response = await fetch('http://127.0.0.1:8000/api/student/orders/verify-pickup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                body: JSON.stringify({ order_id: orderId, input_code: Number(inputCode) }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(response.status === 400 ? 'Invalid Code' : (result.detail || 'Unable to complete trade.'));
+            }
+
+            updateOrder(order, 'Completed');
+            setCompletionState((previous) => ({ ...previous, [orderId]: { success: 'Trade completed successfully.' } }));
+        } catch (error) {
+            setCompletionState((previous) => ({ ...previous, [orderId]: { error: error.message || 'Invalid Code' } }));
+        }
+    };
+
     const orderAction = (order) => {
         const status = String(order.status || 'Pending').trim().toLowerCase();
-        if (status === 'pending') return <div className="flex flex-wrap gap-2"><button type="button" onClick={() => updateOrder(order, 'Processing')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Accept</button><button type="button" onClick={() => updateOrder(order, 'Cancelled')} className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100">Reject</button></div>;
-        if (status === 'processing') return <button type="button" onClick={() => updateOrder(order, 'Ready for Pickup')} className="rounded-full bg-sky-500 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600">Mark as Ready for Pickup</button>;
-        if (status === 'ready for pickup') return <button type="button" onClick={() => updateOrder(order, 'Completed')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Confirm Delivery</button>;
+        if (['pending', 'processing', 'ready for pickup'].includes(status)) {
+            const orderId = order.id ?? order.order_id ?? order.orderId;
+            const state = completionState[orderId] || {};
+            return <div className="flex min-w-[210px] flex-col gap-2">
+                <label htmlFor={`pickup-code-${orderId}`} className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Enter Buyer Pickup Code</label>
+                <div className="flex flex-wrap gap-2">
+                    <input
+                        id={`pickup-code-${orderId}`}
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={pickupCodes[orderId] || ''}
+                        onChange={(event) => setPickupCodes((previous) => ({ ...previous, [orderId]: event.target.value.replace(/\D/g, '').slice(0, 4) }))}
+                        disabled={state.loading}
+                        placeholder="4-digit code"
+                        className="w-32 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold tracking-[0.15em] text-slate-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-100"
+                    />
+                    <button type="button" onClick={() => completeTrade(order)} disabled={state.loading || String(pickupCodes[orderId] || '').length !== 4} className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">{state.loading ? 'Verifying...' : 'Complete Trade'}</button>
+                </div>
+                {state.error && <p className="text-xs font-bold text-rose-600">{state.error}</p>}
+                {state.success && <p className="animate-pulse text-xs font-bold text-emerald-600">{state.success}</p>}
+                {status === 'pending' && <div className="flex flex-wrap gap-2 pt-1"><button type="button" onClick={() => updateOrder(order, 'Processing')} className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Accept</button><button type="button" onClick={() => updateOrder(order, 'Cancelled')} className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100">Reject</button></div>}
+                {status === 'processing' && <button type="button" onClick={() => updateOrder(order, 'Ready for Pickup')} className="self-start rounded-full bg-sky-500 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600">Mark as Ready for Pickup</button>}
+            </div>;
+        }
         return <span className="text-xs font-semibold text-slate-400">No action required</span>;
     };
 
