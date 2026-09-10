@@ -279,6 +279,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     ? productTitle.charAt(0).toUpperCase() + productTitle.slice(1)
     : 'Campus Marketplace Item';
   const priceValue = Number.parseFloat(String(item?.price || '').replace(/[^0-9.]/g, ''));
+  const itemTotal = Number.isFinite(priceValue) ? priceValue * selectedQuantity : null;
   const formattedPrice = Number.isFinite(priceValue)
     ? `${priceValue.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`
     : 'Negotiable';
@@ -398,7 +399,8 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <button type="button" onClick={() => setSelectedQuantity((value) => Math.min(availableStock, value + 1))} disabled={selectedQuantity >= availableStock} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Increase quantity">+</button>
             </div>
             <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>
-            {selectedQuantity > availableStock && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock</p>}
+            {itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
+            {availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
           </div>
 
           {/* የሻጩ ካርድ (ከስልክ ቁጥር መደበቂያ ጋር) */}
@@ -463,14 +465,6 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                 className="w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
                 Add to Cart
-              </button>
-              <button
-                type="button"
-                onClick={handleAddToCart}
-                disabled={purchaseBlocked}
-                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                Buy Now
               </button>
               {isOwnProduct && (
                 <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">

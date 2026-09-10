@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import jsPDF from 'jspdf';
 import SellerOperationsCenter from './SellerOperationsCenter';
 import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
@@ -300,6 +301,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
   const [disputeFeedback, setDisputeFeedback] = useState('');
   const [receiptState, setReceiptState] = useState({});
+  const [paymentReceiptState, setPaymentReceiptState] = useState({});
   const [revealedPickupCodes, setRevealedPickupCodes] = useState({});
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
@@ -575,6 +577,121 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } finally {
       setOrderDetailsLoading(false);
     }
+  };
+
+  const fetchPaymentReceipt = async (orderId) => {
+    const token = getStudentSessionToken();
+    setPaymentReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${encodeURIComponent(orderId)}/receipt`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to load the payment receipt.');
+      setPaymentReceiptState((previous) => ({ ...previous, [orderId]: { data } }));
+      return data;
+    } catch (error) {
+      setPaymentReceiptState((previous) => ({ ...previous, [orderId]: { error: error.message || 'Unable to load the payment receipt.' } }));
+      throw error;
+    }
+  };
+
+  const buildReceiptPdf = (receipt) => {
+    const pdf = new jsPDF();
+    const money = (value) => `${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
+    const date = receipt.payment_date || receipt.order_date;
+    const dateText = date ? new Date(date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Date unavailable';
+    let y = 24;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(20);
+    pdf.text('CAMPUS MARKET', 20, y);
+    y += 10;
+    pdf.setFontSize(15);
+    pdf.text('PAYMENT RECEIPT', 20, y);
+    y += 10;
+    pdf.setFontSize(11);
+    pdf.setTextColor(22, 128, 80);
+    pdf.text(`✓ PAYMENT ${String(receipt.payment_status || '').toUpperCase()}`, 20, y);
+    pdf.setTextColor(0, 0, 0);
+    pdf.setDrawColor(210, 214, 220);
+    pdf.line(20, y + 6, 190, y + 6);
+    y += 20;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(11);
+    const rows = [
+      ['Receipt Number', receipt.receipt_number],
+      ['Order Number', `#${receipt.order_number}`],
+      ['Paid On', dateText],
+      ['Product', receipt.product_name],
+      ['Quantity', String(receipt.quantity)],
+      ['Unit Price', money(receipt.unit_price)],
+      ['Item Total', money(receipt.item_total)],
+      ['Fees', money(receipt.fees)],
+      ['Total Paid', money(receipt.total_paid)],
+      ['Payment Method', receipt.payment_method],
+      ['Transaction Reference', receipt.transaction_reference],
+      ['Buyer', receipt.buyer_name],
+      ['Seller', receipt.seller_name],
+      ['Order Status', String(receipt.order_status || '').toUpperCase()],
+      ['Escrow', String(receipt.escrow_status || '').toUpperCase()],
+    ];
+    rows.forEach(([label, value]) => {
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`${label}:`, 20, y);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text(String(value || 'Unavailable'), 75, y);
+      y += 8;
+    });
+    if (receipt.dispute_status) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`Dispute: ${receipt.dispute_status}`, 20, y + 4);
+      y += 12;
+    }
+    if (receipt.refund_amount !== null && receipt.refund_amount !== undefined) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(`Refund recorded: ${money(receipt.refund_amount)} (${receipt.refund_reference})`, 20, y + 4);
+      y += 12;
+    }
+    pdf.setFont('helvetica', 'normal');
+    pdf.text(String(receipt.escrow_message || ''), 20, y + 4);
+    pdf.text('PAYMENT CONFIRMED', 20, y + 16);
+    return pdf;
+  };
+
+  const formatReceiptDateTime = (value) => value
+    ? new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'Date unavailable';
+
+  const escapeReceiptHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+  const buildReceiptHtml = (receipt) => {
+    const money = (value) => `${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`;
+    const field = (label, value, strong = false) => `<dt>${escapeReceiptHtml(label)}</dt><dd${strong ? ' class="total"' : ''}>${escapeReceiptHtml(value)}</dd>`;
+    return `<main class="receipt"><header><h1>CAMPUS MARKET</h1><h2>PAYMENT RECEIPT</h2><p class="badge">✓ PAYMENT ${escapeReceiptHtml(String(receipt.payment_status || '').toUpperCase())}</p></header><dl>${field('Receipt #', receipt.receipt_number)}${field('Order #', `#${receipt.order_number}`)}${field('Paid on', formatReceiptDateTime(receipt.payment_date || receipt.order_date))}</dl><h3>PRODUCT</h3><dl>${field('Product', receipt.product_name)}${field('Quantity', receipt.quantity)}${field('Unit price', money(receipt.unit_price))}${field('Item total', money(receipt.item_total))}</dl><h3>PAYMENT</h3><dl>${field('Fees', money(receipt.fees))}${field('Total paid', money(receipt.total_paid), true)}${field('Method', receipt.payment_method)}${field('Reference', receipt.transaction_reference)}</dl><h3>BUYER</h3><dl>${field('Buyer', receipt.buyer_name)}</dl><h3>SELLER</h3><dl>${field('Seller', receipt.seller_name)}</dl><h3>ORDER</h3><dl>${field('Status', String(receipt.order_status || '').toUpperCase())}</dl><h3>ESCROW</h3><dl>${field('Status', String(receipt.escrow_status || '').toUpperCase())}</dl><p class="message">${escapeReceiptHtml(receipt.escrow_message)}</p>${receipt.dispute_status ? `<p class="dispute">Dispute: ${escapeReceiptHtml(receipt.dispute_status)}</p>` : ''}${receipt.refund_amount !== null && receipt.refund_amount !== undefined ? `<p>Refund recorded: ${escapeReceiptHtml(money(receipt.refund_amount))} (${escapeReceiptHtml(receipt.refund_reference)})</p>` : ''}<footer><strong>PAYMENT CONFIRMED</strong><p>This receipt confirms that payment was successfully processed through Campus Market.</p><p>Thank you for using Campus Market.</p></footer></main>`;
+  };
+
+  const handleViewPaymentReceipt = async (orderId) => {
+    if (!paymentReceiptState[orderId]?.data) await fetchPaymentReceipt(orderId);
+  };
+
+  const handleDownloadPaymentReceipt = async (orderId) => {
+    const receipt = paymentReceiptState[orderId]?.data || await fetchPaymentReceipt(orderId);
+    buildReceiptPdf(receipt).save(`CampusMarket-Order-${receipt.order_number}-Receipt.pdf`);
+  };
+
+  const handlePrintPaymentReceipt = async (orderId) => {
+    const receipt = paymentReceiptState[orderId]?.data || await fetchPaymentReceipt(orderId);
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
+    if (!printWindow) return;
+    printWindow.document.write(`<html><head><title>Campus Market Receipt</title><style>@page{size:A4;margin:18mm}*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#172033;margin:0}.receipt{max-width:680px;margin:0 auto}.receipt header{text-align:center;border-bottom:2px solid #172033;padding-bottom:18px}.receipt h1{letter-spacing:2px;margin:0 0 6px}.receipt h2{font-size:17px;letter-spacing:1px;margin:0 0 14px}.badge{display:inline-block;border:1px solid #198754;border-radius:999px;color:#198754;font-weight:700;padding:8px 14px}.receipt h3{font-size:12px;letter-spacing:2px;margin:24px 0 8px;border-bottom:1px solid #d7dce2;padding-bottom:6px}.receipt dl{display:grid;grid-template-columns:180px 1fr;gap:9px;margin:0}.receipt dt{font-weight:700}.receipt dd{margin:0;overflow-wrap:anywhere}.receipt dd.total{font-size:16px;font-weight:700}.message{line-height:1.5;margin-top:20px}.dispute{color:#a13b3b;font-weight:700}footer{border-top:2px solid #172033;text-align:center;margin-top:28px;padding-top:16px;line-height:1.5}footer strong{letter-spacing:1px}</style></head><body>${buildReceiptHtml(receipt)}</body></html>`);
+    printWindow.document.close();
+    printWindow.focus();
+    printWindow.print();
   };
 
   const handleDisputeNotification = async ({ order_id: orderId }) => {
@@ -1861,7 +1978,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const updateSellerProduct = async (product, updates) => {
     const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getStudentSessionToken()}` },
       body: JSON.stringify({ student_id: user?.studentId || '', ...updates })
     });
     if (!response.ok) {
@@ -1869,6 +1986,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       throw new Error(errorData?.detail || 'Could not update product.');
     }
     await fetchSellerDashboardData();
+  };
+
+  const handleDeleteProduct = async (product) => {
+    if (!product?.id || (typeof window !== 'undefined' && !window.confirm(`Delete ${product.title || 'this product'}?`))) return;
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Could not delete product.');
+      setSearchResults((previous) => previous.filter((item) => String(item.id) !== String(product.id)));
+      await fetchSellerDashboardData();
+    } catch (error) {
+      setProductError(error.message || 'Could not delete product.');
+    }
   };
 
   const handleTogglePause = async (product) => {
@@ -1945,6 +2078,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       const response = await fetch('http://127.0.0.1:8000/api/products', {
         method: 'POST',
+        headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
         body: formData
       });
 
@@ -3048,6 +3182,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   error={orderDetailsError}
                   onBack={() => setSelectedOrder(null)}
                   onRefresh={() => fetchOrderDetails(selectedOrder.id)}
+                  onViewSellerProfile={(sellerId) => {
+                    if (sellerId && sellerId !== selectedOrder.seller_name) {
+                      onNavigate?.('seller-profile', { sellerId });
+                    }
+                  }}
                   onRaiseDispute={(order) => {
                     setDisputeOrderId(order.id);
                     setDisputeReason('');
@@ -3055,6 +3194,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     setDisputeFeedback('');
                   }}
                   onConfirmReceived={handleConfirmItemReceived}
+                  paymentReceipt={paymentReceiptState[selectedOrder.id]?.data}
+                  paymentReceiptLoading={paymentReceiptState[selectedOrder.id]?.loading}
+                  paymentReceiptError={paymentReceiptState[selectedOrder.id]?.error}
+                  onViewReceipt={handleViewPaymentReceipt}
+                  onDownloadReceipt={handleDownloadPaymentReceipt}
+                  onPrintReceipt={handlePrintPaymentReceipt}
                 />
               </>
             )}
@@ -3175,7 +3320,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       ) : searchResults.length === 0 ? (
                         <p className="text-sm text-slate-500">No products match your search yet. Try a different keyword or category.</p>
                       ) : (
-                        <div className="space-y-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                           {searchResults.map((item) => {
                             const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
                             const sellerPayoutBlocked = String(item.seller_payout_status || '').trim().toLowerCase() !== 'active';
@@ -3209,8 +3354,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             }
 
                             return (
-                              <div key={item.id} className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
+                              <div key={item.id} className="flex h-full min-w-0 flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4">
+                                <div className="flex min-w-0 flex-col gap-4">
                                   <img
                                     src={displayImage}
                                     alt={item.title}
@@ -3218,24 +3363,35 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       e.currentTarget.onerror = null;
                                       e.currentTarget.src = fallbackImage;
                                     }}
-                                    className="h-24 w-32 rounded-2xl object-cover"
+                                    className="aspect-[4/3] h-auto w-full rounded-2xl object-cover"
                                   />
-                                  <div>
+                                  <div className="min-w-0">
                                     <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{item.category} / {item.subcategory || 'General'}</p>
-                                    <h4 className="mt-2 text-lg font-semibold text-slate-900">{item.title}</h4>
+                                    <h4 className="mt-2 break-words text-lg font-semibold text-slate-900">{item.title}</h4>
                                     <p className="mt-1 text-sm text-slate-500">{item.description || item.summary || 'No description available.'}</p>
                                     <p className="mt-2 font-bold text-slate-900">{formatETB(normalizePrice(item.price))}</p>
                                   </div>
                                 </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {isOwnProduct && <span className="basis-full rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] font-bold text-amber-800">This is your material. You cannot purchase your own material.</span>}
-                                  {sellerPayoutBlocked && !isOwnProduct && <span className="basis-full rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] font-bold text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
-                                  <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>
-                                  <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="rounded-full bg-sky-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 transition disabled:cursor-not-allowed disabled:bg-slate-300">Buy Now</button>
-                                  {isInWishlist ? (
-                                    <button type="button" disabled className="rounded-full border border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
+                                <div className="mt-auto flex min-w-0 flex-col gap-2">
+                                  {isOwnProduct ? (
+                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
+                                      <button type="button" onClick={() => handleViewProductFromChat(item.id)} className="w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-700">View</button>
+                                      <button type="button" onClick={() => handleEditProduct(item)} className="w-full rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">Edit</button>
+                                      <button type="button" onClick={() => handleDeleteProduct(item)} className="w-full rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">Delete</button>
+                                    </div>
                                   ) : (
-                                    <button type="button" onClick={() => handleAddToWishlist(item.id)} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">♡ Add to Wishlist</button>
+                                    <>
+                                      {sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
+                                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                                        <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="w-full rounded-full bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>
+                                        <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="w-full rounded-full bg-sky-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 transition disabled:cursor-not-allowed disabled:bg-slate-300">Buy Now</button>
+                                        {isInWishlist ? (
+                                          <button type="button" disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
+                                        ) : (
+                                          <button type="button" onClick={() => handleAddToWishlist(item.id)} className="w-full rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">♡ Add to Wishlist</button>
+                                        )}
+                                      </div>
+                                    </>
                                   )}
                                 </div>
                               </div>
@@ -3874,6 +4030,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   onTabChange?.(target, payload);
                 }}
                 onViewProduct={handleViewProductFromChat}
+                onDeleteProduct={handleDeleteProduct}
                 sellerDashboardData={sellerDashboardData}
                 onEditProduct={handleEditProduct}
                 onTogglePause={handleTogglePause}

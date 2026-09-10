@@ -327,54 +327,31 @@ def _tokenize(text: Optional[str]) -> List[str]:
     return re.findall(r"[a-zA-Z0-9]+", str(text).lower())
 
 
-def _build_tfidf_vectors(corpus: List[str]) -> Tuple[List[Dict[str, float]], List[str]]:
-    """Build a compact TF-IDF model without external libraries using a simple bag-of-words implementation."""
-    documents = [
-        [token for token in _tokenize(doc)] for doc in corpus if doc and _tokenize(doc)
-    ]
-    if not documents:
-        return [], []
+def _build_tfidf_vectors(corpus: List[str]):
+    """Build recommendation vectors with the same sklearn TF-IDF model as the advisor."""
+    documents = [str(document or '') for document in corpus]
+    if not any(document.strip() for document in documents):
+        return None, None
 
-    vocab = sorted({token for document in documents for token in document})
-    doc_count = len(documents)
-    doc_frequency = {term: 0 for term in vocab}
-    for document in documents:
-        unique_terms = set(document)
-        for term in unique_terms:
-            doc_frequency[term] += 1
-
-    idf = {
-        term: 1.0 + (float(math.log((1 + doc_count) / (1 + doc_frequency.get(term, 0)))) + 1.0)
-        for term in vocab
-    }
-
-    vectors = []
-    for document in documents:
-        counts = Counter(document)
-        doc_total = sum(counts.values()) or 1
-        vector = {}
-        for term in vocab:
-            tf = counts.get(term, 0) / doc_total
-            vector[term] = tf * idf.get(term, 1.0)
-        vectors.append(vector)
-
-    return vectors, vocab
+    try:
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+        return vectorizer.fit_transform(documents), vectorizer
+    except ValueError:
+        return None, None
 
 
-def _cosine_similarity(vec_a: Dict[str, float], vec_b: Dict[str, float]) -> float:
-    dot = sum(vec_a.get(term, 0.0) * vec_b.get(term, 0.0) for term in set(vec_a) | set(vec_b))
-    norm_a = math.sqrt(sum(value * value for value in vec_a.values()))
-    norm_b = math.sqrt(sum(value * value for value in vec_b.values()))
-    if norm_a == 0 or norm_b == 0:
+def _cosine_similarity(vec_a, vec_b) -> float:
+    """Return sklearn's cosine similarity for two TF-IDF rows."""
+    if vec_a is None or vec_b is None:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(cosine_similarity(vec_a, vec_b)[0][0])
 
 
 def _student_interest_text(student: Student, db: Session) -> str:
     department = str(getattr(student, "department", "") or "")
     college = str(getattr(student, "college", "") or "")
-    dept_terms = _tokenize(department) + _tokenize(college)
-    history_tokens = []
+    weighted_terms = _tokenize(department) * 4 + _tokenize(college) * 3
+    now = datetime.now()
 
     for model in cast(Tuple[Any, Any, Any], (WishlistItem, CartItem, Order)):
         if model is WishlistItem:
@@ -387,12 +364,25 @@ def _student_interest_text(student: Student, db: Session) -> str:
         for row in rows:
             product = db.query(Product).filter(Product.id == row.product_id).first()
             if product:
-                history_tokens.extend(_tokenize(str(getattr(product, "title", "") or "")))
-                history_tokens.extend(_tokenize(str(getattr(product, "category", "") or "")))
-                history_tokens.extend(_tokenize(str(getattr(product, "subcategory", "") or "")))
-                history_tokens.extend(_tokenize(str(getattr(product, "description", "") or "")))
+                interaction_date = getattr(row, "created_at", None)
+                age_days = max(0, (now - interaction_date).days) if interaction_date else 365
+                recency_weight = max(1, int(round(4 * (0.5 ** (age_days / 30)))))
+                if model is Order:
+                    signal_weight = 6 if str(getattr(row, "status", "")).lower() == "completed" else 4
+                elif model is CartItem:
+                    signal_weight = 3
+                else:
+                    signal_weight = 2
+                repeat_count = max(1, signal_weight + recency_weight)
+                product_text = " ".join([
+                    str(getattr(product, "title", "") or ""),
+                    str(getattr(product, "category", "") or ""),
+                    str(getattr(product, "subcategory", "") or ""),
+                    str(getattr(product, "description", "") or ""),
+                ])
+                weighted_terms.extend(_tokenize(product_text) * repeat_count)
 
-    return " ".join(dept_terms + history_tokens)
+    return " ".join(weighted_terms)
 
 
 def _normalize_payment_type(raw_value: Optional[str]) -> str:
@@ -1833,6 +1823,17 @@ def ensure_database_compatibility(db: Session) -> None:
             "seller_confirmed": "ALTER TABLE orders ADD COLUMN seller_confirmed BOOLEAN NOT NULL DEFAULT FALSE",
             "is_funds_released": "ALTER TABLE orders ADD COLUMN is_funds_released BOOLEAN NOT NULL DEFAULT FALSE",
             "dispute_reason": "ALTER TABLE orders ADD COLUMN dispute_reason TEXT NULL",
+            "product_category": "ALTER TABLE orders ADD COLUMN product_category VARCHAR(100) NULL",
+            "product_subcategory": "ALTER TABLE orders ADD COLUMN product_subcategory VARCHAR(100) NULL",
+            "product_description": "ALTER TABLE orders ADD COLUMN product_description VARCHAR(500) NULL",
+            "product_condition": "ALTER TABLE orders ADD COLUMN product_condition VARCHAR(50) NULL",
+            "product_image": "ALTER TABLE orders ADD COLUMN product_image VARCHAR(255) NULL",
+            "seller_id": "ALTER TABLE orders ADD COLUMN seller_id VARCHAR(50) NULL",
+            "seller_name": "ALTER TABLE orders ADD COLUMN seller_name VARCHAR(100) NULL",
+            "seller_business_name": "ALTER TABLE orders ADD COLUMN seller_business_name VARCHAR(150) NULL",
+            "buyer_name": "ALTER TABLE orders ADD COLUMN buyer_name VARCHAR(100) NULL",
+            "buyer_email": "ALTER TABLE orders ADD COLUMN buyer_email VARCHAR(100) NULL",
+            "buyer_phone": "ALTER TABLE orders ADD COLUMN buyer_phone VARCHAR(20) NULL",
         }
         for column_name, statement in order_add_statements.items():
             column = db.execute(text("SHOW COLUMNS FROM orders LIKE :column_name"), {"column_name": column_name})
@@ -3412,6 +3413,7 @@ def get_student_profile(student_id: str, db: Session = Depends(get_db)):
             "college": student.college,
             "department": student.department,
             "is_verified": bool(student.is_verified),
+            "created_at": student.created_at,
             "two_factor_enabled": bool(student.two_factor_enabled),
             "notification_settings": {
                 field: bool(getattr(student, field)) for field in (
@@ -3596,9 +3598,9 @@ async def setup_seller_payout_account(
     secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
     if selected_provider.is_active and selected_provider.code.isdigit() and secret:
         try:
-            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "3"))
+            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "1"))
         except (InvalidOperation, ValueError):
-            commission_percent = Decimal("3")
+            commission_percent = Decimal("1")
         if commission_percent < 0 or commission_percent >= 100:
             raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
         commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
@@ -3842,6 +3844,7 @@ def get_products(
     search: Optional[str] = None,
     limit: Optional[int] = None,
     department: Optional[str] = None,
+    seller: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import case, or_
@@ -3886,7 +3889,7 @@ def get_products(
     if auto_hide_sold:
         query = query.filter(Product.status != "Sold")
 
-    manual_filters_active = bool(category or subcategory or search)
+    manual_filters_active = bool(category or subcategory or search or seller)
 
     if category:
         query = query.filter(Product.category == category)
@@ -3903,6 +3906,12 @@ def get_products(
                     Product.category.ilike(f"%{search_term}%"),
                 )
             )
+    if seller:
+        seller_student = db.query(Student).filter(Student.student_id == seller.strip()).first()
+        seller_values = [seller.strip()]
+        if seller_student:
+            seller_values.append(seller_student.name)
+        query = query.filter(Product.seller.in_(seller_values))
 
     if department and not manual_filters_active:
         cleaned_department = re.sub(r"(?i)\bdepartment of\b|\bdept\.?\b|\bdepartment\b", "", department)
@@ -3939,7 +3948,11 @@ def get_products(
         return [
             {
                 **{
-                    column.name: getattr(product, column.name)
+                    column.name: (
+                        _normalize_product_image(getattr(product, column.name))
+                        if column.name == "image"
+                        else getattr(product, column.name)
+                    )
                     for column in Product.__table__.columns
                 },
                 "seller_payout_status": _seller_payout_status(db, product.seller),
@@ -3971,6 +3984,7 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
         "category": product.category,
         "subcategory": product.subcategory,
         "price": product.price,
+        "stock": max(0, int(product.stock or 0)),
         "image": product.image,
         "description": product.description,
         "seller": product.seller,
@@ -4031,6 +4045,7 @@ def create_product(
     seller: Optional[str] = Form(None),
     student_id: Optional[str] = Form(None),  # <-- ADDED: Capture student_id from frontend Form
     images: List[UploadFile] = File(default=[]),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db)
 ):
     """
@@ -4080,16 +4095,13 @@ def create_product(
             DEFAULT_SETTINGS_BLOCKS["marketplace"]["requireApproval"],
         )
 
-        normalized_student_id = str(student_id).strip() if student_id else ""
-        if normalized_student_id:
-            student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
-            if not student:
-                raise HTTPException(status_code=404, detail="Student not found.")
-            if require_student_verification and not student.is_verified:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Unverified profiles are restricted from creating listings.",
-                )
+        authenticated_student = _student_from_authorization(authorization, db)
+        normalized_student_id = authenticated_student.student_id
+        if require_student_verification and not authenticated_student.is_verified:
+            raise HTTPException(
+                status_code=403,
+                detail="Unverified profiles are restricted from creating listings.",
+            )
         
         # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
         image_urls = []
@@ -4125,25 +4137,7 @@ def create_product(
         image_url = json.dumps(image_urls, ensure_ascii=False) if image_urls else None
         
         # Resolve the seller's identity properly (የሻጩን ማንነት መፍታት)
-        seller_value = str(seller).strip() if seller else ""
-        if not seller_value and normalized_student_id:
-            try:
-                resolved_student_id = _validate_student_id(
-                    db,
-                    normalized_student_id,
-                    field_name="student_id",
-                )
-                student = db.query(Student).filter(
-                    Student.student_id == resolved_student_id
-                ).first()
-                if student:
-                    seller_value = student.student_id
-            except HTTPException:
-                seller_value = ""
-        
-        # Fallback if no seller resolved
-        if not seller_value:
-            seller_value = "Unknown"
+        seller_value = normalized_student_id
 
         # ምርት ወደ ዳታቤዝ ያስቀምጡ (Save product to database)
         db_product = Product(
@@ -4181,7 +4175,12 @@ def create_product(
 
 
 @app.put("/api/student/products/{product_id}")
-def update_student_product(product_id: int, payload: StudentProductUpdate, db: Session = Depends(get_db)):
+def update_student_product(
+    product_id: int,
+    payload: StudentProductUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
     """Update a seller's own product details or marketplace status."""
     allow_editing = _setting_bool(
         _get_setting_value(
@@ -4198,7 +4197,11 @@ def update_student_product(product_id: int, payload: StudentProductUpdate, db: S
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
-    if str(payload.student_id).strip() != str(product.seller or "").strip():
+    authenticated_student = _student_from_authorization(authorization, db)
+    if str(product.seller or "").strip().lower() not in {
+        authenticated_student.student_id.strip().lower(),
+        authenticated_student.name.strip().lower(),
+    }:
         raise HTTPException(status_code=403, detail="You can only update your own products.")
     if payload.quantity is not None and payload.quantity <= 0:
         raise HTTPException(status_code=400, detail="Product quantity must be at least 1.")
@@ -4232,6 +4235,28 @@ def update_student_product(product_id: int, payload: StudentProductUpdate, db: S
             "image": product.image,
         },
     }
+
+
+@app.delete("/api/student/products/{product_id}")
+def delete_student_product(
+    product_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    authenticated_student = _student_from_authorization(authorization, db)
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if str(product.seller or "").strip().lower() not in {
+        authenticated_student.student_id.strip().lower(),
+        authenticated_student.name.strip().lower(),
+    }:
+        raise HTTPException(status_code=403, detail="You can only delete your own products.")
+    if db.query(Order.id).filter(Order.product_id == product.id).first():
+        raise HTTPException(status_code=409, detail="Products with orders cannot be deleted.")
+    db.delete(product)
+    db.commit()
+    return {"success": True, "product_id": product_id}
     
 @app.post("/api/student/chat/initiate")
 def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
@@ -4283,10 +4308,14 @@ def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
 
 
 @app.get("/api/student/listings")
-def get_student_listings(student_id: str, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
+def get_student_listings(
+    student_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    if student.student_id.strip().lower() != str(student_id).strip().lower():
+        raise HTTPException(status_code=403, detail="You can only view your own listings.")
 
     listings = (
         db.query(Product)
@@ -5152,29 +5181,55 @@ def _collaborative_product_scores(student: Student, db: Session) -> Dict[int, fl
         for order in db.query(Order).filter(Order.student_id == student.student_id).all()
         if order.product_id
     }
-    if not purchased_product_ids:
-        return {}
-
-    peer_ids = {
-        order.student_id
-        for order in db.query(Order).filter(Order.product_id.in_(purchased_product_ids)).all()
-        if order.student_id and order.student_id != student.student_id
-    }
-    if not peer_ids:
-        return {}
-
-    interacted_product_ids = purchased_product_ids | {
+    wishlist_product_ids = {
         item.product_id
         for item in db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
         if item.product_id
     }
+    interacted_product_ids = purchased_product_ids | wishlist_product_ids | {
+        item.product_id
+        for item in db.query(CartItem).filter(CartItem.student_id == student.student_id).all()
+        if item.product_id
+    }
+
+    direct_peer_ids = {
+        order.student_id
+        for order in db.query(Order).filter(Order.product_id.in_(purchased_product_ids)).all()
+        if order.student_id and order.student_id != student.student_id
+    } if purchased_product_ids else set()
+    direct_peer_ids.update(
+        item.student_id
+        for item in db.query(WishlistItem).filter(WishlistItem.product_id.in_(wishlist_product_ids)).all()
+        if item.student_id and item.student_id != student.student_id
+    ) if wishlist_product_ids else None
+
+    cohort_query = db.query(Student.student_id).filter(Student.student_id != student.student_id)
+    cohort_filters = []
+    if getattr(student, "department", None):
+        cohort_filters.append(Student.department == student.department)
+    if getattr(student, "college", None):
+        cohort_filters.append(Student.college == student.college)
+    cohort_peer_ids = {
+        peer_id for peer_id in cohort_query.filter(or_(*cohort_filters)).all()
+        for peer_id in [peer_id[0]] if peer_id
+    } if cohort_filters else set()
+
+    if not direct_peer_ids and not cohort_peer_ids:
+        return {}
+
     scores: Dict[int, float] = {}
-    for order in db.query(Order).filter(Order.student_id.in_(peer_ids)).all():
-        if order.product_id and order.product_id not in interacted_product_ids:
-            scores[order.product_id] = scores.get(order.product_id, 0.0) + 2.0
-    for item in db.query(WishlistItem).filter(WishlistItem.student_id.in_(peer_ids)).all():
-        if item.product_id and item.product_id not in interacted_product_ids:
-            scores[item.product_id] = scores.get(item.product_id, 0.0) + 1.0
+    for order in db.query(Order).filter(Order.student_id.in_(direct_peer_ids | cohort_peer_ids)).all():
+        if not order.product_id or order.product_id in interacted_product_ids:
+            continue
+        peer_weight = 1.0 if order.student_id in direct_peer_ids else 0.35
+        purchase_weight = 2.0 if str(getattr(order, "status", "")).lower() == "completed" else 1.0
+        scores[order.product_id] = scores.get(order.product_id, 0.0) + peer_weight * purchase_weight
+
+    for item in db.query(WishlistItem).filter(WishlistItem.student_id.in_(direct_peer_ids | cohort_peer_ids)).all():
+        if not item.product_id or item.product_id in interacted_product_ids:
+            continue
+        peer_weight = 1.0 if item.student_id in direct_peer_ids else 0.35
+        scores[item.product_id] = scores.get(item.product_id, 0.0) + peer_weight * 0.75
 
     maximum_score = max(scores.values(), default=0.0)
     return {
@@ -5237,6 +5292,23 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     if not approved_products:
         return []
 
+    owned_product_ids = {
+        order.product_id
+        for order in db.query(Order).filter(Order.student_id == student.student_id).all()
+        if order.product_id
+    }
+    cart_product_ids = {
+        item.product_id
+        for item in db.query(CartItem).filter(CartItem.student_id == student.student_id).all()
+        if item.product_id
+    }
+    wishlist_product_ids = {
+        item.product_id
+        for item in db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
+        if item.product_id
+    }
+    excluded_product_ids = owned_product_ids | cart_product_ids | wishlist_product_ids
+
     content_scores: Dict[int, float] = {}
     if recommendation_engine in {"Content-Based Filtering (TF-IDF)", "Hybrid Recommendation"}:
         profile_text = _student_interest_text(student, db)
@@ -5251,10 +5323,10 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
             for product in approved_products
         ]
         vectors, _ = _build_tfidf_vectors([profile_text] + product_texts)
-        if vectors:
-            profile_vector = vectors[0]
+        if vectors is not None:
+            profile_vector = vectors[0:1]
             for idx, product in enumerate(approved_products, start=1):
-                content_scores[product.id] = _cosine_similarity(profile_vector, vectors[idx]) if idx < len(vectors) else 0.0
+                content_scores[product.id] = _cosine_similarity(profile_vector, vectors[idx:idx + 1]) if idx < vectors.shape[0] else 0.0
 
     collaborative_scores = (
         _collaborative_product_scores(student, db)
@@ -5263,6 +5335,8 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     )
     scored_products = []
     for product in approved_products:
+        if product.id in excluded_product_ids:
+            continue
         content_score = content_scores.get(product.id, 0.0)
         collaborative_score = collaborative_scores.get(product.id, 0.0)
         if recommendation_engine == "Collaborative Filtering":
@@ -5271,18 +5345,50 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
             score = (content_score * 0.6) + (collaborative_score * 0.4)
         else:
             score = content_score
-        scored_products.append({"product": product, "score": score})
+        scored_products.append({
+            "product": product,
+            "score": score,
+            "content_score": content_score,
+            "collaborative_score": collaborative_score,
+        })
 
     scored_products.sort(key=lambda item: item["score"], reverse=True)
+    threshold_matches = sum(item["score"] >= min_similarity_score for item in scored_products)
+    logging.info(
+        "[AI recommendations] student=%s engine=%s candidates=%d threshold=%.3f matches=%d limit=%d",
+        student.student_id,
+        recommendation_engine,
+        len(scored_products),
+        min_similarity_score,
+        threshold_matches,
+        num_recommendations,
+    )
+    threshold_fallback = threshold_matches == 0 and bool(scored_products)
+    if threshold_fallback:
+        logging.warning(
+            "[AI recommendations] threshold %.3f filtered all scored candidates for student=%s; using closest matches",
+            min_similarity_score,
+            student.student_id,
+        )
     best_matches = []
     seen_ids = set()
     for item in scored_products:
         product = item["product"]
-        if item["score"] < min_similarity_score:
+        if item["score"] < min_similarity_score and not threshold_fallback:
             continue
         if product.id in seen_ids:
             continue
         seen_ids.add(product.id)
+        if threshold_fallback:
+            reason = "Closest match to your marketplace activity"
+        elif item["collaborative_score"] > item["content_score"] and item["collaborative_score"] > 0:
+            reason = "Popular among similar students"
+        elif item["content_score"] > 0 and product.category:
+            reason = f"Because you liked similar {product.category} items"
+        elif student.department:
+            reason = f"Because you're in {student.department}"
+        else:
+            reason = "Recommended from your marketplace activity"
         best_matches.append({
             "id": product.id,
             "title": product.title,
@@ -5292,6 +5398,7 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
             "image": product.image,
             "match_score": round(item["score"], 4),
             "match": "High match" if item["score"] >= 0.15 else "Recommended",
+            "reason": reason,
         })
         if len(best_matches) >= num_recommendations:
             break
@@ -5299,9 +5406,9 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     if len(best_matches) < num_recommendations:
         latest_products = db.query(Product).filter(
             Product.status.ilike("%approved%")
-        ).order_by(Product.created_at.desc()).limit(5).all()
+        ).order_by(Product.created_at.desc()).limit(max(5, num_recommendations * 3)).all()
         for product in latest_products:
-            if product.id in seen_ids:
+            if product.id in seen_ids or product.id in excluded_product_ids:
                 continue
             seen_ids.add(product.id)
             best_matches.append({
@@ -5313,6 +5420,7 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
                 "image": product.image,
                 "match_score": 0,
                 "match": "Latest listing",
+                "reason": "Latest listing in the marketplace",
             })
             if len(best_matches) >= num_recommendations:
                 break
@@ -6093,9 +6201,11 @@ def _normalize_product_image(raw_image: Optional[object]) -> Optional[str]:
 
 def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = True) -> dict:
     product = db.query(Product).filter(Product.id == order.product_id).first()
+    snapshot_seller_id = getattr(order, "seller_id", None)
+    current_seller_identifier = product.seller if product else snapshot_seller_id
     seller = db.query(Student).filter(
-        or_(Student.student_id == product.seller, Student.name == product.seller)
-    ).first() if product and product.seller else None
+        or_(Student.student_id == current_seller_identifier, Student.name == current_seller_identifier)
+    ).first() if current_seller_identifier else None
     buyer = db.query(Student).filter(Student.student_id == order.student_id).first()
     seller_account = db.query(SellerPaymentAccount).filter(
         SellerPaymentAccount.student_id == seller.student_id,
@@ -6105,24 +6215,33 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         pickup_location = _resolve_pickup_location(db, product)
     status = _normalize_order_status(order.status or "Pending")
     dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
-    product_image = _normalize_product_image(product.image if product else None)
+    product_title = getattr(order, "title", None) or (product.title if product else "Campus Purchase")
+    product_image = _normalize_product_image(
+        getattr(order, "product_image", None) or (product.image if product else None)
+    )
+    seller_id = snapshot_seller_id or (seller.student_id if seller else (product.seller if product else None))
+    seller_name = getattr(order, "seller_name", None) or (seller.name if seller else (product.seller if product else "Campus Seller"))
+    buyer_name = getattr(order, "buyer_name", None) or (buyer.name if buyer else order.student_id)
 
     payload = {
         "id": order.id,
         "order_id": order.id,
         "student_id": order.student_id,
         "buyer_id": order.student_id,
-        "buyer_name": buyer.name if buyer else order.student_id,
+        "buyer_name": buyer_name,
         "product_id": order.product_id,
-        "title": order.title or (product.title if product else "Campus Purchase"),
-        "product_title": product.title if product else order.title,
+        "title": product_title,
+        "product_title": product_title,
         "image": product_image,
         "product_image": product_image,
-        "condition": product.condition if product else None,
+        "category": getattr(order, "product_category", None) or (product.category if product else None),
+        "subcategory": getattr(order, "product_subcategory", None) or (product.subcategory if product else None),
+        "description": getattr(order, "product_description", None) or (product.description if product else None),
+        "condition": getattr(order, "product_condition", None) or (product.condition if product else None),
         "quantity": int(getattr(order, "quantity", 1) or 1),
-        "seller_id": seller.student_id if seller else (product.seller if product else None),
-        "seller_name": seller.name if seller else (product.seller if product else "Campus Seller"),
-        "seller_business_name": seller_account.business_name if seller_account else None,
+        "seller_id": seller_id,
+        "seller_name": seller_name,
+        "seller_business_name": getattr(order, "seller_business_name", None) or (seller_account.business_name if seller_account else None),
         "price": order.price,
         "unit_price": _parse_price_to_etb(order.price),
         "status": status,
@@ -6380,7 +6499,7 @@ def add_to_cart(
                 cart_item = CartItem(
                     student_id=data.student_id,
                     product_id=data.product_id,
-                    quantity=1,
+                    quantity=requested_quantity,
                 )
                 db.add(cart_item)
 
@@ -6400,7 +6519,7 @@ def add_to_cart(
                 cart_item = CartItem(
                     student_id=data.student_id,
                     product_id=data.product_id,
-                    quantity=1,
+                    quantity=requested_quantity,
                 )
                 db.add(cart_item)
                 db.commit()
@@ -6565,9 +6684,13 @@ def checkout_student_cart(
                 status_code=400,
                 detail="This item cannot be purchased because the seller has not configured their payout account yet.",
             )
-        locked_products[product.id] = product
-
         unit_price_etb = Decimal(str(_parse_price_to_etb(product.price)))
+        locked_products[product.id] = {
+            "product": product,
+            "seller": seller,
+            "seller_account": seller_account,
+            "unit_price": unit_price_etb,
+        }
         cart_total += unit_price_etb * Decimal(int(cart_item.quantity or 1))
 
     current_wallet_balance = Decimal(str(student.wallet_balance or 0))
@@ -6577,13 +6700,28 @@ def checkout_student_cart(
     student.wallet_balance = current_wallet_balance - cart_total
 
     for cart_item in cart_items:
-        product = locked_products[cart_item.product_id]
+        line = locked_products[cart_item.product_id]
+        product = line["product"]
+        seller = line["seller"]
+        seller_account = line["seller_account"]
+        unit_price_etb = line["unit_price"]
 
         order = Order(
             student_id=data.student_id,
             product_id=product.id,
             title=product.title,
             price=product.price,
+            product_category=product.category,
+            product_subcategory=product.subcategory,
+            product_description=product.description,
+            product_condition=product.condition,
+            product_image=product.image,
+            seller_id=seller.student_id if seller else product.seller,
+            seller_name=seller.name if seller else product.seller,
+            seller_business_name=seller_account.business_name if seller_account else None,
+            buyer_name=student.name,
+            buyer_email=student.email,
+            buyer_phone=student.phone,
             quantity=int(cart_item.quantity or 1),
             status="Pending",
             pickup_code=secrets.randbelow(9000) + 1000,
@@ -6685,7 +6823,7 @@ def release_escrow_funds(order_id: int, db: Session) -> Decimal:
         raise HTTPException(status_code=409, detail="Seller not found for order.")
 
     total_price = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
-    commission_rate = Decimal("0.02")
+    commission_rate = Decimal("0.01")
     platform_cut = (total_price * commission_rate).quantize(Decimal("0.01"))
     seller_final_amount = total_price - platform_cut
 
@@ -6791,15 +6929,103 @@ def get_student_order_details(
         raise HTTPException(status_code=404, detail="Order not found.")
 
     product = db.query(Product).filter(Product.id == order.product_id).first()
+    seller_identifier = getattr(order, "seller_id", None) or (product.seller if product else None)
     seller = db.query(Student).filter(
-        or_(Student.student_id == product.seller, Student.name == product.seller)
-    ).first() if product and product.seller else None
+        or_(Student.student_id == seller_identifier, Student.name == seller_identifier)
+    ).first() if seller_identifier else None
     is_buyer = viewer.student_id.strip().lower() == order.student_id.strip().lower()
     is_seller = bool(seller and seller.student_id.strip().lower() == viewer.student_id.strip().lower())
     if not is_buyer and not is_seller:
         raise HTTPException(status_code=403, detail="You are not authorized to view this order.")
 
     return _serialize_order(db, order, include_pickup_code=is_buyer)
+
+
+@app.get("/api/student/orders/{order_id}/receipt")
+def get_student_order_receipt(
+    order_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    buyer = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if buyer.student_id.strip().lower() != order.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You are not authorized to view this receipt.")
+    if _normalize_payment_status(order.payment_status) != "Successful":
+        raise HTTPException(status_code=409, detail="A receipt is available only for successful payments.")
+
+    product = db.query(Product).filter(Product.id == order.product_id).first()
+    seller_identifier = getattr(order, "seller_id", None) or (product.seller if product else None)
+    seller = db.query(Student).filter(
+        or_(Student.student_id == seller_identifier, Student.name == seller_identifier)
+    ).first() if seller_identifier else None
+    quantity = int(getattr(order, "quantity", 1) or 1)
+    unit_price = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
+    item_total = (unit_price * quantity).quantize(Decimal("0.01"))
+
+    # Checkout currently records one successful purchase transaction for the cart.
+    # Match it to this order by the authenticated buyer, amount, and checkout time;
+    # no client-supplied transaction reference is accepted.
+    payment_transaction = (
+        db.query(Transaction)
+        .filter(
+            Transaction.student_id == order.student_id,
+            Transaction.type == "Purchase",
+            Transaction.status == "Successful",
+            Transaction.amount == item_total,
+            Transaction.created_at >= order.created_at,
+        )
+        .order_by(Transaction.created_at.asc())
+        .first()
+    )
+    if not payment_transaction:
+        raise HTTPException(status_code=409, detail="The successful payment transaction could not be matched to this order.")
+
+    escrow_hold = db.query(Transaction).filter(
+        Transaction.student_id == order.student_id,
+        Transaction.type == "Escrow Hold",
+        Transaction.description == f"Escrow hold for order #{order.id}",
+    ).order_by(Transaction.created_at.desc()).first()
+    refund = db.query(Transaction).filter(
+        Transaction.student_id == order.student_id,
+        Transaction.type == "Refund",
+        Transaction.description.like(f"%order #{order.id}%"),
+    ).order_by(Transaction.created_at.desc()).first()
+    dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
+    buyer_name = getattr(order, "buyer_name", None) or buyer.name or buyer.student_id
+    seller_name = getattr(order, "seller_name", None) or (seller.name if seller else None) or seller_identifier or "Campus Seller"
+    escrow_status = "RELEASED" if order.is_funds_released else "HOLD"
+    if escrow_hold and escrow_hold.status == "Refunded":
+        escrow_status = "REFUNDED"
+    paid_on = payment_transaction.created_at or order.created_at
+    receipt_number = f"RCPT-{paid_on.strftime('%Y%m%d')}-{order.id:04d}"
+
+    return {
+        "receipt_number": receipt_number,
+        "order_number": order.id,
+        "order_date": order.created_at,
+        "payment_date": paid_on,
+        "payment_status": _normalize_payment_status(payment_transaction.status),
+        "product_name": getattr(order, "title", None) or (product.title if product else "Campus Purchase"),
+        "product_image": _normalize_product_image(getattr(order, "product_image", None) or (product.image if product else None)),
+        "quantity": quantity,
+        "unit_price": float(unit_price),
+        "item_total": float(item_total),
+        "fees": 0.0,
+        "total_paid": float(payment_transaction.amount),
+        "payment_method": _normalize_payment_type(payment_transaction.type),
+        "transaction_reference": payment_transaction.tx_id,
+        "buyer_name": buyer_name,
+        "seller_name": seller_name,
+        "order_status": _normalize_order_status(order.status),
+        "escrow_status": escrow_status,
+        "escrow_message": "Payment was released to the seller after the order was successfully completed." if escrow_status == "RELEASED" else "Payment is being held in escrow until the order is successfully completed.",
+        "dispute_status": dispute.status if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else None,
+        "refund_amount": float(refund.amount) if refund else None,
+        "refund_reference": refund.tx_id if refund else None,
+    }
 
 
 @app.post("/api/student/orders/{id}/cancel")
@@ -6937,8 +7163,12 @@ def raise_order_dispute(
         raise HTTPException(status_code=400, detail="Dispute description is required.")
     if len(description) > 5000:
         raise HTTPException(status_code=400, detail="Dispute description must be 5000 characters or fewer.")
-    if str(order.status or "").strip().lower() in {"completed", "refunded", "cancelled", "disputed"}:
-        raise HTTPException(status_code=400, detail="This order cannot be disputed in its current state.")
+    normalized_order_status = str(order.status or "").strip().lower()
+    if normalized_order_status not in {"ready for pickup", "item received"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Disputes can only be raised when the order is ready for pickup or the item has been received.",
+        )
 
     product = db.query(Product).filter(Product.id == order.product_id).first()
     seller = db.query(Student).filter(
@@ -7150,9 +7380,10 @@ def resolve_dispute(
 
 def _seller_for_order(db: Session, order: Order) -> Student:
     product = db.query(Product).filter(Product.id == order.product_id).first()
+    seller_identifier = getattr(order, "seller_id", None) or (product.seller if product else None)
     seller = db.query(Student).filter(
-        or_(Student.student_id == product.seller, Student.name == product.seller)
-    ).first() if product and product.seller else None
+        or_(Student.student_id == seller_identifier, Student.name == seller_identifier)
+    ).first() if seller_identifier else None
     if not seller:
         raise HTTPException(status_code=409, detail="Seller not found for order.")
     return seller
@@ -7476,9 +7707,9 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
     }
     if seller_account:
         try:
-            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "3"))
+            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "1"))
         except (InvalidOperation, ValueError):
-            commission_percent = Decimal("3")
+            commission_percent = Decimal("1")
         if commission_percent < 0 or commission_percent >= 100:
             raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
         commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))

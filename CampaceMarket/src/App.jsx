@@ -6,6 +6,7 @@ import HomeView from './Components/Home/HomeView';
 import AboutView from './Components/Views/AboutView';
 import ServicesView from './Components/Views/ServicesView';
 import ContactView from './Components/Views/ContactView';
+import SellerProfileView from './Components/Views/SellerProfileView';
 import Footer from './Components/Layout/Footer';
 import AdminDashboard from './Components/Dashboard/AdminDashboard';
 import StudentDashboard from './Components/Dashboard/StudentDashboard';
@@ -92,6 +93,7 @@ function AppContent() {
   const [pendingView, setPendingView] = useState('home');
   const [pendingUsername, setPendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
+  const [pendingSellerId, setPendingSellerId] = useState(null);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
   const [showFooterTerms, setShowFooterTerms] = useState(false);
@@ -264,6 +266,12 @@ function AppContent() {
       return;
     }
 
+    if (view === 'seller-profile') {
+      setPendingSellerId(params.sellerId ?? params.seller_id ?? null);
+      setCurrentView('seller-profile');
+      return;
+    }
+
     if (activeRole === 'admin') {
       if (view === 'student-dashboard' || view === 'student-dashboard-profile') {
         setCurrentView('admin-dashboard');
@@ -286,6 +294,7 @@ function AppContent() {
         return;
       }
       if (view === 'student-dashboard') {
+        if (params.tab) setStudentTab(params.tab);
         setCurrentView('student-dashboard');
         return;
       }
@@ -422,6 +431,13 @@ function AppContent() {
           {currentView === 'services' && <ServicesView />}
 
           {currentView === 'contact' && <ContactView />}
+          {currentView === 'seller-profile' && (
+            <SellerProfileView
+              sellerId={pendingSellerId}
+              onBack={() => setCurrentView('home')}
+              onNavigate={handleNavigate}
+            />
+          )}
           {activeRole === 'admin' && currentView === 'admin-dashboard' && (
             <AdminDashboard
               onLogout={handleLogout}
