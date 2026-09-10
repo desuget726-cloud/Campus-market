@@ -30,6 +30,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [reportEvidenceFile, setReportEvidenceFile] = useState(null);
   const [reportStatus, setReportStatus] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
+  const [isZoomed, setIsZoomed] = useState(false);
+  const [showShareMenu, setShowShareMenu] = useState(false);
+  const [isWishlisted, setIsWishlisted] = useState(false);
+  const [wishlistItemId, setWishlistItemId] = useState(null);
+  const [wishlistStatus, setWishlistStatus] = useState('');
+  const [offerAmount, setOfferAmount] = useState('');
+  const [reportReason, setReportReason] = useState('');
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
 
   useEffect(() => {
@@ -37,7 +44,9 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
 
     const fetchProductDetails = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8000/api/products/${product.id}`);
+        const viewerId = currentUser?.studentId || currentUser?.student_id;
+        const query = viewerId ? `?viewer_id=${encodeURIComponent(viewerId)}` : '';
+        const response = await fetch(`http://127.0.0.1:8000/api/products/${product.id}${query}`);
         if (!response.ok) {
           throw new Error('Failed to fetch product details');
         }
@@ -49,7 +58,34 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     };
 
     fetchProductDetails();
-  }, [product?.id]);
+  }, [product?.id, currentUser?.studentId, currentUser?.student_id]);
+
+  useEffect(() => {
+    const studentId = currentUser?.studentId || currentUser?.student_id;
+    if (!studentId || !product?.id) {
+      setIsWishlisted(false);
+      setWishlistItemId(null);
+      return undefined;
+    }
+
+    let active = true;
+    fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${encodeURIComponent(studentId)}`)
+      .then((response) => response.ok ? response.json() : [])
+      .then((items) => {
+        const match = (Array.isArray(items) ? items : []).find((wishlistItem) => String(wishlistItem.product_id) === String(product.id));
+        if (active) {
+          setIsWishlisted(Boolean(match));
+          setWishlistItemId(match?.id || null);
+        }
+      })
+      .catch(() => {
+        if (active) setIsWishlisted(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.studentId, currentUser?.student_id, product?.id]);
 
   useEffect(() => {
     setSelectedQuantity(1);
@@ -226,9 +262,55 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     }
   };
 
+  const handleToggleWishlist = async () => {
+    const studentId = currentUser?.studentId || currentUser?.student_id;
+    if (!studentId) {
+      setWishlistStatus('Please log in first to save this item.');
+      return;
+    }
+
+    try {
+      const response = isWishlisted
+        ? await fetch(`http://127.0.0.1:8000/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' })
+        : await fetch('http://127.0.0.1:8000/api/student/wishlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ student_id: studentId, product_id: Number(product.id) }),
+        });
+      if (!response.ok) throw new Error('Unable to update wishlist.');
+      const data = isWishlisted ? {} : await response.json().catch(() => ({}));
+      setIsWishlisted((previous) => !previous);
+      setWishlistItemId(data.id || null);
+      setWishlistStatus(isWishlisted ? 'Removed from wishlist.' : 'Added to wishlist.');
+    } catch (error) {
+      setWishlistStatus(error.message || 'Unable to update wishlist.');
+    }
+  };
+
+  const handleMakeOffer = () => {
+    const amount = offerAmount.trim() || '[amount]';
+    setMessageText(`Hi, I'd like to offer ${amount} ETB for this item. Is that acceptable?`);
+    setChatStatus('Offer message ready. Edit it before sending.');
+  };
+
+  const handleShare = async (destination) => {
+    const shareUrl = window.location.href;
+    const shareText = `${displayTitle} on Campace Market`;
+    if (destination === 'copy') {
+      await navigator.clipboard?.writeText(shareUrl);
+      setChatStatus('Product link copied.');
+    } else {
+      const target = destination === 'telegram'
+        ? `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(shareText)}`
+        : `https://wa.me/?text=${encodeURIComponent(`${shareText} ${shareUrl}`)}`;
+      window.open(target, '_blank', 'noopener,noreferrer');
+    }
+    setShowShareMenu(false);
+  };
+
   const handleSubmitReport = async (event) => {
     event.preventDefault();
-    if (!allowStudentReports || !currentUser || !product?.id || !reportText.trim()) return;
+    if (!allowStudentReports || !currentUser || !product?.id || !reportReason || !reportText.trim()) return;
 
     setReportLoading(true);
     setReportStatus('');
@@ -239,7 +321,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       formData.append('student_name', currentUser.name || currentUser.studentId || 'Student');
       formData.append('email', currentUser.email || '');
       formData.append('category', 'Product Report');
-      formData.append('issue', reportText.trim());
+      formData.append('issue', `${reportReason}: ${reportText.trim()}`);
       if (reportEvidenceFile) formData.append('evidence_image', reportEvidenceFile);
 
       const response = await fetch('http://127.0.0.1:8000/api/student/report', {
@@ -298,6 +380,16 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const fallbackImage = 'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?auto=format&fit=crop&w=1200&q=80';
   const visibleImages = galleryImages.length ? galleryImages : [fallbackImage];
   const activeImage = visibleImages[selectedImageIndex % visibleImages.length];
+  const reviews = Array.isArray(item?.reviews) ? item.reviews : [];
+  const similarProducts = Array.isArray(item?.similar_products) ? item.similar_products : [];
+  const responseTimeHours = Number(item?.seller_response_time_hours);
+  const isNegotiable = item?.negotiable !== false;
+  const pickupHours = {
+    'Student Center Pickup Point': 'Available today until 5:00 PM',
+    'CCI Main Block': 'Available today until 4:30 PM',
+    'Main Library Pickup Point': 'Available today until 6:00 PM',
+    'Mekdela Amba University — Dorm Room 12': 'Available today until 7:00 PM',
+  }[campusLocation];
 
   if (!product) return null;
 
@@ -327,23 +419,19 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
         <div className="space-y-6">
           <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-sm">
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Product Listing</p>
-            <h1 className="mt-2 text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">{displayTitle}</h1>
-            <p className="mt-2 text-sm font-semibold text-slate-500">Posted 3 days ago</p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-3"><h1 className="text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">{displayTitle}</h1><div className="relative"><button type="button" onClick={() => setShowShareMenu((previous) => !previous)} className="rounded-full border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">↗ Share</button>{showShareMenu && <div className="absolute right-0 z-20 mt-2 w-48 rounded-2xl border border-slate-200 bg-white p-2 text-left shadow-xl"><button type="button" onClick={() => handleShare('copy')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Copy Link</button><button type="button" onClick={() => handleShare('telegram')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Share to Telegram</button><button type="button" onClick={() => handleShare('whatsapp')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Share to WhatsApp</button></div>}</div></div>
+            <p className="mt-2 text-sm font-semibold text-slate-500">Posted {item.created_at ? new Date(item.created_at).toLocaleDateString() : 'recently'}</p>
           </div>
 
           {/* የምርቱ ትልቅ ፎቶ */}
           <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
-            <img
-              src={activeImage}
-              alt={displayTitle}
-              className="h-[420px] w-full rounded-[20px] object-cover"
-            />
+            <div className="relative"><button type="button" onClick={handleToggleWishlist} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-2xl shadow-md ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500`}>{isWishlisted ? '♥' : '♡'}</button><button type="button" onClick={() => setIsZoomed(true)} className="block w-full cursor-zoom-in" aria-label="Zoom product image"><img src={activeImage} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-[420px] w-full rounded-[20px] object-cover" /></button></div>
             <div className="mt-4 flex items-center gap-3">
               <button type="button" onClick={() => setSelectedImageIndex((index) => (index - 1 + visibleImages.length) % visibleImages.length)} aria-label="Previous product image" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 hover:bg-slate-100">←</button>
               <div className="flex min-w-0 flex-1 gap-3 overflow-x-auto pb-1">
                 {visibleImages.map((image, index) => (
                   <button key={`${image}-${index}`} type="button" onClick={() => setSelectedImageIndex(index)} className={`h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition ${selectedImageIndex === index ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200 hover:border-slate-400'}`} aria-label={`Show product image ${index + 1}`}>
-                    <img src={image} alt={`${displayTitle} thumbnail ${index + 1}`} className="h-full w-full object-cover" />
+                    <img src={image} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-full w-full object-cover" />
                   </button>
                 ))}
               </div>
@@ -362,6 +450,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <div className="flex flex-col gap-2 rounded-2xl bg-slate-50 p-4 border border-slate-100">
                 <span className="text-sm text-slate-500 font-semibold">Location</span>
                 <span className="text-base font-bold text-slate-900">{campusLocation}</span>
+                {pickupHours && <span className="text-xs font-semibold text-emerald-700">{pickupHours}</span>}
               </div>
               <div className="flex flex-col gap-2 rounded-2xl bg-slate-50 p-4 border border-slate-100">
                 <span className="text-sm text-slate-500 font-semibold">Category</span>
@@ -381,6 +470,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               {item.description || 'No additional description provided by the seller.'}
             </p>
           </div>
+
+          <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">Reviews</p><h4 className="mt-1 text-xl font-black text-slate-900">Buyer ratings</h4></div><div className="text-right"><p className="text-2xl font-black text-amber-500">{Number(item.average_rating || 0).toFixed(1)} ★</p><p className="text-xs font-semibold text-slate-500">{Number(item.review_count || reviews.length)} review{Number(item.review_count || reviews.length) === 1 ? '' : 's'}</p></div></div>
+            {reviews.length === 0 ? <p className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-600">No reviews yet — be the first to review after purchase.</p> : <div className="mt-5 space-y-4">{reviews.map((review) => <article key={review.id} className="border-t border-slate-100 pt-4 first:border-t-0 first:pt-0"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-black text-slate-900">{review.reviewer_name || 'Buyer'}</p><p className="text-xs font-semibold text-slate-500">{review.created_at ? new Date(review.created_at).toLocaleDateString() : 'Recent'}</p></div><p className="mt-1 text-sm font-black text-amber-500">{'★'.repeat(Math.max(0, Math.min(5, Number(review.rating) || 0)))}<span className="ml-2 text-slate-400">{Number(review.rating) || 0}/5</span></p><p className="mt-2 text-sm leading-6 text-slate-600">{review.comment}</p></article>)}</div>}
+          </div>
+
+          {similarProducts.length > 0 && <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">More to explore</p><h4 className="mt-1 text-xl font-black text-slate-900">Similar items</h4></div><span className="text-xs font-semibold text-slate-500">Same category</span></div><div className="mt-5 flex gap-4 overflow-x-auto pb-2">{similarProducts.map((similar) => <button key={similar.id} type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="w-44 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm hover:shadow-md"><img src={similar.image || fallbackImage} alt={similar.title || 'Similar item'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-28 w-full object-cover" /><div className="p-3"><p className="truncate font-black text-slate-900">{similar.title || 'Campus item'}</p><p className="mt-1 text-sm font-bold text-emerald-700">{similar.price || 'Negotiable'} ETB</p></div></button>)}</div></section>}
         </div>
 
         {/* የቀኝ የጎን ፓነል (Sidebar) */}
@@ -390,6 +486,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
           <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm text-center">
             <span className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Price</span>
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
+            {Number(item.views || 0) > 5 && <p className="mt-2 text-xs font-bold text-slate-500">{item.views} people viewed this listing</p>}
             <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">
               Negotiable / ድርድር አለው
             </div>
@@ -413,6 +510,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <p className="text-sm text-slate-500">Department: {item.seller_dept || item.department || item.seller_department || 'Software Engineering'}</p>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700">✓ Verified Student</span>
             </div>
+            {Number.isFinite(responseTimeHours) && responseTimeHours > 0 && <p className="mt-2 text-xs font-semibold text-slate-500">Usually responds within {responseTimeHours < 1 ? 'an hour' : `${Math.round(responseTimeHours)} hours`}</p>}
 
             <div className="mt-6 space-y-3">
               {/* ስልክ ቁጥር ማሳያ ቁልፍ (Show Contact Button) */}
@@ -456,6 +554,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                     <span>💬</span>
                     <span>{chatLoading ? 'Sending...' : 'Send Message & Start Chat'}</span>
                   </button>
+                  {isNegotiable && <div className="flex items-center gap-2"><input type="number" min="1" value={offerAmount} onChange={(event) => setOfferAmount(event.target.value)} placeholder="Offer amount" className="min-w-0 flex-1 rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400" /><button type="button" onClick={handleMakeOffer} className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100">Make an Offer</button></div>}
                 </>
               )}
               <button
@@ -494,6 +593,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                     </button>
                   ) : (
                     <form onSubmit={handleSubmitReport} className="space-y-3">
+                      <select value={reportReason} onChange={(event) => setReportReason(event.target.value)} required disabled={reportLoading} className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-rose-400 focus:bg-white"><option value="">Select a reason</option><option>Counterfeit/Fake item</option><option>Scam attempt</option><option>Wrong category</option><option>Prohibited item</option><option>Other</option></select>
                       <textarea
                         value={reportText}
                         onChange={(event) => setReportText(event.target.value)}
@@ -523,6 +623,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                           onClick={() => {
                             setShowReportForm(false);
                             setReportEvidenceFile(null);
+                            setReportReason('');
                           }}
                           className="rounded-full border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                         >
@@ -560,6 +661,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
         </div>
 
       </div>
+      {isZoomed && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-label="Product image preview" onClick={() => setIsZoomed(false)}><div className="relative max-h-[90vh] max-w-5xl" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => setIsZoomed(false)} className="absolute right-3 top-3 z-10 rounded-full bg-white px-3 py-1 text-lg font-black text-slate-700 shadow" aria-label="Close image preview">×</button><img src={activeImage} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="max-h-[88vh] max-w-full rounded-2xl object-contain" /></div></div>}
     </div>
   );
 }

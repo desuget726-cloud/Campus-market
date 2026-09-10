@@ -3966,7 +3966,7 @@ def get_products(
 
 
 @app.get("/api/products/{product_id}")
-def get_product_detail(product_id: int, db: Session = Depends(get_db)):
+def get_product_detail(product_id: int, viewer_id: Optional[str] = None, db: Session = Depends(get_db)):
     """Fetch details for a single product by ID."""
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
@@ -3978,6 +3978,59 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
             or_(Student.student_id == product.seller, Student.name == product.seller)
         ).first()
 
+    seller_id = seller.student_id if seller else product.seller
+    viewer = db.query(Student).filter(Student.student_id == viewer_id.strip()).first() if viewer_id else None
+    if not viewer or not seller_id or viewer.student_id != seller_id:
+        product.views = int(product.views or 0) + 1
+
+    review_rows = db.query(Review, Student).join(
+        Student, Student.student_id == Review.student_id
+    ).join(
+        Order, Order.id == Review.order_id
+    ).filter(Order.product_id == product.id).order_by(Review.created_at.desc()).all()
+    review_items = [
+        {
+            "id": review.id,
+            "reviewer_name": reviewer.name,
+            "rating": int(review.rating),
+            "comment": review.comment,
+            "created_at": review.created_at,
+        }
+        for review, reviewer in review_rows
+    ]
+    average_rating = round(sum(item["rating"] for item in review_items) / len(review_items), 1) if review_items else 0
+
+    similar_query = db.query(Product).filter(
+        Product.id != product.id,
+        Product.status.ilike("Approved"),
+    )
+    if product.category:
+        similar_query = similar_query.filter(Product.category == product.category)
+    if product.subcategory:
+        similar_query = similar_query.filter(Product.subcategory == product.subcategory)
+    excluded_seller_values = {value for value in (seller_id, seller.name if seller else None, viewer.student_id if viewer else None) if value}
+    if excluded_seller_values:
+        similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
+    similar_products = similar_query.order_by(Product.created_at.desc()).limit(8).all()
+
+    response_hours = []
+    if seller_id:
+        messages = db.query(Message).filter(
+            Message.product_id == product.id,
+            or_(Message.sender_id == seller_id, Message.receiver_id == seller_id),
+        ).order_by(Message.created_at.asc()).all()
+        for index, message in enumerate(messages):
+            if message.sender_id == seller_id:
+                continue
+            seller_reply = next(
+                candidate for candidate in messages[index + 1:]
+                if candidate.sender_id == seller_id and candidate.receiver_id == message.sender_id
+            ) if any(candidate.sender_id == seller_id and candidate.receiver_id == message.sender_id for candidate in messages[index + 1:]) else None
+            if seller_reply and message.created_at and seller_reply.created_at:
+                response_hours.append((seller_reply.created_at - message.created_at).total_seconds() / 3600)
+
+    db.commit()
+
     return {
         "id": product.id,
         "title": product.title,
@@ -3985,16 +4038,33 @@ def get_product_detail(product_id: int, db: Session = Depends(get_db)):
         "subcategory": product.subcategory,
         "price": product.price,
         "stock": max(0, int(product.stock or 0)),
-        "image": product.image,
+        "image": _normalize_product_image(product.image),
         "description": product.description,
         "seller": product.seller,
-        "seller_id": seller.student_id if seller else product.seller,
+        "seller_id": seller_id,
         "seller_phone": seller.phone if seller else None,
         "seller_name": seller.name if seller else product.seller,
         "seller_dept": seller.department if seller else None,
         "seller_payout_status": _seller_payout_status(db, product.seller),
         "status": product.status,
         "created_at": product.created_at,
+        "views": int(product.views or 0),
+        "reviews": review_items,
+        "average_rating": average_rating,
+        "review_count": len(review_items),
+        "similar_products": [
+            {
+                "id": similar.id,
+                "title": similar.title,
+                "category": similar.category,
+                "subcategory": similar.subcategory,
+                "price": similar.price,
+                "image": _normalize_product_image(similar.image),
+                "description": similar.description,
+            }
+            for similar in similar_products
+        ],
+        "seller_response_time_hours": round(sum(response_hours) / len(response_hours), 1) if response_hours else None,
     }
 
 

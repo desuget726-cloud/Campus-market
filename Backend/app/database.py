@@ -108,6 +108,11 @@ def init_db() -> None:
     }:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE products ADD COLUMN `condition` VARCHAR(50) NULL"))
+    if "products" in inspector.get_table_names() and "views" not in {
+        column["name"] for column in inspector.get_columns("products")
+    }:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE products ADD COLUMN views INT NOT NULL DEFAULT 0"))
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         missing_columns = {

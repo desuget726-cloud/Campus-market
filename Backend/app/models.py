@@ -170,6 +170,7 @@ class Product(Base):
     seller = Column(String(100), nullable=True)
     status = Column(String(50), default="Pending", nullable=False)
     moderation_reason = Column(Text, nullable=True)
+    views = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     wishlist_items = relationship("WishlistItem", back_populates="product", cascade="all, delete-orphan")
