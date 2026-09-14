@@ -114,7 +114,12 @@ function NotificationCenter({
     onDeleteNotification,
 }) {
     const [activeFilter, setActiveFilter] = useState("All");
-    const safeNotifications = Array.isArray(notifications) ? notifications : [];
+    const [currentPage, setCurrentPage] = useState(1);
+    const pageSize = 10;
+    const safeNotifications = useMemo(
+        () => (Array.isArray(notifications) ? notifications : []),
+        [notifications],
+    );
     const filteredNotifications = useMemo(
         () =>
             safeNotifications.filter(
@@ -123,10 +128,22 @@ function NotificationCenter({
             ),
         [activeFilter, safeNotifications],
     );
+    const totalPages = Math.max(1, Math.ceil(filteredNotifications.length / pageSize));
+    const visiblePage = Math.min(currentPage, totalPages);
+    const paginatedNotifications = filteredNotifications.slice(
+        (visiblePage - 1) * pageSize,
+        visiblePage * pageSize,
+    );
+
+    const handleFilterChange = (filter) => {
+        setActiveFilter(filter);
+        setCurrentPage(1);
+    };
+
     const groupedNotifications = ["TODAY", "YESTERDAY", "EARLIER"]
         .map((label) => ({
             label,
-            items: filteredNotifications.filter(
+            items: paginatedNotifications.filter(
                 (notification) => getTimeframe(notification.created_at) === label,
             ),
         }))
@@ -154,7 +171,7 @@ function NotificationCenter({
     };
 
     return (
-        <div className="mx-auto max-w-5xl px-4 py-6">
+        <div className="w-full max-w-none px-0 py-0">
             <section className="min-h-[550px] rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
                 <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                     <div>
@@ -191,7 +208,7 @@ function NotificationCenter({
                         <button
                             key={filter}
                             type="button"
-                            onClick={() => setActiveFilter(filter)}
+                            onClick={() => handleFilterChange(filter)}
                             className={`rounded-full px-4 py-2 text-sm font-bold transition ${activeFilter === filter ? "bg-emerald-500 text-white shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
                         >
                             {filter}
@@ -299,6 +316,30 @@ function NotificationCenter({
                                 </div>
                             </section>
                         ))}
+                    </div>
+                )}
+
+                {filteredNotifications.length > pageSize && (
+                    <div className="mt-8 flex items-center justify-between border-t border-slate-200 pt-5">
+                        <button
+                            type="button"
+                            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                            disabled={visiblePage === 1}
+                            className="rounded-full border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Previous
+                        </button>
+                        <span className="text-sm font-semibold text-slate-500">
+                            Page {visiblePage} of {totalPages}
+                        </span>
+                        <button
+                            type="button"
+                            onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                            disabled={visiblePage >= totalPages}
+                            className="rounded-full border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                            Next
+                        </button>
                     </div>
                 )}
             </section>

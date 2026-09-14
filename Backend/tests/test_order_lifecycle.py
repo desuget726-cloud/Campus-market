@@ -8,6 +8,7 @@ from app.order_lifecycle import (
     apply_seller_order_action,
     payout_release_allowed,
 )
+from app.main import _build_seller_listing_analytics, _escrow_hold_refund_amount, _product_has_orders, _restock_product_for_order
 
 
 def make_order():
@@ -99,6 +100,61 @@ class OrderLifecycleTests(unittest.TestCase):
         order.active_dispute = False
 
         self.assertTrue(payout_release_allowed(order))
+
+    def test_refund_amount_matches_escrow_hold_for_multiple_units(self):
+        order = SimpleNamespace(quantity=3, price="200")
+        escrow_hold = SimpleNamespace(amount="600.00")
+
+        refund_amount = _escrow_hold_refund_amount(escrow_hold)
+
+        self.assertEqual(refund_amount, 600)
+        self.assertNotEqual(refund_amount, 200)
+        self.assertEqual(order.quantity * 200, refund_amount)
+
+    def test_restock_restores_order_quantity_and_availability(self):
+        product = SimpleNamespace(stock=0, status="Sold")
+        order = SimpleNamespace(quantity=3)
+
+        _restock_product_for_order(product, order)
+
+        self.assertEqual(product.stock, 3)
+        self.assertEqual(product.status, "Approved")
+
+    def test_same_title_products_keep_separate_leaderboard_stats(self):
+        listings = [
+            SimpleNamespace(id=11, title="Books", views=64),
+            SimpleNamespace(id=12, title="Books", views=69),
+        ]
+        completed_orders = [
+            SimpleNamespace(product_id=11, price="120", quantity=1),
+        ]
+
+        analytics = _build_seller_listing_analytics(listings, completed_orders)
+
+        self.assertEqual([item["listing"].id for item in analytics], [11, 12])
+        self.assertEqual([item["completed_orders"] for item in analytics], [1, 0])
+        self.assertEqual([item["completed_revenue"] for item in analytics], [120, 0])
+
+    def test_product_order_history_predicate_matches_delete_guard(self):
+        class Query:
+            def __init__(self, result):
+                self.result = result
+
+            def filter(self, *_conditions):
+                return self
+
+            def first(self):
+                return self.result
+
+        class Database:
+            def __init__(self, result):
+                self.result = result
+
+            def query(self, *_columns):
+                return Query(self.result)
+
+        self.assertTrue(_product_has_orders(Database(object()), 7))
+        self.assertFalse(_product_has_orders(Database(None), 7))
 
 
 if __name__ == "__main__":

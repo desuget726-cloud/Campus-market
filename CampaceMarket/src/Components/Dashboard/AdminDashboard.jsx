@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import AdminDisputeReview from './AdminDisputeReview';
+import logo1 from '../../assets/logo1.jpg';
 
 const generateLinePath = (data, maxVal) => {
   if (!Array.isArray(data) || data.length === 0) return '';
@@ -231,6 +233,7 @@ const adminTabs = [
   { id: 'product-management', label: 'Product Management', icon: 'M4 7h16v13H4z M8 7v-3h8v3' },
   { id: 'categories', label: 'Categories', icon: 'M5 5h14v4H5z M5 15h14v4H5z' },
   { id: 'orders', label: 'Orders', icon: 'M6 6h12l2 10H4z M8 22h8' },
+  { id: 'disputes', label: 'Dispute Review', icon: 'M4 5h16v12H8l-4 4V5z' },
   { id: 'payments', label: 'Payments', icon: 'M6 7h12v10H6z M9 12h6 M12 16v2' },
   { id: 'reports', label: 'Reports', icon: 'M6 5h12v14H6z M9 9h6 M9 13h4' },
   { id: 'ai-recommendations', label: 'AI Recommendations', icon: 'M12 4a8 8 0 00-8 8c0 4.418 3.582 8 8 8s8-3.582 8-8a8 8 0 00-8-8z M12 8v4 M12 16h.01' },
@@ -424,7 +427,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const ORDERS_PER_PAGE = 10;
   const [selectedOrderDetails, setSelectedOrderDetails] = useState(null);
   const [disputeResolutionMessage, setDisputeResolutionMessage] = useState('');
-  const [resolvingDisputeId, setResolvingDisputeId] = useState(null);
+  const [openDisputeCount, setOpenDisputeCount] = useState(0);
+
+  const refreshOpenDisputeCount = async () => {
+    try {
+      const token = getAdminSessionToken();
+      const response = await fetch('http://127.0.0.1:8000/api/admin/disputes', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!response.ok) return;
+      const disputes = await response.json();
+      setOpenDisputeCount((Array.isArray(disputes) ? disputes : []).filter((item) => ['OPEN', 'UNDER_REVIEW'].includes(String(item.status || '').toUpperCase())).length);
+    } catch (error) {
+      console.error('Failed to fetch open dispute count:', error);
+    }
+  };
+
+  useEffect(() => {
+    refreshOpenDisputeCount();
+  }, []);
 
   const calculatedOrderMetrics = useMemo(() => {
     const processingStatuses = new Set(['Processing', 'Pending', 'Ready for Pickup', 'Out for Delivery']);
@@ -1079,6 +1100,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     college_activity: [],
     recent_activity: [],
   });
+  const [dashboardMetricsLoading, setDashboardMetricsLoading] = useState(true);
+  const [dashboardMetricsError, setDashboardMetricsError] = useState('');
   const [aiMetrics, setAiMetrics] = useState({
     requests: 0,
     clicks: 0,
@@ -1099,6 +1122,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   });
 
   const fetchDashboardOverview = async () => {
+    setDashboardMetricsLoading(true);
+    setDashboardMetricsError('');
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/analytics');
       if (!response.ok) {
@@ -1106,6 +1131,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
 
       const data = await response.json();
+      if (!data || typeof data !== 'object') {
+        throw new Error('No dashboard data available.');
+      }
       const productBreakdown = data?.productStatusBreakdown ?? data?.product_status_breakdown ?? {};
       const totalStudents = Number(data?.total_students ?? data?.users ?? 0);
       const activeStudents = Number(data?.active_students ?? data?.activeStudents ?? 0);
@@ -1167,6 +1195,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       });
     } catch (error) {
       console.error('Failed to fetch dashboard overview metrics:', error);
+      setDashboardMetricsError(error.message || 'Unable to load dashboard data.');
       setMetrics({
         totalStudents: 0,
         activeStudents: 0,
@@ -1194,6 +1223,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         college_activity: [],
         recent_activity: [],
       });
+    } finally {
+      setDashboardMetricsLoading(false);
     }
   };
 
@@ -1246,6 +1277,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const overviewCategories = metrics.popular_categories ?? [];
   const collegeActivity = metrics.college_activity ?? [];
   const trendMonths = (Array.isArray(metrics.trends?.months) ? metrics.trends.months : getDynamicMonths()).slice(-6);
+  const dashboardHasData = Boolean(
+    Number(metrics.totalStudents || 0)
+    || Number(metrics.totalProducts || 0)
+    || Number(metrics.totalOrders || 0)
+    || Number(metrics.pendingReports || 0)
+    || overviewCategories.length
+    || collegeActivity.length
+    || (metrics.recent_activity ?? []).length,
+  );
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -1632,49 +1672,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         order_status: previousOrderStatus,
         payment_status: previousPaymentStatus
       } : item));
-    }
-  };
-
-  const handleResolveDispute = async (order, decision) => {
-    const decisionLabel = decision === 'REFUND' ? 'refund the buyer' : 'release the funds to the seller';
-    const confirmed = window.confirm(
-      `Resolve order #${order.id} and ${decisionLabel}? This permanently changes wallet balances and cannot be undone.`,
-    );
-    if (!confirmed || resolvingDisputeId) return;
-
-    setResolvingDisputeId(order.id);
-    setDisputeResolutionMessage('');
-    try {
-      const token = getAdminSessionToken();
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/orders/${order.id}/resolve-dispute`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ decision }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(data.detail || 'Unable to resolve order dispute.');
-      }
-
-      const nextStatus = decision === 'REFUND' ? 'Cancelled' : 'Completed';
-      setOrdersList((previous) => previous.map((item) => (
-        item.id === order.id
-          ? {
-            ...item,
-            order_status: nextStatus,
-            payment_status: decision === 'REFUND' ? 'Refunded' : 'Successful',
-          }
-          : item
-      )));
-      setDisputeResolutionMessage(`Order #${order.id} resolved: ${decisionLabel}.`);
-      if (selectedOrderDetails?.id === order.id) setSelectedOrderDetails(null);
-    } catch (error) {
-      setDisputeResolutionMessage(error.message || 'Unable to resolve order dispute.');
-    } finally {
-      setResolvingDisputeId(null);
     }
   };
 
@@ -2980,10 +2977,23 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       case 'dashboard':
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-2xl font-black text-slate-950">Marketplace Overview</h2>
-              <p className="mt-1 text-slate-500 text-sm font-semibold">Your quick operational overview across campus marketplace activity.</p>
-            </div>
+            {dashboardMetricsLoading ? (
+              // Keep the loading surface compact so it cannot become a blank hero card.
+              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm" aria-label="Loading dashboard overview">
+                <div className="h-7 w-64 animate-pulse rounded-lg bg-slate-200" />
+                <div className="mt-3 h-4 w-full max-w-xl animate-pulse rounded bg-slate-100" />
+              </div>
+            ) : dashboardHasData ? (
+              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-2xl font-black text-slate-950">Marketplace Overview</h2>
+                <p className="mt-1 text-slate-500 text-sm font-semibold">Your quick operational overview across campus marketplace activity.</p>
+              </div>
+            ) : (
+              // No data gets a short message rather than an empty reserved container.
+              <div className="rounded-[24px] border border-dashed border-slate-300 bg-white px-6 py-5 text-sm font-semibold text-slate-500" role="status">
+                {dashboardMetricsError ? 'No data available' : 'ውሂብ የለም'}
+              </div>
+            )}
 
             <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -4536,7 +4546,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         });
         const totalOrderPages = Math.max(1, Math.ceil(filteredOrders.length / ORDERS_PER_PAGE));
         const displayedOrders = filteredOrders.slice((orderPage - 1) * ORDERS_PER_PAGE, orderPage * ORDERS_PER_PAGE);
-        const disputedOrders = ordersList.filter((order) => order.order_status === 'Disputed');
         const handleExportOrdersCSV = () => exportCSVFile('orders.csv', ['Order ID', 'Buyer ID', 'Seller ID', 'Product Title', 'Total Amount', 'Order Status', 'Payment Status', 'Date'], filteredOrders.map((order) => [
           String(order.id || ''), String(order.buyer_id || order.buyer || ''), String(order.seller_id || order.seller || ''),
           String(order.product_title || order.item || ''), String(order.total_amount || order.price || ''), String(order.order_status || ''),
@@ -4552,6 +4561,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           if (status === 'Completed') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
           if (status === 'Pending' || status === 'Processing') return 'bg-amber-100 text-amber-700 border border-amber-200';
           if (status === 'Cancelled' || status === 'Returned') return 'bg-rose-100 text-rose-700 border border-rose-200';
+          if (status === 'Disputed') return 'bg-rose-100 text-rose-700 border border-rose-200';
           if (status === 'Ready for Pickup') return 'bg-sky-100 text-sky-700 border border-sky-200';
           if (status === 'Out for Delivery') return 'bg-violet-100 text-violet-700 border border-violet-200';
           return 'bg-slate-100 text-slate-600 border border-slate-200';
@@ -4614,66 +4624,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 {disputeResolutionMessage}
               </div>
             )}
-
-            <section className="rounded-[32px] border border-rose-200 bg-rose-50/60 p-6 shadow-sm">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-600">Needs review</p>
-                  <h3 className="mt-1 text-xl font-black text-slate-950">Disputed Orders</h3>
-                  <p className="mt-1 text-sm text-rose-800">Review the buyer’s reason before permanently moving the escrowed funds.</p>
-                </div>
-                <span className="rounded-full bg-rose-100 px-3 py-1.5 text-xs font-bold text-rose-700">{disputedOrders.length} open</span>
-              </div>
-
-              {disputedOrders.length === 0 ? (
-                <p className="mt-5 rounded-2xl border border-dashed border-rose-200 bg-white/70 p-5 text-sm text-slate-500">No disputed orders require resolution.</p>
-              ) : (
-                <div className="mt-5 space-y-3">
-                  {disputedOrders.map((order) => (
-                    <div key={order.id} className="rounded-2xl border border-rose-200 bg-white p-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono text-sm font-black text-slate-900">Order #{order.id}</span>
-                            <span className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-bold uppercase text-rose-700">Disputed</span>
-                          </div>
-                          <p className="mt-2 font-semibold text-slate-800">{order.product_title || order.item || 'Campus product'}</p>
-                          <p className="mt-1 text-xs text-slate-500">Buyer: {order.buyer_name || order.buyer_id || order.buyer} · Seller: {order.seller_name || order.seller_id || order.seller}</p>
-                          <p className="mt-2 text-sm text-slate-700"><span className="font-bold">Reason:</span> {order.dispute_reason || 'No reason provided.'}</p>
-                          {order.dispute_description && <p className="mt-2 text-sm text-slate-600"><span className="font-bold">Buyer description:</span> {order.dispute_description}</p>}
-                          {order.seller_response && <p className="mt-2 text-sm text-slate-600"><span className="font-bold">Seller response:</span> {order.seller_response}</p>}
-                        </div>
-                        <div className="flex shrink-0 flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedOrderDetails(order)}
-                            className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-bold text-sky-700 transition hover:bg-sky-100"
-                          >
-                            Review Dispute →
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleResolveDispute(order, 'REFUND')}
-                            disabled={resolvingDisputeId === order.id}
-                            className="rounded-full bg-rose-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Refund Buyer
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleResolveDispute(order, 'RELEASE')}
-                            disabled={resolvingDisputeId === order.id}
-                            className="rounded-full bg-emerald-600 px-4 py-2.5 text-xs font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            Release to Seller
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="grid gap-3 md:grid-cols-3">
@@ -5508,10 +5458,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 {[
-                  { label: 'Requests', value: aiMetrics.requests.toLocaleString(), accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
+                  { label: 'Product Impressions', value: aiMetrics.requests.toLocaleString(), accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
                   { label: 'Clicks', value: aiMetrics.clicks.toLocaleString(), accent: 'bg-sky-50 border-sky-100 text-slate-950', small: 'text-sky-600' },
                   { label: 'CTR', value: `${aiMetrics.ctr}%`, accent: 'bg-emerald-50 border-emerald-100 text-emerald-600', small: 'text-emerald-600' },
-                  { label: 'Purchase Conversion', value: Number(aiMetrics.purchase_conversion ?? aiMetrics.purchase_conversions ?? 0).toLocaleString(), accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
+                  { label: 'Precision Conversion', value: `${Number(aiMetrics.precision ?? 0).toFixed(2)}%`, accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
                 ].map((item) => (
                   <div key={item.label} className={`rounded-[24px] border p-5 shadow-sm ${item.accent}`}>
                     <p className={`text-[10px] font-bold uppercase tracking-[0.2em] ${item.small}`}>{item.label}</p>
@@ -5525,10 +5475,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="mb-4 flex items-center justify-between">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Weekly Performance</p>
-                      <h3 className="mt-1 text-xl font-black text-slate-950">Requests vs Clicks</h3>
+                      <h3 className="mt-1 text-xl font-black text-slate-950">Product Impressions vs Clicks</h3>
                     </div>
                     <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500" /> Requests</span>
+                      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500" /> Product Impressions</span>
                       <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-400" /> Clicks</span>
                     </div>
                   </div>
@@ -6894,6 +6844,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
           </div>
         );
+      case 'disputes':
+        return <AdminDisputeReview user={user} onCountChange={setOpenDisputeCount} />;
       default:
         return null;
     }
@@ -6903,10 +6855,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     <div className="min-h-screen bg-slate-50 text-slate-900 pt-[88px] lg:pt-[80px]">
       <div className="flex min-h-screen flex-col gap-3 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4 lg:py-0">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
-        <aside className="hidden lg:flex lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
-          <div className="mb-8 flex items-center justify-between">
-            <div>
-              <div className="rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
+        <aside className="relative hidden lg:flex lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
+          {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
+          <div className="relative z-10 mb-8 flex min-h-0 items-start gap-3 overflow-hidden">
+            {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
+            <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
+            <div className="min-w-0 flex-1">
+              <div className="relative z-10 max-w-full overflow-hidden rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
                 Admin Console
               </div>
               <div className="mt-5">
@@ -6941,7 +6896,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
                     }`}
                 >
-                  <span>{tab.label}</span>
+                  <span className="flex items-center gap-2">{tab.label}{tab.id === 'disputes' && openDisputeCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{openDisputeCount}</span>}</span>
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
                     className={`h-5 w-5 ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-white'}`}
@@ -6959,9 +6914,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         </aside>
 
         <aside className={`fixed left-0 top-20 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-          <div className="mb-8 flex items-center justify-between">
-            <div className="rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
-              Admin Console
+          {/* The mobile header uses the same relative/clipped containment as desktop. */}
+          <div className="relative z-10 mb-8 flex min-h-0 items-start gap-3 overflow-hidden">
+            <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
+            <div className="min-w-0 flex-1">
+              <div className="relative z-10 max-w-full overflow-hidden rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
+                Admin Console
+              </div>
             </div>
             <button
               type="button"
@@ -6985,7 +6944,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
                     }`}
                 >
-                  <span>{tab.label}</span>
+                  <span className="flex items-center gap-2">{tab.label}{tab.id === 'disputes' && openDisputeCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{openDisputeCount}</span>}</span>
                   <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isActive ? 'text-white' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                     <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
                   </svg>
@@ -6999,26 +6958,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         )}
 
         {/* Main Panel Content Area */}
-        <main className="min-w-0 flex-1 h-screen overflow-y-auto pt-[120px] lg:pr-2">
-          <div className="mb-4 flex flex-col gap-4 rounded-[24px] border border-slate-200/40 bg-white p-4 text-slate-950 shadow-sm sm:mb-6 sm:rounded-[32px] sm:p-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                  className="block rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 lg:hidden"
-                  aria-label="Open admin navigation"
-                >
-                  ☰
-                </button>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500 sm:text-sm sm:tracking-[0.24em]">Administrator</p>
-                  <h2 className="mt-2 text-2xl font-bold sm:text-3xl">Campus Marketplace Admin</h2>
-                </div>
-              </div>
-
-            </div>
-          </div>
+        {/* Start content directly below the global navbar; the former empty hero card is removed. */}
+        <main className="min-w-0 flex-1 h-screen overflow-y-auto pt-4 lg:pt-2 lg:pr-2">
 
           <section className="min-w-0 overflow-hidden rounded-[32px] bg-slate-50 shadow-sm">
             {isReady ? renderTabContent() : (

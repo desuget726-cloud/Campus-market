@@ -30,6 +30,190 @@ body {
   min-height: 100vh;
 }
 
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  body,
+  #root {
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  #printable-receipt,
+  #printable-receipt * {
+    visibility: visible !important;
+  }
+
+  #printable-receipt {
+    display: block !important;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    width: min(100%, 180mm);
+    margin: 0 auto;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+    color: #172033;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  #printable-receipt .printable-receipt__header {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 22px 24px;
+    border-radius: 9px 9px 0 0;
+    background: #16224f;
+    color: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  #printable-receipt .printable-receipt__brand {
+    display: flex !important;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #printable-receipt .printable-receipt__logo {
+    display: grid !important;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 2px solid #6ee7b7;
+    border-radius: 10px;
+    color: #6ee7b7;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+
+  #printable-receipt h1,
+  #printable-receipt p {
+    margin: 0;
+  }
+
+  #printable-receipt h1 {
+    color: #fff;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 24px;
+    line-height: 1.1;
+  }
+
+  #printable-receipt .printable-receipt__brand p {
+    margin-top: 5px;
+    color: #cbd5e1;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+  }
+
+  #printable-receipt .printable-receipt__badge {
+    display: block !important;
+    flex: 0 0 auto;
+    padding: 8px 11px;
+    border: 1px solid #6ee7b7;
+    border-radius: 999px;
+    background: #d1fae5;
+    color: #065f46;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  #printable-receipt .printable-receipt__details {
+    display: block !important;
+    padding: 24px;
+  }
+
+  #printable-receipt .printable-receipt__details dl {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0 28px;
+    margin: 0;
+  }
+
+  #printable-receipt .printable-receipt__field {
+    display: flex !important;
+    min-width: 0;
+    min-height: 49px;
+    flex-direction: column;
+    justify-content: center;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  #printable-receipt .printable-receipt__field dt {
+    color: #64748b;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  #printable-receipt .printable-receipt__field dd {
+    overflow-wrap: anywhere;
+    margin: 3px 0 0;
+    color: #0f172a;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  #printable-receipt .printable-receipt__field dd.printable-receipt__value--emphasis {
+    color: #065f46;
+    font-size: 14px;
+  }
+
+  #printable-receipt .printable-receipt__divider {
+    display: block !important;
+    height: 1px;
+    margin: 0 24px;
+    background: #cbd5e1;
+  }
+
+  #printable-receipt .printable-receipt__note {
+    display: block !important;
+    padding: 16px 24px;
+    color: #475569;
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  #printable-receipt .printable-receipt__footer {
+    display: flex !important;
+    flex-direction: column;
+    gap: 4px;
+    padding: 17px 24px 21px;
+    color: #64748b;
+    font-size: 10px;
+    line-height: 1.4;
+    text-align: center;
+  }
+
+  #printable-receipt .printable-receipt__footer strong {
+    color: #16224f;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 14px;
+  }
+}
+
+.printable-receipt {
+  display: none;
+}
+
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;

@@ -240,6 +240,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [wishlistBadgeCount, setWishlistBadgeCount] = useState(0);
   const [cartBadgeCount, setCartBadgeCount] = useState(0);
   const [orders, setOrders] = useState([]);
+  const [showHiddenOrders, setShowHiddenOrders] = useState(false);
+  const [hiddenOrdersCount, setHiddenOrdersCount] = useState(0);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [pendingSellerOrderId, setPendingSellerOrderId] = useState(null);
   const [orderDetailsLoading, setOrderDetailsLoading] = useState(false);
@@ -273,6 +275,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     quantity: '1',
     condition: 'New',
     pickupLocation: '',
+    pickupHours: '08:00-17:00',
+    negotiable: false,
+    imageNotes: [],
     description: '',
     image: null
   });
@@ -302,6 +307,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [disputeFeedback, setDisputeFeedback] = useState('');
   const [receiptState, setReceiptState] = useState({});
   const [paymentReceiptState, setPaymentReceiptState] = useState({});
+  const [printingReceiptOrderId, setPrintingReceiptOrderId] = useState(null);
   const [revealedPickupCodes, setRevealedPickupCodes] = useState({});
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
@@ -473,10 +479,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setOrdersError('');
 
     try {
-      const [wishRes, cartRes, orderRes, payRes] = await Promise.all([
+      const [wishRes, cartRes, orderRes, hiddenOrderRes, payRes] = await Promise.all([
         fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${studentId}`),
         fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${studentId}`),
         fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}`, {
+          ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+        }),
+        fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=true`, {
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
         fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`),
@@ -501,6 +510,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       } else {
         const errorData = await orderRes.json().catch(() => ({}));
         setOrdersError(orderRes.status === 401 ? 'Your student session has expired. Please sign in again.' : (errorData.detail || 'Unable to load your orders.'));
+      }
+
+      if (hiddenOrderRes.ok) {
+        const hiddenOrderData = await hiddenOrderRes.json();
+        setHiddenOrdersCount(Array.isArray(hiddenOrderData) ? hiddenOrderData.length : 0);
       }
 
       if (payRes.ok) {
@@ -579,6 +593,51 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
+  const loadOrdersView = async (hidden) => {
+    if (!studentId) return;
+    const token = getStudentSessionToken();
+    setOrdersLoading(true);
+    setOrdersError('');
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=${hidden ? 'true' : 'false'}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to load your orders.');
+      const nextOrders = Array.isArray(data) ? data : [];
+      setOrders(nextOrders);
+      if (hidden) setHiddenOrdersCount(nextOrders.length);
+    } catch (error) {
+      setOrdersError(error.message || 'Unable to load your orders.');
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
+
+  const handleOrderVisibility = async (order) => {
+    if (!order?.id) return;
+    const token = getStudentSessionToken();
+    const isHidden = showHiddenOrders;
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${encodeURIComponent(order.id)}/${isHidden ? 'unhide' : 'hide'}`, {
+        method: 'PATCH',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Unable to ${isHidden ? 'restore' : 'hide'} this order.`);
+      setOrders((previous) => previous.filter((item) => item.id !== order.id));
+      setHiddenOrdersCount((previous) => Math.max(0, previous + (isHidden ? -1 : 1)));
+      setReviewFeedback(isHidden ? 'Order restored to My Orders.' : 'Order hidden from My Orders.');
+    } catch (error) {
+      setReviewFeedback(error.message || `Unable to ${isHidden ? 'restore' : 'hide'} this order.`);
+    }
+  };
+
+  const handleOrdersViewChange = async (hidden) => {
+    setShowHiddenOrders(hidden);
+    await loadOrdersView(hidden);
+  };
+
   const fetchPaymentReceipt = async (orderId) => {
     const token = getStudentSessionToken();
     setPaymentReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
@@ -595,6 +654,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       throw error;
     }
   };
+
+  useEffect(() => {
+    if (!printingReceiptOrderId || !paymentReceiptState[printingReceiptOrderId]?.data) return undefined;
+
+    const printTimer = window.setTimeout(() => {
+      window.print();
+      setPrintingReceiptOrderId(null);
+    }, 0);
+
+    return () => window.clearTimeout(printTimer);
+  }, [printingReceiptOrderId, paymentReceiptState]);
 
   const buildReceiptPdf = (receipt) => {
     const pdf = new jsPDF();
@@ -626,7 +696,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       ['Quantity', String(receipt.quantity)],
       ['Unit Price', money(receipt.unit_price)],
       ['Item Total', money(receipt.item_total)],
-      ['Fees', money(receipt.fees)],
+      [receipt.platform_commission_label || 'Platform commission (deducted from seller payout)', money(receipt.fees)],
       ['Total Paid', money(receipt.total_paid)],
       ['Payment Method', receipt.payment_method],
       ['Transaction Reference', receipt.transaction_reference],
@@ -658,23 +728,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return pdf;
   };
 
-  const formatReceiptDateTime = (value) => value
-    ? new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-    : 'Date unavailable';
-
-  const escapeReceiptHtml = (value) => String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-
-  const buildReceiptHtml = (receipt) => {
-    const money = (value) => `${Number(value || 0).toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`;
-    const field = (label, value, strong = false) => `<dt>${escapeReceiptHtml(label)}</dt><dd${strong ? ' class="total"' : ''}>${escapeReceiptHtml(value)}</dd>`;
-    return `<main class="receipt"><header><h1>CAMPUS MARKET</h1><h2>PAYMENT RECEIPT</h2><p class="badge">✓ PAYMENT ${escapeReceiptHtml(String(receipt.payment_status || '').toUpperCase())}</p></header><dl>${field('Receipt #', receipt.receipt_number)}${field('Order #', `#${receipt.order_number}`)}${field('Paid on', formatReceiptDateTime(receipt.payment_date || receipt.order_date))}</dl><h3>PRODUCT</h3><dl>${field('Product', receipt.product_name)}${field('Quantity', receipt.quantity)}${field('Unit price', money(receipt.unit_price))}${field('Item total', money(receipt.item_total))}</dl><h3>PAYMENT</h3><dl>${field('Fees', money(receipt.fees))}${field('Total paid', money(receipt.total_paid), true)}${field('Method', receipt.payment_method)}${field('Reference', receipt.transaction_reference)}</dl><h3>BUYER</h3><dl>${field('Buyer', receipt.buyer_name)}</dl><h3>SELLER</h3><dl>${field('Seller', receipt.seller_name)}</dl><h3>ORDER</h3><dl>${field('Status', String(receipt.order_status || '').toUpperCase())}</dl><h3>ESCROW</h3><dl>${field('Status', String(receipt.escrow_status || '').toUpperCase())}</dl><p class="message">${escapeReceiptHtml(receipt.escrow_message)}</p>${receipt.dispute_status ? `<p class="dispute">Dispute: ${escapeReceiptHtml(receipt.dispute_status)}</p>` : ''}${receipt.refund_amount !== null && receipt.refund_amount !== undefined ? `<p>Refund recorded: ${escapeReceiptHtml(money(receipt.refund_amount))} (${escapeReceiptHtml(receipt.refund_reference)})</p>` : ''}<footer><strong>PAYMENT CONFIRMED</strong><p>This receipt confirms that payment was successfully processed through Campus Market.</p><p>Thank you for using Campus Market.</p></footer></main>`;
-  };
-
   const handleViewPaymentReceipt = async (orderId) => {
     if (!paymentReceiptState[orderId]?.data) await fetchPaymentReceipt(orderId);
   };
@@ -685,13 +738,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const handlePrintPaymentReceipt = async (orderId) => {
-    const receipt = paymentReceiptState[orderId]?.data || await fetchPaymentReceipt(orderId);
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
-    if (!printWindow) return;
-    printWindow.document.write(`<html><head><title>Campus Market Receipt</title><style>@page{size:A4;margin:18mm}*{box-sizing:border-box}body{font:14px Arial,sans-serif;color:#172033;margin:0}.receipt{max-width:680px;margin:0 auto}.receipt header{text-align:center;border-bottom:2px solid #172033;padding-bottom:18px}.receipt h1{letter-spacing:2px;margin:0 0 6px}.receipt h2{font-size:17px;letter-spacing:1px;margin:0 0 14px}.badge{display:inline-block;border:1px solid #198754;border-radius:999px;color:#198754;font-weight:700;padding:8px 14px}.receipt h3{font-size:12px;letter-spacing:2px;margin:24px 0 8px;border-bottom:1px solid #d7dce2;padding-bottom:6px}.receipt dl{display:grid;grid-template-columns:180px 1fr;gap:9px;margin:0}.receipt dt{font-weight:700}.receipt dd{margin:0;overflow-wrap:anywhere}.receipt dd.total{font-size:16px;font-weight:700}.message{line-height:1.5;margin-top:20px}.dispute{color:#a13b3b;font-weight:700}footer{border-top:2px solid #172033;text-align:center;margin-top:28px;padding-top:16px;line-height:1.5}footer strong{letter-spacing:1px}</style></head><body>${buildReceiptHtml(receipt)}</body></html>`);
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.print();
+    if (!paymentReceiptState[orderId]?.data) await fetchPaymentReceipt(orderId);
+    setPrintingReceiptOrderId(orderId);
   };
 
   const handleDisputeNotification = async ({ order_id: orderId }) => {
@@ -1494,6 +1542,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
+    const selectedProduct = searchResults.find((item) => String(item.id) === String(safePayload.product_id));
+    const availableStock = Number(selectedProduct?.stock);
+    const existingCartQuantity = Number(cart.find((item) => String(item.product_id) === String(safePayload.product_id))?.quantity || 0);
+    if (Number.isFinite(availableStock) && availableStock <= existingCartQuantity) {
+      setCartMessage(`Only ${availableStock} available. Your cart already has ${existingCartQuantity}.`);
+      return;
+    }
+
     try {
       const res = await fetch('http://127.0.0.1:8000/api/student/cart', {
         method: 'POST',
@@ -1912,7 +1968,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const resetProductForm = () => {
     setProductForm({
       name: '', title: '', category: '', subcategory: '', price: '', quantity: '1',
-      condition: 'New', pickupLocation: '', description: '', image: null
+      condition: 'New', pickupLocation: '', pickupHours: '08:00-17:00', negotiable: false, imageNotes: [], description: '', image: null
     });
     setEditingProduct(null);
     setSelectedCategoryObj(null);
@@ -1929,6 +1985,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       quantity: String(product.quantity || 1),
       condition: product.condition || 'New',
       pickupLocation: product.pickup_location || product.pickupLocation || '',
+      pickupHours: product.pickup_hours || '08:00-17:00',
+      negotiable: product.negotiable === true,
+      imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
       description: product.description || '',
       image: product.image || null
     });
@@ -1951,6 +2010,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       quantity: String(product.quantity || 1),
       condition: product.condition || 'New',
       pickupLocation: product.pickup_location || product.pickupLocation || '',
+      pickupHours: product.pickup_hours || '08:00-17:00',
+      negotiable: product.negotiable === true,
+      imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
       description: product.description || '',
       image: product.image || null
     });
@@ -2050,6 +2112,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           price: String(productForm.price),
           description: productForm.description || null,
           quantity: Number(productForm.quantity || 1),
+          condition: productForm.condition || 'New',
+          pickup_location: productForm.pickupLocation || 'Student Center',
+          pickup_hours: productForm.pickupHours || '08:00-17:00',
+          negotiable: productForm.negotiable === true,
+          image_notes: productForm.imageNotes || [],
         });
         setProductSuccessMsg('Product updated successfully.');
         setTimeout(() => {
@@ -2069,6 +2136,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       formData.append('quantity', String(productForm.quantity || 1));
       formData.append('condition', productForm.condition || 'New');
       formData.append('pickup_location', productForm.pickupLocation || '');
+      formData.append('pickup_hours', productForm.pickupHours || '08:00-17:00');
+      formData.append('negotiable', String(productForm.negotiable === true));
+      formData.append('image_notes', JSON.stringify(productForm.imageNotes || []));
       formData.append('description', productForm.description || '');
       formData.append('student_id', user?.studentId || '');
       formData.append('status', 'Pending');
@@ -2128,7 +2198,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
 
     setProductError('');
-    setProductForm((prev) => ({ ...prev, image: selectedImages }));
+    setProductForm((prev) => ({ ...prev, image: selectedImages, imageNotes: selectedImages.map((_, index) => prev.imageNotes[index] || '') }));
   };
 
   const parseInlineProductCards = (text) => {
@@ -3325,7 +3395,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
                             const sellerPayoutBlocked = String(item.seller_payout_status || '').trim().toLowerCase() !== 'active';
                             const isOwnProduct = String(user?.studentId || user?.student_id || '').trim().toLowerCase() === String(item.seller_id || item.seller || '').trim().toLowerCase();
-                            const purchaseBlocked = sellerPayoutBlocked || isOwnProduct;
+                            const isOutOfStock = Number.isFinite(Number(item.stock)) && Number(item.stock) <= 0;
+                            const purchaseBlocked = sellerPayoutBlocked || isOwnProduct || isOutOfStock;
                             const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
                             const backendOrigin = 'http://127.0.0.1:8000';
                             let displayImage = fallbackImage;
@@ -3381,10 +3452,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                     </div>
                                   ) : (
                                     <>
-                                      {sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
+                                      {isOutOfStock ? (
+                                        <span className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700">Out of Stock</span>
+                                      ) : sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
                                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
-                                        <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="w-full rounded-full bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>
-                                        <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="w-full rounded-full bg-sky-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-sky-700 transition disabled:cursor-not-allowed disabled:bg-slate-300">Buy Now</button>
+                                        {!isOutOfStock && <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="w-full rounded-full bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>}
                                         {isInWishlist ? (
                                           <button type="button" disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
                                         ) : (
@@ -3665,6 +3737,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <p className="mt-3 text-sm text-slate-500">Track fulfillment, pickup details, and post-purchase feedback for every order.</p>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
+                        <button type="button" onClick={() => handleOrdersViewChange(false)} className={`rounded-full px-4 py-2 text-sm font-bold ${!showHiddenOrders ? 'bg-slate-900 text-white' : 'border border-slate-300 text-slate-700 hover:bg-slate-100'}`}>All Orders</button>
+                        <button type="button" onClick={() => handleOrdersViewChange(true)} className={`rounded-full px-4 py-2 text-sm font-bold ${showHiddenOrders ? 'bg-slate-900 text-white' : 'border border-slate-300 text-slate-700 hover:bg-slate-100'}`}>Hidden Orders ({hiddenOrdersCount})</button>
                         {reviewFeedback && <p className="rounded-full bg-sky-50 px-4 py-2 text-sm text-sky-700">{reviewFeedback}</p>}
                         {disputeFeedback && <p className="rounded-full bg-rose-50 px-4 py-2 text-sm text-rose-700">{disputeFeedback}</p>}
                       </div>
@@ -3676,9 +3750,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-8 text-center text-sm font-semibold text-rose-700">{ordersError}</div>
                     ) : orders.length === 0 ? (
                       <div className="rounded-[28px] border border-dashed border-emerald-200 bg-emerald-50 p-8 text-center">
-                        <p className="text-lg font-semibold text-slate-900">No orders yet</p>
-                        <p className="mt-2 text-sm text-slate-600">Your purchases will appear here once you place an order.</p>
-                        <button
+                        <p className="text-lg font-semibold text-slate-900">{showHiddenOrders ? 'No hidden orders' : 'No orders yet'}</p>
+                        <p className="mt-2 text-sm text-slate-600">{showHiddenOrders ? 'Orders you hide will appear here.' : 'Your purchases will appear here once you place an order.'}</p>
+                        {!showHiddenOrders && <button
                           type="button"
                           onClick={() => {
                             setBuyerTab('search');
@@ -3687,7 +3761,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           className="mt-5 inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600"
                         >
                           Browse Marketplace
-                        </button>
+                        </button>}
                       </div>
                     ) : (
                       <div className="space-y-5">
@@ -3718,6 +3792,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${orderStatus === 'Disputed' ? 'bg-rose-100 text-rose-700' : 'bg-blue-50 text-blue-700'}`}>{orderStatusLabel}</span>
                                   <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">{paymentStatus}</span>
                                   <button type="button" onClick={() => { setSelectedOrder({ id: order.id }); fetchOrderDetails(order.id); }} className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-700">View Order</button>
+                                  <button type="button" onClick={() => handleOrderVisibility(order)} className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100">{showHiddenOrders ? 'Unhide' : 'Hide'}</button>
                                 </div>
                               </div>
 
@@ -5096,6 +5171,29 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               )}
               <div className="grid gap-4 lg:grid-cols-2">
                 <div>
+                  <label className="block text-sm font-semibold text-slate-700">Condition</label>
+                  <select value={productForm.condition} onChange={(e) => setProductForm((prev) => ({ ...prev, condition: e.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none">
+                    <option>New</option><option>Used</option><option>Gently Used</option>
+                  </select>
+                </div>
+                <div className="flex items-end pb-3">
+                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={productForm.negotiable} onChange={(e) => setProductForm((prev) => ({ ...prev, negotiable: e.target.checked }))} /> Negotiable price</label>
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700">Pickup point</label>
+                  <input value={productForm.pickupLocation} onChange={(e) => setProductForm((prev) => ({ ...prev, pickupLocation: e.target.value }))} placeholder="Student Center" className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none" />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700">Pickup hours</label>
+                  <input value={productForm.pickupHours} onChange={(e) => setProductForm((prev) => ({ ...prev, pickupHours: e.target.value }))} placeholder="08:00-17:00" className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none" />
+                </div>
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div>
                   <label className="block text-sm font-semibold text-slate-700">Title</label>
                   <input
                     type="text"
@@ -5104,6 +5202,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none transition"
                     placeholder="Enter product title"
                   />
+                  {productForm.condition.toLowerCase().includes('used') && Array.isArray(productForm.image) && productForm.image.length > 0 && <div className="mt-3 space-y-2"><p className="text-xs font-semibold text-slate-500">Optional condition note for each image</p>{productForm.image.map((image, index) => <input key={`${image.name}-${index}`} value={productForm.imageNotes[index] || ''} onChange={(e) => setProductForm((prev) => ({ ...prev, imageNotes: prev.image.map((note, noteIndex) => noteIndex === index ? e.target.value : note) }))} placeholder={`Image ${index + 1}: e.g. small tear on spine`} className="block w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800 focus:border-sky-500 focus:bg-white focus:outline-none" />)}</div>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700">Price (ETB)</label>

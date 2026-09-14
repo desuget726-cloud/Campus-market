@@ -1426,3 +1426,587 @@ Traceback (most recent call last):
   File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
     raise SMTPAuthenticationError(code, resp)
 smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c07c17sm76252415e9.14 - gsmtp')
+2026-09-10 03:01:26,643 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c2985dsm114511305e9.6 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1664, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c2985dsm114511305e9.6 - gsmtp')
+2026-09-13 02:15:25,907 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c300e2sm338498185e9.8 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c300e2sm338498185e9.8 - gsmtp')
+2026-09-13 02:15:27,210 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c300e2sm338499665e9.8 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c300e2sm338499665e9.8 - gsmtp')
+2026-09-13 02:25:32,411 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e6a06cfb8sm144419635e9.5 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e6a06cfb8sm144419635e9.5 - gsmtp')
+2026-09-13 02:25:34,078 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c1bfb5sm323292025e9.5 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c1bfb5sm323292025e9.5 - gsmtp')
+2026-09-13 02:26:55,642 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26be3e35sm295624355e9.2 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26be3e35sm295624355e9.2 - gsmtp')
+2026-09-13 02:35:05,359 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26b7332asm302848545e9.0 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26b7332asm302848545e9.0 - gsmtp')
+2026-09-13 02:35:07,038 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb36e4a6sm19352974f8f.37 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb36e4a6sm19352974f8f.37 - gsmtp')
+2026-09-13 02:35:32,440 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e60ac411asm212034475e9.8 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e60ac411asm212034475e9.8 - gsmtp')
+2026-09-13 02:35:34,007 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb2ecf2esm19498186f8f.2 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb2ecf2esm19498186f8f.2 - gsmtp')
+2026-09-13 02:51:47,076 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e7548d99bsm51195295e9.1 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e7548d99bsm51195295e9.1 - gsmtp')
+2026-09-13 02:51:48,763 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c2a419sm337605425e9.7 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c2a419sm337605425e9.7 - gsmtp')
+2026-09-13 02:52:35,962 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb360409sm17091272f8f.36 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb360409sm17091272f8f.36 - gsmtp')
+2026-09-13 02:52:37,669 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e6c566bdbsm140639415e9.11 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e6c566bdbsm140639415e9.11 - gsmtp')
+2026-09-13 02:53:08,360 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e6cc11607sm122679225e9.12 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e6cc11607sm122679225e9.12 - gsmtp')
+2026-09-13 02:55:28,139 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e62232cb7sm170057345e9.4 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e62232cb7sm170057345e9.4 - gsmtp')
+2026-09-13 02:55:29,439 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb359f38sm17084610f8f.30 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb359f38sm17084610f8f.30 - gsmtp')
+2026-09-13 03:12:49,698 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb33ebe4sm15741384f8f.14 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1669, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb33ebe4sm15741384f8f.14 - gsmtp')
+2026-09-13 03:17:20,510 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb32e7f5sm18650321f8f.9 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb32e7f5sm18650321f8f.9 - gsmtp')
+2026-09-13 03:17:22,146 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb34e74esm18624804f8f.25 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb34e74esm18624804f8f.25 - gsmtp')
+2026-09-13 03:19:05,358 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb34e74esm18633131f8f.25 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb34e74esm18633131f8f.25 - gsmtp')
+2026-09-13 03:19:06,639 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb34e74esm18633242f8f.25 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb34e74esm18633242f8f.25 - gsmtp')
+2026-09-13 03:19:56,876 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c2985dsm518555135e9.6 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26c2985dsm518555135e9.6 - gsmtp')
+2026-09-13 03:20:39,562 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49db038401fsm350149175e9.13 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49db038401fsm350149175e9.13 - gsmtp')
+2026-09-13 03:20:41,193 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb2ed106sm17930974f8f.1 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1705, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb2ed106sm17930974f8f.1 - gsmtp')
+2026-09-13 03:40:13,363 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb32e7f5sm18769833f8f.9 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1726, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb32e7f5sm18769833f8f.9 - gsmtp')
+2026-09-13 03:40:45,496 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb330bdcsm19360506f8f.13 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1726, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb330bdcsm19360506f8f.13 - gsmtp')
+2026-09-13 03:50:44,217 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2966148d25sm283324866b.61 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1726, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2966148d25sm283324866b.61 - gsmtp')
+2026-09-13 03:50:45,867 ERROR Failed to send student notification email: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2966125543sm276624866b.55 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 1726, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials a640c23a62f3a-c2966125543sm276624866b.55 - gsmtp')
+2026-09-13 04:16:33,658 ERROR OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env.
+2026-09-13 04:19:01,899 ERROR OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env.
+2026-09-13 04:25:27,230 ERROR Failed to send verification email to gech@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb33ea60sm18746981f8f.17 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 877, in send_verification_status_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials ffacd0b85a97d-486eb33ea60sm18746981f8f.17 - gsmtp')
+2026-09-13 04:25:28,681 ERROR Failed to send verification email to gech@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e69f02c92sm128247055e9.2 - gsmtp')
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 877, in send_verification_status_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e69f02c92sm128247055e9.2 - gsmtp')
+2026-09-13 04:27:38,704 ERROR OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env.
+2026-09-13 04:30:15,488 ERROR OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env.
+2026-09-13 04:30:44,708 ERROR OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env.
+2026-09-13 04:37:00,206 ERROR OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env.
+2026-09-13 04:47:57,783 ERROR SMTP authentication failed for desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e62232cb7sm175653215e9.4 - gsmtp'). Check that 2-Step Verification is enabled and SENDER_PASSWORD is a current Google App Password without spaces.
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 809, in send_otp_email
+    server.login(normalized_sender_email, normalized_sender_password)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e62232cb7sm175653215e9.4 - gsmtp')
+2026-09-13 04:54:58,905 ERROR SMTP authentication failed for desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26be3e35sm303707245e9.2 - gsmtp'). Check that 2-Step Verification is enabled and SENDER_PASSWORD is a current Google App Password without spaces.
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 809, in send_otp_email
+    server.login(normalized_sender_email, normalized_sender_password)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49d26be3e35sm303707245e9.2 - gsmtp')
+2026-09-13 04:55:28,268 ERROR SMTP authentication failed for desu5392@gmail.com: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e61a803c5sm140084485e9.1 - gsmtp'). Check that 2-Step Verification is enabled and SENDER_PASSWORD is a current Google App Password without spaces.
+Traceback (most recent call last):
+  File "C:\Users\DELL\Documents\Campus-market\backend\app\main.py", line 809, in send_otp_email
+    server.login(normalized_sender_email, normalized_sender_password)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 762, in login
+    raise last_exception
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 751, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\DELL\AppData\Local\Python\pythoncore-3.14-64\Lib\smtplib.py", line 669, in auth
+    raise SMTPAuthenticationError(code, resp)
+smtplib.SMTPAuthenticationError: (535, b'5.7.8 Username and Password not accepted. For more information, go to\n5.7.8  https://support.google.com/mail/?p=BadCredentials 5b1f17b1804b1-49e61a803c5sm140084485e9.1 - gsmtp')

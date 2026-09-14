@@ -1,18 +1,18 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import ProductDetails from './ProductDetails';
+import c1 from '../../assets/c1.png';
+import c2 from '../../assets/c2.jpg';
 import laptop_586 from '../../assets/laptop_586.webp';
-import phone2 from '../../assets/phone2.jpg';
+import phone1 from '../../assets/phone1.jpg';
 import c3 from '../../assets/c3.jpg';
-import c4 from '../../assets/c4.jpg';
-import c6 from '../../assets/c6.jpg';
 import c7 from '../../assets/c7.jpg';
 
 const bannerImages = [
-  laptop_586,
-  phone2,
+  // c1,
+  // c2,
   c3,
-  c4,
-  c6,
+  laptop_586,
+  phone1,
   c7
 ];
 

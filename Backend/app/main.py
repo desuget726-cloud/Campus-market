@@ -12,7 +12,7 @@ if OPENAI_API_KEY:
 else:
     print("OpenAI API Key is missing. Running in local-only mode")
 
-from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, Response, WebSocket, WebSocketDisconnect, Query
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -56,14 +56,14 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_payout_adapter
 from .order_lifecycle import apply_buyer_receipt_confirmation, apply_seller_order_action, payout_release_allowed
 
 
-app = FastAPI(title="Ecomerce Backend")
+app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
 
 
 class ChapaWebhookPayload(BaseModel):
@@ -696,30 +696,35 @@ async def _expire_processing_orders() -> None:
                 order_db.rollback()
                 continue
 
-            refund_amount = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
-            if refund_amount > 0:
-                buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
-                order_db.add(Transaction(
-                    student_id=buyer.student_id,
-                    tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
-                    type="Refund",
-                    amount=refund_amount,
-                    description=f"Automatic expiration refund for order #{order.id}",
-                    status="Successful",
-                ))
-
-            escrow_hold = order_db.query(Transaction).filter(
-                Transaction.student_id == order.student_id,
-                Transaction.type == "Escrow Hold",
-                Transaction.status == "Held",
-                Transaction.description == f"Escrow hold for order #{order.id}",
-            ).with_for_update().first()
-            if escrow_hold:
-                escrow_hold.status = "Cancelled"
+            escrow_hold = _get_held_escrow_transaction(order_db, order)
+            if not escrow_hold:
+                logging.getLogger("app.orders").error(
+                    "Unable to expire order %s because its escrow hold is missing.", order.id
+                )
+                order_db.rollback()
+                continue
+            try:
+                refund_amount = _escrow_hold_refund_amount(escrow_hold)
+            except HTTPException:
+                logging.getLogger("app.orders").error(
+                    "Unable to expire order %s because its escrow hold amount is not refundable.", order.id
+                )
+                order_db.rollback()
+                continue
+            buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
+            order_db.add(Transaction(
+                student_id=buyer.student_id,
+                tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
+                type="Refund",
+                amount=refund_amount,
+                description=f"Automatic expiration refund for order #{order.id}",
+                status="Successful",
+            ))
+            escrow_hold.status = "Cancelled"
 
             order.status = "Cancelled"
             order.is_funds_released = False
-            product.status = "Approved"
+            _restock_product_for_order(product, order)
             _dispatch_student_notification(
                 order_db,
                 buyer,
@@ -794,7 +799,7 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
         body = str(otp)
 
         msg = MIMEMultipart()
-        msg["Subject"] = "Campace Verification Code"
+        msg["Subject"] = "DG Market"
         msg["From"] = normalized_sender_email
         msg["To"] = receiver_email
         msg.attach(MIMEText(body, "plain"))
@@ -847,11 +852,19 @@ def send_otp_email(receiver_email: str, otp: str) -> bool:
 
 def send_verification_status_email(receiver_email: str, status: str, reason: Optional[str] = None) -> bool:
     """Send a plain-text email summarizing the verification decision."""
+    normalized_sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
+    normalized_sender_password = os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip().replace(" ", "")
+
     try:
         if not _notifications_enabled(None, "emailNotifs"):
-            email_logger.info("Verification email skipped because email notifications are disabled.")
-            return True
+            email_logger.warning("Verification email was not sent because email notifications are disabled.")
+            return False
         if not receiver_email:
+            return False
+        if not normalized_sender_email or not normalized_sender_password:
+            email_logger.error(
+                "Verification email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env."
+            )
             return False
 
         body_lines = [
@@ -863,14 +876,14 @@ def send_verification_status_email(receiver_email: str, status: str, reason: Opt
 
         msg = MIMEMultipart()
         msg["Subject"] = "Campus Marketplace Verification Update"
-        msg["From"] = SENDER_EMAIL
+        msg["From"] = normalized_sender_email
         msg["To"] = receiver_email
         msg.attach(MIMEText("\n".join(body_lines), "plain"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
             server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.sendmail(SENDER_EMAIL, receiver_email, msg.as_string())
+            server.login(normalized_sender_email, normalized_sender_password)
+            server.sendmail(normalized_sender_email, receiver_email, msg.as_string())
 
         return True
     except Exception as e:
@@ -1187,7 +1200,64 @@ class StudentProductUpdate(BaseModel):
     price: Optional[str] = None
     quantity: Optional[int] = None
     description: Optional[str] = None
+    condition: Optional[str] = None
+    pickup_location: Optional[str] = None
+    pickup_hours: Optional[str] = None
+    negotiable: Optional[bool] = None
+    image_notes: Optional[List[str]] = None
     status: Optional[str] = None
+
+
+PRODUCT_STOCK_REQUIRED_STATUSES = {"approved", "available"}
+
+
+def _validate_product_stock_status(stock: int, product_status: str) -> None:
+    normalized_stock = int(stock or 0)
+    normalized_status = str(product_status or "").strip().lower()
+    if normalized_stock < 0:
+        raise HTTPException(status_code=400, detail="Product stock cannot be negative.")
+    if normalized_status in PRODUCT_STOCK_REQUIRED_STATUSES and normalized_stock == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="A product must have stock above 0 before it can be Available or Approved.",
+        )
+    if normalized_status == "sold" and normalized_stock != 0:
+        raise HTTPException(
+            status_code=400,
+            detail="A Sold product must have stock 0.",
+        )
+
+
+def _restock_product_for_order(product: Product, order: Order) -> None:
+    product.stock = int(getattr(product, "stock", 0) or 0) + int(getattr(order, "quantity", 1) or 1)
+    if product.stock > 0:
+        product.status = "Approved"
+    _validate_product_stock_status(product.stock, product.status)
+
+
+def _get_held_escrow_transaction(db: Session, order: Order) -> Optional[Transaction]:
+    return db.query(Transaction).filter(
+        Transaction.student_id == order.student_id,
+        Transaction.type == "Escrow Hold",
+        Transaction.status == "Held",
+        Transaction.description == f"Escrow hold for order #{order.id}",
+    ).with_for_update().first()
+
+
+def _escrow_hold_refund_amount(escrow_hold: Transaction) -> Decimal:
+    refund_amount = Decimal(str(escrow_hold.amount or 0)).quantize(Decimal("0.01"))
+    if refund_amount <= 0:
+        raise HTTPException(status_code=400, detail="Escrow hold amount is not refundable.")
+    return refund_amount
+
+
+def _sync_product_status_with_stock(product: Product) -> None:
+    product.stock = max(0, int(getattr(product, "stock", 0) or 0))
+    if product.stock == 0:
+        product.status = "Sold"
+    elif str(product.status or "").strip().lower() == "sold":
+        product.status = "Approved"
+    _validate_product_stock_status(product.stock, product.status)
 
 
 class DepositRequest(BaseModel):
@@ -1517,9 +1587,19 @@ def _ensure_default_admin(db: Session) -> None:
     db.commit()
 
 
+def _as_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    """Treat naive database timestamps as UTC before performing time comparisons."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _check_login_lock(db: Session, identifier: str, settings: SecuritySettings) -> None:
     attempt = db.query(LoginAttempt).filter(LoginAttempt.identifier == identifier).first()
-    if attempt and attempt.locked_until and attempt.locked_until > datetime.now(timezone.utc):
+    locked_until = _as_utc_datetime(attempt.locked_until) if attempt else None
+    if locked_until and locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later or wait for 15 sec.")
 
 
@@ -1924,6 +2004,30 @@ async def on_startup():
         )
         print(warning_message)
         logging.getLogger("app.startup").warning(warning_message)
+
+    smtp_logger = logging.getLogger("app.startup")
+    smtp_email = os.getenv("SENDER_EMAIL", " ").strip()
+    smtp_password = os.getenv("SENDER_PASSWORD", " ").strip().replace(" ", "")
+    missing_smtp_variables = [
+        variable_name for variable_name, value in (
+            ("SENDER_EMAIL", smtp_email),
+            ("SENDER_PASSWORD", smtp_password),
+        ) if not value
+    ]
+    if missing_smtp_variables:
+        smtp_warning = (
+            "WARNING: Gmail SMTP is not configured. Missing environment variables: "
+            f"{', '.join(missing_smtp_variables)}. OTP and verification emails will not be delivered."
+        )
+        print(smtp_warning)
+        smtp_logger.warning(smtp_warning)
+    elif len(smtp_password) != 16 or not smtp_password.isalnum():
+        smtp_warning = (
+            "WARNING: SENDER_PASSWORD does not look like a 16-character Google App Password. "
+            "Use a current Google App Password with spaces removed; normal Gmail passwords are rejected by SMTP."
+        )
+        print(smtp_warning)
+        smtp_logger.warning(smtp_warning)
     try:
         init_db()
         db = SessionLocal()
@@ -2064,7 +2168,8 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         or_(func.lower(Admin.username) == normalized_id, func.lower(Admin.email) == normalized_id)
     ).first()
 
-    if admin and admin.locked_until and admin.locked_until > datetime.now(timezone.utc):
+    admin_locked_until = _as_utc_datetime(admin.locked_until) if admin else None
+    if admin_locked_until and admin_locked_until > datetime.now(timezone.utc):
         _record_admin_login_event(db, admin.id, "login_locked", request)
         db.commit()
         raise HTTPException(status_code=429, detail="Administrator account is temporarily locked. Try again later.")
@@ -2093,7 +2198,12 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "role": "admin",
                 "requires_2fa": True,
                 "otp_email": admin.email,
-                "message": "A verification code was sent to the administrator email.",
+                "message": (
+                    "A verification code was sent to the administrator email."
+                    if email_sent
+                    else "A verification code was generated, but email delivery failed."
+                ),
+                "email_sent": email_sent,
                 "dev_mode": not email_sent,
             }
         token = _create_session_token(admin.username, "admin", security.session_timeout, _get_session_secret())
@@ -2139,7 +2249,17 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             email_sent = send_otp_email(student.email, otp)
             if not email_sent:
                 logging.getLogger("app.auth").warning("Student login OTP email could not be sent.")
-            return {"status": "otp_required", "email": student.email, "dev_mode": not email_sent}
+            return {
+                "status": "otp_required",
+                "email": student.email,
+                "message": (
+                    "A verification code was sent to your email."
+                    if email_sent
+                    else "A verification code was generated, but email delivery failed."
+                ),
+                "email_sent": email_sent,
+                "dev_mode": not email_sent,
+            }
         token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
         return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified), "two_factor_enabled": bool(student.two_factor_enabled)}}
 
@@ -2148,10 +2268,12 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         if admin.failed_login_attempts >= 5:
             admin.locked_until = datetime.now(timezone.utc) + timedelta(minutes=15)
             _record_admin_login_event(db, admin.id, "login_failed_locked", request)
-            try:
-                send_otp_email(admin.email, "Admin account locked after 5 failed login attempts")
-            except Exception:
-                pass
+            lockout_email_sent = send_otp_email(
+                admin.email,
+                "Admin account locked after 5 failed login attempts",
+            )
+            if not lockout_email_sent:
+                logging.getLogger("app.auth").warning("Admin lockout notification email could not be sent.")
         else:
             _record_admin_login_event(db, admin.id, "login_failed", request)
         db.commit()
@@ -2400,9 +2522,10 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create password reset request.")
     return {
-            "message": "Verification code has been sent to your email." if email_sent else "Email service is currently unavailable. Please try again later.",
-            "success": True,
-            "dev_mode": False,
+            "message": "Verification code has been sent to your email." if email_sent else "OTP was generated, but email delivery failed. Please try again later.",
+            "detail": "OTP email delivered successfully." if email_sent else "OTP was generated and saved, but Gmail SMTP could not deliver the email. Check the server email configuration and try again.",
+            "success": email_sent,
+            "dev_mode": not email_sent,
     }
 
 
@@ -3887,7 +4010,7 @@ def get_products(
         DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
     )
     if auto_hide_sold:
-        query = query.filter(Product.status != "Sold")
+        query = query.filter(Product.status != "Sold", Product.stock > 0)
 
     manual_filters_active = bool(category or subcategory or search or seller)
 
@@ -3966,7 +4089,13 @@ def get_products(
 
 
 @app.get("/api/products/{product_id}")
-def get_product_detail(product_id: int, viewer_id: Optional[str] = None, db: Session = Depends(get_db)):
+def get_product_detail(
+    product_id: int,
+    request: Request,
+    response: Response,
+    viewer_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """Fetch details for a single product by ID."""
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
@@ -3980,8 +4109,18 @@ def get_product_detail(product_id: int, viewer_id: Optional[str] = None, db: Ses
 
     seller_id = seller.student_id if seller else product.seller
     viewer = db.query(Student).filter(Student.student_id == viewer_id.strip()).first() if viewer_id else None
+    visitor_cookie = request.cookies.get("campace_viewer") if request else None
+    visitor_key = f"student:{viewer.student_id}" if viewer else f"session:{visitor_cookie or secrets.token_urlsafe(24)}"
     if not viewer or not seller_id or viewer.student_id != seller_id:
-        product.views = int(product.views or 0) + 1
+        existing_view = db.query(ProductView).filter(
+            ProductView.product_id == product.id,
+            ProductView.visitor_key == visitor_key,
+        ).first()
+        if not existing_view:
+            db.add(ProductView(product_id=product.id, visitor_key=visitor_key))
+            product.views = int(product.views or 0) + 1
+    if not visitor_cookie and response:
+        response.set_cookie("campace_viewer", visitor_key.removeprefix("session:"), max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
 
     review_rows = db.query(Review, Student).join(
         Student, Student.student_id == Review.student_id
@@ -3999,6 +4138,16 @@ def get_product_detail(product_id: int, viewer_id: Optional[str] = None, db: Ses
         for review, reviewer in review_rows
     ]
     average_rating = round(sum(item["rating"] for item in review_items) / len(review_items), 1) if review_items else 0
+
+    try:
+        image_notes = json.loads(product.image_notes or "[]")
+    except (TypeError, json.JSONDecodeError):
+        image_notes = []
+    image_values = json.loads(product.image) if product.image and product.image.startswith("[") else [product.image]
+    gallery = [
+        {"url": image_url, "note": image_notes[index] if index < len(image_notes) else None}
+        for index, image_url in enumerate(image_values) if image_url
+    ]
 
     similar_query = db.query(Product).filter(
         Product.id != product.id,
@@ -4039,6 +4188,7 @@ def get_product_detail(product_id: int, viewer_id: Optional[str] = None, db: Ses
         "price": product.price,
         "stock": max(0, int(product.stock or 0)),
         "image": _normalize_product_image(product.image),
+        "images": gallery,
         "description": product.description,
         "seller": product.seller,
         "seller_id": seller_id,
@@ -4046,6 +4196,9 @@ def get_product_detail(product_id: int, viewer_id: Optional[str] = None, db: Ses
         "seller_name": seller.name if seller else product.seller,
         "seller_dept": seller.department if seller else None,
         "seller_payout_status": _seller_payout_status(db, product.seller),
+        "negotiable": bool(product.negotiable),
+        "pickup_location": product.pickup_location,
+        "pickup_hours": product.pickup_hours,
         "status": product.status,
         "created_at": product.created_at,
         "views": int(product.views or 0),
@@ -4111,6 +4264,11 @@ def create_product(
     subcategory: Optional[str] = Form(None),
     price: str = Form(...),
     quantity: int = Form(1),
+    condition: Optional[str] = Form(None),
+    pickup_location: Optional[str] = Form(None),
+    pickup_hours: Optional[str] = Form(None),
+    negotiable: bool = Form(False),
+    image_notes: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
     seller: Optional[str] = Form(None),
     student_id: Optional[str] = Form(None),  # <-- ADDED: Capture student_id from frontend Form
@@ -4205,9 +4363,18 @@ def create_product(
             image_urls.append(f"http://127.0.0.1:8000/static/uploads/{unique_filename}")
 
         image_url = json.dumps(image_urls, ensure_ascii=False) if image_urls else None
+        try:
+            parsed_image_notes = json.loads(image_notes or "[]")
+            if not isinstance(parsed_image_notes, list):
+                parsed_image_notes = []
+        except json.JSONDecodeError:
+            parsed_image_notes = []
         
         # Resolve the seller's identity properly (የሻጩን ማንነት መፍታት)
         seller_value = normalized_student_id
+
+        initial_status = "Pending" if require_approval else "Approved"
+        _validate_product_stock_status(quantity, initial_status)
 
         # ምርት ወደ ዳታቤዝ ያስቀምጡ (Save product to database)
         db_product = Product(
@@ -4216,10 +4383,15 @@ def create_product(
             subcategory=subcategory,
             price=price_value,
             stock=quantity,
+            condition=condition,
             image=image_url,
+            image_notes=json.dumps(parsed_image_notes, ensure_ascii=False),
             description=description,
             seller=seller_value,  # <-- Use resolved seller identity
-            status="Pending" if require_approval else "Approved"
+            negotiable=negotiable,
+            pickup_location=(pickup_location or "Student Center").strip(),
+            pickup_hours=(pickup_hours or "08:00-17:00").strip(),
+            status=initial_status
         )
         db_product.location = "Addis Ababa"
         db.add(db_product)
@@ -4232,7 +4404,7 @@ def create_product(
             "product": {
                 "id": db_product.id,
                 "title": db_product.title,
-                "image": db_product.image,
+                "image": _normalize_product_image(db_product.image),
                 "status": db_product.status,
                 "created_at": db_product.created_at
             }
@@ -4276,14 +4448,29 @@ def update_student_product(
     if payload.quantity is not None and payload.quantity <= 0:
         raise HTTPException(status_code=400, detail="Product quantity must be at least 1.")
 
+    next_stock = int(payload.quantity) if payload.quantity is not None else int(getattr(product, "stock", 0) or 0)
+    next_status = payload.status if payload.status is not None else product.status
+    if payload.quantity is not None and payload.quantity > 0 and str(product.status or "").strip().lower() == "sold" and payload.status is None:
+        next_status = "Approved"
+    if str(next_status or "").strip().lower() == "sold":
+        if payload.quantity is not None and payload.quantity > 0:
+            raise HTTPException(status_code=400, detail="Set stock to 0 before marking a product Sold.")
+        next_stock = 0
+    _validate_product_stock_status(next_stock, next_status)
+
     update_fields = {
         "title": payload.title,
         "category": payload.category,
         "subcategory": payload.subcategory,
         "price": payload.price,
-        "stock": payload.quantity,
+        "stock": next_stock if payload.quantity is not None or str(next_status or "").strip().lower() == "sold" else None,
         "description": payload.description,
-        "status": payload.status,
+        "condition": payload.condition,
+        "pickup_location": payload.pickup_location,
+        "pickup_hours": payload.pickup_hours,
+        "negotiable": payload.negotiable,
+        "image_notes": json.dumps(payload.image_notes, ensure_ascii=False) if payload.image_notes is not None else None,
+        "status": next_status if payload.status is not None or next_status != product.status else None,
     }
     for field_name, value in update_fields.items():
         if value is not None:
@@ -4302,7 +4489,7 @@ def update_student_product(
             "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
             "status": product.status,
-            "image": product.image,
+            "image": _normalize_product_image(product.image),
         },
     }
 
@@ -4322,7 +4509,7 @@ def delete_student_product(
         authenticated_student.name.strip().lower(),
     }:
         raise HTTPException(status_code=403, detail="You can only delete your own products.")
-    if db.query(Order.id).filter(Order.product_id == product.id).first():
+    if _product_has_orders(db, product.id):
         raise HTTPException(status_code=409, detail="Products with orders cannot be deleted.")
     db.delete(product)
     db.commit()
@@ -4402,7 +4589,7 @@ def get_student_listings(
             "title": prod.title,
             "price": prod.price,
             "description": prod.description,
-            "image": prod.image,
+            "image": _normalize_product_image(prod.image),
             "category": prod.category,
             "subcategory": prod.subcategory,
             "seller": prod.seller,
@@ -4444,6 +4631,14 @@ def get_seller_dashboard_data(
     completed_revenue = sum(
         float(re.sub(r"[^0-9.]", "", str(order.price or "0")) or 0)
         for order in completed_orders
+    )
+    listing_analytics = _build_seller_listing_analytics(listings, completed_orders)
+    advisor_candidate = next(
+        (
+            item for item in sorted(listing_analytics, key=lambda value: value["views"], reverse=True)
+            if item["views"] > 0 and item["conversion_rate"] < 2
+        ),
+        max(listing_analytics, key=lambda value: value["views"], default=None),
     )
     review_average = db.query(func.avg(Review.rating)).join(
         Order, Review.order_id == Order.id
@@ -4498,21 +4693,103 @@ def get_seller_dashboard_data(
         },
         "my_listings": [
             {
-                "id": listing.id,
-                "title": listing.title,
-                "category": listing.category,
-                "price": listing.price,
-                "stock": int(getattr(listing, "stock", 1) or 0),
-                "image": listing.image,
-                "status": listing.status,
-                "created_at": listing.created_at,
+                "id": item["listing"].id,
+                "title": item["listing"].title,
+                "category": item["listing"].category,
+                "subcategory": item["listing"].subcategory,
+                "price": item["listing"].price,
+                "stock": int(getattr(item["listing"], "stock", 1) or 0),
+                "image": _normalize_product_image(item["listing"].image),
+                "status": item["listing"].status,
+                "has_orders": _product_has_orders(db, item["listing"].id),
+                "created_at": item["listing"].created_at,
+                "views": item["views"],
+                "completed_orders": item["completed_orders"],
+                "completed_revenue": item["completed_revenue"],
+                "conversion_rate": item["conversion_rate"],
             }
-            for listing in listings
+            for item in listing_analytics
         ],
+        "advisor": {
+            "product_id": advisor_candidate["listing"].id,
+            "product_title": advisor_candidate["listing"].title,
+            "views": advisor_candidate["views"],
+            "completed_orders": advisor_candidate["completed_orders"],
+            "conversion_rate": advisor_candidate["conversion_rate"],
+        } if advisor_candidate else None,
         "received_orders": [
             _serialize_order(db, o, include_pickup_code=False)
             for o in received_orders
         ]
+    }
+
+
+@app.get("/api/student/seller/sales-analytics")
+def get_seller_sales_analytics(
+    range_value: str = Query("3m", alias="range"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    """Return completed seller sales grouped over the requested calendar range."""
+    student = _student_from_authorization(authorization, db)
+    normalized_range = str(range_value or "3m").strip().lower()
+    if normalized_range not in {"7d", "30d", "3m"}:
+        raise HTTPException(status_code=400, detail="Range must be 7d, 30d, or 3m.")
+
+    today = datetime.now().date()
+    if normalized_range == "7d":
+        dates = [today - timedelta(days=offset) for offset in range(6, -1, -1)]
+        buckets = {item: 0.0 for item in dates}
+        start_date = dates[0]
+    elif normalized_range == "30d":
+        dates = [today - timedelta(days=offset) for offset in range(29, -1, -1)]
+        buckets = {item: 0.0 for item in dates}
+        start_date = dates[0]
+    else:
+        month_start = today.replace(day=1)
+        month_starts = []
+        for offset in range(2, -1, -1):
+            month_index = month_start.month - offset
+            year = month_start.year + (month_index - 1) // 12
+            month = (month_index - 1) % 12 + 1
+            month_starts.append(datetime(year, month, 1).date())
+        buckets = {item: 0.0 for item in month_starts}
+        start_date = month_starts[0]
+
+    seller_filter = or_(
+        Order.seller_id == student.student_id,
+        Product.seller == student.student_id,
+        Product.seller == student.name,
+    )
+    completed_orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
+        seller_filter,
+        func.lower(Order.status) == "completed",
+        Order.created_at >= datetime.combine(start_date, datetime.min.time()),
+    ).all()
+
+    for order in completed_orders:
+        order_date = (order.created_at or datetime.now()).date()
+        if normalized_range == "3m":
+            bucket = next((item for index, item in enumerate(month_starts) if item <= order_date and (index == len(month_starts) - 1 or order_date < month_starts[index + 1])), None)
+        else:
+            bucket = order_date if order_date in buckets else None
+        if bucket is not None:
+            amount = float(re.sub(r"[^0-9.]", "", str(order.price or "0")) or 0)
+            buckets[bucket] += amount * int(order.quantity or 1)
+
+    points = [
+        {
+            "date": bucket.isoformat(),
+            "label": bucket.strftime("%b") if normalized_range == "3m" else f"{bucket.strftime('%b')} {bucket.day}",
+            "total": round(total, 2),
+        }
+        for bucket, total in buckets.items()
+    ]
+    return {
+        "range": normalized_range,
+        "points": points,
+        "total": round(sum(item["total"] for item in points), 2),
+        "order_count": len(completed_orders),
     }
 
 
@@ -5465,7 +5742,7 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
             "description": product.description or 'Popular product recommended for your academic needs.',
             "category": product.category or 'General',
             "price": product.price,
-            "image": product.image,
+            "image": _normalize_product_image(product.image),
             "match_score": round(item["score"], 4),
             "match": "High match" if item["score"] >= 0.15 else "Recommended",
             "reason": reason,
@@ -5487,7 +5764,7 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
                 "description": product.description or 'Latest active product available in the marketplace.',
                 "category": product.category or 'General',
                 "price": product.price,
-                "image": product.image,
+                "image": _normalize_product_image(product.image),
                 "match_score": 0,
                 "match": "Latest listing",
                 "reason": "Latest listing in the marketplace",
@@ -6292,6 +6569,9 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
     seller_id = snapshot_seller_id or (seller.student_id if seller else (product.seller if product else None))
     seller_name = getattr(order, "seller_name", None) or (seller.name if seller else (product.seller if product else "Campus Seller"))
     buyer_name = getattr(order, "buyer_name", None) or (buyer.name if buyer else order.student_id)
+    item_total = (Decimal(str(_parse_price_to_etb(order.price))) * int(getattr(order, "quantity", 1) or 1)).quantize(Decimal("0.01"))
+    commission_percent = _get_platform_commission_percent()
+    platform_commission = (item_total * commission_percent / Decimal("100")).quantize(Decimal("0.01"))
 
     payload = {
         "id": order.id,
@@ -6319,14 +6599,17 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "payment_status": _normalize_payment_status(getattr(order, "payment_status", None) or "Successful"),
         "item_total": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
         "subtotal": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
-        "fees": 0,
-        "total_paid": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
-        "total": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
+        "fees": platform_commission,
+        "platform_commission_percent": commission_percent,
+        "platform_commission_label": f"Platform commission ({commission_percent:g}%, deducted from seller payout)",
+        "total_paid": item_total,
+        "total": item_total,
         "pickup_location": pickup_location,
         "pickup_code": order.pickup_code if include_pickup_code else None,
         "buyer_confirmed": bool(order.buyer_confirmed),
         "seller_confirmed": bool(order.seller_confirmed),
         "is_funds_released": bool(order.is_funds_released),
+        "hidden_by_buyer": bool(getattr(order, "hidden_by_buyer", False)),
         "payout_status": "Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold"),
         "reviewed": bool(getattr(order, "reviewed", False)),
         "created_at": order.created_at,
@@ -6372,7 +6655,7 @@ def get_student_wishlist(student_id: str, db: Session = Depends(get_db)):
             "price": product.price,
             "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
-            "image": product.image,
+            "image": _normalize_product_image(product.image),
             "category": product.category,
             "subcategory": product.subcategory,
             "seller": product.seller,
@@ -6474,7 +6757,7 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
             "price": product.price,
             "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
-            "image": product.image,
+            "image": _normalize_product_image(product.image),
             "category": product.category,
             "subcategory": product.subcategory,
             "seller": product.seller,
@@ -6526,6 +6809,7 @@ def add_to_cart(
     product = db.query(Product).filter(Product.id == data.product_id).with_for_update().first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), product.status)
     seller = db.query(Student).filter(
         or_(Student.student_id == product.seller, Student.name == product.seller)
     ).first() if product.seller else None
@@ -6666,6 +6950,8 @@ def update_student_cart_item_quantity(
         }
 
     product = db.query(Product).filter(Product.id == cart_item.product_id).with_for_update().first()
+    if product:
+        _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), product.status)
     available_stock = int(getattr(product, "stock", 1) or 0) if product else 0
     if not product or new_quantity > available_stock:
         raise HTTPException(status_code=409, detail=f"Not enough stock. Only {available_stock} available.")
@@ -6728,6 +7014,7 @@ def checkout_student_cart(
         product = db.query(Product).filter(Product.id == cart_item.product_id).with_for_update().first()
         if not product:
             raise HTTPException(status_code=400, detail="One or more products in the cart are no longer available.")
+        _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), product.status)
         seller = db.query(Student).filter(
             or_(Student.student_id == product.seller, Student.name == product.seller)
         ).first() if product.seller else None
@@ -6802,8 +7089,7 @@ def checkout_student_cart(
             is_funds_released=False,
         )
         product.stock = max(0, int(product.stock or 0) - int(cart_item.quantity or 0))
-        if product.stock == 0:
-            product.status = "Sold"
+        _sync_product_status_with_stock(product)
         db.add(order)
         db.flush()
         db.add(Transaction(
@@ -6861,6 +7147,41 @@ def checkout_student_cart(
     }
 
 
+def _get_platform_commission_percent() -> Decimal:
+    try:
+        commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "1"))
+    except (InvalidOperation, ValueError):
+        commission_percent = Decimal("1")
+    if commission_percent < 0 or commission_percent >= 100:
+        raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
+    return commission_percent
+
+
+def _build_seller_listing_analytics(listings: list, completed_orders: list) -> list:
+    completed_orders_by_product = Counter(order.product_id for order in completed_orders)
+    completed_revenue_by_product = Counter()
+    for order in completed_orders:
+        completed_revenue_by_product[order.product_id] += (
+            _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1)
+        )
+    analytics = []
+    for listing in listings:
+        views = int(getattr(listing, "views", 0) or 0)
+        completed_product_orders = int(completed_orders_by_product.get(listing.id, 0))
+        analytics.append({
+            "listing": listing,
+            "views": views,
+            "completed_orders": completed_product_orders,
+            "completed_revenue": round(completed_revenue_by_product.get(listing.id, 0), 2),
+            "conversion_rate": round((completed_product_orders / views) * 100, 2) if views else 0,
+        })
+    return analytics
+
+
+def _product_has_orders(db: Session, product_id: int) -> bool:
+    return bool(db.query(Order.id).filter(Order.product_id == product_id).first())
+
+
 def release_escrow_funds(order_id: int, db: Session) -> Decimal:
     """Release an order's held funds only after both parties confirm completion."""
     order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
@@ -6876,12 +7197,7 @@ def release_escrow_funds(order_id: int, db: Session) -> Decimal:
     if order.is_funds_released:
         return Decimal("0.00")
 
-    hold = db.query(Transaction).filter(
-        Transaction.student_id == order.student_id,
-        Transaction.type == "Escrow Hold",
-        Transaction.status == "Held",
-        Transaction.description == f"Escrow hold for order #{order.id}",
-    ).with_for_update().first()
+    hold = _get_held_escrow_transaction(db, order)
     if not hold:
         raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
 
@@ -6893,7 +7209,8 @@ def release_escrow_funds(order_id: int, db: Session) -> Decimal:
         raise HTTPException(status_code=409, detail="Seller not found for order.")
 
     total_price = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
-    commission_rate = Decimal("0.01")
+    commission_percent = _get_platform_commission_percent()
+    commission_rate = commission_percent / Decimal("100")
     platform_cut = (total_price * commission_rate).quantize(Decimal("0.01"))
     seller_final_amount = total_price - platform_cut
 
@@ -6944,7 +7261,7 @@ def refund_escrow_funds(order_id: int, db: Session) -> Decimal:
     if not buyer:
         raise HTTPException(status_code=409, detail="Buyer not found for order.")
 
-    amount = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
+    amount = _escrow_hold_refund_amount(hold)
     buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + amount
     hold.status = "Refunded"
     order.is_funds_released = False
@@ -6975,6 +7292,7 @@ def _notify_admins_of_order_event(db: Session, order: Order, action: str, descri
 @app.get("/api/student/orders")
 def get_student_orders(
     student_id: str,
+    hidden: bool = Query(False),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
@@ -6983,8 +7301,49 @@ def get_student_orders(
         raise HTTPException(status_code=403, detail="You can only view your own orders.")
     student_id = buyer.student_id
 
-    orders = db.query(Order).filter(Order.student_id == student_id).order_by(Order.created_at.desc()).all()
+    hidden_filter = Order.hidden_by_buyer.is_(True) if hidden else or_(
+        Order.hidden_by_buyer.is_(False), Order.hidden_by_buyer.is_(None)
+    )
+    orders = db.query(Order).filter(
+        Order.student_id == student_id,
+        hidden_filter,
+    ).order_by(Order.created_at.desc()).all()
     return [_serialize_order(db, order) for order in orders]
+
+
+@app.patch("/api/student/orders/{order_id}/hide")
+def hide_student_order(
+    order_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    buyer = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if buyer.student_id.strip().lower() != order.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You can only hide your own orders.")
+    order.hidden_by_buyer = True
+    db.commit()
+    return {"success": True, "order_id": order.id, "hidden_by_buyer": True}
+
+
+@app.patch("/api/student/orders/{order_id}/unhide")
+def unhide_student_order(
+    order_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    buyer = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if buyer.student_id.strip().lower() != order.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You can only restore your own orders.")
+
+    order.hidden_by_buyer = False
+    db.commit()
+    return {"success": True, "order_id": order.id, "hidden_by_buyer": False}
 
 
 @app.get("/api/student/orders/detail/{order_id}")
@@ -7034,6 +7393,8 @@ def get_student_order_receipt(
     quantity = int(getattr(order, "quantity", 1) or 1)
     unit_price = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
     item_total = (unit_price * quantity).quantize(Decimal("0.01"))
+    commission_percent = _get_platform_commission_percent()
+    platform_commission = (item_total * commission_percent / Decimal("100")).quantize(Decimal("0.01"))
 
     # Checkout currently records one successful purchase transaction for the cart.
     # Match it to this order by the authenticated buyer, amount, and checkout time;
@@ -7067,8 +7428,13 @@ def get_student_order_receipt(
     buyer_name = getattr(order, "buyer_name", None) or buyer.name or buyer.student_id
     seller_name = getattr(order, "seller_name", None) or (seller.name if seller else None) or seller_identifier or "Campus Seller"
     escrow_status = "RELEASED" if order.is_funds_released else "HOLD"
-    if escrow_hold and escrow_hold.status == "Refunded":
+    if (escrow_hold and escrow_hold.status == "Refunded") or _normalize_order_status(order.status).upper() == "REFUNDED":
         escrow_status = "REFUNDED"
+    escrow_messages = {
+        "HOLD": "Payment is being held in escrow until the order is successfully completed.",
+        "RELEASED": "Payment was released to the seller after the order was successfully completed.",
+        "REFUNDED": "This payment was refunded to your wallet. No further action is needed.",
+    }
     paid_on = payment_transaction.created_at or order.created_at
     receipt_number = f"RCPT-{paid_on.strftime('%Y%m%d')}-{order.id:04d}"
 
@@ -7083,7 +7449,9 @@ def get_student_order_receipt(
         "quantity": quantity,
         "unit_price": float(unit_price),
         "item_total": float(item_total),
-        "fees": 0.0,
+        "fees": float(platform_commission),
+        "platform_commission_percent": float(commission_percent),
+        "platform_commission_label": f"Platform commission ({commission_percent:g}%, deducted from seller payout)",
         "total_paid": float(payment_transaction.amount),
         "payment_method": _normalize_payment_type(payment_transaction.type),
         "transaction_reference": payment_transaction.tx_id,
@@ -7091,7 +7459,7 @@ def get_student_order_receipt(
         "seller_name": seller_name,
         "order_status": _normalize_order_status(order.status),
         "escrow_status": escrow_status,
-        "escrow_message": "Payment was released to the seller after the order was successfully completed." if escrow_status == "RELEASED" else "Payment is being held in escrow until the order is successfully completed.",
+        "escrow_message": escrow_messages[escrow_status],
         "dispute_status": dispute.status if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else None,
         "refund_amount": float(refund.amount) if refund else None,
         "refund_reference": refund.tx_id if refund else None,
@@ -7118,22 +7486,15 @@ def cancel_student_order(
     if not student or not product:
         raise HTTPException(status_code=404, detail="Order records could not be loaded.")
 
-    refund_amount = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
-    if refund_amount <= 0:
-        raise HTTPException(status_code=400, detail="Order price is not refundable.")
-
     try:
+        escrow_hold = _get_held_escrow_transaction(db, order)
+        if not escrow_hold:
+            raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
+        refund_amount = _escrow_hold_refund_amount(escrow_hold)
         student.wallet_balance = Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
         order.status = "Cancelled"
-        escrow_hold = db.query(Transaction).filter(
-            Transaction.student_id == order.student_id,
-            Transaction.type == "Escrow Hold",
-            Transaction.status == "Held",
-            Transaction.description == f"Escrow hold for order #{order.id}",
-        ).with_for_update().first()
-        if escrow_hold:
-            escrow_hold.status = "Cancelled"
-        product.status = "Approved"
+        escrow_hold.status = "Cancelled"
+        _restock_product_for_order(product, order)
         db.add(Transaction(
             student_id=student.student_id,
             tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
@@ -7153,6 +7514,9 @@ def cancel_student_order(
         db.commit()
         db.refresh(order)
         db.refresh(student)
+    except HTTPException:
+        db.rollback()
+        raise
     except SQLAlchemyError:
         db.rollback()
         logging.getLogger("app.orders").exception("Unable to cancel order %s and refund wallet.", id)
@@ -7205,7 +7569,19 @@ def _serialize_dispute(dispute: Dispute, *, include_parties: bool = False) -> di
     if include_parties:
         payload["buyer"] = {"student_id": dispute.buyer.student_id, "name": dispute.buyer.name, "email": dispute.buyer.email} if dispute.buyer else None
         payload["seller"] = {"student_id": dispute.seller.student_id, "name": dispute.seller.name, "email": dispute.seller.email} if dispute.seller else None
-        payload["order"] = {"id": dispute.order.id, "title": dispute.order.title, "price": dispute.order.price, "status": dispute.order.status} if dispute.order else None
+        if dispute.order:
+            unit_price = _parse_price_to_etb(dispute.order.price)
+            quantity = int(getattr(dispute.order, "quantity", 1) or 1)
+            payload["order"] = {
+                "id": dispute.order.id,
+                "title": dispute.order.title,
+                "price": dispute.order.price,
+                "quantity": quantity,
+                "escrow_amount": float(unit_price * quantity),
+                "status": dispute.order.status,
+            }
+        else:
+            payload["order"] = None
         payload["product"] = {"id": dispute.order.product_id, "title": dispute.order.product.title} if dispute.order and dispute.order.product else None
     return payload
 
@@ -7417,13 +7793,13 @@ def resolve_dispute(
         if decision == "BUYER":
             amount = refund_escrow_funds(order.id, db)
             order.status = "Refunded"
-            product.status = "Approved"
+            _restock_product_for_order(product, order)
             resolution_message = f"Dispute #{dispute.id} resolved in your favor. {amount} ETB was refunded to your wallet."
         else:
             order.status = "Completed"
             dispute.status = "RESOLVED"
             amount = release_escrow_funds(order.id, db)
-            product.status = "Sold"
+            _sync_product_status_with_stock(product)
             resolution_message = f"Dispute #{dispute.id} was resolved in the seller's favor and the order was completed."
         dispute.status = "RESOLVED"
         dispute.resolution = decision
@@ -7525,7 +7901,7 @@ def confirm_order_received(
     product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
     apply_buyer_receipt_confirmation(order)
     if product:
-        product.status = "Sold"
+        _sync_product_status_with_stock(product)
     released_amount = release_escrow_funds(order.id, db)
     db.commit()
     db.refresh(order)
@@ -9373,10 +9749,16 @@ def update_student_verification(
             ip_address="127.0.0.1",
         ))
 
-        try:
-            send_verification_status_email(student.email, "Approved" if approved else "Rejected", rejection_reason)
-        except Exception:
-            pass
+        email_sent = send_verification_status_email(
+            student.email,
+            "Approved" if approved else "Rejected",
+            rejection_reason,
+        )
+        if not email_sent:
+            logging.getLogger("app.auth").warning(
+                "Verification status was saved, but the notification email could not be sent to %s.",
+                student.email,
+            )
 
         db.commit()
         db.refresh(student)
@@ -9387,6 +9769,12 @@ def update_student_verification(
             "status": "Approved" if approved else "Rejected",
             "reason": rejection_reason,
             "is_verified": student.is_verified,
+            "email_sent": email_sent,
+            "email_detail": (
+                "Verification status email delivered successfully."
+                if email_sent
+                else "Verification status was updated, but the notification email could not be delivered."
+            ),
         }
     except Exception:
         db.rollback()
@@ -9409,6 +9797,7 @@ def update_admin_product_moderation(
 
     try:
         reason = payload.reason.strip() if payload.reason else None
+        _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), normalized_status)
         product.status = normalized_status
         product.moderation_reason = reason if normalized_status in {"Flagged", "Rejected"} else None
 
@@ -9516,7 +9905,7 @@ def get_admin_products(
             "category": p.category,
             "status": p.status or "Pending",
             "price": p.price,
-            "image": p.image,
+            "image": _normalize_product_image(p.image),
             "description": p.description or "No description provided yet.",
             "subcategory": p.subcategory,
             "condition": condition,
@@ -9553,6 +9942,7 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
         if reason_text is None:
             raise HTTPException(status_code=400, detail="A rejection reason is required when flagging or rejecting a product.")
 
+    _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), normalized_status)
     product.status = normalized_status
 
     seller_id = product.seller or None
@@ -10077,12 +10467,12 @@ def resolve_order_dispute(
         if decision == "REFUND":
             amount = refund_escrow_funds(order.id, db)
             order.status = "Cancelled"
-            product.status = "Approved"
+            _restock_product_for_order(product, order)
             resolution_message = f"Dispute for order #{order.id} resolved with a {amount} ETB refund."
         else:
             amount = release_escrow_funds(order.id, db)
             order.status = "Completed"
-            product.status = "Sold"
+            _sync_product_status_with_stock(product)
             resolution_message = f"Dispute for order #{order.id} resolved with seller payout of {amount} ETB."
 
         _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order", order_id=dispute.order_id)

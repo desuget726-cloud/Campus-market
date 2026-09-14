@@ -1,11 +1,31 @@
 import { useEffect, useState } from 'react';
 import OrderDetailsView from './OrderDetailsView';
 
+const SELLER_IMAGE_PLACEHOLDER = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 200%22%3E%3Crect width=%22320%22 height=%22200%22 fill=%22%23e2e8f0%22/%3E%3Cpath d=%22M92 145l42-48 32 35 25-27 49 40H92z%22 fill=%22%2394a3b8%22/%3E%3Ccircle cx=%22125%22 cy=%2275%22 r=%2216%22 fill=%22%2394a3b8%22/%3E%3Ctext x=%22160%22 y=%22178%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2214%22 fill=%22%23475569%22%3ENo image available%3C/text%3E%3C/svg%3E';
+
+const getSellerImage = (rawImage) => {
+    let image = rawImage;
+    if (typeof image === 'string') {
+        try {
+            const parsedImage = JSON.parse(image);
+            image = Array.isArray(parsedImage) ? parsedImage.find(Boolean) : image;
+        } catch {
+            image = image.trim();
+        }
+    } else if (Array.isArray(image)) {
+        image = image.find(Boolean);
+    }
+    return typeof image === 'string' && image.trim() ? image.trim() : SELLER_IMAGE_PLACEHOLDER;
+};
+
 const formatSellerEtb = (value) => `${Number(value || 0).toLocaleString('en-ET')} ETB`;
 
 function SellerOperationsCenter({ user, sellerData, sellerDashboardData, sellerOrdersLoading, sellerOrdersError, onRefreshOrders, myListings, setMyListings, setSellerData, setSellerDashboardData, onAddProduct: onCreateProduct, onNavigate: onTabNavigate, onViewProduct, onPaymentHistory, onEditProduct, onDeleteProduct, onTogglePause, onMarkAsSold, onApplyPriceDrop, onAdjustPrice, openOrderId, onOpenOrderHandled }) {
     const [chartRange, setChartRange] = useState('3 Months');
     const [chartMetric, setChartMetric] = useState('Revenue');
+    const [salesAnalytics, setSalesAnalytics] = useState({ points: [], total: 0, order_count: 0 });
+    const [salesAnalyticsLoading, setSalesAnalyticsLoading] = useState(false);
+    const [salesAnalyticsError, setSalesAnalyticsError] = useState('');
     const [pickupCodes, setPickupCodes] = useState({});
     const [completionState, setCompletionState] = useState({});
     const [disputeResponseState, setDisputeResponseState] = useState({});
@@ -37,29 +57,26 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, sellerO
     };
     const pendingOrders = orders.filter((order) => String(order.status || 'Pending').toLowerCase() === 'pending');
     const topProducts = listings
-        .map((listing, index) => {
-            const views = Number(listing.views ?? listing.view_count ?? (index + 1) * 180);
-            const orderCount = Number(listing.orders ?? listing.order_count ?? 0);
-            const revenue = orderCount * Number(String(listing.price || 0).replace(/[^0-9.]/g, ''));
+        .map((listing) => {
+            const views = Number(listing.views ?? listing.view_count ?? 0);
+            const orderCount = Number(listing.completed_orders ?? listing.order_count ?? 0);
+            const revenue = Number(listing.completed_revenue ?? listing.revenue ?? (orderCount * Number(String(listing.price || 0).replace(/[^0-9.]/g, ''))));
             return { ...listing, views, orderCount, revenue };
         })
         .sort((left, right) => (right.views + right.orderCount * 30) - (left.views + left.orderCount * 30))
         .slice(0, 3);
+    const lowConversionProduct = listings.find((listing) => Number(listing.views || 0) > 0 && Number(listing.conversion_rate || 0) < 2) || topProducts[0];
     const totalViews = listings.reduce((sum, listing) => sum + Number(listing.views ?? listing.view_count ?? 0), 0);
     const totalOrders = Number(dashboardStats.received_orders ?? orders.length);
     const productsSold = Number(dashboardStats.sold_listings ?? counts.sold);
     const totalRevenue = Number(dashboardStats.completed_revenue ?? 0);
     const conversionRate = totalViews ? (totalOrders / totalViews) * 100 : 0;
     const averageOrderValue = totalOrders ? totalRevenue / totalOrders : 0;
-    const analyticsValues = {
-        Revenue: [totalRevenue * 0.64, totalRevenue * 0.72, totalRevenue * 0.68, totalRevenue * 0.81, totalRevenue * 0.9, totalRevenue],
-        Orders: [totalOrders * 0.45, totalOrders * 0.62, totalOrders * 0.58, totalOrders * 0.76, totalOrders * 0.88, totalOrders],
-        Views: [totalViews * 0.4, totalViews * 0.58, totalViews * 0.53, totalViews * 0.72, totalViews * 0.86, totalViews],
-        'Conversion Rate': [conversionRate * 0.6, conversionRate * 0.72, conversionRate * 0.68, conversionRate * 0.82, conversionRate * 0.9, conversionRate],
-    }[chartMetric].map((value) => value * (chartRange === '7 Days' ? 0.35 : chartRange === '30 Days' ? 0.7 : 1));
-    const chartMax = Math.max(...analyticsValues, 1);
-    const chartPoints = analyticsValues.map((value, index) => `${35 + index * 115},${190 - (value / chartMax) * 135}`).join(' ');
-    const lowConversionProduct = topProducts.find((product) => product.views > 0 && (product.orderCount / product.views) * 100 < 2) || topProducts[0];
+    const advisor = sellerDashboardData?.advisor;
+    const chartMax = Math.max(...salesAnalytics.points.map((point) => Number(point.total) || 0), 1);
+    const chartPoints = salesAnalytics.points
+        .map((point, index) => `${35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)},${190 - ((Number(point.total) || 0) / chartMax) * 135}`)
+        .join(' ');
     const onAddProduct = (event) => {
         if (event?.currentTarget?.textContent?.trim() === 'Adjust Price') {
             onAdjustPrice?.(lowConversionProduct);
@@ -103,6 +120,96 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, sellerO
         }
         return token;
     };
+
+    useEffect(() => {
+        let cancelled = false;
+        const rangeKey = chartRange === '7 Days' ? '7d' : chartRange === '30 Days' ? '30d' : '3m';
+
+        const fetchSalesAnalytics = async () => {
+            setSalesAnalyticsLoading(true);
+            setSalesAnalyticsError('');
+            setSalesAnalytics({ points: [], total: 0, order_count: 0 });
+            try {
+                const response = await fetch(`http://127.0.0.1:8000/api/student/seller/sales-analytics?range=${rangeKey}`, {
+                    headers: { Authorization: `Bearer ${getSessionToken()}` },
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(result.detail || 'Unable to load sales analytics.');
+                if (!cancelled) setSalesAnalytics(result);
+            } catch (error) {
+                if (!cancelled) {
+                    setSalesAnalytics({ points: [], total: 0, order_count: 0 });
+                    setSalesAnalyticsError(error.message || 'Unable to load sales analytics.');
+                }
+            } finally {
+                if (!cancelled) setSalesAnalyticsLoading(false);
+            }
+        };
+
+        fetchSalesAnalytics();
+        return () => { cancelled = true; };
+    }, [chartRange, user?.studentId]);
+
+    useEffect(() => {
+        const analyticsSection = document.querySelectorAll('#seller-analytics')[0];
+        const svg = analyticsSection?.querySelector('svg');
+        if (!svg) return;
+
+        const points = Array.isArray(salesAnalytics.points) ? salesAnalytics.points : [];
+        const chartWidth = 575;
+        const chartStart = 35;
+        const chartBottom = 190;
+        const chartHeight = 135;
+        const chartMax = Math.max(...points.map((point) => Number(point.total) || 0), 1);
+        const coordinates = points.map((point, index) => {
+            const x = chartStart + (index * chartWidth) / Math.max(points.length - 1, 1);
+            const y = chartBottom - ((Number(point.total) || 0) / chartMax) * chartHeight;
+            return { x, y };
+        });
+        const line = coordinates.map(({ x, y }) => `${x},${y}`).join(' ');
+        const paths = svg.querySelectorAll('path');
+        const labelsGroup = svg.querySelector('g');
+        const labelNodes = svg.querySelectorAll('text');
+
+        if (paths[1]) paths[1].setAttribute('d', line ? `M${line.replace(/ /g, ' L')}` : 'M35 190 L610 190');
+        if (paths[2]) paths[2].setAttribute('d', line ? `M${line.replace(/ /g, ' L')} L610 205 L35 205 Z` : 'M35 190 L610 190 L610 205 L35 205 Z');
+        if (labelsGroup) {
+            labelsGroup.replaceChildren(...coordinates.map(({ x, y }) => {
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', String(x));
+                circle.setAttribute('cy', String(y));
+                circle.setAttribute('r', '5');
+                return circle;
+            }));
+        }
+        labelNodes.forEach((node) => node.remove());
+        points.forEach((point, index) => {
+            const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            label.setAttribute('x', String(coordinates[index]?.x || chartStart));
+            label.setAttribute('y', '225');
+            label.setAttribute('text-anchor', 'middle');
+            label.setAttribute('fill', '#64748b');
+            label.setAttribute('font-size', points.length > 12 ? '9' : '12');
+            label.textContent = point.label;
+            svg.appendChild(label);
+        });
+
+        const status = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        status.setAttribute('x', '320');
+        status.setAttribute('y', '120');
+        status.setAttribute('text-anchor', 'middle');
+        status.setAttribute('fill', '#64748b');
+        status.setAttribute('font-size', '14');
+        status.textContent = salesAnalyticsLoading ? 'Loading sales...' : points.every((point) => Number(point.total) === 0) ? 'No sales in this period yet' : '';
+        svg.appendChild(status);
+
+        const advisorMessage = analyticsSection.nextElementSibling?.querySelector('h3 + p');
+        if (advisorMessage) {
+            advisorMessage.textContent = advisor
+                ? `${advisor.product_title} received ${advisor.views.toLocaleString()} views and ${advisor.completed_orders} completed order${advisor.completed_orders === 1 ? '' : 's'} (${Number(advisor.conversion_rate).toFixed(2)}% conversion). Consider updating its images or price.`
+                : 'Your listings do not have enough view or completed-order activity for a conversion recommendation yet.';
+        }
+    }, [advisor, salesAnalytics, salesAnalyticsLoading]);
 
     const fetchSellerOrderDetails = async (orderId) => {
         setSelectedOrderLoading(true);
@@ -258,7 +365,7 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, sellerO
             <section className="rounded-[24px] border border-amber-200 bg-amber-50 p-5"><h3 className="font-black text-amber-950">Action Required</h3><div className="mt-3 flex flex-wrap gap-3 text-sm font-semibold text-amber-800"><span>⚠ {Number(dashboardAlerts.pending_orders ?? pendingOrders.length)} order(s) waiting for acceptance</span><span>⚠ {Number(dashboardAlerts.unapproved_products ?? counts.pending)} product(s) pending admin approval</span></div></section>
 
             <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
-                <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Inventory</p><h3 className="mt-1 text-xl font-black text-slate-950">My Products</h3></div><span className="text-sm font-semibold text-slate-400">{listings.length} total</span></div>{listings.length === 0 ? <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">No products yet. Add your first campus product to get started.</div> : <div className="mt-5 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500"><tr><th className="px-3 py-3">Product</th><th className="px-3 py-3">Category</th><th className="px-3 py-3">Price</th><th className="px-3 py-3">Stock</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Created</th><th className="px-3 py-3">Actions</th></tr></thead><tbody>{listings.map((listing) => { const status = listing.status || 'Pending'; return <tr key={listing.id ?? listing.product_id ?? listing.title} className="border-b border-slate-100"><td className="px-3 py-4 font-bold text-slate-900"><div className="flex items-center gap-3">{listing.image ? <img src={listing.image} alt="" className="h-12 w-12 rounded-xl object-cover" /> : <div className="h-12 w-12 rounded-xl bg-slate-100" />}<span>{listing.title || listing.name || 'Untitled listing'}</span></div></td><td className="px-3 py-4 text-slate-600">{listing.category || 'General'}</td><td className="px-3 py-4 font-bold text-emerald-600">{formatSellerEtb(String(listing.price || 0).replace(/[^0-9.]/g, ''))}</td><td className="px-3 py-4 text-slate-600">{listing.stock ?? 0}</td><td className="px-3 py-4"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">{status === 'Approved' ? 'Active' : status}</span></td><td className="px-3 py-4 text-xs text-slate-500">{listing.created_at ? new Date(listing.created_at).toLocaleDateString() : 'Unavailable'}</td><td className="px-3 py-4"><div className="flex flex-wrap gap-2"><button type="button" onClick={() => onViewProduct?.(listing.id)} className="rounded-full border border-sky-200 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-50">View</button><button type="button" onClick={() => onEditProduct(listing)} className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Edit</button><button type="button" onClick={() => onDeleteProduct?.(listing)} className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50">Delete</button>{String(status).toLowerCase() === 'sold' ? <button type="button" onClick={() => onTogglePause(listing)} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100">Mark as Available</button> : <><button type="button" onClick={() => onTogglePause(listing)} className="rounded-full border border-sky-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">{String(status).toLowerCase() === 'paused' ? 'Resume' : 'Pause'}</button><button type="button" onClick={() => onMarkAsSold(listing)} className="rounded-full border border-amber-200 px-3 py-1.5 text-xs font-bold text-amber-700">Mark as Sold</button></>}</div></td></tr>; })}</tbody></table></div>}</section>
+                    <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Inventory</p><h3 className="mt-1 text-xl font-black text-slate-950">My Products</h3></div><span className="text-sm font-semibold text-slate-400">{listings.length} total</span></div>{listings.length === 0 ? <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">No products yet. Add your first campus product to get started.</div> : <div className="mt-5 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500"><tr><th className="px-3 py-3">Product</th><th className="px-3 py-3">Category</th><th className="px-3 py-3">Price</th><th className="px-3 py-3">Stock</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Created</th><th className="px-3 py-3">Actions</th></tr></thead><tbody>{listings.map((listing) => { const status = listing.status || 'Pending'; const image = getSellerImage(listing.image); const stock = Number(listing.stock ?? 0); const soldOut = stock === 0; const hasOrders = listing.has_orders === true; return <tr key={listing.id ?? listing.product_id ?? listing.title} className="border-b border-slate-100"><td className="px-3 py-4 font-bold text-slate-900"><div className="flex items-center gap-3"><img src={image} alt={listing.title || 'Product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = SELLER_IMAGE_PLACEHOLDER; }} className="h-12 w-12 rounded-xl object-cover" /><span>{listing.title || listing.name || 'Untitled listing'}</span></div></td><td className="px-3 py-4 text-slate-600">{listing.category || 'General'}</td><td className="px-3 py-4 font-bold text-emerald-600">{formatSellerEtb(String(listing.price || 0).replace(/[^0-9.]/g, ''))}</td><td className="px-3 py-4 text-slate-600">{stock}</td><td className="px-3 py-4"><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">{status === 'Approved' ? 'Active' : status}</span></td><td className="px-3 py-4 text-xs text-slate-500">{listing.created_at ? new Date(listing.created_at).toLocaleDateString() : 'Unavailable'}</td><td className="px-3 py-4"><div className="flex flex-wrap gap-2"><button type="button" onClick={() => onViewProduct?.(listing.id)} className="rounded-full border border-sky-200 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-50">View</button><button type="button" onClick={() => onEditProduct(listing)} className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Edit</button><button type="button" disabled={hasOrders} title={hasOrders ? 'This product has order history and cannot be deleted. You can still edit or mark it as unavailable.' : undefined} onClick={() => { if (!hasOrders) onDeleteProduct?.(listing); }} className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400">Delete</button>{hasOrders && <span className="basis-full text-xs font-semibold text-slate-500">This product has order history and cannot be deleted. You can still edit or mark it as unavailable.</span>}{String(status).toLowerCase() === 'sold' ? <><button type="button" disabled={soldOut} title={soldOut ? 'Add stock via Edit before marking this product available.' : undefined} onClick={() => onTogglePause(listing)} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400">Mark as Available</button>{soldOut && <span className="basis-full text-xs font-semibold text-slate-500">Add stock via Edit before marking this product available.</span>}</> : <><button type="button" onClick={() => onTogglePause(listing)} className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100">{String(status).toLowerCase() === 'paused' ? 'Resume' : 'Pause'}</button><button type="button" onClick={() => onMarkAsSold(listing)} className="rounded-full border border-amber-200 px-3 py-1.5 text-xs font-bold text-amber-700">Mark as Sold</button></>}</div></td></tr>; })}</tbody></table></div>}</section>
                 <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Seller Performance</p><h3 className="mt-2 text-3xl font-black text-slate-950">{Number(performance.rating || 0).toFixed(1)} / 5.0 ⭐</h3><div className="mt-6 space-y-4">{[['Response Rate', Number(performance.response_rate || 0)], ['Order Completion', Number(performance.order_completion || 0)], ['On-time Pickup', Number(performance.on_time_pickup || 0)]].map(([label, value]) => <div key={label}><div className="flex justify-between text-sm font-bold text-slate-700"><span>{label}</span><span className="text-emerald-600">{value}%</span></div><div className="mt-2 h-2 rounded-full bg-slate-100"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(value, 100)}%` }} /></div></div>)}</div></section>
             </div>
 
@@ -269,7 +376,7 @@ function SellerOperationsCenter({ user, sellerData, sellerDashboardData, sellerO
             <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]"><section id="seller-analytics" className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Sales Analytics</p><h3 className="mt-1 text-xl font-black text-slate-950">Sales Performance</h3></div><div className="flex gap-1 rounded-full bg-slate-100 p-1">{['7 Days', '30 Days', '3 Months'].map((range) => <button key={range} type="button" onClick={() => setChartRange(range)} className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === range ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>{range}</button>)}</div></div><svg viewBox="0 0 640 230" className="mt-6 h-56 w-full" role="img" aria-label={`Sales revenue trend for ${chartRange}`}><path d="M35 190 H610 M35 145 H610 M35 100 H610 M35 55 H610" stroke="#e2e8f0" strokeDasharray="5 8" /><path d="M35 175 C120 160 130 140 220 145 S325 110 390 125 S500 60 610 72" fill="none" stroke="#10b981" strokeWidth="5" strokeLinecap="round" /><path d="M35 175 C120 160 130 140 220 145 S325 110 390 125 S500 60 610 72 L610 205 L35 205 Z" fill="#10b981" fillOpacity="0.1" /><g fill="#10b981"><circle cx="35" cy="175" r="5" /><circle cx="150" cy="140" r="5" /><circle cx="260" cy="145" r="5" /><circle cx="370" cy="115" r="5" /><circle cx="490" cy="75" r="5" /><circle cx="610" cy="72" r="5" /></g>{['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'].map((month, index) => <text key={month} x={35 + index * 115} y="225" textAnchor="middle" fill="#64748b" fontSize="12">{month}</text>)}</svg></section><section className="rounded-[28px] border border-slate-200 bg-slate-950 p-6 text-white shadow-xl"><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">🤖 AI Seller Advisor</p><h3 className="mt-2 text-xl font-black">Improve your conversion</h3><p className="mt-4 text-sm leading-6 text-slate-300">Your Dell XPS 13 received high views but low conversion. Consider updating images or adjusting the price by 3% to match the market average.</p><button type="button" onClick={onAddProduct} className="mt-5 rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600">Edit target product</button></section></div>
             <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]"><section id="seller-analytics" className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Sales Analytics</p><h3 className="mt-1 text-xl font-black text-slate-950">Operational Performance</h3></div><div className="flex flex-wrap gap-1 rounded-full bg-slate-100 p-1">{['7 Days', '30 Days', '3 Months'].map((range) => <button key={range} type="button" onClick={() => setChartRange(range)} className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === range ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>{range}</button>)}</div></div><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{[['Total Revenue', formatSellerEtb(totalRevenue), '+18.5% vs previous'], ['Total Orders', totalOrders, '+12.0% vs previous'], ['Products Sold', productsSold, '+8.0% vs previous'], ['Conversion Rate', `${conversionRate.toFixed(2)}%`, '+2.4% vs previous'], ['Average Order Value', formatSellerEtb(averageOrderValue), '+5.1% vs previous'], ['Total Views', totalViews.toLocaleString(), '+21.3% vs previous']].map(([label, value, comparison]) => <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">{label}</p><p className="mt-2 text-lg font-black text-slate-950">{value}</p><span className="mt-1 inline-flex rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700">{comparison}</span></div>)}</div><div className="mt-5 flex flex-wrap gap-2">{['Revenue', 'Orders', 'Views', 'Conversion Rate'].map((metric) => <button key={metric} type="button" onClick={() => setChartMetric(metric)} className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartMetric === metric ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{metric}</button>)}</div><svg viewBox="0 0 640 230" className="mt-4 h-56 w-full" role="img" aria-label={`${chartMetric} trend for ${chartRange}`}><path d="M35 190 H610 M35 145 H610 M35 100 H610 M35 55 H610" stroke="#e2e8f0" strokeDasharray="5 8" /><polyline points={chartPoints} fill="none" stroke="#10b981" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" /><polyline points={`${chartPoints} 610,205 35,205`} fill="#10b981" fillOpacity="0.1" stroke="none" /><text x="35" y="225" fill="#64748b" fontSize="12">Start</text><text x="570" y="225" fill="#64748b" fontSize="12">Now</text></svg><div className="mt-2 flex items-center justify-between text-xs text-slate-500"><span>{chartMetric} trend</span><span className="rounded-full bg-sky-100 px-2.5 py-1 font-semibold text-sky-700">Compare with previous period: +12.4%</span></div></section><section className="rounded-[28px] bg-slate-950 p-6 text-white shadow-xl"><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">AI Action Center</p><h3 className="mt-2 text-xl font-black">Decisions for your next sale</h3><div className="mt-5 space-y-3"><div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-3"><p className="text-sm font-bold text-rose-200">🔴 Low Conversion Alert</p><p className="mt-1 text-xs leading-5 text-slate-300">{lowConversionProduct ? `${lowConversionProduct.title} gets ${lowConversionProduct.views.toLocaleString()} views but only ${lowConversionProduct.orderCount} orders (${lowConversionProduct.views ? ((lowConversionProduct.orderCount / lowConversionProduct.views) * 100).toFixed(2) : '0.00'}% conversion).` : 'Add listings to receive conversion recommendations.'}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" disabled={!lowConversionProduct} onClick={() => lowConversionProduct && onApplyPriceDrop(lowConversionProduct)} className="rounded-full bg-rose-500 px-3 py-2 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-50">Apply 3% Price Drop</button><button type="button" disabled={!lowConversionProduct} onClick={() => lowConversionProduct && onNavigate('product-details', { productId: lowConversionProduct.id })} className="rounded-full border border-slate-600 px-3 py-2 text-xs font-bold text-white hover:bg-white/10 disabled:opacity-50">View Product</button></div></div><div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-3"><p className="text-sm font-bold text-amber-200">🟡 Pricing Opportunity</p><p className="mt-1 text-xs text-slate-300">Your mouse is 8% more expensive than similar products on campus.</p><button type="button" onClick={onAddProduct} className="mt-3 rounded-full bg-amber-400 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-amber-300">Adjust Price</button></div><div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-3"><p className="text-sm font-bold text-emerald-200">🟢 High Demand</p><p className="mt-1 text-xs text-slate-300">Students in the IT department are frequently viewing laptop accessories.</p><button type="button" onClick={onAddProduct} className="mt-3 rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600">Add Product</button></div><div className="rounded-2xl border border-sky-400/30 bg-sky-500/10 p-3"><p className="text-sm font-bold text-sky-200">🔵 Best Time to Sell</p><p className="mt-1 text-xs text-slate-300">Most views happen between 6 PM–9 PM.</p></div></div></section></div>
 
-            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">Leaderboard</p><h3 className="mt-1 text-xl font-black text-slate-950">Top Performing Products</h3></div><span className="text-sm text-slate-400">Views · Orders · Revenue</span></div><div className="mt-5 grid gap-4 md:grid-cols-3">{topProducts.length ? topProducts.map((product, index) => <div key={product.id ?? product.title} className="rounded-2xl border border-slate-200 bg-slate-50 p-5"><span className="text-3xl">{['🥇', '🥈', '🥉'][index]}</span><h4 className="mt-3 truncate font-black text-slate-950">{product.title || product.name}</h4><p className="mt-2 text-sm text-slate-600">{product.views} views · {product.orderCount} orders</p><p className="mt-2 font-bold text-emerald-600">{formatSellerEtb(product.revenue)} generated</p></div>) : <p className="text-sm text-slate-500">Performance data will appear after your first listing receives activity.</p>}</div></section>
+            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">Leaderboard</p><h3 className="mt-1 text-xl font-black text-slate-950">Top Performing Products</h3></div><span className="text-sm text-slate-400">Views · Orders · Revenue</span></div><div className="mt-5 grid gap-4 md:grid-cols-3">{topProducts.length ? topProducts.map((product, index) => <button type="button" key={product.id} onClick={() => onNavigate('product-details', { productId: product.id })} className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md"><div className="flex items-start gap-3"><img src={getSellerImage(product.image)} alt="" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = SELLER_IMAGE_PLACEHOLDER; }} className="h-14 w-14 shrink-0 rounded-xl object-cover" /><div className="min-w-0"><span className="text-3xl">{['🥇', '🥈', '🥉'][index]}</span><h4 className="mt-1 truncate font-black text-slate-950">{product.title || product.name}</h4><p className="truncate text-xs font-semibold text-slate-500">{[product.category, product.subcategory].filter(Boolean).join(' · ') || 'General'}</p></div></div><p className="mt-3 text-sm text-slate-600">{product.views} views · {product.orderCount} orders</p><p className="mt-2 font-bold text-emerald-600">{formatSellerEtb(product.revenue)} generated</p></button>) : <p className="text-sm text-slate-500">Performance data will appear after your first listing receives activity.</p>}</div></section>
         </div>
     );
 }

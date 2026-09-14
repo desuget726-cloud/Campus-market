@@ -113,6 +113,18 @@ def init_db() -> None:
     }:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE products ADD COLUMN views INT NOT NULL DEFAULT 0"))
+    if "products" in inspector.get_table_names():
+        product_columns = {column["name"] for column in inspector.get_columns("products")}
+        missing_product_columns = {
+            "negotiable": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
+            "pickup_hours": "VARCHAR(120) NOT NULL DEFAULT '08:00-17:00'",
+            "image_notes": "TEXT NULL",
+        }
+        for column_name, column_definition in missing_product_columns.items():
+            if column_name not in product_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(f"ALTER TABLE products ADD COLUMN `{column_name}` {column_definition}"))
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         missing_columns = {
@@ -130,6 +142,7 @@ def init_db() -> None:
             "buyer_confirmed": "BOOLEAN NOT NULL DEFAULT FALSE",
             "seller_confirmed": "BOOLEAN NOT NULL DEFAULT FALSE",
             "is_funds_released": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "hidden_by_buyer": "BOOLEAN NOT NULL DEFAULT FALSE",
             "dispute_reason": "TEXT NULL",
         }
         for column_name, column_definition in missing_order_columns.items():

@@ -168,6 +168,10 @@ class Product(Base):
     image = Column(String(255), nullable=True)
     description = Column(String(500), nullable=True)
     seller = Column(String(100), nullable=True)
+    negotiable = Column(Boolean, default=False, nullable=False)
+    pickup_location = Column(String(255), default="Student Center", nullable=False)
+    pickup_hours = Column(String(120), default="08:00-17:00", nullable=False)
+    image_notes = Column(Text, nullable=True)
     status = Column(String(50), default="Pending", nullable=False)
     moderation_reason = Column(Text, nullable=True)
     views = Column(Integer, default=0, nullable=False)
@@ -178,6 +182,19 @@ class Product(Base):
     orders = relationship("Order", back_populates="product", cascade="all, delete-orphan")
     messages = relationship("Message", back_populates="product", cascade="all, delete-orphan")
     ai_recommendation_logs = relationship("AIRecommendationLog", back_populates="product", cascade="all, delete-orphan")
+    view_records = relationship("ProductView", back_populates="product", cascade="all, delete-orphan")
+
+
+class ProductView(Base):
+    __tablename__ = "product_views"
+    __table_args__ = (UniqueConstraint("product_id", "visitor_key", name="uq_product_views_visitor"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    visitor_key = Column(String(255), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    product = relationship("Product", back_populates="view_records")
 
 class AIRecommendationLog(Base):
     __tablename__ = "ai_recommendation_logs"
@@ -242,6 +259,7 @@ class Order(Base):
     buyer_confirmed = Column(Boolean, default=False, nullable=False)
     seller_confirmed = Column(Boolean, default=False, nullable=False)
     is_funds_released = Column(Boolean, default=False, nullable=False)
+    hidden_by_buyer = Column(Boolean, default=False, nullable=False)
     dispute_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

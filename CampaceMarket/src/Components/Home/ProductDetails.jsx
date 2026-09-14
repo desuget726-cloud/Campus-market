@@ -36,7 +36,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [wishlistItemId, setWishlistItemId] = useState(null);
   const [wishlistStatus, setWishlistStatus] = useState('');
   const [offerAmount, setOfferAmount] = useState('');
-  const [reportReason, setReportReason] = useState('');
+  const [reportReasons, setReportReasons] = useState([]);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
 
   useEffect(() => {
@@ -310,7 +310,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
 
   const handleSubmitReport = async (event) => {
     event.preventDefault();
-    if (!allowStudentReports || !currentUser || !product?.id || !reportReason || !reportText.trim()) return;
+    if (!allowStudentReports || !currentUser || !product?.id || !reportReasons.length || !reportText.trim()) return;
 
     setReportLoading(true);
     setReportStatus('');
@@ -321,7 +321,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       formData.append('student_name', currentUser.name || currentUser.studentId || 'Student');
       formData.append('email', currentUser.email || '');
       formData.append('category', 'Product Report');
-      formData.append('issue', `${reportReason}: ${reportText.trim()}`);
+      formData.append('issue', `${reportReasons.join(', ')}: ${reportText.trim()}`);
       if (reportEvidenceFile) formData.append('evidence_image', reportEvidenceFile);
 
       const response = await fetch('http://127.0.0.1:8000/api/student/report', {
@@ -337,6 +337,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       }
 
       setReportText('');
+      setReportReasons([]);
       setReportEvidenceFile(null);
       setShowReportForm(false);
       setReportStatus(data.message || 'Product report submitted successfully.');
@@ -370,26 +371,25 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     if (location.includes('addis')) return 'Mekdela Amba University — Dorm Room 12';
     if (location.includes('cci') || location.includes('comput')) return 'CCI Main Block';
     if (location.includes('library')) return 'Main Library Pickup Point';
-    return item?.location || 'Student Center Pickup Point';
+    return item?.pickup_location || item?.location || 'Student Center Pickup Point';
   })();
+  const galleryEntries = (Array.isArray(item?.images) ? item.images : []).map((image) => (
+    typeof image === 'string' ? { url: image, note: null } : image
+  ));
   const galleryImages = [
-    ...parseProductImages(item?.image),
-    ...(Array.isArray(item?.images) ? item.images : []),
-    ...(Array.isArray(item?.image_urls) ? item.image_urls : []),
-  ].filter(Boolean).filter((image, index, images) => images.indexOf(image) === index);
+    ...galleryEntries,
+    ...parseProductImages(item?.image).map((image) => ({ url: image, note: null })),
+    ...(Array.isArray(item?.image_urls) ? item.image_urls.map((url) => ({ url, note: null })) : []),
+  ].filter((image) => image?.url).filter((image, index, images) => images.findIndex((candidate) => candidate.url === image.url) === index);
   const fallbackImage = 'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?auto=format&fit=crop&w=1200&q=80';
-  const visibleImages = galleryImages.length ? galleryImages : [fallbackImage];
-  const activeImage = visibleImages[selectedImageIndex % visibleImages.length];
+  const visibleImages = galleryImages.length ? galleryImages : [{ url: fallbackImage, note: null }];
+  const activeEntry = galleryImages.length ? galleryImages[selectedImageIndex % galleryImages.length] : { url: fallbackImage, note: null };
+  const activeImage = activeEntry.url;
   const reviews = Array.isArray(item?.reviews) ? item.reviews : [];
   const similarProducts = Array.isArray(item?.similar_products) ? item.similar_products : [];
   const responseTimeHours = Number(item?.seller_response_time_hours);
-  const isNegotiable = item?.negotiable !== false;
-  const pickupHours = {
-    'Student Center Pickup Point': 'Available today until 5:00 PM',
-    'CCI Main Block': 'Available today until 4:30 PM',
-    'Main Library Pickup Point': 'Available today until 6:00 PM',
-    'Mekdela Amba University — Dorm Room 12': 'Available today until 7:00 PM',
-  }[campusLocation];
+  const isNegotiable = item?.negotiable === true;
+  const pickupHours = item?.pickup_hours;
 
   if (!product) return null;
 
@@ -431,7 +431,8 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               <div className="flex min-w-0 flex-1 gap-3 overflow-x-auto pb-1">
                 {visibleImages.map((image, index) => (
                   <button key={`${image}-${index}`} type="button" onClick={() => setSelectedImageIndex(index)} className={`h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition ${selectedImageIndex === index ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200 hover:border-slate-400'}`} aria-label={`Show product image ${index + 1}`}>
-                    <img src={image} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-full w-full object-cover" />
+                    <img src={image.url} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-full w-full object-cover" />
+                    {image.note && <span title={image.note} className="absolute bottom-1 right-1 rounded-full bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-bold text-white">i</span>}
                   </button>
                 ))}
               </div>
@@ -486,10 +487,8 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
           <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm text-center">
             <span className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Price</span>
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
-            {Number(item.views || 0) > 5 && <p className="mt-2 text-xs font-bold text-slate-500">{item.views} people viewed this listing</p>}
-            <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">
-              Negotiable / ድርድር አለው
-            </div>
+            {Number(item.views || 0) > 0 && <p className="mt-2 text-xs font-bold text-slate-500">{item.views} people viewed this listing</p>}
+            {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable / ድርድር አለው</div>}
             <div className="mt-5 flex items-center justify-center gap-4">
               <button type="button" onClick={() => setSelectedQuantity((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
               <span className="min-w-8 text-center text-lg font-black text-slate-900">{selectedQuantity}</span>
@@ -593,7 +592,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                     </button>
                   ) : (
                     <form onSubmit={handleSubmitReport} className="space-y-3">
-                      <select value={reportReason} onChange={(event) => setReportReason(event.target.value)} required disabled={reportLoading} className="w-full rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-slate-700 outline-none focus:border-rose-400 focus:bg-white"><option value="">Select a reason</option><option>Counterfeit/Fake item</option><option>Scam attempt</option><option>Wrong category</option><option>Prohibited item</option><option>Other</option></select>
+                      <fieldset className="space-y-2 rounded-2xl border border-rose-200 bg-rose-50 p-3"><legend className="px-1 text-sm font-bold text-rose-800">Choose report reasons</legend>{['Fake/counterfeit item', 'Scam attempt', 'Wrong category', 'Inappropriate content', 'Other'].map((reason) => <label key={reason} className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={reportReasons.includes(reason)} onChange={(event) => setReportReasons((previous) => event.target.checked ? [...previous, reason] : previous.filter((value) => value !== reason))} disabled={reportLoading} />{reason}</label>)}</fieldset>
                       <textarea
                         value={reportText}
                         onChange={(event) => setReportText(event.target.value)}
@@ -613,7 +612,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                       <div className="flex gap-2">
                         <button
                           type="submit"
-                          disabled={reportLoading || !reportText.trim()}
+                          disabled={reportLoading || !reportReasons.length || !reportText.trim()}
                           className="flex-1 rounded-full bg-rose-600 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-300"
                         >
                           {reportLoading ? 'Submitting...' : 'Submit Report'}
@@ -623,7 +622,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                           onClick={() => {
                             setShowReportForm(false);
                             setReportEvidenceFile(null);
-                            setReportReason('');
+                            setReportReasons([]);
                           }}
                           className="rounded-full border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
                         >
