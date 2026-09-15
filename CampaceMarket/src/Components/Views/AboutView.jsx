@@ -100,13 +100,13 @@ const AboutView = () => (
       </div>
     </section>
 
-    <footer className="rounded-[28px] border border-slate-200 bg-slate-900 p-7 text-white shadow-lg sm:p-9">
+    {/* <footer className="rounded-[28px] border border-slate-200 bg-slate-900 p-7 text-white shadow-lg sm:p-9">
       <div className="flex flex-col gap-2 border-b border-slate-700 pb-6 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.25em] text-sky-300">Technology Stack</p>
           <h2 className="mt-2 text-2xl font-black">The foundation behind the platform.</h2>
         </div>
-        <span className="text-sm font-semibold text-slate-400">4th-year project</span>
+        <span className="text-sm font-semibold text-slate-400">DG Market</span>
       </div>
       <div className="grid gap-3 pt-6 sm:grid-cols-2 lg:grid-cols-5">
         {technologies.map(([label, value]) => (
@@ -116,7 +116,7 @@ const AboutView = () => (
           </div>
         ))}
       </div>
-    </footer>
+    </footer> */}
   </main>
 );
 

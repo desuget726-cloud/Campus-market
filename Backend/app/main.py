@@ -4389,7 +4389,7 @@ def create_product(
             description=description,
             seller=seller_value,  # <-- Use resolved seller identity
             negotiable=negotiable,
-            pickup_location=(pickup_location or "Student Center").strip(),
+            pickup_location=(str(pickup_location or "").strip() or "Student Center"),
             pickup_hours=(pickup_hours or "08:00-17:00").strip(),
             status=initial_status
         )
@@ -4405,6 +4405,7 @@ def create_product(
                 "id": db_product.id,
                 "title": db_product.title,
                 "image": _normalize_product_image(db_product.image),
+                "pickup_location": db_product.pickup_location,
                 "status": db_product.status,
                 "created_at": db_product.created_at
             }
@@ -6467,6 +6468,10 @@ def _resolve_pickup_location(db: Session, product: Optional[Product]) -> str:
     if not product:
         return "Student Center"
 
+    explicit_location = str(getattr(product, "pickup_location", "") or "").strip()
+    if explicit_location:
+        return explicit_location
+
     combined_text = f"{product.category or ''} {product.subcategory or ''} {product.title or ''}".lower()
     if any(token in combined_text for token in ["book", "textbook", "course", "study", "notebook"]):
         return "Campus Bookstore"
@@ -6557,9 +6562,7 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
     seller_account = db.query(SellerPaymentAccount).filter(
         SellerPaymentAccount.student_id == seller.student_id,
     ).first() if seller else None
-    pickup_location = str(getattr(order, "pickup_location", "") or "").strip()
-    if not pickup_location:
-        pickup_location = _resolve_pickup_location(db, product)
+    pickup_location = str(getattr(order, "pickup_location", "") or "").strip() or _resolve_pickup_location(db, product)
     status = _normalize_order_status(order.status or "Pending")
     dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
     product_title = getattr(order, "title", None) or (product.title if product else "Campus Purchase")
@@ -8032,7 +8035,7 @@ def get_student_order_tracker(student_id: str, db: Session = Depends(get_db)):
     order_payload = []
     for order in orders:
         product = db.query(Product).filter(Product.id == order.product_id).first()
-        pickup_location = _resolve_pickup_location(db, product)
+        pickup_location = str(getattr(order, "pickup_location", "") or "").strip() or _resolve_pickup_location(db, product)
         timeline = _build_order_timeline(
             order.status,
             pickup_location,

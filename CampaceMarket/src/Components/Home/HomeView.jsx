@@ -41,6 +41,13 @@ const getPrimaryImage = (product) => {
   }
 };
 
+const getCategoryAdCount = (value) => {
+  const match = String(value || '').replace(/,/g, '').match(/([\d.]+)\s*([KMB])?/i);
+  if (!match) return 0;
+  const multiplier = { K: 1000, M: 1000000, B: 1000000000 }[String(match[2] || '').toUpperCase()] || 1;
+  return Number(match[1]) * multiplier;
+};
+
 
 const defaultCategories = [
   {
@@ -420,6 +427,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [aiRecommendations, setAiRecommendations] = useState([]);
+  const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const aiScrollRef = useRef(null);
 
   const visibleCategories = showAllCategories ? categories : categories.slice(0, 8);
@@ -573,6 +581,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   };
 
   const handleCategoryClick = async (categoryName) => {
+    setIsDirectoryOpen(false);
     setSearchQuery('');
     const department = user?.department || user?.college || user?.departmentName || '';
     await fetchProducts({ category: categoryName, department: department || undefined });
@@ -581,6 +590,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   };
 
   const handleSubCategoryClick = async (subCategoryName, categoryName) => {
+    setIsDirectoryOpen(false);
     setSearchQuery(subCategoryName);
     const department = user?.department || user?.college || user?.departmentName || '';
     await fetchProducts({ subcategory: subCategoryName, department: department || undefined });
@@ -673,20 +683,38 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
             </form>
           </div>
 
-          <div className="grid gap-8 lg:grid-cols-[280px_1fr]">
-            <aside className="lg:sticky lg:top-[88px] z-30 h-fit lg:overflow-visible" onMouseLeave={() => setHoveredCategoryId(null)}>
+          <button
+            type="button"
+            onClick={() => setIsDirectoryOpen(true)}
+            className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 md:hidden"
+          >
+            <span aria-hidden="true">☰</span> Browse Directory
+          </button>
+
+          {isDirectoryOpen && (
+            <div
+              onClick={() => setIsDirectoryOpen(false)}
+              className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-sm md:hidden"
+            />
+          )}
+
+          <div className="grid gap-8 md:grid-cols-[280px_1fr]">
+            <aside className={`fixed inset-y-0 left-0 z-50 w-80 -translate-x-full overflow-y-auto bg-white p-3 shadow-2xl transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:translate-x-0 md:overflow-visible md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
               <div className="rounded-[24px] border border-slate-200 bg-white shadow-sm min-h-[500px]">
-                <h3 className="m-4 text-md font-bold text-slate-900 border-b pb-2">Directory</h3>
+                <div className="flex items-center justify-between border-b pb-2 md:block">
+                  <h3 className="m-4 text-md font-bold text-slate-900">Directory</h3>
+                  <button type="button" onClick={() => setIsDirectoryOpen(false)} className="mr-4 rounded-full p-2 text-slate-500 hover:bg-slate-100 md:hidden" aria-label="Close directory">✕</button>
+                </div>
                 <ul className="divide-y divide-slate-100">
                   {visibleCategories.map((cat) => (
                     <li
                       key={cat.id}
                       onMouseEnter={() => setHoveredCategoryId(cat.id)}
-                      className="group relative"
+                      className={`group relative ${getCategoryAdCount(cat.adsCount) === 0 ? 'opacity-60' : ''}`}
                     >
                       <button
                         onClick={() => handleCategoryClick(cat.name)}
-                        className="w-full flex items-center justify-between px-4 py-3.5 text-left text-sm text-slate-700 hover:bg-slate-50 hover:text-emerald-600 transition first:rounded-t-[24px] last:rounded-b-[24px]"
+                        className="w-full flex items-center justify-between rounded-2xl px-4 py-3.5 text-left text-sm font-semibold text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 first:rounded-t-[24px] last:rounded-b-[24px]"
                       >
                         <span className="flex items-center gap-3">
                           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-xl border border-slate-100 group-hover:bg-emerald-50 transition">
@@ -694,7 +722,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                           </span>
                           <span className="flex flex-col min-w-0">
                             <span className="font-semibold text-slate-800 truncate group-hover:text-emerald-600">{cat.name}</span>
-                            <span className="text-[11px] text-slate-400 mt-0.5">{cat.adsCount}</span>
+                            <span className="text-[11px] text-slate-400 mt-0.5">{getCategoryAdCount(cat.adsCount) === 0 ? 'Coming Soon' : cat.adsCount}</span>
                           </span>
                         </span>
                         <span className="text-slate-400 group-hover:translate-x-1 transition-transform">

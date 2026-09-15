@@ -64,6 +64,30 @@ const getStudentAvatar = (studentId) => (
     : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80'
 );
 
+const getRecommendationImage = (rawImage) => {
+  if (Array.isArray(rawImage)) return rawImage.find((image) => String(image || '').trim()) || null;
+  if (typeof rawImage !== 'string') return null;
+
+  const imageValue = rawImage.trim();
+  if (!imageValue) return null;
+  if (imageValue.startsWith('[')) {
+    try {
+      return getRecommendationImage(JSON.parse(imageValue));
+    } catch {
+      return null;
+    }
+  }
+  return imageValue;
+};
+
+const getRecommendationPlaceholder = (category) => {
+  const isBook = String(category || '').toLowerCase().includes('book');
+  const label = isBook ? 'BOOK' : 'SCREEN';
+  const color = isBook ? '#0f766e' : '#0369a1';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180"><rect width="320" height="180" fill="#e2e8f0"/><rect x="${isBook ? '125' : '85'}" y="42" width="${isBook ? '70' : '150'}" height="96" rx="8" fill="${color}"/><text x="160" y="160" fill="#475569" font-family="Arial,sans-serif" font-size="14" text-anchor="middle">${label} - NO IMAGE</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+};
+
 const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
   const match = String(value || '').trim().match(/^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)?$/i);
   if (!match) return fallback;
@@ -1206,17 +1230,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const fetchUnreadCounts = async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/student/notifications/unread-count?student_id=${encodeURIComponent(user.studentId)}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const totalUnread = Number(data.unreadCount ?? data.unread_count ?? 0);
+        const [notificationResponse, messageResponse] = await Promise.all([
+          fetch(`http://127.0.0.1:8000/api/student/notifications/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
+          fetch(`http://127.0.0.1:8000/api/student/messages/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
+        ]);
+        if (!notificationResponse.ok && !messageResponse.ok) return;
+        const notificationData = notificationResponse.ok ? await notificationResponse.json() : {};
+        const messageData = messageResponse.ok ? await messageResponse.json() : {};
+        const totalUnreadNotifications = Number(notificationData.unreadCount ?? notificationData.unread_count ?? 0);
+        const totalUnreadMessages = Number(messageData.unreadCount ?? messageData.unread_count ?? 0);
 
         if (isMounted) {
-          setUnreadNotificationCount(totalUnread);
-          setUnreadMessageCount((prev) => (totalUnread > 0 ? totalUnread : prev));
+          setUnreadNotificationCount(totalUnreadNotifications);
+          setUnreadMessageCount(totalUnreadMessages);
         }
       } catch (err) {
-        console.error('Error fetching unread notification count:', err);
+        console.error('Error fetching unread sidebar counts:', err);
       }
     };
 
@@ -1281,23 +1310,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     // Dashboard fetch functions are recreated on render; active tab and student are the refresh scope.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, studentId, selectedOrder?.id]);
-
-  useEffect(() => {
-    const safeNotifications = Array.isArray(notifications) ? notifications : [];
-
-    if (safeNotifications.length === 0) {
-      setUnreadMessageCount(0);
-      return;
-    }
-
-    const messageCount = safeNotifications.filter((notification) => {
-      if (notification.read) return false;
-      const text = `${notification.title || ''} ${notification.message || ''}`.toLowerCase();
-      return /message|chat|reply|inbox/.test(text);
-    }).length;
-
-    setUnreadMessageCount(messageCount);
-  }, [notifications]);
 
   // 2. ተማሪው ቅሬታውን ለአስተዳዳሪው የሚልክበት አሠራር (Submit Support Ticket)
   const handleSupportSubmit = async (e) => {
@@ -2113,7 +2125,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           description: productForm.description || null,
           quantity: Number(productForm.quantity || 1),
           condition: productForm.condition || 'New',
-          pickup_location: productForm.pickupLocation || 'Student Center',
+          pickup_location: productForm.pickupLocation || '',
           pickup_hours: productForm.pickupHours || '08:00-17:00',
           negotiable: productForm.negotiable === true,
           image_notes: productForm.imageNotes || [],
@@ -2883,14 +2895,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   return (
     <div className="min-h-0 w-full bg-slate-100 pt-10 text-slate-900">
-      <div className="flex min-h-0 w-full flex-col gap-3 lg:h-[calc(100vh-160px)] lg:overflow-hidden lg:flex-row lg:items-start lg:gap-3 lg:pt-1 lg:pb-2">
+      <div className="flex min-h-0 w-full flex-col gap-3 md:h-[calc(100vh-160px)] md:overflow-hidden md:flex-row md:items-start md:gap-3 md:pt-1 md:pb-2">
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside className={`
           fixed top-28 bottom-0 left-0 z-40 flex w-72 -translate-x-full flex-col overflow-y-auto bg-[#0a0e23] p-4 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          lg:static lg:relative lg:top-28 lg:h-full lg:w-72 lg:translate-x-0 lg:overflow-hidden lg:rounded-[32px] lg:p-6 lg:shadow-none
+          md:static md:relative md:top-28 md:h-full md:w-72 md:translate-x-0 md:overflow-hidden md:rounded-[32px] md:p-6 md:shadow-none
           ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-          ${isSidebarCollapsed ? 'lg:w-24 lg:p-3' : 'lg:w-72 lg:p-6'}
+          ${isSidebarCollapsed ? 'md:w-24 md:p-3' : 'md:w-72 md:p-6'}
         `}>
           <div className={`mb-8 flex items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
@@ -2899,7 +2911,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   type="button"
                   onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer lg:hidden"
+                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer md:hidden"
                   title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -2925,7 +2937,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {!isSidebarCollapsed && (
               <button
                 onClick={() => setIsSidebarOpen(false)}
-                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer lg:hidden"
+                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer md:hidden"
                 title="Close sidebar"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2955,13 +2967,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       onTabChange(item.key);
                     }
                   }}
-                  className={`group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-300 hover:bg-white/10 hover:text-white'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
+                  className={`group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-200 hover:bg-white/15 hover:text-white focus-visible:bg-white/15 focus-visible:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
                   title={item.label}
                 >
                   <span className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
                     {!isSidebarCollapsed && <span>{item.label}</span>}
                     {item.badge > 0 && (
-                      <span className={`inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white ring-2 ring-[#111c3a] ${item.key === 'notifications' ? 'bg-amber-500 text-slate-950' : 'bg-red-500'}`}>
+                      <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-slate-950 ring-2 ring-[#111c3a]">
                         {item.badge}
                       </span>
                     )}
@@ -2977,7 +2989,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           </nav>
 
           <div className="mt-auto flex flex-col gap-4 pt-5 transition-all duration-300">
-            <div className={`rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm lg:absolute lg:bottom-6 lg:left-6 lg:right-6 ${isSidebarCollapsed ? 'p-3' : ''}`}>
+            <div className={`rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm ${isSidebarCollapsed ? 'p-3' : ''}`}>
               {!isSidebarCollapsed ? (
                 <>
                   <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-400">
@@ -2985,6 +2997,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-300">Live</span>
                   </div>
                   <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button type="button" onClick={() => { setBuyerTab('payments'); setActiveTab('buyer'); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-2 py-3 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">Add Funds</button>
+                    <button type="button" onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300">Withdraw</button>
+                  </div>
                 </>
               ) : (
                 <div className="flex flex-col items-center gap-2 text-center">
@@ -3021,11 +3037,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         {isSidebarOpen && (
           <div
             onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm md:hidden"
           />
         )}
 
-        <div className="flex items-center gap-3 bg-[#1d4ed8] px-4 py-3 text-white shadow-sm lg:hidden">
+        <div className="flex items-center gap-3 bg-[#1d4ed8] px-4 py-3 text-white shadow-sm md:hidden">
           <button
             type="button"
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -3038,7 +3054,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         </div>
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className="min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 lg:h-full lg:overflow-y-scroll lg:pr-2 lg:pt-1">
+        <main className="min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 md:h-full md:overflow-y-scroll md:pr-2 md:pt-1">
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
@@ -3142,17 +3158,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <div className="grid gap-4 md:grid-cols-2">
                       {recommendedProducts.length ? (
                         recommendedProducts.map((item) => {
-                          const fallbackImage = 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80';
-                          let displayImage = fallbackImage;
-
-                          try {
-                            const parsedImages = JSON.parse(item.image || '[]');
-                            if (Array.isArray(parsedImages) && parsedImages.length > 0) {
-                              displayImage = parsedImages[0];
-                            }
-                          } catch {
-                            displayImage = fallbackImage;
-                          }
+                          const fallbackImage = getRecommendationPlaceholder(item.category);
+                          const displayImage = getRecommendationImage(item.image) || fallbackImage;
 
                           return (
                             <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
@@ -3771,7 +3778,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           const paymentStatus = normalizePaymentStatus(order.payment_status || order.paymentStatus || order.pay_status || 'Successful');
                           const sellerId = order.seller_id || order.sellerId || order.seller;
                           const sellerName = order.seller_name || order.sellerName || order.seller || 'Campus Seller';
-                          const pickupLocation = order.pickup_location || order.pickupLocation || 'Engineering Building';
+                          const pickupLocation = order.pickup_location || order.pickupLocation || 'Student Center';
                           const timelineSteps = ['Order Placed', 'Payment Successful', 'Processing', 'Ready for Pickup', 'Item Received', 'Buyer Confirmed + Seller Confirmed', 'Completed'];
                           let currentStep = paymentStatus === 'Successful' ? 1 : 0;
                           if (['Processing', 'Ready for Pickup', 'Completed'].includes(orderStatus)) currentStep = Math.max(currentStep, 2);
@@ -5184,7 +5191,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               <div className="grid gap-4 lg:grid-cols-2">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700">Pickup point</label>
-                  <input value={productForm.pickupLocation} onChange={(e) => setProductForm((prev) => ({ ...prev, pickupLocation: e.target.value }))} placeholder="Student Center" className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none" />
+                  <input value={productForm.pickupLocation} onChange={(e) => setProductForm((prev) => ({ ...prev, pickupLocation: e.target.value }))} placeholder="e.g. Dormitory Block A, Library Entrance" className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-sky-500 focus:bg-white focus:outline-none" />
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-slate-700">Pickup hours</label>

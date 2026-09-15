@@ -289,10 +289,7 @@ function RegisterForm({ onRegisterSuccess, onCancel, onToggleLogin }) {
               {t('auth.cancel')}
             </button>
             <button
-              type="button"
-              onClick={onToggleLogin}
-              className="font-medium text-emerald-600 hover:text-emerald-700"
-            >
+              type="button" onClick={onToggleLogin} className="font-medium text-emerald-600 hover:text-emerald-700">
               {t('auth.alreadyHaveAccount')}
             </button>
           </div>

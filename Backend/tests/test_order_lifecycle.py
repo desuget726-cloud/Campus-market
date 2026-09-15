@@ -8,7 +8,7 @@ from app.order_lifecycle import (
     apply_seller_order_action,
     payout_release_allowed,
 )
-from app.main import _build_seller_listing_analytics, _escrow_hold_refund_amount, _product_has_orders, _restock_product_for_order
+from app.main import _build_seller_listing_analytics, _escrow_hold_refund_amount, _product_has_orders, _resolve_pickup_location, _restock_product_for_order
 
 
 def make_order():
@@ -119,6 +119,26 @@ class OrderLifecycleTests(unittest.TestCase):
 
         self.assertEqual(product.stock, 3)
         self.assertEqual(product.status, "Approved")
+
+    def test_explicit_pickup_location_wins_over_category_fallback(self):
+        product = SimpleNamespace(
+            pickup_location="Dormitory Gate 2",
+            category="Books",
+            subcategory="Textbooks",
+            title="Database Systems",
+        )
+
+        self.assertEqual(_resolve_pickup_location(None, product), "Dormitory Gate 2")
+
+    def test_empty_pickup_location_uses_category_fallback(self):
+        product = SimpleNamespace(
+            pickup_location="",
+            category="Books",
+            subcategory="Textbooks",
+            title="Database Systems",
+        )
+
+        self.assertEqual(_resolve_pickup_location(None, product), "Campus Bookstore")
 
     def test_same_title_products_keep_separate_leaderboard_stats(self):
         listings = [

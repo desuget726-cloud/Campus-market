@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import toast from 'react-hot-toast';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 
@@ -37,6 +38,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const [wishlistStatus, setWishlistStatus] = useState('');
   const [offerAmount, setOfferAmount] = useState('');
   const [reportReasons, setReportReasons] = useState([]);
+  const similarProductsScrollRef = useRef(null);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
 
   useEffect(() => {
@@ -266,6 +268,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
     const studentId = currentUser?.studentId || currentUser?.student_id;
     if (!studentId) {
       setWishlistStatus('Please log in first to save this item.');
+      toast.error('Please log in first to save this item.');
       return;
     }
 
@@ -281,9 +284,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       const data = isWishlisted ? {} : await response.json().catch(() => ({}));
       setIsWishlisted((previous) => !previous);
       setWishlistItemId(data.id || null);
-      setWishlistStatus(isWishlisted ? 'Removed from wishlist.' : 'Added to wishlist.');
+      const statusMessage = isWishlisted ? 'Removed from wishlist.' : 'Added to wishlist.';
+      setWishlistStatus(statusMessage);
+      toast.success(statusMessage);
     } catch (error) {
-      setWishlistStatus(error.message || 'Unable to update wishlist.');
+      const errorMessage = error.message || 'Unable to update wishlist.';
+      setWishlistStatus(errorMessage);
+      toast.error(errorMessage);
     }
   };
 
@@ -306,6 +313,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
       window.open(target, '_blank', 'noopener,noreferrer');
     }
     setShowShareMenu(false);
+  };
+
+  const scrollSimilarProducts = (direction) => {
+    similarProductsScrollRef.current?.scrollBy({
+      left: direction * 300,
+      behavior: 'smooth',
+    });
   };
 
   const handleSubmitReport = async (event) => {
@@ -366,13 +380,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const formattedPrice = Number.isFinite(priceValue)
     ? `${priceValue.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`
     : 'Negotiable';
-  const campusLocation = (() => {
-    const location = String(item?.location || '').toLowerCase();
-    if (location.includes('addis')) return 'Mekdela Amba University — Dorm Room 12';
-    if (location.includes('cci') || location.includes('comput')) return 'CCI Main Block';
-    if (location.includes('library')) return 'Main Library Pickup Point';
-    return item?.pickup_location || item?.location || 'Student Center Pickup Point';
-  })();
+  const campusLocation = String(item?.pickup_location || '').trim() || 'Student Center';
   const galleryEntries = (Array.isArray(item?.images) ? item.images : []).map((image) => (
     typeof image === 'string' ? { url: image, note: null } : image
   ));
@@ -390,6 +398,13 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
   const responseTimeHours = Number(item?.seller_response_time_hours);
   const isNegotiable = item?.negotiable === true;
   const pickupHours = item?.pickup_hours;
+  const additionalSpecifications = [
+    ['Brand', item?.brand],
+    ['Model', item?.model],
+    ['Screen Size', item?.screen_size],
+    ['Resolution', item?.resolution],
+    ['Ports', item?.ports],
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim());
 
   if (!product) return null;
 
@@ -461,7 +476,18 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                 <span className="text-sm text-slate-500 font-semibold">Subcategory</span>
                 <span className="text-base font-bold text-slate-900">{item.subcategory || 'General'}</span>
               </div>
+              {additionalSpecifications.map(([label, value]) => (
+                <div key={label} className="flex flex-col gap-2 rounded-2xl bg-slate-50 p-4 border border-slate-100">
+                  <span className="text-sm text-slate-500 font-semibold">{label}</span>
+                  <span className="text-base font-bold text-slate-900">{value}</span>
+                </div>
+              ))}
             </div>
+            {additionalSpecifications.length === 0 && (
+              <p className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+                No additional specifications provided by the seller.
+              </p>
+            )}
           </div>
 
           {/* ዝርዝር መግለጫ (Description) */}
@@ -477,14 +503,40 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
             {reviews.length === 0 ? <p className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-600">No reviews yet — be the first to review after purchase.</p> : <div className="mt-5 space-y-4">{reviews.map((review) => <article key={review.id} className="border-t border-slate-100 pt-4 first:border-t-0 first:pt-0"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-black text-slate-900">{review.reviewer_name || 'Buyer'}</p><p className="text-xs font-semibold text-slate-500">{review.created_at ? new Date(review.created_at).toLocaleDateString() : 'Recent'}</p></div><p className="mt-1 text-sm font-black text-amber-500">{'★'.repeat(Math.max(0, Math.min(5, Number(review.rating) || 0)))}<span className="ml-2 text-slate-400">{Number(review.rating) || 0}/5</span></p><p className="mt-2 text-sm leading-6 text-slate-600">{review.comment}</p></article>)}</div>}
           </div>
 
-          {similarProducts.length > 0 && <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">More to explore</p><h4 className="mt-1 text-xl font-black text-slate-900">Similar items</h4></div><span className="text-xs font-semibold text-slate-500">Same category</span></div><div className="mt-5 flex gap-4 overflow-x-auto pb-2">{similarProducts.map((similar) => <button key={similar.id} type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="w-44 shrink-0 overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm hover:shadow-md"><img src={similar.image || fallbackImage} alt={similar.title || 'Similar item'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-28 w-full object-cover" /><div className="p-3"><p className="truncate font-black text-slate-900">{similar.title || 'Campus item'}</p><p className="mt-1 text-sm font-bold text-emerald-700">{similar.price || 'Negotiable'} ETB</p></div></button>)}</div></section>}
+          {similarProducts.length > 0 && (
+            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm" aria-labelledby="similar-products-heading">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">More to explore</p>
+                  <h4 id="similar-products-heading" className="mt-1 text-xl font-black text-slate-900">Similar Products</h4>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => scrollSimilarProducts(-1)} aria-label="Previous similar products" className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">&lt;</button>
+                  <button type="button" onClick={() => scrollSimilarProducts(1)} aria-label="Next similar products" className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-lg font-bold text-white transition hover:bg-emerald-600">&gt;</button>
+                </div>
+              </div>
+              <div ref={similarProductsScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {similarProducts.map((similar) => (
+                  <article key={similar.id} className="flex w-48 shrink-0 snap-start flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md">
+                    <img src={similar.image || fallbackImage} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-32 w-full object-cover" />
+                    <div className="flex flex-1 flex-col p-4">
+                      <span className="w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{similar.category || 'Marketplace item'}</span>
+                      <h5 className="mt-2 truncate font-black text-slate-900" title={similar.title}>{similar.title || 'Campus item'}</h5>
+                      <p className="mt-2 text-sm font-bold text-emerald-700">{similar.price ? `${Number(similar.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</p>
+                      <button type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="mt-3 w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800">View Details</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
 
         {/* የቀኝ የጎን ፓነል (Sidebar) */}
         <div className="space-y-6">
 
           {/* የዋጋ ካርድ */}
-          <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm text-center">
+          <div className="rounded-[28px] border border-slate-200 bg-white p-6 text-center shadow-sm lg:sticky lg:top-6">
             <span className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Price</span>
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
             {Number(item.views || 0) > 0 && <p className="mt-2 text-xs font-bold text-slate-500">{item.views} people viewed this listing</p>}
@@ -497,6 +549,15 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
             <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>
             {itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
             {availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
+            <button
+              type="button"
+              onClick={handleAddToCart}
+              disabled={purchaseBlocked}
+              className="mt-5 w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              Add to Cart
+            </button>
+            {cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
           </div>
 
           {/* የሻጩ ካርድ (ከስልክ ቁጥር መደበቂያ ጋር) */}
@@ -531,7 +592,12 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                 </button>
               ) : (
                 <>
+                  <div className="flex items-center justify-between gap-3 text-left">
+                    <label htmlFor="seller-message" className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Message to seller</label>
+                    <span className="text-xs font-semibold text-slate-400">Editable before sending</span>
+                  </div>
                   <textarea
+                    id="seller-message"
                     value={messageText}
                     onChange={(event) => setMessageText(event.target.value)}
                     placeholder={isChatEnabled ? 'Write a message to the seller...' : 'Chat is currently disabled by the administrator'}
@@ -556,14 +622,6 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                   {isNegotiable && <div className="flex items-center gap-2"><input type="number" min="1" value={offerAmount} onChange={(event) => setOfferAmount(event.target.value)} placeholder="Offer amount" className="min-w-0 flex-1 rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400" /><button type="button" onClick={handleMakeOffer} className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100">Make an Offer</button></div>}
                 </>
               )}
-              <button
-                type="button"
-                onClick={handleAddToCart}
-                disabled={purchaseBlocked}
-                className="w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                Add to Cart
-              </button>
               {isOwnProduct && (
                 <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">
                   This is your material. You cannot purchase your own material.
@@ -576,9 +634,6 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
               )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
-              )}
-              {cartStatus && (
-                <p className="text-sm text-blue-700">{cartStatus}</p>
               )}
               {allowStudentReports && currentUser && (
                 <div className="border-t border-slate-100 pt-4">
