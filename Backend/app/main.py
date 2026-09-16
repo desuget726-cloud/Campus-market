@@ -408,6 +408,14 @@ def _normalize_payment_type(raw_value: Optional[str]) -> str:
     return mapping.get(value, value.title())
 
 
+CREDIT_TRANSACTION_TYPES = {"Wallet Deposit", "Refund", "Escrow Release"}
+DEBIT_TRANSACTION_TYPES = {"Product Purchase", "Wallet Withdrawal", "Escrow Hold", "Seller Payout"}
+
+
+def _transaction_direction(raw_value: Optional[str]) -> str:
+    return "credit" if _normalize_payment_type(raw_value) in CREDIT_TRANSACTION_TYPES else "debit"
+
+
 def _normalize_order_status(raw_value: Optional[str]) -> str:
     if raw_value is None:
         return "Pending"
@@ -658,6 +666,159 @@ async def _reconcile_pending_payments() -> None:
         logging.getLogger("app.payments").exception("Pending payment reconciliation failed.")
     finally:
         db.close()
+
+
+def _resolve_pending_payout(
+    db: Session,
+    payout_id: int,
+    status: str,
+    provider_reference: Optional[str] = None,
+    failure_reason: Optional[str] = None,
+) -> Optional[str]:
+    """Apply one provider result while locking every balance-affecting row."""
+    db.rollback()
+    with db.begin():
+        payout = db.query(PayoutTransaction).filter(
+            PayoutTransaction.id == payout_id,
+            PayoutTransaction.status.in_(["pending", "processing"]),
+        ).with_for_update().first()
+        if not payout:
+            return None
+
+        transaction = db.query(Transaction).filter(
+            Transaction.tx_id == payout.internal_reference,
+        ).with_for_update().first()
+        student = db.query(Student).filter(
+            Student.student_id == payout.student_id,
+        ).with_for_update().first()
+        wallet = db.query(Wallet).filter(
+            Wallet.student_id == payout.student_id,
+        ).with_for_update().first()
+        if not student or not wallet:
+            raise ValueError(f"Wallet records are missing for payout {payout.internal_reference}.")
+
+        payout.status = status
+        if provider_reference:
+            payout.provider_reference = provider_reference
+
+        if status == "completed":
+            student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
+            if transaction:
+                transaction.status = "Successful"
+                transaction.description = "Payout completed by the provider."
+            audit_action = "Wallet Payout Completed"
+            audit_description = f"Payout {payout.internal_reference} completed for student {student.student_id}."
+        else:
+            reason = failure_reason or "Provider reported payout failure."
+            payout.failure_reason = reason
+            refund_amount = Decimal(str(payout.amount or 0)).quantize(Decimal("0.01"))
+            wallet.balance = (Decimal(str(wallet.balance or 0)) + refund_amount).quantize(Decimal("0.01"))
+            student.wallet_balance = wallet.balance
+            refund_tx_id = f"REFUND-{payout.internal_reference}"
+            refund_transaction = db.query(Transaction).filter(
+                Transaction.tx_id == refund_tx_id,
+            ).with_for_update().first()
+            if refund_transaction is None:
+                db.add(Transaction(
+                    student_id=payout.student_id,
+                    wallet_id=wallet.id,
+                    tx_id=refund_tx_id,
+                    type="Refund",
+                    amount=refund_amount,
+                    description=f"Refund for failed payout {payout.internal_reference}.",
+                    status="Successful",
+                ))
+            if transaction:
+                transaction.status = "Failed"
+                transaction.description = f"Payout provider status: {status}; amount refunded."
+            _dispatch_student_notification(
+                db,
+                student,
+                "Payout Refunded",
+                f"Your payout of {refund_amount} ETB could not be completed. The amount was returned to your wallet.",
+                "payment",
+            )
+            audit_action = "Wallet Payout Refunded"
+            audit_description = f"Payout {payout.internal_reference} failed for student {student.student_id}; refunded {refund_amount} ETB. Reason: {reason}"
+
+        db.add(AuditLog(
+            admin_id=None,
+            action=audit_action,
+            entity_type="PayoutTransaction",
+            entity_id=payout.id,
+            description=audit_description,
+            status="SUCCESS",
+            ip_address="127.0.0.1",
+        ))
+        return payout.status
+
+
+async def _reconcile_pending_payouts() -> None:
+    """Resolve provider payouts and refund stale or failed transfers independently."""
+    try:
+        timeout_hours = max(1, float(os.getenv("PAYOUT_TIMEOUT_HOURS", "24")))
+    except (TypeError, ValueError):
+        timeout_hours = 24
+    cutoff = datetime.now() - timedelta(hours=timeout_hours)
+    scan_db = SessionLocal()
+    try:
+        payout_ids = [payout_id for (payout_id,) in scan_db.query(PayoutTransaction.id).filter(
+            PayoutTransaction.status.in_(["pending", "processing"]),
+        ).all()]
+    finally:
+        scan_db.close()
+
+    for payout_id in payout_ids:
+        db = SessionLocal()
+        try:
+            payout = db.query(PayoutTransaction).filter(
+                PayoutTransaction.id == payout_id,
+                PayoutTransaction.status.in_(["pending", "processing"]),
+            ).first()
+            if not payout:
+                continue
+
+            is_stale = payout.created_at < cutoff
+            provider = db.query(PayoutProvider).filter(PayoutProvider.id == payout.provider_id).first()
+            adapter = get_payout_adapter(provider.code) if provider else None
+            result = None
+            if adapter is not None and not is_stale:
+                try:
+                    result = adapter.get_transfer_status(payout.internal_reference)
+                except PayoutProviderError:
+                    logging.getLogger("app.payments").exception(
+                        "Unable to reconcile payout %s with its provider.", payout.internal_reference
+                    )
+
+            if result and result.status == "completed":
+                _resolve_pending_payout(
+                    db,
+                    payout.id,
+                    "completed",
+                    provider_reference=result.provider_reference,
+                )
+            elif result and result.status in {"failed", "cancelled"}:
+                _resolve_pending_payout(
+                    db,
+                    payout.id,
+                    result.status,
+                    provider_reference=result.provider_reference,
+                    failure_reason=result.message,
+                )
+            elif is_stale:
+                _resolve_pending_payout(
+                    db,
+                    payout.id,
+                    "failed",
+                    failure_reason="Provider did not confirm within the timeout window",
+                )
+        except Exception:
+            db.rollback()
+            logging.getLogger("app.payments").exception(
+                "Pending payout reconciliation failed for payout id %s.", payout_id
+            )
+        finally:
+            db.close()
 
 
 async def _expire_processing_orders() -> None:
@@ -2047,6 +2208,15 @@ async def on_startup():
         "interval",
         minutes=10,
         id="pending-payment-reconciliation",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    payment_scheduler.add_job(
+        _reconcile_pending_payouts,
+        "interval",
+        minutes=10,
+        id="pending-payout-reconciliation",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -8028,12 +8198,16 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
 
     ledger = []
     for tx in transactions[:20]:
-        amount = float(tx.amount or 0)
+        amount = Decimal(str(tx.amount or 0)).quantize(Decimal("0.01"))
+        direction = _transaction_direction(tx.type)
+        signed_amount = amount if direction == "credit" else -amount
         ledger.append({
             "id": tx.id,
             "type": tx.type,
             "label": tx.description or tx.type,
-            "amount": amount,
+            "amount": float(amount),
+            "direction": direction,
+            "signed_amount": float(signed_amount),
             "status": tx.status,
             "date": tx.created_at.strftime("%Y-%m-%d") if tx.created_at else None,
             "hash": tx.tx_id,
@@ -8384,6 +8558,31 @@ async def withdraw_student_wallet(
     }
 
 
+@app.get("/api/student/wallet/withdrawals")
+def get_student_wallet_withdrawals(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    payouts = db.query(PayoutTransaction).filter(
+        PayoutTransaction.student_id == student.student_id,
+    ).order_by(PayoutTransaction.created_at.desc()).all()
+    return {
+        "success": True,
+        "withdrawals": [
+            {
+                "id": payout.id,
+                "status": payout.status,
+                "amount": float(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01"))),
+                "provider_reference": payout.provider_reference,
+                "failure_reason": payout.failure_reason,
+                "created_at": payout.created_at.isoformat() if payout.created_at else None,
+            }
+            for payout in payouts
+        ],
+    }
+
+
 @app.post("/api/webhooks/payout-provider")
 async def handle_payout_provider_webhook(
     request: Request,
@@ -8428,16 +8627,83 @@ async def handle_payout_provider_webhook(
         "processing": "processing", "pending": "pending", "queued": "pending",
         "failed": "failed", "cancelled": "cancelled", "canceled": "cancelled",
     }
-    payout.status = status_map.get(incoming_status, "pending")
-    payout.provider_reference = str(payload.get("provider_reference") or payload.get("transfer_id") or data.get("transfer_id") or payout.provider_reference or "") or None
-    if payout.status in {"failed", "cancelled"}:
-        payout.failure_reason = str(payload.get("message") or data.get("message") or "Provider reported payout failure.")
-    transaction = db.query(Transaction).filter(Transaction.tx_id == payout.internal_reference).first()
-    if transaction:
-        transaction.status = "Successful" if payout.status == "completed" else "Failed" if payout.status in {"failed", "cancelled"} else "Pending"
-        transaction.description = f"Payout provider status: {payout.status}."
-    db.commit()
-    return {"success": True, "status": payout.status, "reference": payout.internal_reference}
+    next_status = status_map.get(incoming_status, "pending")
+    provider_reference = str(payload.get("provider_reference") or payload.get("transfer_id") or data.get("transfer_id") or "") or None
+    failure_reason = str(payload.get("message") or data.get("message") or "Provider reported payout failure.")
+
+    db.rollback()
+    try:
+        with db.begin():
+            payout = db.query(PayoutTransaction).filter(
+                (PayoutTransaction.internal_reference == reference)
+                | (PayoutTransaction.provider_reference == reference)
+            ).with_for_update().first()
+            if not payout:
+                raise HTTPException(status_code=404, detail="Payout transaction not found.")
+
+            previous_status = str(payout.status or "pending").lower()
+            payout.status = next_status
+            payout.provider_reference = provider_reference or payout.provider_reference
+            if next_status in {"failed", "cancelled"}:
+                payout.failure_reason = failure_reason
+
+            transaction = db.query(Transaction).filter(
+                Transaction.tx_id == payout.internal_reference,
+            ).with_for_update().first()
+            student = db.query(Student).filter(
+                Student.student_id == payout.student_id,
+            ).with_for_update().first()
+            wallet = db.query(Wallet).filter(
+                Wallet.student_id == payout.student_id,
+            ).with_for_update().first()
+            if not student or not wallet:
+                raise HTTPException(status_code=404, detail="Wallet records for payout transaction not found.")
+
+            if next_status in {"failed", "cancelled"} and previous_status not in {"failed", "cancelled"}:
+                refund_amount = Decimal(str(payout.amount or 0)).quantize(Decimal("0.01"))
+                wallet.balance = (Decimal(str(wallet.balance or 0)) + refund_amount).quantize(Decimal("0.01"))
+                student.wallet_balance = wallet.balance
+                refund_tx_id = f"REFUND-{payout.internal_reference}"
+                refund_transaction = db.query(Transaction).filter(
+                    Transaction.tx_id == refund_tx_id,
+                ).with_for_update().first()
+                if refund_transaction is None:
+                    db.add(Transaction(
+                        student_id=payout.student_id,
+                        wallet_id=wallet.id,
+                        tx_id=refund_tx_id,
+                        type="Refund",
+                        amount=refund_amount,
+                        description=f"Refund for failed payout {payout.internal_reference}.",
+                        status="Successful",
+                    ))
+                db.add(AuditLog(
+                    admin_id=None,
+                    action="Wallet Withdrawal Refunded",
+                    entity_type="PayoutTransaction",
+                    entity_id=payout.id,
+                    description=(
+                        f"Refunded failed payout {payout.internal_reference} for {refund_amount} ETB "
+                        f"to student {student.student_id}."
+                    ),
+                    status="SUCCESS",
+                    ip_address="127.0.0.1",
+                ))
+            else:
+                student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
+
+            if transaction:
+                transaction.status = "Successful" if next_status == "completed" else "Failed" if next_status in {"failed", "cancelled"} else "Pending"
+                transaction.description = f"Payout provider status: {next_status}."
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to apply payout provider webhook safely.")
+        raise HTTPException(status_code=500, detail="Unable to apply payout provider webhook safely.")
+
+    return {"success": True, "status": next_status, "reference": payout.internal_reference}
 
 
 @app.get("/api/admin/users/{id}/audit-balance")
@@ -8459,25 +8725,20 @@ def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
                 Transaction.student_id == student.student_id,
                 func.lower(Transaction.status) == "successful",
             ).all()
-            total_deposits = sum(
+            total_credits = sum(
                 (Decimal(str(transaction.amount or 0))
                  for transaction in successful_transactions
-                 if _normalize_payment_type(transaction.type) == "Wallet Deposit"),
+                 if _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES),
                 Decimal("0.00"),
             )
-            debit_types = {
-                "Product Purchase",
-                "Wallet Withdrawal",
-                "Seller Payout",
-            }
             total_debits = sum(
                 (Decimal(str(transaction.amount or 0))
                  for transaction in successful_transactions
-                 if _normalize_payment_type(transaction.type) in debit_types),
+                 if _normalize_payment_type(transaction.type) in DEBIT_TRANSACTION_TYPES),
                 Decimal("0.00"),
             )
 
-            expected_balance = (total_deposits - total_debits).quantize(Decimal("0.01"))
+            expected_balance = (total_credits - total_debits).quantize(Decimal("0.01"))
             stored_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
 
             if stored_balance == expected_balance:
@@ -8487,7 +8748,7 @@ def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
                     "student_id": student.student_id,
                     "expected_balance": float(expected_balance),
                     "stored_balance": float(stored_balance),
-                    "total_deposits": float(total_deposits),
+                    "total_deposits": float(total_credits),
                     "total_withdrawals_and_purchases": float(total_debits),
                 }
 
@@ -8501,7 +8762,7 @@ def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
                 description=(
                     f"Critical wallet balance mismatch detected for student {student.student_id}. "
                     f"Stored Wallet.balance: {stored_balance}, expected: {expected_balance}. "
-                    f"Successful deposits: {total_deposits}, successful debits: {total_debits}."
+                    f"Successful credits: {total_credits}, successful debits: {total_debits}."
                 ),
                 status="ALERT",
                 severity="CRITICAL",
@@ -8514,7 +8775,7 @@ def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
                 "student_id": student.student_id,
                 "expected_balance": float(expected_balance),
                 "stored_balance": float(stored_balance),
-                "total_deposits": float(total_deposits),
+                "total_deposits": float(total_credits),
                 "total_withdrawals_and_purchases": float(total_debits),
                 "account_status": "Suspended",
             }
@@ -8529,7 +8790,7 @@ def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/admin/wallets/reconcile")
 def reconcile_student_wallets(db: Session = Depends(get_db)):
-    """Rebuild every wallet balance from successful deposit and purchase transactions."""
+    """Rebuild every wallet balance from all successful credit and debit transactions."""
     db.rollback()
     reconciled_wallets = []
 
@@ -8537,25 +8798,26 @@ def reconcile_student_wallets(db: Session = Depends(get_db)):
         with db.begin():
             students = db.query(Student).with_for_update().all()
             for student in students:
-                successful_deposits = db.query(
-                    func.coalesce(func.sum(Transaction.amount), 0)
-                ).filter(
+                successful_transactions = db.query(Transaction).filter(
                     Transaction.student_id == student.student_id,
                     func.lower(Transaction.status) == "successful",
-                    func.lower(Transaction.type) == "wallet deposit",
-                ).scalar() or 0
-
-                successful_purchases = db.query(
-                    func.coalesce(func.sum(Transaction.amount), 0)
-                ).filter(
-                    Transaction.student_id == student.student_id,
-                    func.lower(Transaction.status) == "successful",
-                    func.lower(Transaction.type).in_(["purchase", "product purchase"]),
-                ).scalar() or 0
+                ).all()
+                successful_credits = sum(
+                    (Decimal(str(transaction.amount or 0))
+                     for transaction in successful_transactions
+                     if _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES),
+                    Decimal("0.00"),
+                )
+                successful_debits = sum(
+                    (Decimal(str(transaction.amount or 0))
+                     for transaction in successful_transactions
+                     if _normalize_payment_type(transaction.type) in DEBIT_TRANSACTION_TYPES),
+                    Decimal("0.00"),
+                )
 
                 calculated_balance = (
-                    Decimal(str(successful_deposits))
-                    - Decimal(str(successful_purchases))
+                    successful_credits
+                    - successful_debits
                 ).quantize(Decimal("0.01"))
 
                 wallet = (
