@@ -753,22 +753,33 @@ def _resolve_pending_payout(
         return payout.status
 
 
-async def _reconcile_pending_payouts() -> None:
+async def _reconcile_pending_payouts(
+    payout_ids: Optional[List[int]] = None,
+    force_fail: bool = False,
+) -> dict:
     """Resolve provider payouts and refund stale or failed transfers independently."""
     try:
         timeout_hours = max(1, float(os.getenv("PAYOUT_TIMEOUT_HOURS", "24")))
     except (TypeError, ValueError):
         timeout_hours = 24
     cutoff = datetime.now() - timedelta(hours=timeout_hours)
+    logger = logging.getLogger("app.payments")
+    logger.info(
+        "Starting pending payout reconciliation timeout_hours=%s selected_ids=%s force_fail=%s.",
+        timeout_hours,
+        payout_ids,
+        force_fail,
+    )
     scan_db = SessionLocal()
     try:
-        payout_ids = [payout_id for (payout_id,) in scan_db.query(PayoutTransaction.id).filter(
+        ids_to_scan = payout_ids or [payout_id for (payout_id,) in scan_db.query(PayoutTransaction.id).filter(
             PayoutTransaction.status.in_(["pending", "processing"]),
         ).all()]
     finally:
         scan_db.close()
 
-    for payout_id in payout_ids:
+    summary = {"checked": 0, "completed": 0, "failed": 0, "skipped": 0, "errors": 0}
+    for payout_id in ids_to_scan:
         db = SessionLocal()
         try:
             payout = db.query(PayoutTransaction).filter(
@@ -776,26 +787,105 @@ async def _reconcile_pending_payouts() -> None:
                 PayoutTransaction.status.in_(["pending", "processing"]),
             ).first()
             if not payout:
+                summary["skipped"] += 1
+                logger.warning("Skipping payout id=%s: it is missing or no longer pending/processing.", payout_id)
                 continue
 
+            summary["checked"] += 1
             is_stale = payout.created_at < cutoff
             provider = db.query(PayoutProvider).filter(PayoutProvider.id == payout.provider_id).first()
-            adapter = get_payout_adapter(provider.code) if provider else None
+            provider_code = provider.code if provider else None
+            adapter = get_payout_adapter(provider_code) if provider_code else None
+            logger.info(
+                "Payout reconciliation lookup payout_id=%s internal_reference=%s provider_id=%s provider_code=%s provider_name=%s provider_reference=%s adapter=%s stale=%s.",
+                payout.id,
+                payout.internal_reference,
+                payout.provider_id,
+                provider_code,
+                provider.name if provider else None,
+                payout.provider_reference,
+                type(adapter).__name__ if adapter else None,
+                is_stale,
+            )
             result = None
-            if adapter is not None and not is_stale:
+            if force_fail:
+                logger.warning(
+                    "Force-failing payout id=%s internal_reference=%s at admin request.",
+                    payout.id,
+                    payout.internal_reference,
+                )
+            elif adapter is None:
+                summary["skipped"] += 1
+                logger.error(
+                    "Cannot reconcile payout id=%s internal_reference=%s: no adapter for provider_id=%s provider_code=%s; CHAPA_SECRET_KEY configured=%s.",
+                    payout.id,
+                    payout.internal_reference,
+                    payout.provider_id,
+                    provider_code,
+                    bool(os.getenv("CHAPA_SECRET_KEY", "").strip()),
+                )
+            elif is_stale:
+                logger.warning(
+                    "Skipping provider status lookup for stale payout id=%s internal_reference=%s; timeout_hours=%s.",
+                    payout.id,
+                    payout.internal_reference,
+                    timeout_hours,
+                )
+            else:
                 try:
-                    result = adapter.get_transfer_status(payout.internal_reference)
-                except PayoutProviderError:
-                    logging.getLogger("app.payments").exception(
-                        "Unable to reconcile payout %s with its provider.", payout.internal_reference
+                    status_reference = payout.provider_reference or payout.internal_reference
+                    logger.info(
+                        "Calling payout adapter status payout_id=%s internal_reference=%s status_reference=%s adapter=%s.",
+                        payout.id,
+                        payout.internal_reference,
+                        status_reference,
+                        type(adapter).__name__,
+                    )
+                    result = adapter.get_transfer_status(status_reference)
+                    logger.info(
+                        "Payout adapter status returned payout_id=%s internal_reference=%s status=%s provider_reference=%s message=%s.",
+                        payout.id,
+                        payout.internal_reference,
+                        result.status,
+                        result.provider_reference,
+                        result.message,
+                    )
+                except PayoutProviderError as error:
+                    summary["errors"] += 1
+                    logger.exception(
+                        "Unable to reconcile payout id=%s internal_reference=%s provider_id=%s provider_code=%s retryable=%s status_code=%s: %s",
+                        payout.id,
+                        payout.internal_reference,
+                        payout.provider_id,
+                        provider_code,
+                        error.retryable,
+                        error.status_code,
+                        error,
                     )
 
-            if result and result.status == "completed":
+            if force_fail or (is_stale and result is None):
+                _resolve_pending_payout(
+                    db,
+                    payout.id,
+                    "failed",
+                    failure_reason=(
+                        "Manually force-failed by an administrator"
+                        if force_fail
+                        else "Provider did not confirm within the timeout window"
+                    ),
+                )
+                summary["failed"] += 1
+            elif result and result.status == "completed" and result.provider_reference:
                 _resolve_pending_payout(
                     db,
                     payout.id,
                     "completed",
                     provider_reference=result.provider_reference,
+                )
+                summary["completed"] += 1
+            elif result and result.status == "completed":
+                raise PayoutProviderError(
+                    "The payout provider reported completion without a transfer reference."
                 )
             elif result and result.status in {"failed", "cancelled"}:
                 _resolve_pending_payout(
@@ -805,6 +895,7 @@ async def _reconcile_pending_payouts() -> None:
                     provider_reference=result.provider_reference,
                     failure_reason=result.message,
                 )
+                summary["failed"] += 1
             elif is_stale:
                 _resolve_pending_payout(
                     db,
@@ -812,13 +903,17 @@ async def _reconcile_pending_payouts() -> None:
                     "failed",
                     failure_reason="Provider did not confirm within the timeout window",
                 )
+                summary["failed"] += 1
         except Exception:
+            summary["errors"] += 1
             db.rollback()
-            logging.getLogger("app.payments").exception(
+            logger.exception(
                 "Pending payout reconciliation failed for payout id %s.", payout_id
             )
         finally:
             db.close()
+    logger.info("Finished pending payout reconciliation summary=%s.", summary)
+    return summary
 
 
 async def _expire_processing_orders() -> None:
@@ -1154,6 +1249,11 @@ class AdminSessionRequest(BaseModel):
     session_token: str
 
 
+class PayoutRecoveryRequest(BaseModel):
+    payout_ids: List[int]
+    action: str = "recheck"
+
+
 class AdminTwoFactorRequest(BaseModel):
     session_token: Optional[str] = None
 
@@ -1367,6 +1467,7 @@ class StudentProductUpdate(BaseModel):
     pickup_hours: Optional[str] = None
     negotiable: Optional[bool] = None
     image_notes: Optional[List[str]] = None
+    image: Optional[List[str]] = None
     status: Optional[str] = None
 
 
@@ -2231,6 +2332,10 @@ async def on_startup():
         coalesce=True,
     )
     payment_scheduler.start()
+    logging.getLogger("app.payments").info(
+        "Started payout reconciliation scheduler job id=pending-payout-reconciliation interval_minutes=10 max_instances=1 coalesce=True timeout_hours=%s.",
+        os.getenv("PAYOUT_TIMEOUT_HOURS", "24"),
+    )
 
 
 @app.on_event("shutdown")
@@ -4639,11 +4744,13 @@ def update_student_product(
         authenticated_student.name.strip().lower(),
     }:
         raise HTTPException(status_code=403, detail="You can only update your own products.")
-    if payload.quantity is not None and payload.quantity <= 0:
-        raise HTTPException(status_code=400, detail="Product quantity must be at least 1.")
+    if payload.quantity is not None and payload.quantity < 0:
+        raise HTTPException(status_code=400, detail="Product quantity cannot be negative.")
 
     next_stock = int(payload.quantity) if payload.quantity is not None else int(getattr(product, "stock", 0) or 0)
     next_status = payload.status if payload.status is not None else product.status
+    if payload.quantity == 0 and str(next_status or "").strip().lower() != "sold":
+        raise HTTPException(status_code=400, detail="Product quantity must be at least 1 unless the product is Sold.")
     if payload.quantity is not None and payload.quantity > 0 and str(product.status or "").strip().lower() == "sold" and payload.status is None:
         next_status = "Approved"
     if str(next_status or "").strip().lower() == "sold":
@@ -4664,6 +4771,7 @@ def update_student_product(
         "pickup_hours": payload.pickup_hours,
         "negotiable": payload.negotiable,
         "image_notes": json.dumps(payload.image_notes, ensure_ascii=False) if payload.image_notes is not None else None,
+        "image": json.dumps(payload.image, ensure_ascii=False) if payload.image is not None else None,
         "status": next_status if payload.status is not None or next_status != product.status else None,
     }
     for field_name, value in update_fields.items():
@@ -4684,6 +4792,96 @@ def update_student_product(
             "description": product.description,
             "status": product.status,
             "image": _normalize_product_image(product.image),
+            "condition": product.condition,
+            "pickup_location": product.pickup_location,
+            "pickup_hours": product.pickup_hours,
+            "negotiable": bool(product.negotiable),
+            "created_at": product.created_at,
+        },
+    }
+
+
+@app.post("/api/student/products/{product_id}/images")
+async def upload_student_product_images(
+    product_id: int,
+    existing_images: str = Form("[]"),
+    images: List[UploadFile] = File(default=[]),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    """Replace the selected product images while preserving seller ownership checks."""
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    authenticated_student = _student_from_authorization(authorization, db)
+    if str(product.seller or "").strip().lower() not in {
+        authenticated_student.student_id.strip().lower(),
+        authenticated_student.name.strip().lower(),
+    }:
+        raise HTTPException(status_code=403, detail="You can only update your own products.")
+
+    try:
+        requested_existing = json.loads(existing_images or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise HTTPException(status_code=400, detail="Existing product images are invalid.") from error
+    if not isinstance(requested_existing, list):
+        raise HTTPException(status_code=400, detail="Existing product images must be a list.")
+
+    raw_images = product.image
+    try:
+        current_images = json.loads(raw_images) if isinstance(raw_images, str) and raw_images.strip().startswith("[") else [raw_images]
+    except json.JSONDecodeError:
+        current_images = [raw_images]
+    current_images = [str(item).strip() for item in current_images if str(item or "").strip()]
+    current_image_keys = {
+        image
+        for item in current_images
+        for image in (item, _normalize_product_image(item))
+        if image
+    }
+    retained_images = [
+        str(item).strip()
+        for item in requested_existing
+        if str(item or "").strip() in current_image_keys
+        or _normalize_product_image(str(item).strip()) in current_image_keys
+    ]
+    max_image_size = _parse_size_bytes(_get_setting_value(
+        db, "marketplace", "maxImageSize", DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImageSize"]
+    ))
+    new_image_urls = []
+    for image in images:
+        filename = image.filename or ""
+        extension = os.path.splitext(filename)[1].lower()
+        if extension not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".jfif"}:
+            raise HTTPException(status_code=400, detail="Invalid image format.")
+        image.file.seek(0, os.SEEK_END)
+        image_size = image.file.tell()
+        image.file.seek(0)
+        if image_size > max_image_size:
+            raise HTTPException(status_code=400, detail="Image size exceeds the configured maximum.")
+        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S_')}{uuid.uuid4().hex}{extension}"
+        file_path = os.path.join(STATIC_DIR, filename)
+        try:
+            with open(file_path, "wb") as output_file:
+                shutil.copyfileobj(image.file, output_file)
+        finally:
+            await image.close()
+        new_image_urls.append(f"http://127.0.0.1:8000/static/uploads/{filename}")
+
+    product.image = json.dumps(retained_images + new_image_urls, ensure_ascii=False) if retained_images or new_image_urls else None
+    db.commit()
+    db.refresh(product)
+    return {
+        "success": True,
+        "product": {
+            "id": product.id,
+            "title": product.title,
+            "category": product.category,
+            "price": product.price,
+            "stock": int(getattr(product, "stock", 0) or 0),
+            "status": product.status,
+            "image": _normalize_product_image(product.image),
+            "created_at": product.created_at,
         },
     }
 
@@ -4788,6 +4986,11 @@ def get_student_listings(
             "subcategory": prod.subcategory,
             "seller": prod.seller,
             "status": prod.status,
+            "sold_via": (
+                "Marketplace Order" if _product_has_orders(db, prod.id)
+                else "Marked by Seller" if str(prod.status or "").strip().lower() == "sold"
+                else None
+            ),
             "created_at": prod.created_at,
         }
         for prod in listings
@@ -4827,6 +5030,8 @@ def get_seller_dashboard_data(
         for order in completed_orders
     )
     listing_analytics = _build_seller_listing_analytics(listings, completed_orders)
+    for item in listing_analytics:
+        item["has_orders"] = _product_has_orders(db, item["listing"].id)
     advisor_candidate = next(
         (
             item for item in sorted(listing_analytics, key=lambda value: value["views"], reverse=True)
@@ -4895,7 +5100,12 @@ def get_seller_dashboard_data(
                 "stock": int(getattr(item["listing"], "stock", 1) or 0),
                 "image": _normalize_product_image(item["listing"].image),
                 "status": item["listing"].status,
-                "has_orders": _product_has_orders(db, item["listing"].id),
+                "has_orders": item["has_orders"],
+                "sold_via": (
+                    "Marketplace Order" if item["has_orders"]
+                    else "Marked by Seller" if str(item["listing"].status or "").strip().lower() == "sold"
+                    else None
+                ),
                 "created_at": item["listing"].created_at,
                 "views": item["views"],
                 "completed_orders": item["completed_orders"],
@@ -8704,6 +8914,25 @@ async def handle_payout_provider_webhook(
         raise HTTPException(status_code=500, detail="Unable to apply payout provider webhook safely.")
 
     return {"success": True, "status": next_status, "reference": payout.internal_reference}
+
+
+@app.post("/api/admin/payouts/reconcile")
+async def reconcile_selected_payouts(
+    payload: PayoutRecoveryRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, None, db)
+    if not payload.payout_ids or len(payload.payout_ids) > 100:
+        raise HTTPException(status_code=400, detail="Provide between 1 and 100 payout IDs.")
+    action = str(payload.action or "recheck").strip().lower()
+    if action not in {"recheck", "force_fail"}:
+        raise HTTPException(status_code=400, detail="Action must be recheck or force_fail.")
+    summary = await _reconcile_pending_payouts(
+        payout_ids=list(dict.fromkeys(payload.payout_ids)),
+        force_fail=action == "force_fail",
+    )
+    return {"success": True, "action": action, "summary": summary}
 
 
 @app.get("/api/admin/users/{id}/audit-balance")

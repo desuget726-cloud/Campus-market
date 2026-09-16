@@ -82,6 +82,17 @@ const getRecommendationImage = (rawImage) => {
   return imageValue;
 };
 
+const getProductImages = (rawImage) => {
+  if (Array.isArray(rawImage)) return rawImage.filter((image) => String(image || '').trim());
+  if (typeof rawImage !== 'string' || !rawImage.trim()) return [];
+  try {
+    const parsedImage = JSON.parse(rawImage);
+    return Array.isArray(parsedImage) ? parsedImage.filter((image) => String(image || '').trim()) : [rawImage.trim()];
+  } catch {
+    return [rawImage.trim()];
+  }
+};
+
 const getRecommendationPlaceholder = (category) => {
   const isBook = String(category || '').toLowerCase().includes('book');
   const label = isBook ? 'BOOK' : 'SCREEN';
@@ -296,6 +307,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
   const [showProductModal, setShowProductModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [existingProductImages, setExistingProductImages] = useState([]);
+  const [newProductImagePreviews, setNewProductImagePreviews] = useState([]);
   const [productForm, setProductForm] = useState({
     name: '',
     title: '',
@@ -316,6 +329,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [productSubmitting, setProductSubmitting] = useState(false);
   const [maxImageSize, setMaxImageSize] = useState('5MB');
   const [maxImagesPerProduct, setMaxImagesPerProduct] = useState(5);
+
+  useEffect(() => {
+    const files = Array.isArray(productForm.image)
+      ? productForm.image.filter((image) => image instanceof File)
+      : [];
+    const previews = files.map((file) => URL.createObjectURL(file));
+    setNewProductImagePreviews(previews);
+    return () => previews.forEach((preview) => URL.revokeObjectURL(preview));
+  }, [productForm.image]);
 
   // Dynamic categories from backend
   const [categories, setCategories] = useState([]);
@@ -1058,9 +1080,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (err) {
       console.error('Error fetching seller dashboard data:', err);
       setSellerOrdersError('Unable to load seller orders. Check your connection and try again.');
-      setSellerDashboardData((previous) => ({ ...previous, my_listings: [], received_orders: [] }));
-      setMyListings([]);
-      setSellerData((previous) => ({ ...previous, totalListings: 0, receivedOrders: 0, totalRevenue: 0, pendingOrders: 0, incomingOrders: [], activeListings: [] }));
     } finally {
       setSellerOrdersLoading(false);
     }
@@ -2114,25 +2133,36 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       condition: 'New', pickupLocation: '', pickupHours: '08:00-17:00', negotiable: false, imageNotes: [], description: '', image: null
     });
     setEditingProduct(null);
+    setExistingProductImages([]);
     setSelectedCategoryObj(null);
   };
 
-  const handleEditProduct = (product) => {
+  const findSellerProduct = (productOrId) => {
+    const productId = typeof productOrId === 'object' ? productOrId?.id : productOrId;
+    return [...(sellerDashboardData?.my_listings || []), ...(myListings || [])]
+      .find((item) => String(item.id) === String(productId)) ||
+      (typeof productOrId === 'object' ? productOrId : null);
+  };
+
+  const handleEditProduct = (productOrId) => {
+    const product = findSellerProduct(productOrId);
+    if (!product?.id) return;
     setEditingProduct(product);
+    setExistingProductImages(getProductImages(product.image));
     setProductForm({
       name: product.title || product.name || '',
       title: product.title || product.name || '',
       category: product.category || '',
       subcategory: product.subcategory || '',
       price: product.price || '',
-      quantity: String(product.quantity || 1),
+      quantity: String(product.stock ?? product.quantity ?? 1),
       condition: product.condition || 'New',
       pickupLocation: product.pickup_location || product.pickupLocation || '',
       pickupHours: product.pickup_hours || '08:00-17:00',
       negotiable: product.negotiable === true,
       imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
       description: product.description || '',
-      image: product.image || null
+      image: []
     });
     setProductError('');
     setProductSuccessMsg('');
@@ -2144,20 +2174,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const currentPrice = Number(String(product.price || 0).replace(/[^0-9.]/g, '')) || 0;
     const discountedPrice = (currentPrice * (1 - discountPercentage / 100)).toFixed(2);
     setEditingProduct(product);
+    setExistingProductImages(getProductImages(product.image));
     setProductForm({
       name: product.title || product.name || '',
       title: product.title || product.name || '',
       category: product.category || '',
       subcategory: product.subcategory || '',
       price: discountedPrice,
-      quantity: String(product.quantity || 1),
+      quantity: String(product.stock ?? product.quantity ?? 1),
       condition: product.condition || 'New',
       pickupLocation: product.pickup_location || product.pickupLocation || '',
       pickupHours: product.pickup_hours || '08:00-17:00',
       negotiable: product.negotiable === true,
       imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
       description: product.description || '',
-      image: product.image || null
+      image: []
     });
     setProductError('');
     setProductSuccessMsg('');
@@ -2180,21 +2211,61 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     handleAiApplyRecommendation(product, 3);
   };
 
-  const updateSellerProduct = async (product, updates) => {
+  const updateSellerProduct = async (productOrId, updates, imageChanges = null) => {
+    const product = findSellerProduct(productOrId);
+    if (!product?.id) throw new Error('The selected product could not be found.');
     const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getStudentSessionToken()}` },
       body: JSON.stringify({ student_id: user?.studentId || '', ...updates })
     });
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const errorData = await response.json().catch(() => null);
-      throw new Error(errorData?.detail || 'Could not update product.');
+      throw new Error(data?.detail || 'Could not update product.');
+    }
+    let updatedProduct = data.product;
+    if (imageChanges) {
+      const imageFormData = new FormData();
+      imageFormData.append('existing_images', JSON.stringify(imageChanges.existingImages || []));
+      (imageChanges.newImages || []).forEach((image) => imageFormData.append('images', image));
+      const imageResponse = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}/images`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
+        body: imageFormData,
+      });
+      const imageData = await imageResponse.json().catch(() => ({}));
+      if (!imageResponse.ok) throw new Error(imageData?.detail || 'Could not update product images.');
+      updatedProduct = imageData.product || updatedProduct;
+    }
+    if (updatedProduct) {
+      setMyListings((previous) => previous.map((item) => (
+        String(item.id) === String(product.id) ? { ...item, ...updatedProduct } : item
+      )));
+      setSellerDashboardData((previous) => ({
+        ...previous,
+        my_listings: (previous.my_listings || []).map((item) => (
+          String(item.id) === String(product.id) ? { ...item, ...updatedProduct } : item
+        )),
+      }));
     }
     await fetchSellerDashboardData();
+    if (updatedProduct) {
+      setMyListings((previous) => previous.map((item) => (
+        String(item.id) === String(product.id) ? { ...item, ...updatedProduct } : item
+      )));
+      setSellerDashboardData((previous) => ({
+        ...previous,
+        my_listings: (previous.my_listings || []).map((item) => (
+          String(item.id) === String(product.id) ? { ...item, ...updatedProduct } : item
+        )),
+      }));
+    }
+    return updatedProduct;
   };
 
-  const handleDeleteProduct = async (product) => {
-    if (!product?.id || (typeof window !== 'undefined' && !window.confirm(`Delete ${product.title || 'this product'}?`))) return;
+  const handleDeleteProduct = async (productOrId) => {
+    const product = findSellerProduct(productOrId);
+    if (!product?.id) throw new Error('The selected product could not be found.');
     try {
       const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
         method: 'DELETE',
@@ -2203,26 +2274,41 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.detail || 'Could not delete product.');
       setSearchResults((previous) => previous.filter((item) => String(item.id) !== String(product.id)));
+      setMyListings((previous) => previous.filter((item) => String(item.id) !== String(product.id)));
+      setSellerDashboardData((previous) => ({
+        ...previous,
+        my_listings: (previous.my_listings || []).filter((item) => String(item.id) !== String(product.id)),
+      }));
       await fetchSellerDashboardData();
+      setMyListings((previous) => previous.filter((item) => String(item.id) !== String(product.id)));
+      setSellerDashboardData((previous) => ({
+        ...previous,
+        my_listings: (previous.my_listings || []).filter((item) => String(item.id) !== String(product.id)),
+      }));
+      return result;
     } catch (error) {
-      setProductError(error.message || 'Could not delete product.');
+      throw new Error(error.message || 'Could not delete product.');
     }
   };
 
-  const handleTogglePause = async (product) => {
+  const handleTogglePause = async (productOrId) => {
+    const product = findSellerProduct(productOrId);
+    if (!product?.id) throw new Error('The selected product could not be found.');
     try {
       const status = String(product.status || '').toLowerCase();
-      await updateSellerProduct(product, { status: status === 'paused' || status === 'sold' ? 'Approved' : 'Paused' });
+      return await updateSellerProduct(product.id, { status: status === 'paused' || status === 'sold' ? 'Approved' : 'Paused' });
     } catch (error) {
-      setProductError(error.message);
+      throw new Error(error.message || 'Could not update product status.');
     }
   };
 
-  const handleMarkAsSold = async (product) => {
+  const handleMarkAsSold = async (productOrId) => {
+    const product = findSellerProduct(productOrId);
+    if (!product?.id) throw new Error('The selected product could not be found.');
     try {
-      await updateSellerProduct(product, { status: 'Sold' });
+      return await updateSellerProduct(product.id, { status: 'Sold' });
     } catch (error) {
-      setProductError(error.message);
+      throw new Error(error.message || 'Could not mark product as sold.');
     }
   };
 
@@ -2234,8 +2320,26 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const itemName = (productForm.name || productForm.title || '').trim();
     const selectedImages = Array.isArray(productForm.image) ? productForm.image : (productForm.image ? [productForm.image] : []);
-    if (!itemName || !productForm.category || !productForm.price || (!editingProduct && selectedImages.length === 0)) {
-      setProductError('Please fill in Name, Category, Price and add an image.');
+    const priceValue = Number(String(productForm.price || '').replace(/[^0-9.]/g, ''));
+    const stockValue = Number(productForm.quantity);
+    if (!itemName) {
+      setProductError('Product title is required.');
+      return;
+    }
+    if (!productForm.category) {
+      setProductError('Category is required.');
+      return;
+    }
+    if (!String(productForm.price || '').trim() || !Number.isFinite(priceValue) || priceValue < 0) {
+      setProductError('Price must be a valid non-negative number.');
+      return;
+    }
+    if (!Number.isInteger(stockValue) || stockValue < 0 || (!editingProduct && stockValue < 1)) {
+      setProductError('Stock must be a valid non-negative whole number.');
+      return;
+    }
+    if (!editingProduct && selectedImages.length === 0) {
+      setProductError('Add at least one product image.');
       return;
     }
 
@@ -2260,6 +2364,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           pickup_hours: productForm.pickupHours || '08:00-17:00',
           negotiable: productForm.negotiable === true,
           image_notes: productForm.imageNotes || [],
+        }, {
+          existingImages: existingProductImages,
+          newImages: selectedImages,
         });
         setProductSuccessMsg('Product updated successfully.');
         setTimeout(() => {
@@ -2324,7 +2431,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
-    if (selectedImages.length > maxImagesPerProduct) {
+    if (existingProductImages.length + selectedImages.length > maxImagesPerProduct) {
       setProductError(`You can upload a maximum of ${maxImagesPerProduct} images per product.`);
       e.target.value = '';
       setProductForm((prev) => ({ ...prev, image: [] }));
@@ -5390,7 +5497,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <label className="block text-sm font-semibold text-slate-700">Available quantity</label>
                   <input
                     type="number"
-                    min="1"
+                    min={editingProduct && String(editingProduct.status || '').toLowerCase() === 'sold' ? '0' : '1'}
                     step="1"
                     value={productForm.quantity}
                     onChange={(e) => setProductForm((prev) => ({ ...prev, quantity: e.target.value }))}
@@ -5439,6 +5546,38 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     onChange={handleProductImageSelect}
                     className="mt-2 block w-full text-sm text-slate-700 file:mr-4 file:rounded-full file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-slate-700"
                   />
+                  {editingProduct && existingProductImages.length > 0 && (
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      {existingProductImages.map((image, index) => (
+                        <div key={`${image}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200">
+                          <img src={image} alt={`Existing product image ${index + 1}`} className="h-20 w-full object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => setExistingProductImages((previous) => previous.filter((_, imageIndex) => imageIndex !== index))}
+                            className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {newProductImagePreviews.length > 0 && (
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      {newProductImagePreviews.map((preview, index) => (
+                        <div key={preview} className="relative overflow-hidden rounded-xl border border-emerald-200">
+                          <img src={preview} alt={`New product image ${index + 1}`} className="h-20 w-full object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => setProductForm((previous) => ({ ...previous, image: previous.image.filter((_, imageIndex) => imageIndex !== index) }))}
+                            className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -5465,7 +5604,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   disabled={productSubmitting}
                   className="inline-flex justify-center rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
-                  {productSubmitting ? (editingProduct ? 'Updating...' : 'Posting...') : (editingProduct ? 'Update Product' : 'Post Product')}
+                  {productSubmitting ? (editingProduct ? 'Saving...' : 'Posting...') : (editingProduct ? 'Save Changes' : 'Post Product')}
                 </button>
                 <button
                   type="button"
