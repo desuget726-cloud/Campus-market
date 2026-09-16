@@ -954,6 +954,7 @@ class SellerPayoutSetupRequest(BaseModel):
     business_name: str
     payout_type: str = "bank"
     provider_id: Optional[int] = None
+    provider_name: Optional[str] = None
     bank_code: str
     account_number: str
     account_name: str
@@ -3255,6 +3256,13 @@ def create_or_update_payout_provider(
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,49}", code):
         raise HTTPException(status_code=400, detail="Provider code must contain only letters, numbers, hyphens, or underscores.")
     provider = db.query(PayoutProvider).filter(PayoutProvider.code == code).first()
+    duplicate_name = db.query(PayoutProvider).filter(
+        func.lower(PayoutProvider.name) == name.casefold(),
+        PayoutProvider.type == provider_type,
+        PayoutProvider.id != provider.id if provider is not None else True,
+    ).first()
+    if duplicate_name is not None:
+        raise HTTPException(status_code=409, detail="A payout provider with this name and type already exists.")
     if provider is None:
         provider = PayoutProvider(
             name=name,
@@ -3276,6 +3284,7 @@ def create_or_update_payout_provider(
 
 def _resolve_selected_provider(db: Session, payload: SellerPayoutSetupRequest) -> PayoutProvider:
     provider_type = _normalize_payout_type(payload.payout_type)
+    provider_code = str(payload.bank_code or "").strip().lower()
     provider = None
     if payload.provider_id:
         provider = db.query(PayoutProvider).filter(
@@ -3285,16 +3294,22 @@ def _resolve_selected_provider(db: Session, payload: SellerPayoutSetupRequest) -
         ).first()
     if provider is None:
         provider = db.query(PayoutProvider).filter(
-            PayoutProvider.code == str(payload.bank_code or "").strip().lower(),
+            PayoutProvider.code == provider_code,
             PayoutProvider.type == provider_type,
             PayoutProvider.is_active.is_(True),
         ).first()
-    if provider is None:
-        for candidate in _seed_default_payout_providers(db):
-            if candidate.code == str(payload.bank_code or "").strip().lower() and candidate.type == provider_type:
-                return candidate
-        raise HTTPException(status_code=400, detail="Selected payout provider is not available.")
-    return provider
+    if provider is not None:
+        return provider
+
+    seeded_providers = _seed_default_payout_providers(db)
+    provider_name = str(payload.provider_name or "").strip().casefold()
+    if provider_name:
+        provider = next((item for item in seeded_providers
+                         if item.type == provider_type and item.name.strip().casefold() == provider_name), None)
+    if provider is not None:
+        return provider
+
+    raise HTTPException(status_code=400, detail="Selected payout provider is not recognized.")
 
 
 @app.get("/api/admin/settings/{id}")
@@ -3677,6 +3692,8 @@ async def setup_seller_payout_account(
     student = _student_from_authorization(authorization, db)
     payout_type = _normalize_payout_type(payload.payout_type)
     selected_provider = _resolve_selected_provider(db, payload)
+    if str(selected_provider.integration_status or "").strip().lower() != "available":
+        raise HTTPException(status_code=400, detail="This payout provider is not yet available. Please choose another option.")
     if not student.is_verified:
         raise HTTPException(status_code=403, detail="Student verification is required before setting up payouts.")
 
@@ -3795,16 +3812,22 @@ def get_seller_payout_account(
     if not account:
         return {"success": True, "account": None}
     provider = db.query(PayoutProvider).filter(PayoutProvider.id == account.provider_id).first()
+    account_number = str(
+        account.phone_number if account.payout_type == "mobile_wallet" else account.account_number or ""
+    ).strip()
     return {
         "success": True,
         "account": {
             "id": account.id,
             "provider_id": account.provider_id,
             "provider_name": provider.name if provider else None,
+            "integration_status": provider.integration_status if provider else "unavailable",
+            "provider_is_available": bool(provider and provider.is_active and provider.integration_status == "available"),
             "payout_type": account.payout_type,
             "account_name": account.account_name,
             "business_name": account.business_name,
             "account_status": account.account_status,
+            "account_last4": account_number[-4:] if len(account_number) >= 4 else account_number,
         },
     }
 
@@ -10566,6 +10589,7 @@ def update_admin_order(order_id: int, payload: dict, db: Session = Depends(get_d
 
 
 @app.get("/api/payment/webhook")
+@app.get("/payment/webhook")
 async def acknowledge_chapa_get_callback(
     trx_ref: Optional[str] = None,
     tx_ref: Optional[str] = None,
@@ -10584,6 +10608,7 @@ async def acknowledge_chapa_get_callback(
 
 
 @app.post("/api/payment/webhook")
+@app.post("/payment/webhook")
 @app.post("/api/admin/payments/webhook")
 async def simulate_chapa_webhook(
     payload: ChapaWebhookPayload,

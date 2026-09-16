@@ -15,7 +15,7 @@ const parseProductImages = (image) => {
   }
 };
 
-function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
+function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [chatStatus, setChatStatus] = useState('');
@@ -142,28 +142,6 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
 
     setMessageText((previousMessage) => previousMessage || `Hi, I am interested in buying your ${productTitle}. Is it still available?`);
   }, [product?.id, product?.title, detailedProduct?.title]);
-
-  const handleGoogleLogin = () => {
-    const mockUser = {
-      studentId: 'MAU1600002',
-      name: 'Campus Student',
-      email: 'student@campace.edu.et',
-      role: 'student',
-      department: 'Department of Software Engineering',
-    };
-    const session = {
-      user: mockUser,
-      currentView: 'home',
-      studentTab: 'home',
-      userRole: 'student',
-    };
-
-    window.localStorage.setItem('campaceSession', JSON.stringify(session));
-    if (typeof onUserUpdate === 'function') {
-      onUserUpdate(mockUser);
-    }
-    setChatStatus('Google login successful. You can now message the seller.');
-  };
 
   const handleStartChat = async () => {
     if (!isChatEnabled) {
@@ -503,33 +481,37 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
             {reviews.length === 0 ? <p className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-600">No reviews yet — be the first to review after purchase.</p> : <div className="mt-5 space-y-4">{reviews.map((review) => <article key={review.id} className="border-t border-slate-100 pt-4 first:border-t-0 first:pt-0"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-black text-slate-900">{review.reviewer_name || 'Buyer'}</p><p className="text-xs font-semibold text-slate-500">{review.created_at ? new Date(review.created_at).toLocaleDateString() : 'Recent'}</p></div><p className="mt-1 text-sm font-black text-amber-500">{'★'.repeat(Math.max(0, Math.min(5, Number(review.rating) || 0)))}<span className="ml-2 text-slate-400">{Number(review.rating) || 0}/5</span></p><p className="mt-2 text-sm leading-6 text-slate-600">{review.comment}</p></article>)}</div>}
           </div>
 
-          {similarProducts.length > 0 && (
-            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm" aria-labelledby="similar-products-heading">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm" aria-labelledby="similar-products-heading">
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
                   <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">More to explore</p>
                   <h4 id="similar-products-heading" className="mt-1 text-xl font-black text-slate-900">Similar Products</h4>
                 </div>
-                <div className="flex gap-2">
+                {similarProducts.length > 0 && <div className="flex gap-2">
                   <button type="button" onClick={() => scrollSimilarProducts(-1)} aria-label="Previous similar products" className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">&lt;</button>
                   <button type="button" onClick={() => scrollSimilarProducts(1)} aria-label="Next similar products" className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-lg font-bold text-white transition hover:bg-emerald-600">&gt;</button>
+                </div>}
+              </div>
+              {similarProducts.length === 0 ? (
+                <p className="mt-5 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+                  No similar products are available right now.
+                </p>
+              ) : (
+                <div ref={similarProductsScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {similarProducts.map((similar) => (
+                    <article key={similar.id} className="flex w-48 shrink-0 snap-start flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md">
+                      <img src={similar.image || fallbackImage} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-32 w-full object-cover" />
+                      <div className="flex flex-1 flex-col p-4">
+                        <span className="w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{similar.category || 'Marketplace item'}</span>
+                        <h5 className="mt-2 truncate font-black text-slate-900" title={similar.title}>{similar.title || 'Campus item'}</h5>
+                        <p className="mt-2 text-sm font-bold text-emerald-700">{similar.price ? `${Number(similar.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</p>
+                        <button type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="mt-3 w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800">View Details</button>
+                      </div>
+                    </article>
+                  ))}
                 </div>
-              </div>
-              <div ref={similarProductsScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {similarProducts.map((similar) => (
-                  <article key={similar.id} className="flex w-48 shrink-0 snap-start flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md">
-                    <img src={similar.image || fallbackImage} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-32 w-full object-cover" />
-                    <div className="flex flex-1 flex-col p-4">
-                      <span className="w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{similar.category || 'Marketplace item'}</span>
-                      <h5 className="mt-2 truncate font-black text-slate-900" title={similar.title}>{similar.title || 'Campus item'}</h5>
-                      <p className="mt-2 text-sm font-bold text-emerald-700">{similar.price ? `${Number(similar.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</p>
-                      <button type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="mt-3 w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800">View Details</button>
-                    </div>
-                  </article>
-                ))}
-              </div>
+              )}
             </section>
-          )}
         </div>
 
         {/* የቀኝ የጎን ፓነል (Sidebar) */}
@@ -582,15 +564,7 @@ function ProductDetails({ product, currentUser, onUserUpdate, onNavigate, onNavi
                 <span>{showPhone ? (item.seller_phone || 'Phone unavailable') : 'Show Contact'}</span>
               </button>
 
-              {!currentUser ? (
-                <button
-                  type="button"
-                  onClick={handleGoogleLogin}
-                  className="w-full rounded-full bg-slate-900 py-3.5 text-sm font-semibold text-white transition hover:bg-slate-800"
-                >
-                  ⚡ One-Click Google Login
-                </button>
-              ) : (
+              {currentUser && (
                 <>
                   <div className="flex items-center justify-between gap-3 text-left">
                     <label htmlFor="seller-message" className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Message to seller</label>

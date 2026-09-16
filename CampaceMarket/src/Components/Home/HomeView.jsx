@@ -609,7 +609,6 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
         <ProductDetails
           product={selectedProduct}
           currentUser={user}
-          onUserUpdate={onUserUpdate}
           onNavigate={onNavigate}
           onNavigateToMessages={onNavigateToMessages}
           onBack={() => setSelectedProduct(null)}

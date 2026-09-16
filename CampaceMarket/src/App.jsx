@@ -386,7 +386,7 @@ function AppContent() {
 
       <div className="flex min-h-0 flex-1 flex-col pt-20 lg:flex-row">
         <main className={`${isDashboardView ? 'w-full flex-1 min-h-0' : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 lg:pb-8`}>
-          {currentView === 'login' && (
+          {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
                 onLoginSuccess={handleLoginSuccess}

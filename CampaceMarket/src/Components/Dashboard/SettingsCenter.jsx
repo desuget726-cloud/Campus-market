@@ -42,6 +42,7 @@ function SettingsCenter({
     avatarUploading,
     universityStructure,
     setSellerData,
+    onPayoutAccountUpdated,
 }) {
     const safeUniversityStructure = universityStructure || {};
     const [notificationPrefs, setNotificationPrefs] = useState({
@@ -86,36 +87,53 @@ function SettingsCenter({
     const [providers, setProviders] = useState([]);
     const [loadingProviders, setLoadingProviders] = useState(true);
     const [payoutProvidersError, setPayoutProvidersError] = useState('');
+    const [providerReloadKey, setProviderReloadKey] = useState(0);
 
     useEffect(() => {
         let active = true;
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 12000);
 
         const loadPayoutProviders = async () => {
+            setLoadingProviders(true);
+            setPayoutProvidersError('');
             try {
-                const providerType = payoutType === 'mobile' ? 'mobile_wallet' : 'bank';
-                const response = await fetch(`http://127.0.0.1:8000/api/payout-providers?type=${providerType}`);
+                const providerPath = `/api/payout-providers?type=${encodeURIComponent(payoutType)}`;
+                const response = await fetch(`http://127.0.0.1:8000${providerPath}`, { signal: controller.signal });
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok) throw new Error(data?.detail || 'Unable to load payout providers.');
+                if (!response.ok) throw new Error(data?.detail || 'Unable to load payout provider list.');
+                const providerList = data?.providers;
+                if (!Array.isArray(providerList)) throw new Error('Payout provider service returned an invalid list.');
+                const liveProviders = providerList
+                    .filter((provider) => provider?.code && provider?.name && String(provider.type || '').toLowerCase() === payoutType && String(provider.integration_status || '').toLowerCase() === 'available')
+                    .map((provider) => ({
+                        code: String(provider.code),
+                        name: String(provider.name),
+                        type: String(provider.type).toLowerCase(),
+                        integration_status: String(provider.integration_status).toLowerCase(),
+                    }));
                 if (active) {
-                    setProviders(Array.isArray(data?.providers) ? data.providers : []);
-                    setPayoutProvidersError('');
+                    setProviders(liveProviders);
                 }
             } catch (error) {
-                if (active) {
-                    setProviders([]);
-                    setPayoutProvidersError(error.message || 'Payout providers are unavailable right now.');
-                }
+                if (!active) return;
+                setProviders([]);
+                setPayoutProvidersError(error.message || 'Payout providers are unavailable right now.');
             } finally {
+                window.clearTimeout(timeoutId);
                 if (active) setLoadingProviders(false);
             }
         };
 
-        setLoadingProviders(true);
         loadPayoutProviders();
         return () => {
             active = false;
+            controller.abort();
+            window.clearTimeout(timeoutId);
         };
-    }, [payoutType]);
+    }, [payoutType, providerReloadKey]);
+
+    const selectedProvider = providers.find((provider) => provider.code === formData.bankCode);
 
     const updatePref = (key) => setNotificationPrefs((previous) => ({ ...previous, [key]: !previous[key] }));
 
@@ -140,7 +158,7 @@ function SettingsCenter({
         const accountNumberIsDigits = /^\d+$/.test(accountNumber);
         const accountNumberIsValid = bankCode.toLowerCase() === 'comari'
             ? /^\d{13}$/.test(accountNumber)
-            : payoutType === 'mobile'
+            : payoutType === 'mobile_wallet'
                 ? /^\d{10}$/.test(accountNumber)
                 : /^\d{10,15}$/.test(accountNumber);
         if (!accountNumberIsDigits || !accountNumberIsValid) {
@@ -148,7 +166,7 @@ function SettingsCenter({
                 ? 'Account number must contain digits only.'
                 : bankCode.toLowerCase() === 'comari'
                     ? 'CBE account numbers must be exactly 13 digits.'
-                    : payoutType === 'mobile'
+                    : payoutType === 'mobile_wallet'
                         ? 'Enter a valid 10-digit phone number for the mobile wallet.'
                         : 'Account number must be between 10 and 15 digits.';
             setAccountNumberError(validationMessage);
@@ -168,7 +186,8 @@ function SettingsCenter({
                     account_name: formData.account_name,
                     bank_code: bankCode,
                     payout_type: payoutType,
-                    provider_id: Number(formData.provider_id),
+                    provider_id: null,
+                    provider_name: selectedProvider?.name || '',
                     account_number: accountNumber,
                     student_id: studentId,
                 }),
@@ -183,6 +202,7 @@ function SettingsCenter({
 
             setPayoutMessage(data?.message || 'Payout account configured successfully.');
             setSellerData?.((previous) => ({ ...previous, account_status: data?.account_status || 'Active' }));
+            onPayoutAccountUpdated?.(data);
         } catch (error) {
             setPayoutError(error.message || 'Unable to configure payout account.');
         } finally {
@@ -537,7 +557,7 @@ function SettingsCenter({
                         <div className="sm:col-span-2 flex gap-2 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Payout type">
                             {[
                                 ['bank', 'Traditional Banks'],
-                                ['mobile', 'Mobile Wallets'],
+                                ['mobile_wallet', 'Mobile Wallets'],
                             ].map(([type, label]) => (
                                 <button
                                     key={type}
@@ -557,18 +577,21 @@ function SettingsCenter({
                         </div>
                         <Field label="Business Name"><input required value={formData.business_name} onChange={(event) => setFormData((previous) => ({ ...previous, business_name: event.target.value }))} className={inputClass} placeholder="Your seller or business name" /></Field>
                         <Field label="Account Name"><input required value={formData.account_name} onChange={(event) => setFormData((previous) => ({ ...previous, account_name: event.target.value }))} className={inputClass} placeholder="Name on bank account" /></Field>
-                        <Field label={payoutType === 'mobile' ? 'Mobile Wallet' : 'Ethiopian Bank'}>
-                            <select required value={formData.provider_id} onChange={(event) => { const provider = providers.find((item) => String(item.id) === event.target.value); setFormData((previous) => ({ ...previous, provider_id: event.target.value, bankCode: provider?.code || '' })); }} className={inputClass}>
-                                <option value="">{loadingProviders ? 'Loading providers...' : payoutProvidersError ? 'Providers unavailable' : providers.length ? (payoutType === 'mobile' ? 'Select your wallet' : 'Select your bank') : 'No active providers'}</option>
+                        <Field label={payoutType === 'mobile_wallet' ? 'Mobile Wallet' : 'Ethiopian Bank'}>
+                            <div className="relative">
+                                <select required value={formData.bankCode} onChange={(event) => { const provider = providers.find((item) => item.code === event.target.value); setFormData((previous) => ({ ...previous, provider_id: '', bankCode: provider?.code || '' })); }} className={inputClass}>
+                                <option value="">{loadingProviders ? 'Loading live provider list...' : payoutProvidersError ? 'Unable to load provider list' : providers.length ? (payoutType === 'mobile_wallet' ? 'Select your wallet' : 'Select your bank') : 'No supported providers returned'}</option>
                                 {providers.map((provider) => (
-                                    <option key={provider.id} value={provider.id} disabled={!provider.is_active}>
-                                        {provider.name}{provider.integration_status !== 'available' ? ` (${provider.integration_status})` : ''}
+                                    <option key={`${provider.code}-${provider.name}`} value={provider.code}>
+                                        {provider.name}
                                     </option>
                                 ))}
-                            </select>
+                                </select>
+                                {loadingProviders && <span className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-slate-300 border-t-emerald-500" aria-label="Loading providers" />}
+                            </div>
                         </Field>
-                        {payoutProvidersError && <p className="sm:col-span-2 text-sm font-semibold text-rose-600">{payoutProvidersError}</p>}
-                        <Field label={payoutType === 'mobile' ? '10-Digit Phone Number' : 'Account Number'}><input required inputMode="numeric" pattern={payoutType === 'mobile' ? '\\d{10}' : undefined} minLength={payoutType === 'mobile' ? 10 : undefined} maxLength={payoutType === 'mobile' ? 10 : 15} value={formData.account_number} onChange={(event) => { setAccountNumberError(''); setFormData((previous) => ({ ...previous, account_number: event.target.value })); }} className={inputClass} placeholder={payoutType === 'mobile' ? 'Enter a valid 10-digit phone number' : 'Enter account number'} /></Field>
+                        {payoutProvidersError && <div className="sm:col-span-2 flex items-center gap-3 text-sm font-semibold text-rose-600"><p>{payoutProvidersError}</p><button type="button" onClick={() => setProviderReloadKey((value) => value + 1)} className="underline underline-offset-2">Retry</button></div>}
+                        <Field label={payoutType === 'mobile_wallet' ? 'Phone Number' : 'Account Number'}><input required inputMode="numeric" pattern={payoutType === 'mobile_wallet' ? '\\d{10}' : undefined} minLength={10} maxLength={payoutType === 'mobile_wallet' ? 10 : 15} value={formData.account_number} onChange={(event) => { setAccountNumberError(''); setFormData((previous) => ({ ...previous, account_number: event.target.value })); }} className={inputClass} placeholder={payoutType === 'mobile_wallet' ? 'Enter a valid 10-digit phone number' : 'Enter a 10-15 digit account number (CBE: 13 digits)'} /></Field>
                         {accountNumberError && <p className="sm:col-span-2 -mt-2 text-sm font-semibold text-rose-600">{accountNumberError}</p>}
                         <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-2"><button type="submit" disabled={isSubmitting} className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">{isSubmitting && <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />}{isSubmitting ? 'Connecting...' : 'Save Payout Account'}</button>{payoutMessage && <p className="text-sm font-semibold text-emerald-600">{payoutMessage}</p>}{payoutError && <p className="text-sm font-semibold text-rose-600">{payoutError}</p>}</div>
                     </form>

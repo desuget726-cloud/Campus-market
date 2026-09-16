@@ -6,6 +6,8 @@ import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
+const DEBIT_TRANSACTION_TYPES = new Set(['wallet withdrawal', 'seller payout', 'product purchase', 'escrow hold']);
 const disputeReasons = [
   'Item not received',
   'Wrong item',
@@ -278,9 +280,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [depositAmount, setDepositAmount] = useState('');
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
+  const [paymentVerificationState, setPaymentVerificationState] = useState('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [payoutAccount, setPayoutAccount] = useState(null);
+  const [payoutAccountLoading, setPayoutAccountLoading] = useState(false);
+  const [withdrawProviderUnavailable, setWithdrawProviderUnavailable] = useState(false);
+  const [returnToWithdrawAfterPayoutSetup, setReturnToWithdrawAfterPayoutSetup] = useState(false);
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [highlights, setHighlights] = useState({ aiPicks: 0, latestListings: 0, cartValue: 0.00, pendingMessages: 0 });
@@ -484,11 +490,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const label = tx.label || tx.type || 'Transaction';
     const amount = Number(tx.amount ?? tx.value ?? 0);
-    const isDeposit = amount >= 0 || String(tx.type || '').toLowerCase().includes('deposit');
-    const sign = isDeposit ? '+' : '-';
+    const type = String(tx.type || '').trim().toLowerCase();
+    const sign = CREDIT_TRANSACTION_TYPES.has(type) ? '+' : '-';
     const formatted = formatETB(Math.abs(amount));
 
     return `${label} — ${sign}${formatted}`;
+  };
+
+  const getTransactionDirection = (tx) => {
+    const type = String(tx?.type || '').trim().toLowerCase();
+    const isCredit = CREDIT_TRANSACTION_TYPES.has(type);
+    const isDebit = DEBIT_TRANSACTION_TYPES.has(type);
+    return {
+      sign: isCredit ? '+' : '-',
+      colorClass: isCredit ? 'text-emerald-600' : isDebit ? 'text-rose-600' : 'text-slate-700',
+    };
   };
 
   const recentTransactionText = transactionLedger[0]
@@ -499,6 +515,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!studentId) return;
 
     const token = getStudentSessionToken();
+    if (!token) {
+      setOrders([]);
+      setHiddenOrdersCount(0);
+      setOrdersLoading(false);
+      setOrdersError('Your student session has expired. Please sign in again.');
+      return;
+    }
     setOrdersLoading(true);
     setOrdersError('');
 
@@ -526,6 +549,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setCart(cartData.items || []);
         const nextCartCount = Number(cartData?.meta?.cart_count ?? cartData?.meta?.cart_item_count ?? cartData?.items?.reduce((sum, item) => sum + (item.quantity || 1), 0) ?? 0);
         setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : 0);
+      }
+
+      if (orderRes.status === 401 || hiddenOrderRes.status === 401) {
+        setOrders([]);
+        setHiddenOrdersCount(0);
+        setOrdersError('Your student session has expired. Please sign in again.');
+        onLogout?.();
+        return;
       }
 
       if (orderRes.ok) {
@@ -820,13 +851,47 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!transactionReference) return;
 
     paymentVerificationStartedRef.current = true;
+    let isMounted = true;
+    let verificationTimeoutId;
+
+    const refreshWalletLedger = async () => {
+      if (!user?.studentId) return;
+      const response = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`);
+      if (!response.ok) return;
+      const data = await response.json().catch(() => ({}));
+      const nextBalance = Number(data?.balance ?? data?.walletBalance ?? data?.wallet_balance ?? 0);
+      const normalizedTransactions = Array.isArray(data?.transactions) ? data.transactions : [];
+      if (!isMounted) return;
+      if (Number.isFinite(nextBalance)) {
+        walletBalanceRef.current = nextBalance;
+        setWalletBalance(nextBalance);
+      }
+      setPaymentInfo((previousPaymentInfo) => ({
+        ...previousPaymentInfo,
+        balance: Number.isFinite(nextBalance) ? nextBalance : previousPaymentInfo.balance,
+        recentTx: data?.recentTx || data?.recent_tx || previousPaymentInfo.recentTx,
+        transactions: normalizedTransactions,
+      }));
+    };
 
     const verifyReturnedPayment = async () => {
-      try {
+      const startedAt = Date.now();
+      let status = 'Pending';
+
+      setPaymentVerificationState('confirming');
+      while (isMounted && Date.now() - startedAt <= 60000 && status === 'Pending') {
+        try {
         const response = await fetch('http://127.0.0.1:8000/api/payment/verify/' + transactionReference);
         const data = await response.json().catch(() => ({}));
+        status = String(data?.status || '').trim().toLowerCase() === 'successful'
+          ? 'Successful'
+          : String(data?.status || '').trim().toLowerCase() === 'failed'
+            ? 'Failed'
+            : 'Pending';
 
-        if (response.ok && String(data?.status || '').trim().toLowerCase() === 'successful') {
+        await refreshWalletLedger();
+
+        if (response.ok && status === 'Successful') {
           const verifiedBalance = Number(data?.wallet_balance ?? data?.walletBalance ?? data?.balance);
           if (Number.isFinite(verifiedBalance)) {
             walletBalanceRef.current = verifiedBalance;
@@ -850,6 +915,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           window.alert(`Payment successful!${formattedAmount} has been added to your wallet.`);
 
           await fetchBuyerDashboardData();
+          if (isMounted) setPaymentVerificationState('successful');
 
           callbackUrl.searchParams.delete('trx_ref');
           callbackUrl.searchParams.delete('tx_ref');
@@ -858,13 +924,45 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             document.title,
             `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
           );
+        } else if (!response.ok || status === 'Failed') {
+          if (isMounted) {
+            setPaymentVerificationState('failed');
+            setDepositError(data?.detail || 'We could not confirm your payment. Please try again.');
+          }
+          break;
+        } else if (Date.now() - startedAt < 60000) {
+          if (isMounted) setPaymentVerificationState('pending');
+          await new Promise((resolve) => {
+            verificationTimeoutId = window.setTimeout(resolve, 5000);
+          });
         }
-      } catch (error) {
-        console.error('Returned payment verification failed:', error);
+        } catch (error) {
+          console.error('Returned payment verification failed:', error);
+          if (isMounted) {
+            setPaymentVerificationState('failed');
+            setDepositError('Unable to confirm your payment right now. Please check back shortly.');
+          }
+          break;
+        }
+      }
+
+      if (isMounted && status === 'Pending') {
+        setPaymentVerificationState('pending_timeout');
+        callbackUrl.searchParams.delete('trx_ref');
+        callbackUrl.searchParams.delete('tx_ref');
+        window.history.replaceState(
+          {},
+          document.title,
+          `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
+        );
       }
     };
 
     verifyReturnedPayment();
+    return () => {
+      isMounted = false;
+      window.clearTimeout(verificationTimeoutId);
+    };
     // The dashboard refresh function is intentionally excluded because it is recreated on render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1860,6 +1958,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
+    if (withdrawProviderUnavailable) {
+      setWithdrawError(`${payoutAccount.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`);
+      return;
+    }
+
     if (!user?.studentId) {
       setWithdrawError('Student ID is missing. Please log in again.');
       return;
@@ -1883,6 +1986,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const data = await res.json();
 
       if (!res.ok) {
+        if (res.status === 503) {
+          setWithdrawProviderUnavailable(true);
+          throw new Error(`${payoutAccount.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`);
+        }
         throw new Error(data.detail || data.message || 'Withdrawal request failed.');
       }
 
@@ -1898,7 +2005,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
       setShowWithdrawModal(false);
       setWithdrawAmount('');
-      await fetchWalletBalance();
     } catch (err) {
       console.error('Withdrawal failed:', err);
       setWithdrawError(err.message || 'Could not process the withdrawal.');
@@ -1907,16 +2013,41 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
+  const refreshPayoutAccount = async () => {
+    const token = user?.access_token || user?.accessToken || '';
+    if (!token) {
+      setPayoutAccount(null);
+      setWithdrawProviderUnavailable(false);
+      return null;
+    }
+
+    setPayoutAccountLoading(true);
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/student/seller/payout-account', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.detail || 'Unable to load payout account.');
+      const account = data?.account || null;
+      setPayoutAccount(account);
+      setWithdrawProviderUnavailable(Boolean(account && account.provider_is_available === false));
+      setWithdrawError(account?.provider_is_available === false
+        ? `${account.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`
+        : '');
+      return account;
+    } catch (error) {
+      setPayoutAccount(null);
+      setWithdrawProviderUnavailable(false);
+      console.error('Payout account fetch failed:', error);
+      return null;
+    } finally {
+      setPayoutAccountLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!showWithdrawModal) return undefined;
-    const token = user?.access_token || user?.accessToken || '';
-    if (!token) return undefined;
-    fetch('http://127.0.0.1:8000/api/student/seller/payout-account', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((response) => response.json())
-      .then((data) => setPayoutAccount(data?.account || null))
-      .catch(() => setPayoutAccount(null));
+    refreshPayoutAccount();
     return undefined;
   }, [showWithdrawModal, user]);
 
@@ -3996,7 +4127,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <p className="text-xs text-slate-500 font-semibold uppercase">Recent Transaction</p>
                               <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600 border border-slate-200">Live</span>
                             </div>
-                            <p className="text-md font-semibold text-slate-800 mt-2">{recentTransactionText}</p>
+                            {transactionLedger[0] ? (() => {
+                              const recentTransaction = transactionLedger[0];
+                              const amount = Number(recentTransaction.amount ?? recentTransaction.value ?? 0);
+                              const { sign, colorClass } = getTransactionDirection(recentTransaction);
+                              return (
+                                <p className="text-md mt-2 font-semibold text-slate-800">
+                                  {recentTransaction.label || recentTransaction.type || 'Transaction'} — <span className={colorClass}>{sign}{formatETB(Math.abs(amount))}</span>
+                                </p>
+                              );
+                            })() : (
+                              <p className="text-md mt-2 font-semibold text-slate-800">{recentTransactionText}</p>
+                            )}
                           </div>
                         </div>
 
@@ -4013,7 +4155,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             ) : (
                               transactionLedger.map((tx) => {
                                 const amount = Number(tx.amount ?? tx.value ?? 0);
-                                const isDeposit = amount >= 0;
+                                const { sign, colorClass } = getTransactionDirection(tx);
 
                                 return (
                                   <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -4027,8 +4169,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       </span>
                                     </div>
                                     <div className="mt-3 flex items-center justify-between">
-                                      <span className={`text-lg font-black ${isDeposit ? 'text-emerald-600' : 'text-slate-900'}`}>
-                                        {isDeposit ? '+' : '-'}{formatETB(Math.abs(amount))}
+                                      <span className={`text-lg font-black ${colorClass}`}>
+                                        {sign}{formatETB(Math.abs(amount))}
                                       </span>
                                       <span className="text-[11px] font-medium text-slate-500">Hash: {tx.hash || 'N/A'}</span>
                                     </div>
@@ -4056,6 +4198,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <div>
                             <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Deposit via Chapa</h3>
                             <p className="text-sm text-slate-500">Top up your wallet securely through Chapa checkout.</p>
+                            {paymentVerificationState === 'confirming' && <p className="mt-3 rounded-xl bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-700">Confirming your payment...</p>}
+                            {paymentVerificationState === 'pending' && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">Your payment is still being confirmed...</p>}
+                            {paymentVerificationState === 'pending_timeout' && <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">We're still confirming — check back shortly.</p>}
                             <form onSubmit={handleDepositSubmit} className="mt-5 space-y-4">
                               <div>
                                 <label className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
@@ -4099,6 +4244,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 myListings={myListings}
                 setMyListings={setMyListings}
                 setSellerData={setSellerData}
+                onPayoutAccountUpdated={async () => {
+                  const account = await refreshPayoutAccount();
+                  if (returnToWithdrawAfterPayoutSetup && account) {
+                    setReturnToWithdrawAfterPayoutSetup(false);
+                    setShowWithdrawModal(true);
+                  }
+                }}
                 onAddProduct={() => {
                   resetProductForm();
                   setShowProductModal(true);
@@ -5107,6 +5259,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   step="0.01"
                   value={withdrawAmount}
                   onChange={(event) => setWithdrawAmount(event.target.value)}
+                  disabled={payoutAccountLoading || !payoutAccount?.id || withdrawProviderUnavailable}
                   placeholder="Enter withdrawal amount"
                   className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
@@ -5114,7 +5267,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 {payoutAccount ? (
-                  <><span className="font-bold">Payout account:</span> {payoutAccount.provider_name || 'Configured provider'} ({payoutAccount.payout_type === 'wallet' ? 'Mobile Wallet' : 'Bank'})</>
+                  <>
+                    <span className="font-bold">Payout account:</span> {payoutAccount.provider_name || 'Configured provider'} ({payoutAccount.payout_type === 'mobile_wallet' || payoutAccount.payout_type === 'wallet' ? 'Mobile Wallet' : 'Bank'})
+                    {payoutAccount.account_last4 && <span className="ml-1">ending in {payoutAccount.account_last4}</span>}
+                  </>
                 ) : (
                   <span>Set up an active payout account in Account Settings before withdrawing.</span>
                 )}
@@ -5125,12 +5281,19 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   Insufficient wallet balance for this withdrawal.
                 </p>
               )}
-              {withdrawError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{withdrawError}</p>}
+              {withdrawProviderUnavailable ? (
+                <div className="space-y-3">
+                  <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                    ⚠️ {payoutAccount?.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.
+                  </p>
+                  <button type="button" onClick={() => { setReturnToWithdrawAfterPayoutSetup(true); setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('payout'); }} className="font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800">Change Payout Method</button>
+                </div>
+              ) : withdrawError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{withdrawError}</p>}
 
               <button
                 type="submit"
-                disabled={withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
-                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                disabled={payoutAccountLoading || !payoutAccount?.id || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
+                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
               >
                 {withdrawLoading ? 'Processing...' : 'Submit Withdrawal'}
               </button>
