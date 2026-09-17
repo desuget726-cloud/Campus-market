@@ -306,6 +306,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
   const [showProductModal, setShowProductModal] = useState(false);
+
+  useEffect(() => {
+    if (!showProductModal) return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [showProductModal]);
+
   const [editingProduct, setEditingProduct] = useState(null);
   const [existingProductImages, setExistingProductImages] = useState([]);
   const [newProductImagePreviews, setNewProductImagePreviews] = useState([]);
@@ -355,6 +367,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [disputeOrderId, setDisputeOrderId] = useState(null);
   const [disputeReason, setDisputeReason] = useState('');
   const [disputeDescription, setDisputeDescription] = useState('');
+  const [disputeEvidenceFiles, setDisputeEvidenceFiles] = useState([]);
   const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
   const [disputeFeedback, setDisputeFeedback] = useState('');
   const [receiptState, setReceiptState] = useState({});
@@ -1805,13 +1818,19 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setDisputeFeedback('');
     try {
       const token = user?.access_token || user?.accessToken || '';
+      const formData = new FormData();
+      formData.append('reason', reason);
+      formData.append('description', description);
+      (disputeEvidenceFiles || []).forEach((file) => {
+        formData.append('evidence_images', file);
+      });
+
       const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${targetOrderId}/dispute`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ reason, description }),
+        body: formData,
       });
 
       if (!response.ok) {
@@ -1829,6 +1848,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setDisputeOrderId(null);
       setDisputeReason('');
       setDisputeDescription('');
+      setDisputeEvidenceFiles([]);
       setDisputeFeedback('Dispute submitted. Status: Open.');
     } catch (error) {
       console.error('Error raising dispute:', error);
@@ -3506,6 +3526,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     setDisputeOrderId(order.id);
                     setDisputeReason('');
                     setDisputeDescription('');
+                    setDisputeEvidenceFiles([]);
                     setDisputeFeedback('');
                   }}
                   onConfirmReceived={handleConfirmItemReceived}
@@ -3527,7 +3548,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-600">Order dispute</p>
                       <h4 id="dispute-modal-title" className="mt-2 text-2xl font-bold text-slate-900">Why are you raising a dispute?</h4>
                     </div>
-                    <button type="button" onClick={() => setDisputeOrderId(null)} className="rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
+                    <button type="button" onClick={() => { setDisputeOrderId(null); setDisputeEvidenceFiles([]); }} className="rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
                   </div>
                   <label className="mt-5 block text-sm font-semibold text-slate-700" htmlFor="dispute-reason">Reason</label>
                   <select id="dispute-reason" required value={disputeReason} onChange={(event) => setDisputeReason(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white">
@@ -3536,10 +3557,36 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   </select>
                   <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="dispute-description">Description/details</label>
                   <textarea id="dispute-description" required rows="5" value={disputeDescription} onChange={(event) => setDisputeDescription(event.target.value)} placeholder="Describe the issue with this order..." className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white" />
+                  <div className="mt-4">
+                    <label className="block text-sm font-semibold text-slate-700">Evidence images</label>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(event) => setDisputeEvidenceFiles(Array.from(event.target.files || []))}
+                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700"
+                    />
+                    {disputeEvidenceFiles.length > 0 && (
+                      <div className="mt-3 grid grid-cols-3 gap-2">
+                        {disputeEvidenceFiles.map((file, index) => (
+                          <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                            <img src={URL.createObjectURL(file)} alt={`Dispute evidence preview ${index + 1}`} className="h-20 w-full object-cover" />
+                            <button
+                              type="button"
+                              onClick={() => setDisputeEvidenceFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index))}
+                              className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   {disputeFeedback && <p className="mt-3 rounded-2xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{disputeFeedback}</p>}
                   <p className="mt-2 text-xs text-slate-500">An Admin will review the case before the funds are refunded or released.</p>
                   <div className="mt-5 flex justify-end gap-3">
-                    <button type="button" onClick={() => setDisputeOrderId(null)} className="rounded-full border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
+                    <button type="button" onClick={() => { setDisputeOrderId(null); setDisputeEvidenceFiles([]); }} className="rounded-full border border-slate-200 px-5 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
                     <button type="submit" disabled={isSubmittingDispute || !disputeReason.trim() || !disputeDescription.trim()} className="rounded-full bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{isSubmittingDispute ? 'Submitting...' : 'Submit Dispute'}</button>
                   </div>
                 </form>
@@ -5411,7 +5458,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       {showProductModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
-          <div className="w-full max-w-3xl overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+          <div className="w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
               <div>
                 <h2 className="text-xl font-bold text-slate-950">{editingProduct ? 'Edit Product' : 'List a New Product'}</h2>
@@ -5429,7 +5476,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               </button>
             </div>
 
-            <form onSubmit={handleAddProductSubmit} className="space-y-5 px-6 py-6">
+            <form onSubmit={handleAddProductSubmit} className="max-h-[calc(90vh-7rem)] overflow-y-auto overflow-x-hidden px-6 py-6">
               {editingProduct && (
                 <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                   <p className="text-sm font-bold text-emerald-900">AI Seller Advisor Tip</p>

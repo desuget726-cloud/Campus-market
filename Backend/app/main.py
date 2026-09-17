@@ -1491,6 +1491,11 @@ def _validate_product_stock_status(stock: int, product_status: str) -> None:
         )
 
 
+def _should_show_in_my_products(status: Optional[object]) -> bool:
+    normalized_status = str(status or "").strip().lower()
+    return normalized_status != "sold"
+
+
 def _restock_product_for_order(product: Product, order: Order) -> None:
     product.stock = int(getattr(product, "stock", 0) or 0) + int(getattr(order, "quantity", 1) or 1)
     if product.stock > 0:
@@ -4969,7 +4974,8 @@ def get_student_listings(
     listings = (
         db.query(Product)
         .filter(
-            (Product.seller == student.student_id) | (Product.seller == student.name)
+            (Product.seller == student.student_id) | (Product.seller == student.name),
+            func.coalesce(func.lower(func.trim(Product.status)), "").notilike("sold"),
         )
         .order_by(Product.created_at.desc())
         .all()
@@ -5011,12 +5017,16 @@ def get_seller_dashboard_data(
 
     seller_filter = (Product.seller == student.student_id) | (Product.seller == student.name)
 
-    listings = db.query(Product).filter(seller_filter).order_by(Product.created_at.desc()).all()
+    all_listings = db.query(Product).filter(seller_filter).order_by(Product.created_at.desc()).all()
+    listings = [
+        listing for listing in all_listings
+        if _should_show_in_my_products(getattr(listing, "status", None))
+    ]
     received_orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
         (Product.seller == student.student_id) | (Product.seller == student.name)
     ).order_by(Order.created_at.desc()).all()
 
-    listing_statuses = [str(listing.status or "Pending").strip().lower() for listing in listings]
+    listing_statuses = [str(listing.status or "Pending").strip().lower() for listing in all_listings]
     active_listings = sum(status in {"approved", "active"} for status in listing_statuses)
     pending_listings = sum(status in {"pending", "under review", "under_review"} for status in listing_statuses)
     sold_listings = sum(status == "sold" for status in listing_statuses)
@@ -5064,7 +5074,7 @@ def get_seller_dashboard_data(
     return {
         "account_status": payout_account.account_status if payout_account else "Pending",
         "stats": {
-            "total_listings": len(listings),
+            "total_listings": len(all_listings),
             "active_listings": active_listings,
             "pending_listings": pending_listings,
             "sold_listings": sold_listings,
@@ -7953,9 +7963,186 @@ DISPUTE_REASONS = {
     "Payment/order problem",
 }
 ACTIVE_DISPUTE_STATUSES = {"OPEN", "UNDER_REVIEW"}
+DISPUTE_ARCHIVE_THRESHOLD_DAYS = 1
+
+
+def _is_archived_dispute(dispute: Dispute) -> bool:
+    if str(dispute.status or "").upper() != "RESOLVED":
+        return False
+    if not dispute.resolved_at:
+        return False
+    age_days = (datetime.now(timezone.utc) - dispute.resolved_at).total_seconds() / (60 * 60 * 24)
+    return age_days >= DISPUTE_ARCHIVE_THRESHOLD_DAYS
+
+
+def _dispute_resolution_label(dispute: Dispute) -> str:
+    order_status = str(getattr(dispute.order, "status", "") if dispute.order else getattr(dispute, "previous_order_status", "") or "").strip().lower()
+    resolution = str(dispute.resolution or "").strip().upper()
+
+    if order_status in {"refunded", "returned", "refund", "return"}:
+        return "Resolved - Refunded"
+    if order_status in {"cancelled", "canceled", "cancel"}:
+        return "Resolved - Order Cancelled"
+    if order_status in {"completed", "successful", "sold", "delivered"}:
+        return "Resolved - Completed"
+    if resolution == "BUYER":
+        return "Resolved - Refunded"
+    if resolution == "SELLER":
+        return "Resolved - Completed"
+    if resolution == "CANCELLED":
+        return "Resolved - Order Cancelled"
+    if str(dispute.status or "").upper() == "RESOLVED":
+        return "Resolved"
+    return str(dispute.status or "OPEN").title()
+
+
+def _normalize_dispute_evidence_value(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return []
+        try:
+            parsed = json.loads(trimmed)
+        except (TypeError, ValueError):
+            return [trimmed]
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if item]
+        if isinstance(parsed, str):
+            return [parsed] if parsed.strip() else []
+        return []
+    return [str(value)]
+
+
+def _prepare_dispute_evidence_value(
+    evidence_value: Optional[Any],
+    uploaded_files: Optional[List[Any]] = None,
+    *,
+    db: Optional[Session] = None,
+    static_dir: str = STATIC_DIR,
+    now: Optional[Callable[[], datetime]] = None,
+    save_file: Optional[Callable[[str, Any], None]] = None,
+) -> Optional[str]:
+    files = uploaded_files or []
+    if files:
+        urls = []
+        for uploaded_file in files:
+            filename = getattr(uploaded_file, "filename", None) or ""
+            if not filename:
+                continue
+            file_obj = getattr(uploaded_file, "file", None)
+            if file_obj is None:
+                continue
+            file_ext = os.path.splitext(filename)[1].lower()
+            allowed_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".jfif"}
+            if file_ext not in allowed_extensions:
+                raise HTTPException(status_code=400, detail="Invalid evidence image format.")
+            file_obj.seek(0, os.SEEK_END)
+            file_size = file_obj.tell()
+            file_obj.seek(0)
+            max_evidence_size = 5 * 1024 * 1024
+            if db is not None:
+                max_evidence_size = _parse_size_bytes(_get_setting_value(
+                    db,
+                    "marketplace",
+                    "maxImageSize",
+                    DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImageSize"],
+                ))
+            if file_size > max_evidence_size:
+                raise HTTPException(status_code=400, detail="Evidence image exceeds the maximum allowed size.")
+            current_time = (now or (lambda: datetime.now(timezone.utc)))()
+            unique_filename = f"{current_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{file_ext}"
+            save_path = os.path.join(static_dir, unique_filename)
+            if save_file is not None:
+                save_file(save_path, file_obj)
+            else:
+                with open(save_path, "wb") as buffer:
+                    shutil.copyfileobj(file_obj, buffer)
+            urls.append(f"http://127.0.0.1:8000/static/uploads/{unique_filename}")
+        return json.dumps(urls, ensure_ascii=False) if urls else None
+
+    if evidence_value is None:
+        return None
+    candidate = str(evidence_value).strip()
+    return candidate if candidate else None
+
+
+def _format_dispute_timestamp(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _derived_dispute_thread(dispute: Dispute) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    buyer_message = str(dispute.description or "").strip()
+    if buyer_message:
+        entries.append({
+            "id": f"buyer-{dispute.id}-initial",
+            "sender": "Buyer",
+            "role": "buyer",
+            "message": buyer_message,
+            "created_at": _format_dispute_timestamp(getattr(dispute, "created_at", None)),
+            "attachments": [],
+        })
+
+    raw_response = getattr(dispute, "seller_response", None)
+    if raw_response is None:
+        return entries
+
+    response_text = str(raw_response).strip()
+    if not response_text:
+        return entries
+
+    try:
+        parsed_response = json.loads(response_text)
+    except (TypeError, ValueError):
+        parsed_response = None
+
+    if isinstance(parsed_response, list):
+        normalized = []
+        for item in parsed_response:
+            if not isinstance(item, dict):
+                continue
+            normalized.append({
+                "id": item.get("id") or f"seller-{dispute.id}-{len(normalized)}",
+                "sender": item.get("sender") or ("Seller" if str(item.get("role") or "").lower() == "seller" else "Buyer"),
+                "role": str(item.get("role") or "seller").lower(),
+                "message": str(item.get("message") or item.get("text") or "").strip(),
+                "created_at": item.get("created_at") or _format_dispute_timestamp(getattr(dispute, "updated_at", None)),
+                "attachments": _normalize_dispute_evidence_value(item.get("attachments") or item.get("evidence") or []),
+            })
+        if normalized:
+            return entries + [item for item in normalized if str(item.get("message") or "").strip()]
+
+    seller_message = {
+        "id": f"seller-{dispute.id}-response",
+        "sender": "Seller",
+        "role": "seller",
+        "message": response_text,
+        "created_at": _format_dispute_timestamp(getattr(dispute, "updated_at", None)) or _format_dispute_timestamp(getattr(dispute, "created_at", None)),
+        "attachments": _normalize_dispute_evidence_value(getattr(dispute, "seller_evidence", None)),
+    }
+    return entries + [seller_message]
 
 
 def _serialize_dispute(dispute: Dispute, *, include_parties: bool = False) -> dict:
+    dispute_thread = _derived_dispute_thread(dispute)
+    latest_seller_response = ""
+    if dispute_thread:
+        for item in reversed(dispute_thread):
+            if str(item.get("role") or "").lower() == "seller":
+                latest_seller_response = str(item.get("message") or "").strip()
+                break
+    if not latest_seller_response:
+        latest_seller_response = str(dispute.seller_response or "").strip()
     payload = {
         "id": dispute.id,
         "order_id": dispute.order_id,
@@ -7964,13 +8151,15 @@ def _serialize_dispute(dispute: Dispute, *, include_parties: bool = False) -> di
         "reason": dispute.reason,
         "description": dispute.description,
         "evidence_image": dispute.evidence_image,
-        "seller_response": dispute.seller_response,
+        "seller_response": latest_seller_response,
         "seller_evidence": dispute.seller_evidence,
+        "dispute_thread": dispute_thread,
         "status": dispute.status,
         "resolution": dispute.resolution,
-        "created_at": dispute.created_at.isoformat() if dispute.created_at else None,
-        "updated_at": dispute.updated_at.isoformat() if dispute.updated_at else None,
-        "resolved_at": dispute.resolved_at.isoformat() if dispute.resolved_at else None,
+        "resolution_label": _dispute_resolution_label(dispute),
+        "created_at": _format_dispute_timestamp(getattr(dispute, "created_at", None)),
+        "updated_at": _format_dispute_timestamp(getattr(dispute, "updated_at", None)),
+        "resolved_at": _format_dispute_timestamp(getattr(dispute, "resolved_at", None)),
     }
     if include_parties:
         payload["buyer"] = {"student_id": dispute.buyer.student_id, "name": dispute.buyer.name, "email": dispute.buyer.email} if dispute.buyer else None
@@ -7994,9 +8183,9 @@ def _serialize_dispute(dispute: Dispute, *, include_parties: bool = False) -> di
 
 @app.post("/api/student/orders/{order_id}/disputes")
 @app.post("/api/student/orders/{order_id}/dispute")
-def raise_order_dispute(
+async def raise_order_dispute(
+    request: Request,
     order_id: int,
-    payload: DisputeCreateRequest,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
@@ -8007,8 +8196,34 @@ def raise_order_dispute(
     ).with_for_update().first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
-    reason = str(payload.reason or "").strip()
-    description = str(payload.description or "").strip()
+
+    reason = ""
+    description = ""
+    evidence_value = None
+    uploaded_files = []
+    content_type = request.headers.get("content-type", "").lower()
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        reason = str(form.get("reason") or "").strip()
+        description = str(form.get("description") or "").strip()
+        evidence_value = form.get("evidence_image")
+        uploaded_files = [value for value in form.getlist("evidence_images") if getattr(value, "filename", None)]
+        if not uploaded_files and getattr(form.get("evidence_image"), "filename", None):
+            uploaded_files = [form.get("evidence_image")]
+    else:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        if payload is None:
+            raise HTTPException(status_code=400, detail="Dispute payload is required.")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Request body must be an object.")
+        reason = str(payload.get("reason") or "").strip()
+        description = str(payload.get("description") or "").strip()
+        evidence_value = payload.get("evidence_image")
+
     if reason not in DISPUTE_REASONS:
         raise HTTPException(status_code=400, detail="Select a valid dispute reason.")
     if not description:
@@ -8035,13 +8250,14 @@ def raise_order_dispute(
     if active_dispute:
         raise HTTPException(status_code=409, detail="This order already has an active dispute.")
 
+    dispute_evidence = _prepare_dispute_evidence_value(evidence_value, uploaded_files, db=db)
     dispute = Dispute(
         order_id=order.id,
         buyer_id=buyer.student_id,
         seller_id=seller.student_id,
         reason=reason,
         description=description,
-        evidence_image=(str(payload.evidence_image).strip() if payload.evidence_image else None),
+        evidence_image=dispute_evidence,
         previous_order_status=order.status,
         status="OPEN",
     )
@@ -8097,18 +8313,40 @@ def get_buyer_order_dispute(
 
 
 @app.post("/api/disputes/{dispute_id}/response")
-def respond_to_dispute(
+async def respond_to_dispute(
+    request: Request,
     dispute_id: int,
-    payload: DisputeResponseRequest,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     seller = _student_from_authorization(authorization, db)
-    response_text = str(payload.response or "").strip()
+
+    response_text = ""
+    evidence_value = None
+    uploaded_files = []
+
+    content_type = request.headers.get("content-type", "").lower()
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        response_text = str(form.get("response") or "").strip()
+        evidence_value = form.get("evidence")
+        uploaded_files = [value for value in form.getlist("evidence_images") if getattr(value, "filename", None)]
+    else:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Request body must be an object.")
+        response_text = str(payload.get("response") or "").strip()
+        evidence_value = payload.get("evidence")
+
     if not response_text:
         raise HTTPException(status_code=400, detail="A response is required.")
+    if len(response_text) < 20:
+        raise HTTPException(status_code=400, detail="Response must be at least 20 characters long.")
     if len(response_text) > 5000:
         raise HTTPException(status_code=400, detail="Response must be 5000 characters or fewer.")
+
+    evidence_value = _prepare_dispute_evidence_value(evidence_value, uploaded_files, db=db)
+
     dispute = db.query(Dispute).filter(Dispute.id == dispute_id).with_for_update().first()
     if not dispute:
         raise HTTPException(status_code=404, detail="Dispute not found.")
@@ -8116,8 +8354,22 @@ def respond_to_dispute(
         raise HTTPException(status_code=403, detail="Only the seller for this dispute can respond.")
     if dispute.status not in ACTIVE_DISPUTE_STATUSES:
         raise HTTPException(status_code=409, detail="This dispute is no longer accepting responses.")
-    dispute.seller_response = response_text
-    dispute.seller_evidence = (str(payload.evidence).strip() if payload.evidence else None)
+
+    dispute_thread = _derived_dispute_thread(dispute)
+    seller_message = {
+        "id": f"seller-{dispute.id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+        "sender": "Seller",
+        "role": "seller",
+        "message": response_text,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "attachments": _normalize_dispute_evidence_value(evidence_value),
+    }
+    if dispute_thread and dispute_thread[-1].get("role") == "seller":
+        dispute_thread[-1] = seller_message
+    else:
+        dispute_thread.append(seller_message)
+    dispute.seller_response = json.dumps(dispute_thread, ensure_ascii=False)
+    dispute.seller_evidence = evidence_value
     dispute.status = "UNDER_REVIEW"
     buyer = db.query(Student).filter(Student.student_id == dispute.buyer_id).first()
     if buyer:
@@ -8135,12 +8387,140 @@ def _require_admin(authorization: Optional[str], session_token: Optional[str], d
 
 @app.get("/api/seller/disputes")
 def get_seller_disputes(
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    date_range: Optional[str] = Query(None, alias="dateRange"),
+    archived: Optional[bool] = Query(False),
+    limit: Optional[int] = Query(20),
+    offset: Optional[int] = Query(0),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     seller = _student_from_authorization(authorization, db)
-    disputes = db.query(Dispute).filter(Dispute.seller_id == seller.student_id).order_by(Dispute.created_at.desc()).all()
-    return [_serialize_dispute(item, include_parties=True) for item in disputes]
+    query = db.query(Dispute).filter(Dispute.seller_id == seller.student_id)
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status in {"active", "open", "pending"}:
+        query = query.filter(Dispute.status.in_(ACTIVE_DISPUTE_STATUSES))
+    elif normalized_status in {"resolved", "closed"}:
+        query = query.filter(Dispute.status == "RESOLVED")
+
+    normalized_search = str(search or "").strip()
+    if normalized_search:
+        term = f"%{normalized_search}%"
+        query = query.join(Order, Order.id == Dispute.order_id).join(Product, Product.id == Order.product_id).filter(
+            or_(
+                Order.id.cast(String).like(term),
+                Product.title.ilike(term),
+                Dispute.reason.ilike(term),
+            )
+        )
+
+    normalized_range = str(date_range or "").strip().lower()
+    if normalized_range in {"30d", "30", "30_days", "30days"}:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        query = query.filter(Dispute.created_at >= cutoff)
+    elif normalized_range in {"90d", "90", "90_days", "90days"}:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        query = query.filter(Dispute.created_at >= cutoff)
+    elif normalized_range in {"180d", "180", "6m", "6months", "6_months"}:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=180)
+        query = query.filter(Dispute.created_at >= cutoff)
+    elif normalized_range in {"all", ""}:
+        pass
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=DISPUTE_ARCHIVE_THRESHOLD_DAYS)
+    if archived:
+        query = query.filter(Dispute.status == "RESOLVED")
+        query = query.filter(Dispute.resolved_at.isnot(None))
+        query = query.filter(Dispute.resolved_at < cutoff)
+    else:
+        query = query.filter(
+            or_(
+                Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
+                Dispute.status != "RESOLVED",
+                Dispute.resolved_at.is_(None),
+                Dispute.resolved_at >= cutoff,
+            )
+        )
+
+    total = query.count()
+    disputes = query.order_by(Dispute.created_at.desc()).offset(offset or 0).limit(limit or 20).all()
+    return {
+        "items": [_serialize_dispute(item, include_parties=True) for item in disputes],
+        "total": total,
+        "limit": limit or 20,
+        "offset": offset or 0,
+        "archived": bool(archived),
+    }
+
+
+@app.get("/api/student/disputes")
+def get_student_disputes(
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    date_range: Optional[str] = Query(None, alias="dateRange"),
+    archived: Optional[bool] = Query(False),
+    limit: Optional[int] = Query(20),
+    offset: Optional[int] = Query(0),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    buyer = _student_from_authorization(authorization, db)
+    query = db.query(Dispute).filter(Dispute.buyer_id == buyer.student_id)
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status in {"active", "open", "pending"}:
+        query = query.filter(Dispute.status.in_(ACTIVE_DISPUTE_STATUSES))
+    elif normalized_status in {"resolved", "closed"}:
+        query = query.filter(Dispute.status == "RESOLVED")
+
+    normalized_search = str(search or "").strip()
+    if normalized_search:
+        term = f"%{normalized_search}%"
+        query = query.join(Order, Order.id == Dispute.order_id).join(Product, Product.id == Order.product_id).filter(
+            or_(
+                Order.id.cast(String).like(term),
+                Product.title.ilike(term),
+                Dispute.reason.ilike(term),
+            )
+        )
+
+    normalized_range = str(date_range or "").strip().lower()
+    if normalized_range in {"30d", "30", "30_days", "30days"}:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        query = query.filter(Dispute.created_at >= cutoff)
+    elif normalized_range in {"90d", "90", "90_days", "90days"}:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        query = query.filter(Dispute.created_at >= cutoff)
+    elif normalized_range in {"180d", "180", "6m", "6months", "6_months"}:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=180)
+        query = query.filter(Dispute.created_at >= cutoff)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=DISPUTE_ARCHIVE_THRESHOLD_DAYS)
+    if archived:
+        query = query.filter(Dispute.status == "RESOLVED")
+        query = query.filter(Dispute.resolved_at.isnot(None))
+        query = query.filter(Dispute.resolved_at < cutoff)
+    else:
+        query = query.filter(
+            or_(
+                Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
+                Dispute.status != "RESOLVED",
+                Dispute.resolved_at.is_(None),
+                Dispute.resolved_at >= cutoff,
+            )
+        )
+
+    total = query.count()
+    disputes = query.order_by(Dispute.created_at.desc()).offset(offset or 0).limit(limit or 20).all()
+    return {
+        "items": [_serialize_dispute(item, include_parties=True) for item in disputes],
+        "total": total,
+        "limit": limit or 20,
+        "offset": offset or 0,
+        "archived": bool(archived),
+    }
 
 
 @app.get("/api/admin/disputes")
@@ -8199,16 +8579,16 @@ def resolve_dispute(
         if decision == "BUYER":
             amount = refund_escrow_funds(order.id, db)
             order.status = "Refunded"
+            dispute.resolution = "REFUNDED"
             _restock_product_for_order(product, order)
             resolution_message = f"Dispute #{dispute.id} resolved in your favor. {amount} ETB was refunded to your wallet."
         else:
             order.status = "Completed"
-            dispute.status = "RESOLVED"
+            dispute.resolution = "COMPLETED"
             amount = release_escrow_funds(order.id, db)
             _sync_product_status_with_stock(product)
             resolution_message = f"Dispute #{dispute.id} was resolved in the seller's favor and the order was completed."
         dispute.status = "RESOLVED"
-        dispute.resolution = decision
         dispute.resolved_by = admin.id
         dispute.resolved_at = datetime.now(timezone.utc)
         buyer = db.query(Student).filter(Student.student_id == dispute.buyer_id).first()
@@ -10986,18 +11366,26 @@ def resolve_order_dispute(
             order.status = "Cancelled"
             _restock_product_for_order(product, order)
             resolution_message = f"Dispute for order #{order.id} resolved with a {amount} ETB refund."
+            dispute_resolution = "CANCELLED"
         else:
             amount = release_escrow_funds(order.id, db)
             order.status = "Completed"
             _sync_product_status_with_stock(product)
             resolution_message = f"Dispute for order #{order.id} resolved with seller payout of {amount} ETB."
+            dispute_resolution = "COMPLETED"
 
-        _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order", order_id=dispute.order_id)
+        if active_dispute:
+            active_dispute.resolution = dispute_resolution
+            active_dispute.status = "RESOLVED"
+            active_dispute.resolved_by = admin.id
+            active_dispute.resolved_at = datetime.now(timezone.utc)
+
+        _dispatch_student_notification(db, buyer, "Dispute Resolved", resolution_message, "order", order_id=order.id)
         seller = db.query(Student).filter(
             (Student.student_id == product.seller) | (Student.name == product.seller)
         ).first() if product.seller else None
         if seller and seller.student_id != buyer.student_id:
-            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order", order_id=dispute.order_id)
+            _dispatch_student_notification(db, seller, "Dispute Resolved", resolution_message, "order", order_id=order.id)
         _notify_admins_of_order_event(
             db,
             order,

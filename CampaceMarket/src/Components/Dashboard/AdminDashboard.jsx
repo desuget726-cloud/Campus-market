@@ -200,7 +200,7 @@ const exportPDFFile = (fileName, reportName, columns, rows) => {
   const pdfDocument = new jsPDF();
   pdfDocument.setFontSize(18);
   pdfDocument.setTextColor(15, 23, 42);
-  pdfDocument.text(`Campus Marketplace — ${reportName}`, 14, 18);
+  pdfDocument.text(`DG Market — ${reportName}`, 14, 18);
   pdfDocument.setFontSize(9);
   pdfDocument.setTextColor(100, 116, 139);
   pdfDocument.text(`Generated: ${new Date().toLocaleString()} | Total records: ${rows.length}`, 14, 26);

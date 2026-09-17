@@ -23,12 +23,111 @@ const evidenceUrl = (value) => {
   return `${API_BASE}${value.startsWith('/') ? value : `/${value}`}`;
 };
 
+const normalizeEvidenceList = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean).map(String);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).map(String);
+      if (typeof parsed === 'string' && parsed.trim()) return [parsed];
+    } catch {
+      return [trimmed];
+    }
+    return [trimmed];
+  }
+  return [String(value)];
+};
+
+const normalizeDisputeThread = (dispute) => {
+  const parseThreadPayload = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value !== 'string') return [];
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const rawThread = parseThreadPayload(dispute?.dispute_thread).length > 0
+    ? parseThreadPayload(dispute?.dispute_thread)
+    : parseThreadPayload(dispute?.thread).length > 0
+      ? parseThreadPayload(dispute?.thread)
+      : [];
+
+  if (rawThread.length > 0) {
+    return rawThread
+      .filter((entry) => entry && (entry.message || entry.text || entry.body))
+      .map((entry, index) => ({
+        id: entry.id || `${(entry.sender || entry.role || 'message').toLowerCase()}-${index}`,
+        sender: String(entry.sender || entry.author || (entry.role === 'buyer' ? 'Buyer' : 'Seller')),
+        role: String(entry.role || (String(entry.sender || '').toLowerCase().includes('buyer') ? 'buyer' : 'seller')).toLowerCase(),
+        message: String(entry.message || entry.text || entry.body || ''),
+        created_at: entry.created_at || dispute.updated_at || dispute.created_at,
+        attachments: normalizeEvidenceList(entry.attachments || entry.evidence || []),
+      }));
+  }
+
+  const thread = [];
+  const buyerMessage = String(dispute?.description || '').trim();
+  if (buyerMessage) {
+    thread.push({
+      id: `buyer-${dispute.id}`,
+      sender: 'Buyer',
+      role: 'buyer',
+      message: buyerMessage,
+      created_at: dispute.created_at,
+      attachments: normalizeEvidenceList(dispute.evidence_image),
+    });
+  }
+
+  const sellerResponseEntries = parseThreadPayload(dispute?.seller_response);
+  if (sellerResponseEntries.length > 0) {
+    sellerResponseEntries.forEach((entry, index) => {
+      if (!entry || !(entry.message || entry.text || entry.body)) return;
+      thread.push({
+        id: entry.id || `seller-${dispute.id}-${index}`,
+        sender: String(entry.sender || entry.author || 'Seller'),
+        role: String(entry.role || 'seller').toLowerCase(),
+        message: String(entry.message || entry.text || entry.body || ''),
+        created_at: entry.created_at || dispute.updated_at || dispute.created_at,
+        attachments: normalizeEvidenceList(entry.attachments || entry.evidence || []),
+      });
+    });
+  } else {
+    const sellerMessage = String(dispute?.seller_response || '').trim();
+    if (sellerMessage && !sellerMessage.startsWith('[')) {
+      thread.push({
+        id: `seller-${dispute.id}`,
+        sender: 'Seller',
+        role: 'seller',
+        message: sellerMessage,
+        created_at: dispute.updated_at || dispute.created_at,
+        attachments: normalizeEvidenceList(dispute.seller_evidence),
+      });
+    }
+  }
+  return thread;
+};
+
 function EvidenceImage({ src, label }) {
-  if (!src) return <p className="text-sm text-slate-500">No evidence image submitted.</p>;
+  const items = normalizeEvidenceList(src);
+  if (!items.length) return <p className="text-sm text-slate-500">No evidence image submitted.</p>;
   return (
-    <a href={evidenceUrl(src)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-      <img src={evidenceUrl(src)} alt={label} className="max-h-64 w-full object-contain" />
-    </a>
+    <div className="grid gap-3 sm:grid-cols-2">
+      {items.map((image, index) => (
+        <a key={`${image}-${index}`} href={evidenceUrl(image)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+          <img src={evidenceUrl(image)} alt={`${label} ${index + 1}`} className="max-h-64 w-full object-contain" />
+        </a>
+      ))}
+    </div>
   );
 }
 
@@ -189,9 +288,21 @@ export default function AdminDisputeReview({ user, onCountChange }) {
           <div><p className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Dispute #{selectedDispute.id}</p><h3 className="mt-2 text-2xl font-black">Order #{selectedDispute.order_id}: {selectedDispute.product?.title || selectedDispute.order?.title}</h3><p className="mt-2 text-sm text-slate-500">Submitted {formatDate(selectedDispute.created_at)} by {selectedDispute.buyer?.name || selectedDispute.buyer_id}</p></div>
           <StatusBadge status={selectedDispute.status} />
         </div>
-        <div className="mt-6 grid gap-5 lg:grid-cols-2">
-          <div className="space-y-4 rounded-2xl bg-slate-50 p-5"><h4 className="font-black">Buyer claim</h4><p className="text-sm leading-6 text-slate-700">{selectedDispute.description}</p><EvidenceImage src={selectedDispute.evidence_image} label="Buyer evidence" /></div>
-          <div className="space-y-4 rounded-2xl bg-slate-50 p-5"><h4 className="font-black">Seller response</h4><p className="text-sm leading-6 text-slate-700">{selectedDispute.seller_response || 'No response submitted.'}</p><EvidenceImage src={selectedDispute.seller_evidence} label="Seller evidence" /></div>
+        <div className="mt-6 space-y-4 rounded-2xl bg-slate-50 p-5">
+          <h4 className="font-black">Dispute conversation</h4>
+          {(() => {
+            const thread = normalizeDisputeThread(selectedDispute);
+            return thread.length ? thread.map((message) => (
+              <div key={message.id} className={`rounded-2xl border p-4 ${message.role === 'buyer' ? 'border-sky-200 bg-sky-50' : 'border-rose-200 bg-rose-50'}`}>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{message.sender}</p>
+                  {message.created_at && <time className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">{formatDate(message.created_at)}</time>}
+                </div>
+                <p className="mt-3 text-sm leading-6 text-slate-700">{message.message}</p>
+                {message.attachments?.length > 0 && <div className="mt-3 grid gap-3 sm:grid-cols-2"><EvidenceImage src={message.attachments} label={`${message.sender} evidence`} /></div>}
+              </div>
+            )) : <p className="text-sm leading-6 text-slate-700">No dispute conversation recorded yet.</p>;
+          })()}
         </div>
         <div className="mt-5 grid gap-4 rounded-2xl border border-slate-200 p-5 sm:grid-cols-3"><div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Order</p><p className="mt-1 font-black">#{selectedDispute.order?.id || selectedDispute.order_id}</p></div><div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Price</p><p className="mt-1 font-black">{selectedDispute.order?.price || 'Unknown'}</p></div><div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Escrow amount</p><p className="mt-1 font-black">{formatMoney(selectedDispute.order?.escrow_amount)}</p></div></div>
         <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" onClick={() => setPendingDecision('BUYER')} className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700">Refund Buyer</button><button type="button" onClick={() => setPendingDecision('SELLER')} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-black text-white hover:bg-emerald-700">Release to Seller</button></div>

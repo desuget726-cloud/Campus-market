@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import OrderDetailsView from "./OrderDetailsView";
 
 const SELLER_IMAGE_PLACEHOLDER =
@@ -60,6 +60,13 @@ function SellerOperationsCenter({
   const [pickupCodes, setPickupCodes] = useState({});
   const [completionState, setCompletionState] = useState({});
   const [disputeResponseState, setDisputeResponseState] = useState({});
+  const [disputeEvidenceFiles, setDisputeEvidenceFiles] = useState({});
+  const [disputeSearch, setDisputeSearch] = useState("");
+  const [disputeStatusFilter, setDisputeStatusFilter] = useState("all");
+  const [disputeDateFilter, setDisputeDateFilter] = useState("all");
+  const [disputeTab, setDisputeTab] = useState("recent");
+  const [expandedDisputes, setExpandedDisputes] = useState({});
+  const [visibleDisputeCount, setVisibleDisputeCount] = useState(10);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [selectedOrderLoading, setSelectedOrderLoading] = useState(false);
   const [selectedOrderError, setSelectedOrderError] = useState("");
@@ -74,11 +81,17 @@ function SellerOperationsCenter({
       "Pending",
   ).toLowerCase();
   const performance = sellerDashboardData?.performance || {};
+  const shouldShowInMyProducts = (status) =>
+    String(status ?? "").trim().toLowerCase() !== "sold";
   const listings = Array.isArray(sellerDashboardData?.my_listings)
     ? sellerDashboardData.my_listings
     : Array.isArray(myListings)
       ? myListings
       : [];
+  const visibleListings = useMemo(
+    () => listings.filter((listing) => shouldShowInMyProducts(listing?.status)),
+    [listings],
+  );
   const orders = Array.isArray(sellerDashboardData?.received_orders)
     ? sellerDashboardData.received_orders
     : Array.isArray(sellerData?.incomingOrders)
@@ -87,7 +100,7 @@ function SellerOperationsCenter({
   const disputes = Array.isArray(sellerDashboardData?.disputes)
     ? sellerDashboardData.disputes
     : [];
-  const viewedProduct = listings.find(
+  const viewedProduct = visibleListings.find(
     (listing) => String(listing.id) === String(viewedProductId),
   );
   const viewedProductOrders = viewedProduct
@@ -144,10 +157,149 @@ function SellerOperationsCenter({
     ),
     sold: Number(dashboardStats.sold_listings ?? calculatedCounts.sold),
   };
-  const pendingOrders = orders.filter(
-    (order) => String(order.status || "Pending").toLowerCase() === "pending",
+
+  const normalizeOrderStatus = (rawStatus) => {
+    const value = String(rawStatus ?? "Pending").trim();
+    const normalized = value.toLowerCase();
+    const aliases = {
+      pending: "pending",
+      "waiting for acceptance": "waiting for acceptance",
+      waiting_acceptance: "waiting for acceptance",
+      accepted: "accepted",
+      processing: "processing",
+      "ready for pickup": "ready for pickup",
+      ready_for_pickup: "ready for pickup",
+      "out for delivery": "ready for pickup",
+      out_for_delivery: "ready for pickup",
+      completed: "completed",
+      success: "completed",
+      successful: "completed",
+      delivered: "completed",
+      sold: "completed",
+      cancelled: "cancelled",
+      canceled: "cancelled",
+      rejected: "cancelled",
+      failed: "cancelled",
+    };
+    return aliases[normalized] || normalized || "pending";
+  };
+
+  const incomingOrderStatuses = new Set([
+    "pending",
+    "waiting for acceptance",
+    "accepted",
+    "processing",
+    "ready for pickup",
+  ]);
+  const completedOrderStatuses = new Set(["completed", "sold"]);
+  const cancelledOrderStatuses = new Set(["cancelled"]);
+
+  const incomingOrders = orders.filter((order) =>
+    incomingOrderStatuses.has(normalizeOrderStatus(order.status)),
   );
-  const topProducts = listings
+  const completedOrders = orders.filter((order) =>
+    completedOrderStatuses.has(normalizeOrderStatus(order.status)),
+  );
+  const pendingActionOrders = incomingOrders.filter((order) => {
+    const normalized = normalizeOrderStatus(order.status);
+    return ["pending", "waiting for acceptance", "accepted"].includes(normalized);
+  });
+
+  const DISPUTE_ARCHIVE_THRESHOLD_DAYS = 1;
+  const isArchivedDispute = (dispute) => {
+    if (String(dispute?.status || "").toUpperCase() !== "RESOLVED") return false;
+    const resolvedAt = getDisputeDate(dispute);
+    if (!resolvedAt) return false;
+    const ageDays = (Date.now() - resolvedAt.getTime()) / (1000 * 60 * 60 * 24);
+    return ageDays >= DISPUTE_ARCHIVE_THRESHOLD_DAYS;
+  };
+  const getDisputeStatusLabel = (dispute) => {
+    const status = String(dispute?.status || "").toUpperCase();
+    if (status === "RESOLVED") return "Resolved";
+    if (status === "UNDER_REVIEW") return "Under Review";
+    if (status === "OPEN") return "Active";
+    return status || "Active";
+  };
+  const getDisputeDate = (dispute) => {
+    const pointedDate = dispute?.resolved_at || dispute?.updated_at || dispute?.created_at;
+    const parsedDate = pointedDate ? new Date(pointedDate) : null;
+    return parsedDate && Number.isFinite(parsedDate.getTime()) ? parsedDate : null;
+  };
+  const sellerDisputes = [...(Array.isArray(disputes) ? disputes : [])].sort(
+    (a, b) => (getDisputeDate(b) || new Date(0)).getTime() - (getDisputeDate(a) || new Date(0)).getTime(),
+  );
+  const archivedDisputes = sellerDisputes.filter(isArchivedDispute);
+  const recentDisputes = sellerDisputes.filter((dispute) => !isArchivedDispute(dispute));
+
+  const filteredDisputes = useMemo(() => {
+    const source = disputeTab === "archived" ? archivedDisputes : recentDisputes;
+    const query = disputeSearch.trim().toLowerCase();
+    const dateCutoff = {
+      all: null,
+      "30d": 30,
+      "90d": 90,
+      "180d": 180,
+    }[disputeDateFilter] || null;
+
+    return source.filter((dispute) => {
+      const status = String(dispute?.status || "").toUpperCase();
+      const matchesStatus =
+        disputeStatusFilter === "all" ||
+        (disputeStatusFilter === "active" && ["OPEN", "UNDER_REVIEW", "PENDING"].includes(status)) ||
+        (disputeStatusFilter === "pending" && ["OPEN", "UNDER_REVIEW", "PENDING"].includes(status)) ||
+        (disputeStatusFilter === "resolved" && status === "RESOLVED");
+      const matchesSearch =
+        !query ||
+        String(dispute?.order_id || "").toLowerCase().includes(query) ||
+        String(dispute?.product?.title || dispute?.order?.title || "").toLowerCase().includes(query) ||
+        String(dispute?.reason || "").toLowerCase().includes(query);
+      const createdAt = getDisputeDate(dispute);
+      const matchesDate =
+        !dateCutoff ||
+        !createdAt ||
+        (Date.now() - createdAt.getTime()) / (1000 * 60 * 60 * 24) <= dateCutoff;
+      return matchesStatus && matchesSearch && matchesDate;
+    });
+  }, [archivedDisputes, disputeDateFilter, disputeSearch, disputeStatusFilter, disputeTab, recentDisputes]);
+
+  useEffect(() => {
+    setVisibleDisputeCount(10);
+  }, [disputeSearch, disputeStatusFilter, disputeDateFilter, disputeTab]);
+
+  const displayedDisputes = filteredDisputes.slice(0, visibleDisputeCount);
+  const hasMoreDisputes = visibleDisputeCount < filteredDisputes.length;
+
+  const getOrderBadgeConfig = (orderStatus) => {
+    const normalized = normalizeOrderStatus(orderStatus);
+
+    if (["pending", "waiting for acceptance", "accepted", "processing", "ready for pickup"].includes(normalized)) {
+      return {
+        label: normalized === "completed" ? "Completed" : normalized === "cancelled" ? "Cancelled" : normalized === "waiting for acceptance" ? "Waiting for Acceptance" : normalized === "ready for pickup" ? "Ready for Pickup" : normalized.charAt(0).toUpperCase() + normalized.slice(1),
+        className: "border border-amber-200 bg-amber-100 text-amber-800",
+      };
+    }
+
+    if (completedOrderStatuses.has(normalized)) {
+      return {
+        label: "Sold",
+        className: "border border-emerald-200 bg-emerald-100 text-emerald-700",
+      };
+    }
+
+    if (cancelledOrderStatuses.has(normalized)) {
+      return {
+        label: "Cancelled",
+        className: "border border-rose-200 bg-rose-100 text-rose-700",
+      };
+    }
+
+    return {
+      label: String(orderStatus || "Pending"),
+      className: "border border-slate-200 bg-slate-100 text-slate-700",
+    };
+  };
+
+  const topProducts = visibleListings
     .map((listing) => {
       const views = Number(listing.views ?? listing.view_count ?? 0);
       const orderCount = Number(
@@ -169,17 +321,20 @@ function SellerOperationsCenter({
     )
     .slice(0, 3);
   const lowConversionProduct =
-    listings.find(
+    visibleListings.find(
       (listing) =>
         Number(listing.views || 0) > 0 &&
         Number(listing.conversion_rate || 0) < 2,
     ) || topProducts[0];
-  const totalViews = listings.reduce(
+  const totalViews = visibleListings.reduce(
     (sum, listing) => sum + Number(listing.views ?? listing.view_count ?? 0),
     0,
   );
   const totalOrders = Number(dashboardStats.received_orders ?? orders.length);
   const productsSold = Number(dashboardStats.sold_listings ?? counts.sold);
+  const totalInventoryCount = Number(
+    dashboardStats.total_listings ?? visibleListings.length + productsSold,
+  );
   const totalRevenue = Number(dashboardStats.completed_revenue ?? 0);
   const conversionRate = totalViews ? (totalOrders / totalViews) * 100 : 0;
   const averageOrderValue = totalOrders ? totalRevenue / totalOrders : 0;
@@ -501,26 +656,34 @@ function SellerOperationsCenter({
     }
   };
 
-  const respondToDispute = async (dispute, responseTextOverride = "") => {
+  const respondToDispute = async (dispute, responseTextOverride = "", evidenceFiles = []) => {
     const state = disputeResponseState[dispute.id] || {};
     const responseText = String(
       responseTextOverride || state.response || "",
     ).trim();
     if (!responseText || state.loading) return;
+    if (responseText.length < 20) {
+      throw new Error("Response must be at least 20 characters long.");
+    }
     setDisputeResponseState((previous) => ({
       ...previous,
       [dispute.id]: { ...state, loading: true, error: "" },
     }));
     try {
+      const formData = new FormData();
+      formData.append("response", responseText);
+      (evidenceFiles || []).forEach((file) => {
+        if (file) formData.append("evidence_images", file);
+      });
+
       const response = await fetch(
         `http://127.0.0.1:8000/api/disputes/${dispute.id}/response`,
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
             Authorization: `Bearer ${getSessionToken()}`,
           },
-          body: JSON.stringify({ response: responseText }),
+          body: formData,
         },
       );
       const result = await response.json().catch(() => ({}));
@@ -530,6 +693,7 @@ function SellerOperationsCenter({
         ...previous,
         [dispute.id]: { response: "", success: "Response submitted." },
       }));
+      setDisputeEvidenceFiles((previous) => ({ ...previous, [dispute.id]: [] }));
       await onRefreshOrders?.();
       await fetchSellerOrderDetails(dispute.order_id);
       return result;
@@ -767,7 +931,7 @@ function SellerOperationsCenter({
         {[
           [
             "My Listings",
-            Number(dashboardStats.total_listings ?? listings.length),
+            totalInventoryCount,
             `${counts.active} Active · ${counts.pending} Pending · ${counts.sold} Sold`,
             "▣",
             "text-sky-600",
@@ -788,8 +952,8 @@ function SellerOperationsCenter({
           ],
           [
             "Pending Orders",
-            Number(dashboardStats.pending_orders ?? pendingOrders.length),
-            `${Number(dashboardAlerts.pending_orders ?? pendingOrders.length)} require action`,
+            Number(dashboardStats.pending_orders ?? pendingActionOrders.length),
+            `${Number(dashboardAlerts.pending_orders ?? pendingActionOrders.length)} require action`,
             "◔",
             "text-rose-600",
           ],
@@ -818,7 +982,7 @@ function SellerOperationsCenter({
         <h3 className="font-black text-amber-950">Action Required</h3>
         <div className="mt-3 flex flex-wrap gap-3 text-sm font-semibold text-amber-800">
           <span>
-            ⚠ {Number(dashboardAlerts.pending_orders ?? pendingOrders.length)}{" "}
+            ⚠ {Number(dashboardAlerts.pending_orders ?? pendingActionOrders.length)}{" "}
             order(s) waiting for acceptance
           </span>
           <span>
@@ -840,7 +1004,7 @@ function SellerOperationsCenter({
               </h3>
             </div>
             <span className="flex flex-wrap justify-end gap-x-1.5 text-right text-sm font-semibold text-slate-400">
-              <span>{listings.length} total</span>
+              <span>{totalInventoryCount} total</span>
               <span aria-hidden="true">·</span>
               <span>{counts.active} Active</span>
               <span aria-hidden="true">·</span>
@@ -849,9 +1013,9 @@ function SellerOperationsCenter({
               <span>{counts.pending} Pending</span>
             </span>
           </div>
-          {listings.length === 0 ? (
+          {visibleListings.length === 0 ? (
             <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
-              No products yet. Add your first campus product to get started.
+              No active products yet. Add your first campus product to get started.
             </div>
           ) : (
             <div className="mt-5 overflow-x-auto">
@@ -872,7 +1036,7 @@ function SellerOperationsCenter({
                   </tr>
                 </thead>
                 <tbody>
-                  {listings.map((listing) => {
+                  {visibleListings.map((listing) => {
                     const status = listing.status || "Pending";
                     const image = getSellerImage(listing.image);
                     const stock = Number(listing.stock ?? 0);
@@ -886,7 +1050,7 @@ function SellerOperationsCenter({
                         key={listing.id ?? listing.product_id ?? listing.title}
                         className={`border-b border-slate-100 ${isSold ? "bg-slate-50" : "bg-white"}`}
                       >
-                        <td className="px-3 py-4 text-slate-900">
+                        <td className="min-w-[180px] max-w-[360px] px-3 py-4 text-slate-900">
                           <div className="flex min-w-0 items-center gap-3">
                             <img
                               src={image}
@@ -898,13 +1062,23 @@ function SellerOperationsCenter({
                               }}
                               className="h-20 w-20 rounded-xl object-cover"
                             />
-                            <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-                              <span className="block break-words font-bold leading-5">
-                                {listing.title ||
-                                  listing.name ||
-                                  "Untitled listing"}
+                            <div className="flex min-w-0 max-w-[230px] flex-1 flex-col justify-center gap-1">
+                              <span
+                                className="block min-w-0 max-w-full whitespace-normal break-words font-bold leading-5 text-slate-900"
+                                style={{ overflowWrap: "break-word", wordBreak: "break-word" }}
+                              >
+                                {listing.title || listing.name || "Untitled listing"}
                               </span>
-                              <span className="block break-words text-xs font-medium leading-4 text-slate-500">
+                              <span
+                                className="inline-flex max-w-full items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600"
+                                style={{
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                  maxWidth: "100%",
+                                }}
+                                title={listing.category || "General"}
+                              >
                                 {listing.category || "General"}
                               </span>
                             </div>
@@ -1080,7 +1254,7 @@ function SellerOperationsCenter({
             </h3>
           </div>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-            {orders.length} orders
+            {incomingOrders.length} orders
           </span>
         </div>
         {sellerOrdersLoading ? (
@@ -1091,9 +1265,9 @@ function SellerOperationsCenter({
           <p className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-sm font-semibold text-rose-700">
             {sellerOrdersError}
           </p>
-        ) : orders.length === 0 ? (
+        ) : incomingOrders.length === 0 ? (
           <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
-            No incoming customer orders yet.
+            No incoming customer orders need your action yet.
           </p>
         ) : (
           <div className="mt-5 overflow-x-auto">
@@ -1111,56 +1285,121 @@ function SellerOperationsCenter({
                 </tr>
               </thead>
               <tbody>
-                {orders.map((order) => (
-                  <tr
-                    key={order.id ?? order.order_id}
-                    className="border-b border-slate-100"
-                  >
-                    <td className="px-3 py-4 font-bold text-slate-900">
-                      {order.id ?? order.order_id}
-                    </td>
-                    <td className="px-3 py-4 text-slate-600">
-                      {order.buyer_name || order.buyer_id || "Student"}
-                    </td>
-                    <td className="px-3 py-4 text-slate-700">
-                      <div className="flex items-center gap-2">
-                        {order.image && (
-                          <img
-                            src={order.image}
-                            alt=""
-                            className="h-10 w-10 rounded-lg object-cover"
-                          />
-                        )}
-                        <span>
-                          {order.product_title ||
-                            order.title ||
-                            "Campus product"}
+                {incomingOrders.map((order) => {
+                  const badge = getOrderBadgeConfig(order.status);
+                  return (
+                    <tr
+                      key={order.id ?? order.order_id}
+                      className="border-b border-slate-100"
+                    >
+                      <td className="px-3 py-4 font-bold text-slate-900">
+                        {order.id ?? order.order_id}
+                      </td>
+                      <td className="px-3 py-4 text-slate-600">
+                        {order.buyer_name || order.buyer_id || "Student"}
+                      </td>
+                      <td className="px-3 py-4 text-slate-700">
+                        <div className="flex items-center gap-2">
+                          {order.image && (
+                            <img
+                              src={order.image}
+                              alt=""
+                              className="h-10 w-10 rounded-lg object-cover"
+                            />
+                          )}
+                          <span>
+                            {order.product_title ||
+                              order.title ||
+                              "Campus product"}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-4 font-bold text-slate-900">
+                        {formatSellerEtb(order.price)}
+                      </td>
+                      <td className="px-3 py-4 text-slate-600">
+                        {order.payment_status || "Successful"}
+                      </td>
+                      <td className="px-3 py-4">
+                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
+                          {badge.label}
                         </span>
-                      </div>
-                    </td>
-                    <td className="px-3 py-4 font-bold text-slate-900">
-                      {formatSellerEtb(order.price)}
-                    </td>
-                    <td className="px-3 py-4 text-slate-600">
-                      {order.payment_status || "Successful"}
-                    </td>
-                    <td className="px-3 py-4">
-                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
-                        {String(order.status || "Pending").toLowerCase() ===
-                        "pending"
-                          ? "New Order"
-                          : order.status}
-                      </span>
-                    </td>
-                    <td className="px-3 py-4 text-slate-600">
-                      <p>{order.pickup_location || "Student Center"}</p>
-                      <p className="mt-1 text-xs">
-                        {order.required_seller_action || "Review order"}
-                      </p>
-                    </td>
-                    <td className="px-3 py-4">{orderAction(order)}</td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-3 py-4 text-slate-600">
+                        <p>{order.pickup_location || "Student Center"}</p>
+                        <p className="mt-1 text-xs">
+                          {order.required_seller_action || "Review order"}
+                        </p>
+                      </td>
+                      <td className="px-3 py-4">{orderAction(order)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">
+              Order History
+            </p>
+            <h3 className="mt-1 text-xl font-black text-slate-950">
+              Completed Orders
+            </h3>
+          </div>
+          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
+            {completedOrders.length} orders
+          </span>
+        </div>
+        {completedOrders.length === 0 ? (
+          <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
+            No completed orders yet.
+          </p>
+        ) : (
+          <div className="mt-5 overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
+                <tr>
+                  <th className="px-3 py-3">Order</th>
+                  <th className="px-3 py-3">Customer</th>
+                  <th className="px-3 py-3">Product</th>
+                  <th className="px-3 py-3">Amount</th>
+                  <th className="px-3 py-3">Status</th>
+                  <th className="px-3 py-3">Completed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {completedOrders.map((order) => {
+                  const badge = getOrderBadgeConfig(order.status);
+                  return (
+                    <tr key={order.id ?? order.order_id} className="border-b border-slate-100">
+                      <td className="px-3 py-4 font-bold text-slate-900">
+                        {order.id ?? order.order_id}
+                      </td>
+                      <td className="px-3 py-4 text-slate-600">
+                        {order.buyer_name || order.buyer_id || "Student"}
+                      </td>
+                      <td className="px-3 py-4 text-slate-700">
+                        {order.product_title || order.title || "Campus product"}
+                      </td>
+                      <td className="px-3 py-4 font-bold text-slate-900">
+                        {formatSellerEtb(order.price)}
+                      </td>
+                      <td className="px-3 py-4">
+                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
+                          {badge.label}
+                        </span>
+                      </td>
+                      <td className="px-3 py-4 text-xs text-slate-500">
+                        {order.updated_at ? new Date(order.updated_at).toLocaleDateString() : order.created_at ? new Date(order.created_at).toLocaleDateString() : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1168,102 +1407,248 @@ function SellerOperationsCenter({
       </section>
 
       <section className="rounded-[28px] border border-rose-200 bg-rose-50 p-6 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">
-              Seller Hub
-            </p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">Disputes</h3>
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">
+                Seller Hub
+              </p>
+              <h3 className="mt-1 text-xl font-black text-slate-950">Disputes</h3>
+            </div>
+            <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-rose-700">
+              {recentDisputes.filter((item) => ["OPEN", "UNDER_REVIEW"].includes(String(item.status || "").toUpperCase())).length} active
+            </span>
           </div>
-          <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-rose-700">
-            {
-              disputes.filter((item) =>
-                ["OPEN", "UNDER_REVIEW"].includes(item.status),
-              ).length
-            }{" "}
-            active
-          </span>
+
+          <div className="grid gap-3 md:grid-cols-[1.4fr_0.8fr_0.8fr_1fr]">
+            <input
+              value={disputeSearch}
+              onChange={(event) => setDisputeSearch(event.target.value)}
+              placeholder="Search by order # or product"
+              className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
+            />
+            <select
+              value={disputeStatusFilter}
+              onChange={(event) => setDisputeStatusFilter(event.target.value)}
+              className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
+            >
+              <option value="all">All statuses</option>
+              <option value="active">Active</option>
+              <option value="pending">Pending</option>
+              <option value="resolved">Resolved</option>
+            </select>
+            <select
+              value={disputeDateFilter}
+              onChange={(event) => setDisputeDateFilter(event.target.value)}
+              className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
+            >
+              <option value="all">All dates</option>
+              <option value="30d">Last 30 days</option>
+              <option value="90d">Last 90 days</option>
+              <option value="180d">Last 180 days</option>
+            </select>
+            <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-white p-1">
+              {[
+                { key: "recent", label: "Recent" },
+                { key: "archived", label: "Archived" },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setDisputeTab(tab.key)}
+                  className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${disputeTab === tab.key ? "bg-rose-600 text-white" : "text-slate-600"}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-        {disputes.length === 0 ? (
+
+        {filteredDisputes.length === 0 ? (
           <p className="mt-5 text-sm text-slate-600">
-            No disputes have been raised against your orders.
+            No disputes match your current filters.
           </p>
         ) : (
           <div className="mt-5 space-y-4">
-            {disputes.map((dispute) => {
+            {displayedDisputes.map((dispute) => {
               const state = disputeResponseState[dispute.id] || {};
+              const isExpanded = Boolean(expandedDisputes[dispute.id]);
+              const orderStatus = String(dispute?.order?.status || "").toLowerCase();
+              const resolutionLabel =
+                dispute?.resolution_label ||
+                (orderStatus.includes("refund") || orderStatus === "returned" ? "Resolved - Refunded" :
+                  orderStatus.includes("cancel") ? "Resolved - Order Cancelled" :
+                  orderStatus.includes("complete") || orderStatus === "sold" ? "Resolved - Completed" :
+                  dispute?.status === "RESOLVED" ? "Resolved" : dispute?.status || "Open");
+              const tagTone =
+                orderStatus.includes("refund") || orderStatus === "returned"
+                  ? "bg-amber-100 text-amber-800 border-amber-200"
+                  : orderStatus.includes("cancel")
+                    ? "bg-rose-100 text-rose-700 border-rose-200"
+                    : ["OPEN", "UNDER_REVIEW"].includes(String(dispute?.status || "").toUpperCase())
+                      ? "bg-sky-100 text-sky-700 border-sky-200"
+                      : "bg-emerald-100 text-emerald-700 border-emerald-200";
+
               return (
                 <article
                   key={dispute.id}
                   className="rounded-2xl border border-rose-100 bg-white p-4"
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">
-                        Order #{dispute.order_id} ·{" "}
-                        {dispute.product?.title ||
-                          dispute.order?.title ||
-                          "Product"}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedDisputes((previous) => ({
+                        ...previous,
+                        [dispute.id]: !previous[dispute.id],
+                      }))
+                    }
+                    className="flex w-full items-start justify-between gap-3 text-left"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                        Order #{dispute.order_id} · {dispute.product?.title || dispute.order?.title || "Product"}
                       </p>
-                      <h4 className="mt-1 font-black text-slate-900">
+                      <h4 className="mt-1 truncate font-black text-slate-900">
                         {dispute.reason}
                       </h4>
                     </div>
-                    <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-bold text-rose-700">
-                      {dispute.status}
-                    </span>
-                  </div>
-                  <p className="mt-3 text-sm leading-6 text-slate-700">
-                    {dispute.description}
-                  </p>
-                  {dispute.status === "OPEN" ||
-                  dispute.status === "UNDER_REVIEW" ? (
-                    <div className="mt-4">
-                      <textarea
-                        rows="3"
-                        value={state.response || ""}
-                        onChange={(event) =>
-                          setDisputeResponseState((previous) => ({
-                            ...previous,
-                            [dispute.id]: {
-                              ...state,
-                              response: event.target.value,
-                            },
-                          }))
-                        }
-                        placeholder="Provide your explanation or evidence..."
-                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-rose-400"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => respondToDispute(dispute)}
-                        disabled={
-                          !String(state.response || "").trim() || state.loading
-                        }
-                        className="mt-2 rounded-full bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300"
-                      >
-                        {state.loading ? "Submitting..." : "Respond to dispute"}
-                      </button>
-                      {state.error && (
-                        <p className="mt-2 text-xs font-bold text-rose-700">
-                          {state.error}
-                        </p>
-                      )}
-                      {state.success && (
-                        <p className="mt-2 text-xs font-bold text-emerald-700">
-                          {state.success}
-                        </p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className={`rounded-full border px-3 py-1 text-[11px] font-bold ${tagTone}`}>
+                        {resolutionLabel}
+                      </span>
+                      <span className="text-lg text-slate-400">{isExpanded ? "−" : "+"}</span>
+                    </div>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="mt-4 border-t border-slate-100 pt-4">
+                      <div className="grid gap-4 text-sm text-slate-700 md:grid-cols-2">
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Issue</p>
+                          <p className="mt-1 font-semibold text-slate-900">{dispute.reason}</p>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Status</p>
+                          <p className="mt-1 font-semibold text-slate-900">{getDisputeStatusLabel(dispute)}</p>
+                        </div>
+                      </div>
+
+                      <p className="mt-4 text-sm leading-6 text-slate-700">
+                        {dispute.description}
+                      </p>
+
+                      {dispute.status === "OPEN" || dispute.status === "UNDER_REVIEW" ? (
+                        <div className="mt-4">
+                          <textarea
+                            rows="3"
+                            value={state.response || ""}
+                            onChange={(event) =>
+                              setDisputeResponseState((previous) => ({
+                                ...previous,
+                                [dispute.id]: {
+                                  ...state,
+                                  response: event.target.value,
+                                },
+                              }))
+                            }
+                            placeholder="Provide your explanation or evidence..."
+                            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-rose-400"
+                          />
+
+                          <div className="mt-3">
+                            <label className="block text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Evidence images</label>
+                            <input
+                              type="file"
+                              multiple
+                              accept="image/*"
+                              onChange={(event) => {
+                                const files = Array.from(event.target.files || []);
+                                setDisputeEvidenceFiles((previous) => ({
+                                  ...previous,
+                                  [dispute.id]: files,
+                                }));
+                              }}
+                              className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700"
+                            />
+                            {(disputeEvidenceFiles[dispute.id] || []).length > 0 && (
+                              <div className="mt-3 grid grid-cols-3 gap-2">
+                                {(disputeEvidenceFiles[dispute.id] || []).map((file, index) => (
+                                  <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                                    <img src={URL.createObjectURL(file)} alt={`Dispute evidence ${index + 1}`} className="h-20 w-full object-cover" />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDisputeEvidenceFiles((previous) => ({
+                                          ...previous,
+                                          [dispute.id]: (previous[dispute.id] || []).filter((_, itemIndex) => itemIndex !== index),
+                                        }))
+                                      }
+                                      className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => respondToDispute(dispute, state.response, disputeEvidenceFiles[dispute.id] || [])}
+                            disabled={!String(state.response || "").trim() || state.loading}
+                            className="mt-3 rounded-full bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300"
+                          >
+                            {state.loading ? "Submitting..." : "Respond to dispute"}
+                          </button>
+                          {state.error && <p className="mt-2 text-xs font-bold text-rose-700">{state.error}</p>}
+                          {state.success && <p className="mt-2 text-xs font-bold text-emerald-700">{state.success}</p>}
+                        </div>
+                      ) : (
+                        <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+                          <p className="font-bold text-slate-800">Seller response:</p>
+                          <p className="mt-1 whitespace-pre-wrap">{dispute.seller_response || "No response recorded."}</p>
+                          {(() => {
+                            const evidenceValues = Array.isArray(dispute.seller_evidence)
+                              ? dispute.seller_evidence
+                              : typeof dispute.seller_evidence === "string"
+                                ? (() => {
+                                    try {
+                                      const parsed = JSON.parse(dispute.seller_evidence);
+                                      return Array.isArray(parsed) ? parsed : [parsed];
+                                    } catch {
+                                      return [dispute.seller_evidence];
+                                    }
+                                  })()
+                                : [];
+                            return evidenceValues.filter(Boolean).length > 0 ? (
+                              <div className="mt-3 grid grid-cols-3 gap-2">
+                                {evidenceValues.filter(Boolean).map((image, index) => (
+                                  <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-slate-200 bg-white">
+                                    <img src={image} alt={`Seller dispute evidence ${index + 1}`} className="h-20 w-full object-cover" />
+                                  </a>
+                                ))}
+                              </div>
+                            ) : null;
+                          })()}
+                        </div>
                       )}
                     </div>
-                  ) : (
-                    <p className="mt-3 text-xs font-semibold text-slate-500">
-                      Seller response:{" "}
-                      {dispute.seller_response || "No response recorded."}
-                    </p>
                   )}
                 </article>
               );
             })}
+
+            {hasMoreDisputes && (
+              <button
+                type="button"
+                onClick={() => setVisibleDisputeCount((previous) => previous + 10)}
+                className="mt-2 w-full rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm font-bold text-rose-700 hover:bg-rose-50"
+              >
+                Load more disputes
+              </button>
+            )}
           </div>
         )}
       </section>

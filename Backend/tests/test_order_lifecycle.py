@@ -1,3 +1,4 @@
+import io
 import unittest
 from types import SimpleNamespace
 
@@ -8,7 +9,16 @@ from app.order_lifecycle import (
     apply_seller_order_action,
     payout_release_allowed,
 )
-from app.main import _build_seller_listing_analytics, _escrow_hold_refund_amount, _product_has_orders, _resolve_pickup_location, _restock_product_for_order
+from app.main import (
+    _build_seller_listing_analytics,
+    _derived_dispute_thread,
+    _escrow_hold_refund_amount,
+    _prepare_dispute_evidence_value,
+    _product_has_orders,
+    _resolve_pickup_location,
+    _restock_product_for_order,
+    _should_show_in_my_products,
+)
 
 
 def make_order():
@@ -175,6 +185,47 @@ class OrderLifecycleTests(unittest.TestCase):
 
         self.assertTrue(_product_has_orders(Database(object()), 7))
         self.assertFalse(_product_has_orders(Database(None), 7))
+
+    def test_seller_inventory_filters_out_sold_products(self):
+        self.assertFalse(_should_show_in_my_products("Sold"))
+        self.assertFalse(_should_show_in_my_products("sold"))
+        self.assertTrue(_should_show_in_my_products("Active"))
+        self.assertTrue(_should_show_in_my_products("Paused"))
+        self.assertTrue(_should_show_in_my_products("Pending"))
+        self.assertTrue(_should_show_in_my_products("Approved"))
+
+    def test_dispute_thread_normalizes_legacy_and_json_seller_replies(self):
+        dispute = SimpleNamespace(
+            id=18,
+            description="The order arrived damaged and the item was not as listed.",
+            created_at="2026-09-10T10:00:00",
+            updated_at="2026-09-11T12:30:00",
+            seller_response='[{"role": "seller", "message": "We apologize. We already arranged a replacement and sent the tracking details.", "created_at": "2026-09-11T12:30:00", "attachments": ["http://127.0.0.1:8000/static/uploads/e1.jpg"]}]',
+            seller_evidence='["http://127.0.0.1:8000/static/uploads/e1.jpg"]',
+        )
+
+        thread = _derived_dispute_thread(dispute)
+
+        self.assertEqual(thread[0]["sender"], "Buyer")
+        self.assertEqual(thread[1]["sender"], "Seller")
+        self.assertEqual(thread[1]["message"], "We apologize. We already arranged a replacement and sent the tracking details.")
+        self.assertEqual(thread[1]["attachments"], ["http://127.0.0.1:8000/static/uploads/e1.jpg"])
+
+    def test_dispute_evidence_handles_multipart_payloads(self):
+        evidence_json = _prepare_dispute_evidence_value(
+            evidence_value=None,
+            uploaded_files=[
+                SimpleNamespace(filename="buyer-proof.jpg", file=io.BytesIO(b"test-image-data")),
+                SimpleNamespace(filename="buyer-proof-2.png", file=io.BytesIO(b"more-image-data")),
+            ],
+            static_dir="/tmp",
+            now=lambda: __import__("datetime").datetime(2026, 9, 11, 8, 15, 0),
+            save_file=lambda path, file_obj: None,
+        )
+
+        self.assertTrue(evidence_json.startswith("[\"http://127.0.0.1:8000/static/uploads/"))
+        self.assertIn(".jpg", evidence_json)
+        self.assertIn(".png", evidence_json)
 
 
 if __name__ == "__main__":

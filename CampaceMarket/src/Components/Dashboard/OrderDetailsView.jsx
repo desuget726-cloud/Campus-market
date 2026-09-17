@@ -85,7 +85,132 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
   const [sellerResponse, setSellerResponse] = useState('');
   const [sellerResponseError, setSellerResponseError] = useState('');
   const [sellerResponseLoading, setSellerResponseLoading] = useState(false);
+  const [sellerEvidenceFiles, setSellerEvidenceFiles] = useState([]);
   const [referenceCopied, setReferenceCopied] = useState(false);
+
+  const normalizeDisputeEvidence = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(Boolean).map(String);
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed.filter(Boolean).map(String);
+        if (typeof parsed === 'string' && parsed.trim()) return [parsed];
+      } catch {
+        return [trimmed];
+      }
+      return [trimmed];
+    }
+    return [String(value)];
+  };
+
+  const normalizeDisputeThread = (disputeRecord) => {
+    const parseThreadPayload = (value) => {
+      if (!value) return [];
+      if (Array.isArray(value)) return value;
+      if (typeof value !== 'string') return [];
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      try {
+        const parsed = JSON.parse(trimmed);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const candidateThread = parseThreadPayload(disputeRecord?.dispute_thread)
+      .length > 0 ? parseThreadPayload(disputeRecord?.dispute_thread)
+      : parseThreadPayload(disputeRecord?.thread).length > 0 ? parseThreadPayload(disputeRecord?.thread)
+        : parseThreadPayload(disputeRecord?.conversation).length > 0 ? parseThreadPayload(disputeRecord?.conversation)
+          : [];
+
+    if (candidateThread.length > 0) {
+      const seenIds = new Set();
+      return candidateThread
+        .filter((entry) => entry && (entry.message || entry.text || entry.body))
+        .map((entry, index) => {
+          const message = entry.message ?? entry.text ?? entry.body ?? '';
+          const attachments = Array.isArray(entry.attachments)
+            ? entry.attachments
+            : Array.isArray(entry.evidence)
+              ? entry.evidence
+              : [];
+          const sender = String(entry.sender || entry.author || (entry.role === 'buyer' ? 'Buyer' : 'Seller') || 'Seller');
+          const baseId = entry.id || `${(sender || 'message').toLowerCase()}-${index}`;
+          let finalId = baseId;
+          let suffix = 1;
+          while (seenIds.has(finalId)) {
+            finalId = `${baseId}-${suffix}`;
+            suffix += 1;
+          }
+          seenIds.add(finalId);
+          return {
+            id: finalId,
+            sender: sender.charAt(0).toUpperCase() + sender.slice(1),
+            role: String(entry.role || (sender.toLowerCase().includes('buyer') ? 'buyer' : 'seller')).toLowerCase(),
+            message: String(message),
+            created_at: entry.created_at || disputeRecord?.updated_at || disputeRecord?.created_at,
+            attachments: attachments.filter(Boolean),
+          };
+        });
+    }
+
+    const thread = [];
+    const buyerMessage = String(disputeRecord?.description || order?.dispute_description || '').trim();
+    if (buyerMessage) {
+      thread.push({
+        id: `buyer-${disputeRecord?.id || order?.id || 'initial'}-${thread.length}`,
+        sender: 'Buyer',
+        role: 'buyer',
+        message: buyerMessage,
+        created_at: disputeRecord?.created_at || order?.dispute_created_at,
+        attachments: normalizeDisputeEvidence(disputeRecord?.evidence_image || order?.dispute_evidence || []),
+      });
+    }
+
+    const sellerResponsePayload = parseThreadPayload(disputeRecord?.seller_response);
+    if (sellerResponsePayload.length > 0) {
+      sellerResponsePayload.forEach((entry, index) => {
+        if (!entry || !(entry.message || entry.text || entry.body)) return;
+        thread.push({
+          id: entry.id || `seller-${disputeRecord?.id || order?.id || 'response'}-${index}-${thread.length}`,
+          sender: String(entry.sender || entry.author || 'Seller'),
+          role: String(entry.role || 'seller').toLowerCase(),
+          message: String(entry.message ?? entry.text ?? entry.body ?? ''),
+          created_at: entry.created_at || disputeRecord?.updated_at || disputeRecord?.created_at,
+          attachments: Array.isArray(entry.attachments) ? entry.attachments : Array.isArray(entry.evidence) ? entry.evidence : [],
+        });
+      });
+    } else {
+      const sellerMessage = String(disputeRecord?.seller_response || '').trim();
+      if (sellerMessage && !sellerMessage.startsWith('[')) {
+        thread.push({
+          id: `seller-${disputeRecord?.id || order?.id || 'response'}-${thread.length}`,
+          sender: 'Seller',
+          role: 'seller',
+          message: sellerMessage,
+          created_at: disputeRecord?.updated_at || disputeRecord?.created_at,
+          attachments: normalizeDisputeEvidence(disputeRecord?.seller_evidence || []),
+        });
+      }
+    }
+
+    const seenIds = new Set();
+    return thread.map((message, index) => {
+      const baseId = message.id || `${message.role || 'message'}-${index}`;
+      let finalId = baseId;
+      let suffix = 1;
+      while (seenIds.has(finalId)) {
+        finalId = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+      seenIds.add(finalId);
+      return { ...message, id: finalId };
+    });
+  };
   if (loading) return <div className="rounded-[28px] border border-slate-200 bg-white p-10 text-center font-semibold text-slate-600">Loading order details...</div>;
   if (error) return <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-8 text-center text-rose-700"><p className="font-bold">Unable to load this order</p><p className="mt-2 text-sm">{error}</p><button type="button" onClick={onBack} className="mt-5 rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white">Back to orders</button></div>;
   if (!order) return <div className="rounded-[28px] border border-dashed border-slate-300 bg-white p-10 text-center text-slate-600">Order not found.</div>;
@@ -134,8 +259,9 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
     setSellerResponseLoading(true);
     setSellerResponseError('');
     try {
-      await onDisputeResponse(dispute, response);
+      await onDisputeResponse(dispute, response, sellerEvidenceFiles);
       setSellerResponse('');
+      setSellerEvidenceFiles([]);
     } catch (responseError) {
       setSellerResponseError(responseError.message || 'Unable to submit your response.');
     } finally {
@@ -232,9 +358,37 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
         {!dispute && status === 'Disputed' && <p className="mt-5 rounded-2xl bg-white p-4 text-sm font-black text-rose-700">Dispute Open</p>}
         {dispute && <>
           <div className="mt-5 grid gap-4 text-sm sm:grid-cols-2"><div><p className="text-slate-500">Reason</p><p className="mt-1 font-black text-slate-900">{dispute.reason || order.dispute_reason || 'Not provided'}</p></div><div><p className="text-slate-500">Submitted</p><p className="mt-1 font-black text-slate-900">{formatDate(dispute.created_at || order.dispute_created_at)}</p></div></div>
-          <div className="mt-4 rounded-2xl bg-white p-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Buyer description</p><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{dispute.description || order.dispute_description || 'No description provided.'}</p></div>
-          {dispute.seller_response && <div className="mt-4 rounded-2xl bg-white p-4"><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Seller response</p><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-700">{dispute.seller_response}</p></div>}
-          {!isBuyer && hasActiveDispute && !dispute.seller_response && onDisputeResponse && <form onSubmit={submitSellerResponse} className="mt-4"><label htmlFor="seller-dispute-response" className="text-sm font-bold text-slate-700">Your response</label><textarea id="seller-dispute-response" rows="4" value={sellerResponse} onChange={(event) => setSellerResponse(event.target.value)} placeholder="Explain your side of the order dispute..." className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400" /><div className="mt-3 flex flex-wrap items-center gap-3"><button type="submit" disabled={sellerResponseLoading || !sellerResponse.trim()} className="rounded-full bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{sellerResponseLoading ? 'Submitting...' : 'Submit Response'}</button>{sellerResponseError && <p className="text-sm font-bold text-rose-700">{sellerResponseError}</p>}</div></form>}
+          <div className="mt-4 space-y-4 rounded-2xl bg-white p-4">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Conversation thread</p>
+            {(() => {
+              const thread = normalizeDisputeThread(dispute);
+              return thread.length > 0 ? (
+                <div className="space-y-4">
+                  {thread.map((message) => (
+                    <div key={message.id} className={`rounded-2xl border p-4 ${message.role === 'buyer' ? 'border-sky-200 bg-sky-50' : 'border-rose-200 bg-rose-50'}`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{message.sender}</p>
+                        {message.created_at && <time className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">{formatDateTime(message.created_at)}</time>}
+                      </div>
+                      <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{message.message}</p>
+                      {message.attachments?.length > 0 && (
+                        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                          {message.attachments.map((image, index) => (
+                            <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                              <img src={image} alt={`${message.sender} evidence ${index + 1}`} className="h-24 w-full object-cover" />
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm leading-6 text-slate-700">No dispute conversation recorded yet.</p>
+              );
+            })()}
+          </div>
+          {!isBuyer && hasActiveDispute && !dispute.seller_response && onDisputeResponse && <form onSubmit={submitSellerResponse} className="mt-4"><label htmlFor="seller-dispute-response" className="text-sm font-bold text-slate-700">Your response</label><textarea id="seller-dispute-response" rows="4" value={sellerResponse} onChange={(event) => setSellerResponse(event.target.value)} placeholder="Explain your side of the order dispute..." className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400" /><div className="mt-4"><label className="text-sm font-bold text-slate-700">Evidence images <span className="font-normal text-slate-400">(optional)</span></label><input type="file" multiple accept="image/*" onChange={(event) => setSellerEvidenceFiles(Array.from(event.target.files || []))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700" /><div className="mt-3 grid grid-cols-3 gap-2">{sellerEvidenceFiles.map((file, index) => <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50"><img src={URL.createObjectURL(file)} alt={`Seller evidence preview ${index + 1}`} className="h-20 w-full object-cover" /><button type="button" onClick={() => setSellerEvidenceFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white">Remove</button></div>)}</div></div><div className="mt-3 flex flex-wrap items-center gap-3"><button type="submit" disabled={sellerResponseLoading || sellerResponse.trim().length < 20} className="rounded-full bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{sellerResponseLoading ? 'Submitting...' : 'Submit Response'}</button>{sellerResponseError && <p className="text-sm font-bold text-rose-700">{sellerResponseError}</p>}</div></form>}
         </>}
       </section>)}
       <PrintableReceipt receipt={paymentReceipt} />
