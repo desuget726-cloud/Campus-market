@@ -4,7 +4,10 @@ import os
 from dotenv import load_dotenv
 
 # Load configuration before importing modules that may initialize database state.
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ENV_FILE_PATH = os.path.join(BACKEND_DIR, ".env")
+ENV_FILE_EXISTS = os.path.isfile(ENV_FILE_PATH)
+ENV_FILE_LOADED = load_dotenv(ENV_FILE_PATH)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY:
@@ -15,7 +18,7 @@ else:
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, Response, WebSocket, WebSocketDisconnect, Query
 
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import case, event, func, inspect, or_, text
@@ -41,6 +44,7 @@ import secrets
 from decimal import Decimal, InvalidOperation
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -56,7 +60,7 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_payout_adapter
@@ -1271,7 +1275,7 @@ class AdminProfileUpdate(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    id_or_email: str
 
 
 class VerifyResetCodeRequest(BaseModel):
@@ -1400,6 +1404,18 @@ class ReportCreate(BaseModel):
     category: str
     issue: str
     evidence_image: Optional[str] = None
+
+
+class SupportTicketCreate(BaseModel):
+    requester_name: Optional[str] = None
+    requester_email: Optional[str] = None
+    category: str
+    message: str
+    user_id: Optional[str] = None
+
+
+class SupportTicketStatusUpdate(BaseModel):
+    status: str
 
 
 class WishlistCreate(BaseModel):
@@ -1812,6 +1828,11 @@ def _session_password_min_length(db: Session) -> int:
 
 def _login_identifier(value: str) -> str:
     return str(value or "").strip().lower()
+
+
+def _is_email_identifier(value: Optional[str]) -> bool:
+    normalized = str(value or "").strip()
+    return bool(normalized) and "@" in normalized and "." in normalized.split("@", 1)[1]
 
 
 def _ensure_default_admin(db: Session) -> None:
@@ -2260,6 +2281,46 @@ def ensure_database_compatibility(db: Session) -> None:
 @app.on_event("startup")
 async def on_startup():
     global payment_scheduler
+    startup_logger = logging.getLogger("app.startup")
+    google_config = {
+        variable_name: os.getenv(variable_name, "").strip()
+        for variable_name in (
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "GOOGLE_REDIRECT_URI",
+        )
+    }
+
+    def mask_google_value(variable_name: str, value: str) -> str:
+        if not value:
+            return "<missing>"
+        if variable_name == "GOOGLE_CLIENT_SECRET":
+            return f"<present, length={len(value)}>"
+        return value
+
+    startup_logger.info(
+        "Environment file: path=%s exists=%s loaded=%s",
+        ENV_FILE_PATH,
+        ENV_FILE_EXISTS,
+        ENV_FILE_LOADED,
+    )
+    startup_logger.info(
+        "Google OAuth configuration: GOOGLE_CLIENT_ID=%s GOOGLE_CLIENT_SECRET=%s GOOGLE_REDIRECT_URI=%s",
+        mask_google_value("GOOGLE_CLIENT_ID", google_config["GOOGLE_CLIENT_ID"]),
+        mask_google_value("GOOGLE_CLIENT_SECRET", google_config["GOOGLE_CLIENT_SECRET"]),
+        mask_google_value("GOOGLE_REDIRECT_URI", google_config["GOOGLE_REDIRECT_URI"]),
+    )
+    missing_google_variables = [
+        variable_name for variable_name, value in google_config.items() if not value
+    ]
+    if missing_google_variables:
+        startup_logger.warning(
+            "Google OAuth is disabled. Missing environment variables: %s. Add these to %s: "
+            "GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... "
+            "GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback",
+            ", ".join(missing_google_variables),
+            ENV_FILE_PATH,
+        )
     missing_gateway_variables = [
         variable_name for variable_name in ("CHAPA_SECRET_KEY", "CHAPA_WEBHOOK_SECRET")
         if not os.getenv(variable_name, "").strip()
@@ -2505,10 +2566,11 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         )
 
     # 2.2 ካልሆነ በተማሪዎች ሰንጠረዥ ይፈትሻል
-    student = db.query(Student).filter(
-        or_(func.lower(Student.student_id) == normalized_id, func.lower(Student.email) == normalized_id)
-    ).first()
-    
+    if _is_email_identifier(normalized_id):
+        student = db.query(Student).filter(func.lower(Student.email) == normalized_id).first()
+    else:
+        student = db.query(Student).filter(func.lower(Student.student_id) == normalized_id).first()
+
     if student and verify_password(data.password, student.password):
         if security.require_student_verification and not student.is_verified:
             _record_failed_login(db, identifier, security)
@@ -2577,6 +2639,33 @@ async def _exchange_oauth_code(token_url: str, payload: dict) -> dict:
     return token_data
 
 
+def _google_oauth_settings() -> tuple[str, str, str]:
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+    missing = [
+        name for name, value in (
+            ("GOOGLE_CLIENT_ID", client_id),
+            ("GOOGLE_CLIENT_SECRET", client_secret),
+            ("GOOGLE_REDIRECT_URI", redirect_uri),
+        ) if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Google OAuth is not configured. Missing environment variables: "
+            + ", ".join(missing)
+        )
+    return client_id, client_secret, redirect_uri
+
+
+def _oauth_frontend_url() -> str:
+    return os.getenv("FRONTEND_LOGIN_URL", "http://localhost:5173/login").strip().rstrip("#")
+
+
+def _oauth_cookie_secure() -> bool:
+    return os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _create_secure_session_for_student(student: Student, response: Response, db: Session) -> dict:
     security = get_security_settings(db)
     token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
@@ -2609,25 +2698,161 @@ def _create_secure_session_for_student(student: Student, response: Response, db:
     }
 
 
-def _get_pre_registered_student(email: str, db: Session) -> Student:
+def _get_or_create_oauth_student(email: str, name: Optional[str], db: Session) -> Student:
     normalized_email = email.strip().lower()
-    student = db.query(Student).filter(Student.email == normalized_email).first()
-    if not student:
-        raise HTTPException(status_code=403, detail="Access denied. Only pre-registered university students are allowed.")
+    student = db.query(Student).filter(func.lower(Student.email) == normalized_email).first()
+    if student:
+        security = get_security_settings(db)
+        if security.require_student_verification and not student.is_verified:
+            raise HTTPException(status_code=403, detail="Student verification is required before login.")
+        return student
 
     security = get_security_settings(db)
-    if security.require_student_verification and not student.is_verified:
-        raise HTTPException(status_code=403, detail="Student verification is required before login.")
+    require_university_email = _setting_bool(
+        _get_setting_value(db, "studentVerification", "requireUniversityEmail", True),
+        True,
+    )
+    allowed_email_domain = str(
+        _get_setting_value(db, "studentVerification", "allowedEmailDomain", "university.edu.et")
+        or ""
+    ).strip().lstrip("@").lower()
+    email_domain = normalized_email.rsplit("@", 1)[-1]
+    if require_university_email and email_domain != allowed_email_domain:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Please use your official university email ending with @{allowed_email_domain}.",
+        )
+
+    for _ in range(5):
+        generated_student_id = f"OAUTH-{secrets.token_hex(5).upper()}"
+        if not db.query(Student).filter(Student.student_id == generated_student_id).first():
+            break
+    else:
+        raise HTTPException(status_code=500, detail="Could not create an OAuth student identity.")
+
+    student = Student(
+        name=(name or normalized_email.split("@", 1)[0]).strip()[:100],
+        student_id=generated_student_id,
+        email=normalized_email,
+        password=hash_password(secrets.token_urlsafe(32)),
+        college="Pending profile",
+        department="Pending profile",
+        wallet_balance=Decimal("0.00"),
+        status="Active",
+        is_verified=True,
+    )
+    db.add(student)
+    db.flush()
+    db.add(Wallet(student_id=student.student_id, balance=Decimal("0.00")))
+    db.commit()
+    db.refresh(student)
     return student
+
+
+@app.get("/auth/google/login")
+def google_login():
+    try:
+        client_id, _, redirect_uri = _google_oauth_settings()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    state = secrets.token_urlsafe(32)
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    authorization_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "access_type": "online",
+        "prompt": "select_account",
+    })
+    response = RedirectResponse(url=authorization_url, status_code=307)
+    response.set_cookie(
+        "google_oauth_state",
+        state,
+        max_age=600,
+        httponly=True,
+        secure=_oauth_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+    response.set_cookie(
+        "google_oauth_verifier",
+        verifier,
+        max_age=600,
+        httponly=True,
+        secure=_oauth_cookie_secure(),
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/google/callback")
+async def google_callback(code: str, state: str, request: Request, db: Session = Depends(get_db)):
+    client_id, client_secret, redirect_uri = _google_oauth_settings()
+    expected_state = request.cookies.get("google_oauth_state", "")
+    verifier = request.cookies.get("google_oauth_verifier", "")
+    if not expected_state or not secrets.compare_digest(state, expected_state) or not verifier:
+        raise HTTPException(status_code=400, detail="Invalid or expired Google OAuth state.")
+
+    token_data = await _exchange_oauth_code(
+        "https://oauth2.googleapis.com/token",
+        {
+            "code": code,
+            "code_verifier": verifier,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            identity_response = await client.get(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                headers={"Authorization": f"Bearer {token_data['access_token']}"},
+            )
+    except httpx.RequestError as error:
+        logging.getLogger("app.auth").error("Google userinfo request failed: %s", error)
+        raise HTTPException(status_code=502, detail="Google identity service is unavailable.") from error
+
+    if not identity_response.is_success:
+        raise HTTPException(status_code=400, detail="Google identity verification failed.")
+    profile = identity_response.json()
+    if not profile.get("email") or profile.get("email_verified") is not True:
+        raise HTTPException(status_code=400, detail="Google did not return a verified email address.")
+
+    student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
+    response = RedirectResponse(url=_oauth_frontend_url(), status_code=303)
+    session_payload = _create_secure_session_for_student(student, response, db)
+    response.headers["location"] = (
+        f"{_oauth_frontend_url()}#"
+        + urlencode({
+            "oauth": "success",
+            "access_token": session_payload["access_token"],
+            "role": session_payload["role"],
+            "name": session_payload["user"]["name"],
+            "student_id": session_payload["user"]["studentId"],
+            "email": session_payload["user"]["email"],
+        })
+    )
+    response.delete_cookie("google_oauth_state", path="/")
+    response.delete_cookie("google_oauth_verifier", path="/")
+    return response
 
 
 @app.post("/api/auth/google-callback")
 async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, db: Session = Depends(get_db)):
-    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
-    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
-    configured_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
-    if not client_id or not client_secret or not configured_redirect_uri:
-        raise HTTPException(status_code=503, detail="Google OAuth is not configured on the server.")
+    try:
+        client_id, client_secret, configured_redirect_uri = _google_oauth_settings()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     if data.redirect_uri.strip() != configured_redirect_uri:
         raise HTTPException(status_code=400, detail="Invalid Google OAuth redirect URI.")
 
@@ -2645,7 +2870,7 @@ async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, 
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
+            identity_response = await client.get(
                 "https://openidconnect.googleapis.com/v1/userinfo",
                 headers={"Authorization": f"Bearer {token_data['access_token']}"},
             )
@@ -2653,13 +2878,13 @@ async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, 
         logging.getLogger("app.auth").error("Google userinfo request failed: %s", error)
         raise HTTPException(status_code=502, detail="Google identity service is unavailable.") from error
 
-    if not response.is_success:
+    if not identity_response.is_success:
         raise HTTPException(status_code=400, detail="Google identity verification failed.")
-    profile = response.json()
+    profile = identity_response.json()
     if not profile.get("email") or profile.get("email_verified") is not True:
         raise HTTPException(status_code=400, detail="Google did not return a verified email address.")
 
-    student = _get_pre_registered_student(profile["email"], db)
+    student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
     return _create_secure_session_for_student(student, response, db)
 
 
@@ -2689,22 +2914,22 @@ async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Respons
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName",
+            identity_response = await client.get(
+                "https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName",
                 headers={"Authorization": f"Bearer {token_data['access_token']}"},
             )
     except httpx.RequestError as error:
         logging.getLogger("app.auth").error("Microsoft profile request failed: %s", error)
         raise HTTPException(status_code=502, detail="Microsoft identity service is unavailable.") from error
 
-    if not response.is_success:
+    if not identity_response.is_success:
         raise HTTPException(status_code=400, detail="Microsoft identity verification failed.")
-    profile = response.json()
+    profile = identity_response.json()
     email = profile.get("mail") or profile.get("userPrincipalName")
     if not email:
         raise HTTPException(status_code=400, detail="Microsoft did not return an email address.")
 
-    student = _get_pre_registered_student(email, db)
+    student = _get_or_create_oauth_student(email, profile.get("displayName"), db)
     return _create_secure_session_for_student(student, response, db)
 
 
@@ -2777,10 +3002,15 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
 # 2.3 የይለፍ ቃል መርሻ ኮድ መላኪያ (POST /api/auth/forgot-password)
 @app.post("/api/auth/forgot-password")
 def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    email = request.email.strip().lower()
-    student = db.query(Student).filter(Student.email.ilike(email)).first()
+    identifier = _login_identifier(request.id_or_email)
+    if _is_email_identifier(identifier):
+        student = db.query(Student).filter(func.lower(Student.email) == identifier).first()
+    else:
+        student = db.query(Student).filter(func.lower(Student.student_id) == identifier).first()
     if not student:
-        raise HTTPException(status_code=404, detail="Email not found.")
+        raise HTTPException(status_code=404, detail="Student ID or email not found.")
+
+    email = student.email.strip().lower()
 
     otp = _generate_otp_code()
     expires = datetime.now(timezone.utc) + timedelta(minutes=15)
@@ -2803,6 +3033,7 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
         db.rollback()
         raise HTTPException(status_code=500, detail="Failed to create password reset request.")
     return {
+            "email": email,
             "message": "Verification code has been sent to your email." if email_sent else "OTP was generated, but email delivery failed. Please try again later.",
             "detail": "OTP email delivered successfully." if email_sent else "OTP was generated and saved, but Gmail SMTP could not deliver the email. Check the server email configuration and try again.",
             "success": email_sent,
@@ -4420,7 +4651,12 @@ def get_product_detail(
             ProductView.visitor_key == visitor_key,
         ).first()
         if not existing_view:
-            db.add(ProductView(product_id=product.id, visitor_key=visitor_key))
+            db.add(ProductView(
+                product_id=product.id,
+                viewer_id=viewer.student_id if viewer else None,
+                visitor_key=visitor_key,
+                viewed_at=datetime.now(),
+            ))
             product.views = int(product.views or 0) + 1
     if not visitor_cookie and response:
         response.set_cookie("campace_viewer", visitor_key.removeprefix("session:"), max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
@@ -5139,71 +5375,126 @@ def get_seller_dashboard_data(
 
 
 @app.get("/api/student/seller/sales-analytics")
+@app.get("/api/seller/analytics")
+@app.get("/seller/analytics")
 def get_seller_sales_analytics(
     range_value: str = Query("3m", alias="range"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    """Return completed seller sales grouped over the requested calendar range."""
+    """Return range-scoped seller KPIs, comparisons, and revenue series."""
     student = _student_from_authorization(authorization, db)
     normalized_range = str(range_value or "3m").strip().lower()
     if normalized_range not in {"7d", "30d", "3m"}:
         raise HTTPException(status_code=400, detail="Range must be 7d, 30d, or 3m.")
 
-    today = datetime.now().date()
+    now = datetime.now()
+    today = now.date()
     if normalized_range == "7d":
-        dates = [today - timedelta(days=offset) for offset in range(6, -1, -1)]
-        buckets = {item: 0.0 for item in dates}
-        start_date = dates[0]
+        current_start = datetime.combine(today - timedelta(days=6), datetime.min.time())
+        previous_start = current_start - timedelta(days=7)
+        bucket_count, bucket_delta = 7, timedelta(days=1)
     elif normalized_range == "30d":
-        dates = [today - timedelta(days=offset) for offset in range(29, -1, -1)]
-        buckets = {item: 0.0 for item in dates}
-        start_date = dates[0]
+        current_start = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        previous_start = current_start - timedelta(days=30)
+        bucket_count, bucket_delta = 30, timedelta(days=1)
     else:
-        month_start = today.replace(day=1)
-        month_starts = []
-        for offset in range(2, -1, -1):
-            month_index = month_start.month - offset
-            year = month_start.year + (month_index - 1) // 12
-            month = (month_index - 1) % 12 + 1
-            month_starts.append(datetime(year, month, 1).date())
-        buckets = {item: 0.0 for item in month_starts}
-        start_date = month_starts[0]
+        current_month = datetime(today.year, today.month, 1)
+        current_start = (current_month - timedelta(days=1)).replace(day=1)
+        current_start = (current_start - timedelta(days=1)).replace(day=1)
+        previous_start = (current_start - timedelta(days=1)).replace(day=1)
+        previous_start = (previous_start - timedelta(days=1)).replace(day=1)
+        previous_start = (previous_start - timedelta(days=1)).replace(day=1)
+        bucket_count, bucket_delta = 3, None
 
     seller_filter = or_(
         Order.seller_id == student.student_id,
         Product.seller == student.student_id,
         Product.seller == student.name,
     )
-    completed_orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
-        seller_filter,
-        func.lower(Order.status) == "completed",
-        Order.created_at >= datetime.combine(start_date, datetime.min.time()),
-    ).all()
+    completed_statuses = {"completed", "successful", "delivered", "sold"}
 
-    for order in completed_orders:
-        order_date = (order.created_at or datetime.now()).date()
+    def month_start(value):
+        calendar_date = value.date() if isinstance(value, datetime) else value
+        return calendar_date.replace(day=1)
+
+    def bucket_starts(start):
         if normalized_range == "3m":
-            bucket = next((item for index, item in enumerate(month_starts) if item <= order_date and (index == len(month_starts) - 1 or order_date < month_starts[index + 1])), None)
-        else:
-            bucket = order_date if order_date in buckets else None
-        if bucket is not None:
-            amount = float(re.sub(r"[^0-9.]", "", str(order.price or "0")) or 0)
-            buckets[bucket] += amount * int(order.quantity or 1)
+            return [month_start(start + timedelta(days=32 * index)) for index in range(bucket_count)]
+        return [(start + bucket_delta * index).date() for index in range(bucket_count)]
 
-    points = [
-        {
-            "date": bucket.isoformat(),
-            "label": bucket.strftime("%b") if normalized_range == "3m" else f"{bucket.strftime('%b')} {bucket.day}",
-            "total": round(total, 2),
+    def aggregate(start, end, starts):
+        orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
+            seller_filter,
+            func.lower(Order.status).in_(completed_statuses),
+            Order.created_at >= start,
+            Order.created_at < end,
+        ).all()
+        revenue_buckets = {item: 0.0 for item in starts}
+        order_buckets = {item: 0 for item in starts}
+        revenue = 0.0
+        products_sold = 0
+        for order in orders:
+            quantity = int(order.quantity or 1)
+            amount = float(re.sub(r"[^0-9.]", "", str(order.price or "0")) or 0) * quantity
+            revenue += amount
+            products_sold += quantity
+            order_time = order.created_at or now
+            bucket = month_start(order_time) if normalized_range == "3m" else order_time.date()
+            if bucket in revenue_buckets:
+                revenue_buckets[bucket] += amount
+                order_buckets[bucket] += 1
+        views = db.query(ProductView).join(Product, ProductView.product_id == Product.id).filter(
+            or_(Product.seller == student.student_id, Product.seller == student.name),
+            ProductView.viewed_at >= start,
+            ProductView.viewed_at < end,
+        ).count()
+        return {
+            "revenue": revenue,
+            "orders": len(orders),
+            "products_sold": products_sold,
+            "views": views,
+            "conversion_rate": len(orders) / views * 100 if views else 0,
+            "average_order_value": revenue / len(orders) if orders else 0,
+            "revenue_buckets": revenue_buckets,
+            "order_buckets": order_buckets,
         }
-        for bucket, total in buckets.items()
-    ]
+
+    current_buckets = bucket_starts(current_start)
+    previous_buckets = bucket_starts(previous_start)
+    current = aggregate(current_start, now, current_buckets)
+    previous = aggregate(previous_start, current_start, previous_buckets)
+
+    def percent_change(current_value, previous_value):
+        return 100.0 if current_value and not previous_value else ((current_value - previous_value) / previous_value * 100 if previous_value else 0.0)
+
+    points = [{
+        "date": bucket.isoformat(),
+        "label": bucket.strftime("%b") if normalized_range == "3m" else f"{bucket.strftime('%b')} {bucket.day}",
+        "total": round(current["revenue_buckets"][bucket], 2),
+        "orders": current["order_buckets"][bucket],
+    } for bucket in current_buckets]
     return {
         "range": normalized_range,
         "points": points,
-        "total": round(sum(item["total"] for item in points), 2),
-        "order_count": len(completed_orders),
+        "stats": {
+            "total_revenue": round(current["revenue"], 2),
+            "total_orders": current["orders"],
+            "products_sold": current["products_sold"],
+            "conversion_rate": round(current["conversion_rate"], 2),
+            "average_order_value": round(current["average_order_value"], 2),
+            "total_views": current["views"],
+        },
+        "comparisons": {
+            "total_revenue": round(percent_change(current["revenue"], previous["revenue"]), 2),
+            "total_orders": round(percent_change(current["orders"], previous["orders"]), 2),
+            "products_sold": round(percent_change(current["products_sold"], previous["products_sold"]), 2),
+            "conversion_rate": round(percent_change(current["conversion_rate"], previous["conversion_rate"]), 2),
+            "average_order_value": round(percent_change(current["average_order_value"], previous["average_order_value"]), 2),
+            "total_views": round(percent_change(current["views"], previous["views"]), 2),
+        },
+        "total": round(current["revenue"], 2),
+        "order_count": current["orders"],
     }
 
 
@@ -8383,6 +8674,161 @@ def _require_admin(authorization: Optional[str], session_token: Optional[str], d
     token = _extract_admin_token(authorization, session_token)
     admin, _ = _admin_for_session(db, token)
     return admin
+
+
+SUPPORT_TICKET_CATEGORIES = {
+    "Payment Issue",
+    "Dispute",
+    "Account Problem",
+    "Bug Report",
+    "Other",
+}
+SUPPORT_TICKET_STATUSES = {"open", "in_progress", "resolved"}
+
+
+def _support_ticket_payload(ticket: SupportTicket) -> dict:
+    return {
+        "id": ticket.id,
+        "ticket_number": f"SUP-{ticket.id:04d}",
+        "user_id": ticket.user_id,
+        "name": ticket.requester_name,
+        "email": ticket.requester_email,
+        "category": ticket.category,
+        "message": ticket.message,
+        "attachment_url": ticket.attachment_url,
+        "status": ticket.status,
+        "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+        "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
+    }
+
+
+def _notify_support_admin(ticket: SupportTicket) -> None:
+    admin_email = os.getenv("SUPPORT_EMAIL") or SENDER_EMAIL
+    if not admin_email or not SENDER_EMAIL or not SENDER_PASSWORD:
+        logging.getLogger("app.support").warning(
+            "Support ticket %s created but admin email notification is not configured.",
+            ticket.id,
+        )
+        return
+    try:
+        message = MIMEMultipart()
+        message["Subject"] = f"New support ticket SUP-{ticket.id:04d}"
+        message["From"] = SENDER_EMAIL
+        message["To"] = admin_email
+        message.attach(MIMEText(
+            f"Category: {ticket.category}\n"
+            f"From: {ticket.requester_name or 'Guest'} ({ticket.requester_email or 'No email'})\n\n"
+            f"{ticket.message}",
+            "plain",
+        ))
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.sendmail(SENDER_EMAIL, admin_email, message.as_string())
+    except Exception as error:
+        logging.getLogger("app.support").exception(
+            "Failed to notify admin about support ticket %s: %s", ticket.id, error
+        )
+
+
+@app.post("/support/tickets", status_code=status.HTTP_201_CREATED)
+async def create_support_ticket(
+    requester_name: Optional[str] = Form(None),
+    requester_email: Optional[str] = Form(None),
+    student_id: Optional[str] = Form(None),
+    category: str = Form(...),
+    message: str = Form(...),
+    attachment: Optional[UploadFile] = File(None),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    normalized_category = str(category or "").strip()
+    normalized_message = str(message or "").strip()
+    if normalized_category not in SUPPORT_TICKET_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Select a valid support category.")
+    if not normalized_message:
+        raise HTTPException(status_code=400, detail="A support message is required.")
+    if len(normalized_message) > 5000:
+        raise HTTPException(status_code=400, detail="Support message must be 5000 characters or fewer.")
+
+    student = None
+    if authorization:
+        student = _student_from_authorization(authorization, db)
+
+    attachment_url = None
+    if attachment and attachment.filename:
+        extension = os.path.splitext(attachment.filename)[1].lower()
+        if extension not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".jfif", ".pdf"}:
+            raise HTTPException(status_code=400, detail="Only image or PDF attachments are supported.")
+        attachment_name = f"support_{uuid.uuid4().hex}{extension}"
+        attachment_path = os.path.join(STATIC_DIR, attachment_name)
+        try:
+            with open(attachment_path, "wb") as output_file:
+                shutil.copyfileobj(attachment.file, output_file)
+        finally:
+            await attachment.close()
+        attachment_url = f"http://127.0.0.1:8000/static/uploads/{attachment_name}"
+
+    ticket = SupportTicket(
+        user_id=student.student_id if student else ((student_id or "").strip() or None),
+        requester_name=(student.name if student else (requester_name or "").strip()) or None,
+        requester_email=(student.email if student else (requester_email or "").strip()) or None,
+        category=normalized_category,
+        message=normalized_message,
+        attachment_url=attachment_url,
+        status="open",
+    )
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+    _notify_support_admin(ticket)
+    return {"success": True, "ticket": _support_ticket_payload(ticket)}
+
+
+@app.get("/support/tickets")
+def list_support_tickets(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    query = db.query(SupportTicket)
+    if status_filter and status_filter.strip().lower() in SUPPORT_TICKET_STATUSES:
+        query = query.filter(SupportTicket.status == status_filter.strip().lower())
+    tickets = query.order_by(SupportTicket.created_at.desc(), SupportTicket.id.desc()).all()
+    return {"items": [_support_ticket_payload(ticket) for ticket in tickets], "total": len(tickets)}
+
+
+@app.patch("/support/tickets/{ticket_id}")
+def update_support_ticket_status(
+    ticket_id: int,
+    payload: SupportTicketStatusUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    next_status = str(payload.status or "").strip().lower()
+    if next_status not in SUPPORT_TICKET_STATUSES:
+        raise HTTPException(status_code=400, detail="Status must be open, in_progress, or resolved.")
+    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+    ticket.status = next_status
+    db.commit()
+    db.refresh(ticket)
+
+    if ticket.user_id:
+        db.add(Notification(
+            student_id=ticket.user_id,
+            title="Support ticket updated",
+            message=f"Your support ticket SUP-{ticket.id:04d} is now {next_status.replace('_', ' ')}.",
+            type="system",
+            is_read=False,
+        ))
+        db.commit()
+    return {"success": True, "ticket": _support_ticket_payload(ticket)}
 
 
 @app.get("/api/seller/disputes")

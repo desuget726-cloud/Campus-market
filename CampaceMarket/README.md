@@ -1,16 +1,25 @@
-# React + Vite
+# Campace Market
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Google OAuth setup
 
-Currently, two official plugins are available:
+Google sign-in is handled by the FastAPI backend using Authorization Code flow with PKCE.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. Open [Google Cloud Console](https://console.cloud.google.com/), create or select a project, and configure the OAuth consent screen.
+2. Create an OAuth client under **APIs & Services > Credentials > Create Credentials > OAuth client ID**.
+3. Choose **Web application** and add this authorized redirect URI for local development:
 
-## React Compiler
+   `http://127.0.0.1:8000/auth/google/callback`
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+4. Copy `Backend/.env.example` to `Backend/.env` and set:
 
-## Expanding the ESLint configuration
+   ```env
+   GOOGLE_CLIENT_ID=your-google-client-id
+   GOOGLE_CLIENT_SECRET=your-google-client-secret
+   GOOGLE_REDIRECT_URI=http://127.0.0.1:8000/auth/google/callback
+   FRONTEND_LOGIN_URL=http://localhost:5173/login
+   ```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+5. Set `studentVerification.allowedEmailDomain` to the institution's domain. New Google accounts are rejected unless their verified email matches that domain.
+6. Start the backend before opening the frontend. Missing OAuth variables produce a startup error listing the missing names.
+
+For production, use HTTPS URLs in Google Cloud Console and the environment variables. Never commit `Backend/.env` or expose the client secret.

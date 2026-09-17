@@ -1,8 +1,10 @@
 import io
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi import HTTPException
+from sqlalchemy.sql import visitors
 
 from app.order_lifecycle import (
     apply_buyer_receipt_confirmation,
@@ -18,7 +20,9 @@ from app.main import (
     _resolve_pickup_location,
     _restock_product_for_order,
     _should_show_in_my_products,
+    get_seller_sales_analytics,
 )
+from app import main as main_module
 
 
 def make_order():
@@ -32,6 +36,86 @@ def make_order():
 
 
 class OrderLifecycleTests(unittest.TestCase):
+    def test_seller_analytics_query_is_scoped_to_authenticated_seller(self):
+        captured_filters = []
+
+        class Query:
+            def join(self, *_args):
+                return self
+
+            def filter(self, *conditions):
+                captured_filters.extend(conditions)
+                return self
+
+            def all(self):
+                return []
+
+            def count(self):
+                return 0
+
+        class Database:
+            def query(self, *_columns):
+                return Query()
+
+        seller = SimpleNamespace(student_id="seller-1", name="Seller One")
+        original_resolver = main_module._student_from_authorization
+        main_module._student_from_authorization = lambda _authorization, _db: seller
+        try:
+            get_seller_sales_analytics("7d", "Bearer token", Database())
+        finally:
+            main_module._student_from_authorization = original_resolver
+
+        bound_values = {
+            element.value
+            for condition in captured_filters
+            for element in visitors.iterate(condition)
+            if hasattr(element, "value")
+        }
+        self.assertIn("seller-1", bound_values)
+        self.assertIn("Seller One", bound_values)
+
+    def test_chart_points_match_stats_for_current_month_order(self):
+        order = SimpleNamespace(
+            status="Completed",
+            created_at=datetime.now(),
+            quantity=1,
+            price="1000",
+            seller_id="seller-1",
+        )
+
+        class Query:
+            def __init__(self, model):
+                self.model = model
+
+            def join(self, *_args):
+                return self
+
+            def filter(self, *_conditions):
+                return self
+
+            def all(self):
+                return [order] if self.model.__name__ == "Order" else []
+
+            def count(self):
+                return 0
+
+        class Database:
+            def query(self, model, *_columns):
+                return Query(model)
+
+        seller = SimpleNamespace(student_id="seller-1", name="Seller One")
+        original_resolver = main_module._student_from_authorization
+        main_module._student_from_authorization = lambda _authorization, _db: seller
+        try:
+            result = get_seller_sales_analytics("3m", "Bearer token", Database())
+        finally:
+            main_module._student_from_authorization = original_resolver
+
+        self.assertEqual(result["stats"]["total_revenue"], 1000)
+        self.assertEqual(result["stats"]["total_orders"], 1)
+        self.assertEqual(sum(point["total"] for point in result["points"]), 1000)
+        self.assertEqual(sum(point["orders"] for point in result["points"]), 1)
+
     def test_complete_order_requires_both_confirmations(self):
         order = make_order()
 

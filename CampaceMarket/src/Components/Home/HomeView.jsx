@@ -1,11 +1,18 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import ProductDetails from './ProductDetails';
+import { apiUrl } from '../../api/config';
 import c1 from '../../assets/c1.png';
 import c2 from '../../assets/c2.jpg';
 import laptop_586 from '../../assets/laptop_586.webp';
 import phone1 from '../../assets/phone1.jpg';
 import c3 from '../../assets/c3.jpg';
 import c7 from '../../assets/c7.jpg';
+
+const fetchWithTimeout = (url, timeoutMs = 10000) => {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { signal: controller.signal }).finally(() => window.clearTimeout(timeoutId));
+};
 
 const bannerImages = [
   // c1,
@@ -420,6 +427,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   const [categories, setCategories] = useState(defaultCategories);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [hoveredCategoryId, setHoveredCategoryId] = useState(null);
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -450,7 +458,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
 
   const fetchCategories = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/categories');
+      const response = await fetchWithTimeout(apiUrl('/api/categories'));
       if (!response.ok) {
         throw new Error('Failed to load categories');
       }
@@ -468,6 +476,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
       setCategories(normalizedCategories.length ? normalizedCategories : defaultCategories);
     } catch (error) {
       console.error('Category fetch error:', error);
+      setLoadError('The marketplace service is unavailable. Please check the backend and try again.');
       setCategories(defaultCategories);
     }
   };
@@ -481,9 +490,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
       if (department) params.set('department', department);
 
       const url = params.toString()
-        ? `http://127.0.0.1:8000/api/products?${params.toString()}`
-        : 'http://127.0.0.1:8000/api/products';
-      const response = await fetch(url);
+        ? `/api/products?${params.toString()}`
+        : '/api/products';
+      const response = await fetchWithTimeout(apiUrl(url));
       if (!response.ok) {
         throw new Error('Failed to load products');
       }
@@ -491,6 +500,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
       setSearchResults(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Product fetch error:', error);
+      setLoadError('The marketplace service is unavailable. Please check the backend and try again.');
       setSearchResults([]);
     }
   };
@@ -498,12 +508,16 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   useEffect(() => {
     const loadInitialData = async () => {
       setLoading(true);
+      setLoadError('');
       const department = user?.department || user?.college || user?.departmentName || '';
-      await Promise.all([
-        fetchCategories(),
-        fetchProducts({ department: department || undefined }),
-      ]);
-      setLoading(false);
+      try {
+        await Promise.all([
+          fetchCategories(),
+          fetchProducts({ department: department || undefined }),
+        ]);
+      } finally {
+        setLoading(false);
+      }
     };
     loadInitialData();
   }, [user?.department, user?.college, user?.departmentName]);
@@ -519,7 +533,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
 
     const fetchSelectedProduct = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8000/api/products/${initialProductId}`);
+        const response = await fetchWithTimeout(apiUrl(`/api/products/${initialProductId}`));
         if (!response.ok) throw new Error('Failed to load selected product');
         setSelectedProduct(await response.json());
       } catch (error) {
@@ -618,6 +632,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
         />
       ) : (
         <div className="space-y-6 pt-1">
+          {loadError && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{loadError}</div>}
           <section className="group w-screen relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
             {bannerImages.map((src, index) => (
               <img

@@ -125,6 +125,18 @@ def init_db() -> None:
             if column_name not in product_columns:
                 with engine.begin() as connection:
                     connection.execute(text(f"ALTER TABLE products ADD COLUMN `{column_name}` {column_definition}"))
+    if "product_views" in inspector.get_table_names():
+        product_view_columns = {column["name"] for column in inspector.get_columns("product_views")}
+        missing_product_view_columns = {
+            "viewer_id": "VARCHAR(50) NULL",
+            "viewed_at": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        }
+        for column_name, column_definition in missing_product_view_columns.items():
+            if column_name not in product_view_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        f"ALTER TABLE product_views ADD COLUMN `{column_name}` {column_definition}"
+                    ))
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         missing_columns = {

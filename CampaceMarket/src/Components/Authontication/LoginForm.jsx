@@ -4,8 +4,6 @@ import AuthInfoModal from './AuthInfoModal';
 import { useLanguage } from '../../context/LanguageContext';
 import { apiUrl } from '../../api/config';
 
-const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-const googleRedirectUri = import.meta.env.VITE_GOOGLE_REDIRECT_URI || `${window.location.origin}/login`;
 const microsoftClientId = import.meta.env.VITE_MICROSOFT_CLIENT_ID || '';
 const microsoftRedirectUri = import.meta.env.VITE_MICROSOFT_REDIRECT_URI || `${window.location.origin}/login`;
 
@@ -42,6 +40,19 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
 
   useEffect(() => {
     const callbackUrl = new URL(window.location.href);
+    const oauthFragment = new URLSearchParams(callbackUrl.hash.slice(1));
+    const oauthAccessToken = oauthFragment.get('access_token');
+    if (oauthFragment.get('oauth') === 'success' && oauthAccessToken) {
+      callbackUrl.hash = '';
+      window.history.replaceState({}, document.title, `${callbackUrl.pathname}${callbackUrl.search}`);
+      onLoginSuccess?.({
+        name: oauthFragment.get('name') || 'Student',
+        studentId: oauthFragment.get('student_id') || '',
+        email: oauthFragment.get('email') || '',
+        access_token: oauthAccessToken,
+      }, oauthFragment.get('role') || 'student');
+      return;
+    }
     const code = callbackUrl.searchParams.get('code');
     const returnedState = callbackUrl.searchParams.get('state');
     const oauthError = callbackUrl.searchParams.get('error_description') || callbackUrl.searchParams.get('error');
@@ -81,7 +92,9 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
     const callbackPath = provider === 'microsoft'
       ? '/api/auth/microsoft-callback'
       : '/api/auth/google-callback';
-    const redirectUri = provider === 'microsoft' ? microsoftRedirectUri : googleRedirectUri;
+    const redirectUri = provider === 'microsoft'
+      ? microsoftRedirectUri
+      : apiUrl('/auth/google/callback');
 
     fetch(apiUrl(callbackPath), {
       method: 'POST',
@@ -107,11 +120,20 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
   };
 
   const validate = () => {
-    const studentId = formData.studentId.trim();
+    const identifier = formData.studentId.trim();
     const password = formData.password.trim();
 
-    if (!studentId || !password) {
+    if (!identifier || !password) {
       return t('auth.fillBoth');
+    }
+
+    const looksLikeEmail = identifier.includes('@');
+    if (looksLikeEmail) {
+      const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+      if (!validEmail) {
+        return 'Please enter a valid student ID or email.';
+      }
+      return '';
     }
 
     return '';
@@ -239,13 +261,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
   };
 
   const handleGoogleLogin = () => {
-    beginOAuthLogin(
-      'google',
-      googleClientId,
-      googleRedirectUri,
-      'https://accounts.google.com/o/oauth2/v2/auth',
-      'openid email profile',
-    );
+    window.location.assign(apiUrl('/auth/google/login'));
   };
 
   const handleMicrosoftLogin = () => {
@@ -321,14 +337,14 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
             <>
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">Student ID</label>
+                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">{t('auth.studentIdOrEmail')}</label>
                   <input
                     id="studentId"
                     name="studentId"
                     type="text"
                     value={formData.studentId}
                     onChange={handleChange}
-                    placeholder="Enter your student ID"
+                    placeholder={t('auth.enterStudentIdOrEmail')}
                     className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                 </div>
@@ -390,10 +406,10 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
               </div>
 
               <div className="mt-7 flex flex-col items-center justify-center gap-3 text-sm sm:flex-row sm:gap-6">
-                <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="font-medium text-slate-600 transition hover:text-emerald-700">
+                <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="bg-transparent font-medium text-slate-600 transition hover:bg-transparent hover:text-emerald-700 focus:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 active:bg-transparent">
                   Forgot password?
                 </button>
-                <button type="button" onClick={onToggleRegister} className="font-medium text-emerald-700 transition hover:text-emerald-800">
+                <button type="button" onClick={onToggleRegister} className="bg-transparent font-medium text-emerald-700 transition hover:bg-transparent hover:text-emerald-800 focus:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 active:bg-transparent">
                   Create account
                 </button>
               </div>

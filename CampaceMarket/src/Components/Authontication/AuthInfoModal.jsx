@@ -1,25 +1,27 @@
 import { useCallback, useEffect, useState } from 'react';
+import { API_BASE } from '../../api/config';
 
-function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
-    const [name, setName] = useState('');
-    const [email, setEmail] = useState('');
-    const [studentId, setStudentId] = useState(defaultStudentId);
-    const [category, setCategory] = useState('General Inquiry');
+function AuthInfoModal({ type, onClose, defaultStudentId = '', user = null }) {
+    const initialStudentId = user?.studentId || user?.student_id || defaultStudentId;
+    const [name, setName] = useState(user?.name || '');
+    const [email, setEmail] = useState(user?.email || '');
+    const [studentId, setStudentId] = useState(initialStudentId);
+    const [category, setCategory] = useState('Other');
     const [message, setMessage] = useState('');
     const [evidenceImage, setEvidenceImage] = useState(null);
     const [ticketReference, setTicketReference] = useState('');
     const [status, setStatus] = useState({ error: '', success: '', submitting: false });
 
     const resetSupportForm = useCallback(() => {
-        setName('');
-        setEmail('');
-        setStudentId(defaultStudentId);
-        setCategory('General Inquiry');
+        setName(user?.name || '');
+        setEmail(user?.email || '');
+        setStudentId(initialStudentId);
+        setCategory('Other');
         setMessage('');
         setEvidenceImage(null);
         setTicketReference('');
         setStatus({ error: '', success: '', submitting: false });
-    }, [defaultStudentId]);
+    }, [defaultStudentId, initialStudentId, user?.email, user?.name]);
 
     const handleClose = useCallback(() => {
         resetSupportForm();
@@ -46,19 +48,21 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
         setStatus({ error: '', success: '', submitting: true });
         try {
             const formData = new FormData();
-            formData.append('student_id', studentId.trim());
-            formData.append('student_name', name.trim());
-            formData.append('email', email.trim());
+            formData.append('requester_name', name.trim());
+            formData.append('requester_email', email.trim());
+            if (studentId.trim()) formData.append('student_id', studentId.trim());
             formData.append('category', category);
-            formData.append('issue', message.trim());
-            if (evidenceImage) formData.append('evidence_image', evidenceImage);
-            const response = await fetch('http://127.0.0.1:8000/api/student/report', {
+            formData.append('message', message.trim());
+            if (evidenceImage) formData.append('attachment', evidenceImage);
+            const token = user?.access_token || user?.accessToken || user?.token || '';
+            const response = await fetch(`${API_BASE}/support/tickets`, {
                 method: 'POST',
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
                 body: formData
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data?.detail || 'Could not submit your support request.');
-            setTicketReference(data?.ticket_reference || 'Pending reference');
+            setTicketReference(data?.ticket?.ticket_number || 'Pending reference');
             setStatus({ error: '', success: '', submitting: false });
             setMessage('');
             setEvidenceImage(null);
@@ -191,21 +195,21 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '' }) {
                         <h3 className="mt-4 text-xl font-bold text-slate-900">Support request received</h3>
                         <p className="mt-2 text-sm leading-6 text-slate-600">Your message has been sent to the administrator. Please keep this reference for follow-up.</p>
                         <p className="mt-5 rounded-xl bg-white px-4 py-3 font-mono text-lg font-bold tracking-wider text-emerald-700 shadow-sm">{ticketReference}</p>
-                        <p className="mt-4 text-xs leading-5 text-slate-500">The admin will review your request and respond using the email address you provided, typically within 1–2 business days.</p>
+                        <p className="mt-4 text-xs leading-5 text-slate-500">The admin will review your request and respond using the email address you provided, typically within 24 hours.</p>
                     </div>
                 )}
 
                 {type === 'help' && !ticketReference && (
                     <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-                        <p className="text-sm leading-6 text-slate-500">Tell the admin what you need help with. Your message will be added to the campus support queue.</p>
+                        <p className="text-sm leading-6 text-slate-500">Tell us what happened. We typically respond within 24 hours.</p>
                         <div className="grid gap-4 sm:grid-cols-2">
                             <label className="text-sm font-medium text-slate-700">Name<input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
                             <label className="text-sm font-medium text-slate-700">Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
                         </div>
-                        <label className="block text-sm font-medium text-slate-700">Inquiry Type<select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"><option>General Inquiry</option><option>Login Issue</option><option>Payment Problem</option><option>Fraud Report</option></select></label>
+                        <label className="block text-sm font-medium text-slate-700">Category<select value={category} onChange={(event) => setCategory(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"><option>Payment Issue</option><option>Dispute</option><option>Account Problem</option><option>Bug Report</option><option>Other</option></select></label>
                         <label className="block text-sm font-medium text-slate-700">Student ID <span className="font-normal text-slate-400">(optional)</span><input value={studentId} onChange={(event) => setStudentId(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
                         <label className="block text-sm font-medium text-slate-700">Message<textarea required rows={4} value={message} onChange={(event) => setMessage(event.target.value)} className="mt-2 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label>
-                        <label className="block text-sm font-medium text-slate-700">Evidence image <span className="font-normal text-slate-400">(optional)</span><input type="file" accept="image/*" onChange={(event) => setEvidenceImage(event.target.files?.[0] || null)} className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal text-slate-600" /></label>
+                        <label className="block text-sm font-medium text-slate-700">Screenshot or evidence <span className="font-normal text-slate-400">(optional)</span><input type="file" accept="image/*,.pdf" onChange={(event) => setEvidenceImage(event.target.files?.[0] || null)} className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal text-slate-600" /></label>
                         {status.error && <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{status.error}</p>}
                         {status.success && <p className="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{status.success}</p>}
                         <button type="submit" disabled={status.submitting} className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400">{status.submitting ? 'Sending...' : 'Send to Admin'}</button>

@@ -1,52 +1,90 @@
+import dg from '../../assets/dg.jpg';
+import { useLanguage } from '../../context/LanguageContext';
+
 const socialLinks = [
   {
     label: 'Telegram',
-    href: 'https://t.me/mekdelauniversity/1',
+    href: 'https://t.me/desuget11',
     icon: <path d="m21.5 3.5-3.2 15.1c-.2 1.1-.8 1.4-1.7.9l-4.7-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.8 8.7-7.8c.4-.4-.1-.6-.6-.2L6.3 12.8l-4.6-1.4c-1-.3-1-1 .2-1.5L19.8 3c.8-.3 1.9.2 1.7.5Z" />,
   },
   {
-    label: 'LinkedIn',
-    href: 'https://et.linkedin.com/company/mekdela-amba-university-mau',
-    icon: <><path d="M5.2 7.8H1.6V21h3.6V7.8ZM3.4 2A2.1 2.1 0 1 0 3.4 6.2 2.1 2.1 0 0 0 3.4 2ZM8 7.8h3.5v1.8h.1c.5-1 1.8-2.1 3.8-2.1 4 0 4.7 2.6 4.7 6V21h-3.6v-6.7c0-1.6 0-3.6-2.2-3.6s-2.5 1.7-2.5 3.5V21H8V7.8Z" /></>,
+    label: 'Facebook',
+    href: 'https://facebook.com/',
+    icon: <path d="M14 21v-8h2.7l.4-3.1H14V7.9c0-.9.3-1.6 1.7-1.6h1.8V3.5c-.3 0-1.4-.1-2.6-.1-2.6 0-4.4 1.6-4.4 4.5v2H7.7V13h2.8v8H14Z" />,
   },
   {
-    label: 'Facebook',
-    href: 'https://web.facebook.com/Mekdela.Amba.University/?_rdc=1&_rdr#',
-    icon: <path d="M14 21v-8h2.7l.4-3.1H14V7.9c0-.9.3-1.6 1.7-1.6h1.8V3.5c-.3 0-1.4-.1-2.6-.1-2.6 0-4.4 1.6-4.4 4.5v2H7.7V13h2.8v8H14Z" />,
+    label: 'Email',
+    href: 'mailto:desuget726@gmail.com',
+    icon: <><path d="M3 5h18v14H3V5Z" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="m4 7 8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></>,
   },
 ];
 
-const Footer = ({ onNavigate, onOpenPrivacy, onOpenTerms }) => (
-  <footer className="w-full border-t border-slate-800 bg-slate-900 px-4 py-10 text-sm text-white sm:px-6 lg:px-8">
-    <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-3">
-      <div>
-        <p className="text-lg font-bold text-white">Campus Marketplace</p>
-        <p className="mt-3 max-w-xs leading-6 text-slate-300">Making campus exchange simple, trusted, and student-friendly.</p>
-      </div>
+const Footer = ({ onNavigate }) => {
+  const { language, setLanguage } = useLanguage();
 
-      <nav className="grid grid-cols-2 gap-x-8 gap-y-3" aria-label="Footer navigation">
-        <button type="button" onClick={() => onNavigate('about')} className="text-left text-white transition-colors hover:text-blue-400">About</button>
-        <button type="button" onClick={() => onNavigate('contact')} className="text-left text-white transition-colors hover:text-blue-400">Contact</button>
-        <button type="button" onClick={() => onNavigate('login')} className="text-left text-white transition-colors hover:text-blue-400">Login</button>
-        <button type="button" onClick={() => onNavigate('register')} className="text-left text-white transition-colors hover:text-blue-400">Register</button>
-        <button type="button" onClick={onOpenPrivacy} className="text-left text-white transition-colors hover:text-blue-400">Privacy Policy</button>
-        <button type="button" onClick={onOpenTerms} className="text-left text-white transition-colors hover:text-blue-400">Terms of Service</button>
-      </nav>
+  const navigate = (view) => onNavigate?.(view);
 
-      <div>
-        <p className="font-semibold text-white">Connect with us</p>
-        <div className="mt-4 flex gap-3">
-          {socialLinks.map((social) => (
-            <a key={social.label} href={social.href} target="_blank" rel="noreferrer" aria-label={social.label} title={social.label} className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-700 text-slate-300 transition-colors hover:border-blue-400 hover:bg-slate-800 hover:text-blue-400">
-              <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">{social.icon}</svg>
-            </a>
-          ))}
+  return (
+    <footer className="w-full border-t border-blue-950 bg-sky-700 px-4 py-12 text-sm text-white sm:px-6 lg:px-8">
+      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <button type="button" onClick={() => navigate('home')} className="flex items-center gap-3 text-left">
+            <img src={dg} alt="DG Market logo" className="h-14 w-14 rounded-2xl object-cover ring-2 ring-white/30" />
+            <span className="text-xl font-black tracking-tight">DG Market</span>
+          </button>
+          <p className="mt-4 max-w-xs leading-6 text-blue-100">Your trusted campus marketplace for buying, selling, and exchanging with confidence.</p>
+        </div>
+
+        <nav aria-label="Footer quick links">
+          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Quick Links</h2>
+          <div className="mt-4 grid gap-3">
+            {[
+              ['Home', 'home'],
+              ['About', 'about'],
+              ['Services', 'services'],
+              ['Contact', 'contact'],
+              ['Dashboard', 'student-dashboard'],
+            ].map(([label, view]) => (
+              <button key={view} type="button" onClick={() => navigate(view)} className="w-fit text-left text-white transition-colors hover:text-blue-200">{label}</button>
+            ))}
+          </div>
+        </nav>
+
+        <nav aria-label="Footer legal links">
+          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Legal</h2>
+          <div className="mt-4 grid gap-3">
+            <button type="button" onClick={() => navigate('terms')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Terms of Service</button>
+            <button type="button" onClick={() => navigate('privacy')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Privacy Policy</button>
+            <button type="button" onClick={() => navigate('refund-dispute')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Refund / Dispute Policy</button>
+          </div>
+        </nav>
+
+        <div>
+          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Contact</h2>
+          <div className="mt-4 grid gap-3 text-blue-50">
+            <a href="mailto:desuget726@gmail.com" className="w-fit transition-colors hover:text-white">desuget726@gmail.com</a>
+            <a href="tel:+251962714305" className="w-fit transition-colors hover:text-white">0962714305</a>
+          </div>
+          <div className="mt-5 flex gap-3">
+            {socialLinks.map((social) => (
+              <a key={social.label} href={social.href} target={social.href.startsWith('http') ? '_blank' : undefined} rel={social.href.startsWith('http') ? 'noreferrer' : undefined} aria-label={social.label} title={social.label} className="flex h-10 w-10 items-center justify-center rounded-xl border border-blue-300/50 text-blue-50 transition-colors hover:border-white hover:bg-white/10 hover:text-white">
+                <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">{social.icon}</svg>
+              </a>
+            ))}
+          </div>
         </div>
       </div>
-    </div>
 
-    <div className="mx-auto mt-10 max-w-7xl border-t border-slate-800 pt-5 text-center text-xs text-slate-400">© 2026 Campus Marketplace. All rights reserved.</div>
-  </footer>
-);
+      <div className="mx-auto mt-10 flex max-w-7xl flex-col gap-4 border-t border-blue-400/40 pt-5 text-xs text-blue-100 sm:flex-row sm:items-center sm:justify-between">
+        <p>© 2026 DG Market. All rights reserved.</p>
+        <div className="flex items-center gap-2 font-semibold" aria-label="Language switcher">
+          <button type="button" onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white' : 'text-blue-200 hover:text-white'}>English</button>
+          <span aria-hidden="true">|</span>
+          <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-blue-200 hover:text-white'}>አማርኛ</button>
+        </div>
+      </div>
+    </footer>
+  );
+};
 
 export default Footer;

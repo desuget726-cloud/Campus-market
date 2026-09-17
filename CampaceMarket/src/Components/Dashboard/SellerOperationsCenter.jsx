@@ -54,6 +54,8 @@ function SellerOperationsCenter({
     points: [],
     total: 0,
     order_count: 0,
+    stats: {},
+    comparisons: {},
   });
   const [salesAnalyticsLoading, setSalesAnalyticsLoading] = useState(false);
   const [salesAnalyticsError, setSalesAnalyticsError] = useState("");
@@ -77,8 +79,8 @@ function SellerOperationsCenter({
   const dashboardAlerts = sellerDashboardData?.alerts || {};
   const payoutStatus = String(
     sellerData?.account_status ||
-      sellerDashboardData?.account_status ||
-      "Pending",
+    sellerDashboardData?.account_status ||
+    "Pending",
   ).toLowerCase();
   const performance = sellerDashboardData?.performance || {};
   const shouldShowInMyProducts = (status) =>
@@ -105,10 +107,10 @@ function SellerOperationsCenter({
   );
   const viewedProductOrders = viewedProduct
     ? orders.filter(
-        (order) =>
-          String(order.product_id ?? order.productId) ===
-          String(viewedProduct.id),
-      )
+      (order) =>
+        String(order.product_id ?? order.productId) ===
+        String(viewedProduct.id),
+    )
     : [];
   const runProductAction = async (productId, action, callback) => {
     setProductActionFeedback(null);
@@ -307,9 +309,9 @@ function SellerOperationsCenter({
       );
       const revenue = Number(
         listing.completed_revenue ??
-          listing.revenue ??
-          orderCount *
-            Number(String(listing.price || 0).replace(/[^0-9.]/g, "")),
+        listing.revenue ??
+        orderCount *
+        Number(String(listing.price || 0).replace(/[^0-9.]/g, "")),
       );
       return { ...listing, views, orderCount, revenue };
     })
@@ -326,18 +328,21 @@ function SellerOperationsCenter({
         Number(listing.views || 0) > 0 &&
         Number(listing.conversion_rate || 0) < 2,
     ) || topProducts[0];
-  const totalViews = visibleListings.reduce(
-    (sum, listing) => sum + Number(listing.views ?? listing.view_count ?? 0),
-    0,
-  );
-  const totalOrders = Number(dashboardStats.received_orders ?? orders.length);
-  const productsSold = Number(dashboardStats.sold_listings ?? counts.sold);
+  const analyticsStats = salesAnalytics.stats || {};
+  const analyticsComparisons = salesAnalytics.comparisons || {};
+  const totalViews = Number(analyticsStats.total_views ?? 0);
+  const totalOrders = Number(analyticsStats.total_orders ?? 0);
+  const productsSold = Number(analyticsStats.products_sold ?? 0);
   const totalInventoryCount = Number(
     dashboardStats.total_listings ?? visibleListings.length + productsSold,
   );
-  const totalRevenue = Number(dashboardStats.completed_revenue ?? 0);
-  const conversionRate = totalViews ? (totalOrders / totalViews) * 100 : 0;
-  const averageOrderValue = totalOrders ? totalRevenue / totalOrders : 0;
+  const totalRevenue = Number(analyticsStats.total_revenue ?? 0);
+  const conversionRate = Number(analyticsStats.conversion_rate ?? 0);
+  const averageOrderValue = Number(analyticsStats.average_order_value ?? 0);
+  const comparisonLabel = (key) => {
+    const value = Number(analyticsComparisons[key] ?? 0);
+    return `${value >= 0 ? "+" : ""}${value.toFixed(1)}% vs previous`;
+  };
   const advisor = sellerDashboardData?.advisor;
   const chartMax = Math.max(
     ...salesAnalytics.points.map((point) => Number(point.total) || 0),
@@ -411,7 +416,7 @@ function SellerOperationsCenter({
     const fetchSalesAnalytics = async () => {
       setSalesAnalyticsLoading(true);
       setSalesAnalyticsError("");
-      setSalesAnalytics({ points: [], total: 0, order_count: 0 });
+      setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
       try {
         const response = await fetch(
           `http://127.0.0.1:8000/api/student/seller/sales-analytics?range=${rangeKey}`,
@@ -425,7 +430,7 @@ function SellerOperationsCenter({
         if (!cancelled) setSalesAnalytics(result);
       } catch (error) {
         if (!cancelled) {
-          setSalesAnalytics({ points: [], total: 0, order_count: 0 });
+          setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
           setSalesAnalyticsError(
             error.message || "Unable to load sales analytics.",
           );
@@ -521,7 +526,7 @@ function SellerOperationsCenter({
     status.setAttribute("font-size", "14");
     status.textContent = salesAnalyticsLoading
       ? "Loading sales..."
-      : points.every((point) => Number(point.total) === 0)
+      : Number(salesAnalytics.stats?.total_revenue ?? 0) === 0
         ? "No sales in this period yet"
         : "";
     svg.appendChild(status);
@@ -533,7 +538,7 @@ function SellerOperationsCenter({
         ? `${advisor.product_title} received ${advisor.views.toLocaleString()} views and ${advisor.completed_orders} completed order${advisor.completed_orders === 1 ? "" : "s"} (${Number(advisor.conversion_rate).toFixed(2)}% conversion). Consider updating its images or price.`
         : "Your listings do not have enough view or completed-order activity for a conversion recommendation yet.";
     }
-  }, [advisor, salesAnalytics, salesAnalyticsLoading]);
+  }, [advisor, salesAnalytics, salesAnalyticsLoading, totalRevenue]);
 
   const fetchSellerOrderDetails = async (orderId) => {
     setSelectedOrderLoading(true);
@@ -1479,8 +1484,8 @@ function SellerOperationsCenter({
                 dispute?.resolution_label ||
                 (orderStatus.includes("refund") || orderStatus === "returned" ? "Resolved - Refunded" :
                   orderStatus.includes("cancel") ? "Resolved - Order Cancelled" :
-                  orderStatus.includes("complete") || orderStatus === "sold" ? "Resolved - Completed" :
-                  dispute?.status === "RESOLVED" ? "Resolved" : dispute?.status || "Open");
+                    orderStatus.includes("complete") || orderStatus === "sold" ? "Resolved - Completed" :
+                      dispute?.status === "RESOLVED" ? "Resolved" : dispute?.status || "Open");
               const tagTone =
                 orderStatus.includes("refund") || orderStatus === "returned"
                   ? "bg-amber-100 text-amber-800 border-amber-200"
@@ -1614,13 +1619,13 @@ function SellerOperationsCenter({
                               ? dispute.seller_evidence
                               : typeof dispute.seller_evidence === "string"
                                 ? (() => {
-                                    try {
-                                      const parsed = JSON.parse(dispute.seller_evidence);
-                                      return Array.isArray(parsed) ? parsed : [parsed];
-                                    } catch {
-                                      return [dispute.seller_evidence];
-                                    }
-                                  })()
+                                  try {
+                                    const parsed = JSON.parse(dispute.seller_evidence);
+                                    return Array.isArray(parsed) ? parsed : [parsed];
+                                  } catch {
+                                    return [dispute.seller_evidence];
+                                  }
+                                })()
                                 : [];
                             return evidenceValues.filter(Boolean).length > 0 ? (
                               <div className="mt-3 grid grid-cols-3 gap-2">
@@ -1691,36 +1696,39 @@ function SellerOperationsCenter({
               stroke="#e2e8f0"
               strokeDasharray="5 8"
             />
-            <path
-              d="M35 175 C120 160 130 140 220 145 S325 110 390 125 S500 60 610 72"
+            <polyline
+              points={chartPoints}
               fill="none"
               stroke="#10b981"
               strokeWidth="5"
               strokeLinecap="round"
+              strokeLinejoin="round"
             />
-            <path
-              d="M35 175 C120 160 130 140 220 145 S325 110 390 125 S500 60 610 72 L610 205 L35 205 Z"
+            <polyline
+              points={`${chartPoints} 610,205 35,205`}
               fill="#10b981"
               fillOpacity="0.1"
+              stroke="none"
             />
-            <g fill="#10b981">
-              <circle cx="35" cy="175" r="5" />
-              <circle cx="150" cy="140" r="5" />
-              <circle cx="260" cy="145" r="5" />
-              <circle cx="370" cy="115" r="5" />
-              <circle cx="490" cy="75" r="5" />
-              <circle cx="610" cy="72" r="5" />
-            </g>
-            {["Jan", "Feb", "Mar", "Apr", "May", "Jun"].map((month, index) => (
+            {salesAnalytics.points.map((point, index) => (
+              <circle
+                key={`${point.date}-${index}`}
+                cx={35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)}
+                cy={190 - ((Number(point.total) || 0) / chartMax) * 135}
+                r="5"
+                fill="#10b981"
+              />
+            ))}
+            {salesAnalytics.points.map((point, index) => (
               <text
-                key={month}
-                x={35 + index * 115}
+                key={`${point.date}-label`}
+                x={35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)}
                 y="225"
                 textAnchor="middle"
                 fill="#64748b"
                 fontSize="12"
               >
-                {month}
+                {point.label}
               </text>
             ))}
           </svg>
@@ -1776,24 +1784,24 @@ function SellerOperationsCenter({
               [
                 "Total Revenue",
                 formatSellerEtb(totalRevenue),
-                "+18.5% vs previous",
+                comparisonLabel("total_revenue"),
               ],
-              ["Total Orders", totalOrders, "+12.0% vs previous"],
-              ["Products Sold", productsSold, "+8.0% vs previous"],
+              ["Total Orders", totalOrders, comparisonLabel("total_orders")],
+              ["Products Sold", productsSold, comparisonLabel("products_sold")],
               [
                 "Conversion Rate",
                 `${conversionRate.toFixed(2)}%`,
-                "+2.4% vs previous",
+                comparisonLabel("conversion_rate"),
               ],
               [
                 "Average Order Value",
                 formatSellerEtb(averageOrderValue),
-                "+5.1% vs previous",
+                comparisonLabel("average_order_value"),
               ],
               [
                 "Total Views",
                 totalViews.toLocaleString(),
-                "+21.3% vs previous",
+                comparisonLabel("total_views"),
               ],
             ].map(([label, value, comparison]) => (
               <div

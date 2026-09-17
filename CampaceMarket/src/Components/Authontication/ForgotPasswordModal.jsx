@@ -4,6 +4,7 @@ const API_URL = 'http://127.0.0.1:8000';
 
 function ForgotPasswordModal({ onClose }) {
     const [step, setStep] = useState(1);
+    const [identifier, setIdentifier] = useState('');
     const [email, setEmail] = useState('');
     const [otp, setOtp] = useState('');
     const [newPassword, setNewPassword] = useState('');
@@ -25,9 +26,16 @@ function ForgotPasswordModal({ onClose }) {
     const handleSendCode = async (event) => {
         event.preventDefault();
         setMessage({ type: '', text: '' });
+        const normalizedIdentifier = identifier.trim();
+        const looksLikeEmail = normalizedIdentifier.includes('@');
+        if (!normalizedIdentifier || (looksLikeEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedIdentifier))) {
+            setMessage({ type: 'error', text: 'Enter a valid student ID or email.' });
+            return;
+        }
         setLoading(true);
         try {
-            await request('/api/auth/forgot-password', { email: email.trim() });
+            const data = await request('/api/auth/forgot-password', { id_or_email: normalizedIdentifier });
+            setEmail(data.email || normalizedIdentifier);
             setStep(2);
             setMessage({ type: 'success', text: 'A 6-digit code was sent to your email.' });
         } catch (error) {
@@ -86,7 +94,7 @@ function ForgotPasswordModal({ onClose }) {
                 {step < 4 && <div className="mb-6 flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Account recovery</p><h3 className="mt-2 text-2xl font-black text-slate-950">Reset your password</h3></div><span className="text-sm font-bold text-slate-400">{step}/3</span></div>}
                 {message.text && <div className={`mb-5 rounded-2xl border px-4 py-3 text-sm ${message.type === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{message.text}</div>}
 
-                {step === 1 && <form onSubmit={handleSendCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">Enter your registered student email and we will send a code that expires in 15 minutes.</p><label className="block text-sm font-semibold text-slate-700">Registered Email<input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@university.edu" className={inputClass} /></label><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Sending...' : 'Send Code'}</button><button type="button" onClick={onClose} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Cancel</button></div></form>}
+                {step === 1 && <form onSubmit={handleSendCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">Enter your registered student ID or email and we will send a code that expires in 15 minutes.</p><label className="block text-sm font-semibold text-slate-700">Student ID or Email<input type="text" required value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="mau9999 or you@university.edu" className={inputClass} /></label><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Sending...' : 'Send Code'}</button><button type="button" onClick={onClose} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Cancel</button></div></form>}
 
                 {step === 2 && <form onSubmit={handleVerifyCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">Enter the 6-digit code sent to <span className="font-semibold text-slate-700">{email}</span>.</p><label className="block text-sm font-semibold text-slate-700">Verification Code<input type="text" inputMode="numeric" maxLength={6} required value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} placeholder="000000" className={`${inputClass} text-center text-xl font-bold tracking-[0.45em]`} /></label><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Checking...' : 'Verify Code'}</button><button type="button" onClick={() => setStep(1)} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Back</button></div></form>}
 

@@ -191,7 +191,9 @@ class ProductView(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    viewer_id = Column(String(50), ForeignKey("students.student_id", ondelete="SET NULL"), nullable=True, index=True)
     visitor_key = Column(String(255), nullable=False)
+    viewed_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     product = relationship("Product", back_populates="view_records")
@@ -432,6 +434,22 @@ class Report(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Report.student_id == Student.student_id", back_populates="reports")
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String(50), nullable=True, index=True)
+    requester_name = Column(String(150), nullable=True)
+    requester_email = Column(String(150), nullable=True)
+    category = Column(String(50), nullable=False)
+    message = Column(Text, nullable=False)
+    attachment_url = Column(String(500), nullable=True)
+    status = Column(String(30), nullable=False, default="open", index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
 
 class Notification(Base):
     __tablename__ = "notifications"

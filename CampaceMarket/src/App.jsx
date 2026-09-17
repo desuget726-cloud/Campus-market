@@ -8,6 +8,7 @@ import ServicesView from './Components/Views/ServicesView';
 import ContactView from './Components/Views/ContactView';
 import SellerProfileView from './Components/Views/SellerProfileView';
 import Footer from './Components/Layout/Footer';
+import PolicyView from './Components/Views/PolicyView';
 import AdminDashboard from './Components/Dashboard/AdminDashboard';
 import StudentDashboard from './Components/Dashboard/StudentDashboard';
 import SuccessModal from './Components/Authontication/SuccessModal';
@@ -430,7 +431,8 @@ function AppContent() {
 
           {currentView === 'services' && <ServicesView />}
 
-          {currentView === 'contact' && <ContactView />}
+          {currentView === 'contact' && <ContactView user={user} />}
+          {['terms', 'privacy', 'refund-dispute'].includes(currentView) && <PolicyView type={currentView} onNavigate={handleNavigate} />}
           {currentView === 'seller-profile' && (
             <SellerProfileView
               sellerId={pendingSellerId}
@@ -476,8 +478,6 @@ function AppContent() {
 
       <Footer
         onNavigate={handleNavigate}
-        onOpenPrivacy={() => setShowFooterPrivacy(true)}
-        onOpenTerms={() => setShowFooterTerms(true)}
       />
 
       {(showFooterPrivacy || showFooterTerms) && (
