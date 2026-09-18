@@ -1,6 +1,6 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, UniqueConstraint, Index, text
+from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -344,10 +344,11 @@ class Admin(Base):
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), default="Admin", nullable=False)
     status = Column(String(50), default="Active", nullable=False)
-    two_factor_enabled = Column(Boolean, default=True, nullable=False)
-    two_factor_secret = Column(String(64), nullable=True)
-    two_factor_pending_secret = Column(String(64), nullable=True)
+    two_factor_enabled = Column(Boolean, default=False, nullable=False)
+    two_factor_secret = Column(String(255), nullable=True)
+    two_factor_pending_secret = Column(String(255), nullable=True)
     backup_codes = Column(Text, nullable=True)
+    permissions = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     last_login = Column(DateTime, nullable=True)
     failed_login_attempts = Column(Integer, default=0, nullable=False)
@@ -356,7 +357,20 @@ class Admin(Base):
     audit_logs = relationship("AuditLog", back_populates="admin", cascade="all, delete-orphan")
     sessions = relationship("AdminSession", back_populates="admin", cascade="all, delete-orphan")
     login_history = relationship("AdminLoginHistory", back_populates="admin", cascade="all, delete-orphan")
+    backup_code_records = relationship("AdminBackupCode", back_populates="admin", cascade="all, delete-orphan")
     reviewed_student_id_change_requests = relationship("StudentIdChangeRequest", back_populates="reviewer")
+
+
+class AdminBackupCode(Base):
+    __tablename__ = "admin_backup_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash = Column(String(255), nullable=False)
+    used = Column(Boolean, default=False, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    admin = relationship("Admin", back_populates="backup_code_records")
 
 
 class StudentIdChangeRequest(Base):

@@ -244,21 +244,25 @@ const adminTabs = [
   { id: 'settings', label: 'Settings', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8z M4.93 4.93l2.12 2.12 M17.95 17.95l2.12 2.12 M4.93 19.07l2.12-2.12 M17.95 6.05l2.12-2.12' }
 ];
 
-function AdminSecurityProfile({ user }) {
+function AdminSecurityProfile({ user, onUserUpdate }) {
   const [section, setSection] = useState('personal');
-  const [profile, setProfile] = useState({ full_name: '', username: '', email: '', phone: '', role: 'Primary Super Admin', two_factor_enabled: false, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
+  const [profile, setProfile] = useState({ id: null, full_name: '', username: '', email: '', phone: '', role: '', two_factor_enabled: false, permissions: {}, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
   const [form, setForm] = useState({ full_name: '', username: '', email: '', phone: '', current_password: '', new_password: '', confirm_password: '', logout_all_sessions: false });
   const [sessions, setSessions] = useState([]);
   const [history, setHistory] = useState([]);
   const [backupCodes, setBackupCodes] = useState([]);
   const [message, setMessage] = useState('');
+  const [messageType, setMessageType] = useState('success');
   const [busy, setBusy] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(true);
   const [backupCodesCopied, setBackupCodesCopied] = useState(false);
   const [setupData, setSetupData] = useState(null);
   const [setupCode, setSetupCode] = useState('');
   const [reauthAction, setReauthAction] = useState(null);
   const [reauthPassword, setReauthPassword] = useState('');
   const [reauthCode, setReauthCode] = useState('');
+  const [permissionState, setPermissionState] = useState({ users: true, products: true, orders: true, payments: true, reports: true, ai: true, analytics: true, audit_logs: true, settings: true });
+  const [permissionsSaving, setPermissionsSaving] = useState(false);
   const token = () => {
     try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || ''; } catch { return user?.access_token || ''; }
   };
@@ -274,30 +278,59 @@ function AdminSecurityProfile({ user }) {
     try { const [sessionData, historyData] = await Promise.all([request('http://127.0.0.1:8000/api/admin/sessions', { headers }), request('http://127.0.0.1:8000/api/admin/login-history', { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { setMessage(error.message); }
   };
   useEffect(() => {
-    const load = async () => { try { const data = await request(`http://127.0.0.1:8000/api/admin/profile?username=${encodeURIComponent(user?.username || 'mau9999')}`); setProfile(data); setForm((current) => ({ ...current, full_name: data.full_name || '', username: data.username || '', email: data.email || '', phone: data.phone || '' })); } catch (error) { setMessage(error.message); } refreshSecurityData(); };
-    load(); const interval = window.setInterval(refreshSecurityData, 30000); return () => window.clearInterval(interval);
-  }, [user?.username]);
+    const load = async () => {
+      setProfileLoading(true);
+      try {
+        const data = await request('http://127.0.0.1:8000/api/admin/me', { headers: { Authorization: `Bearer ${token()}` } });
+        setProfile((current) => ({ ...current, ...data, two_factor_enabled: Boolean(data.two_factor_enabled) }));
+        setPermissionState((current) => ({ ...current, ...(data.permissions || {}) }));
+        setForm((current) => ({
+          ...current,
+          full_name: data.full_name || '',
+          username: data.username || '',
+          email: data.email || '',
+          phone: data.phone || '',
+          current_password: '',
+          new_password: '',
+          confirm_password: '',
+        }));
+      } catch (error) {
+        setMessage(error.message);
+      } finally {
+        setProfileLoading(false);
+      }
+      refreshSecurityData();
+    };
+    load();
+    const interval = window.setInterval(refreshSecurityData, 30000);
+    return () => window.clearInterval(interval);
+  }, []);
   const passwordScore = [form.new_password.length >= 8, /[A-Z]/.test(form.new_password), /[a-z]/.test(form.new_password), /\d/.test(form.new_password), /[^A-Za-z0-9]/.test(form.new_password)].filter(Boolean).length;
-  const updateProfile = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/profile', { method: 'PUT', body: JSON.stringify({ ...form, current_session_token: token() }) }); setProfile((current) => ({ ...current, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); setMessage('Profile and security settings saved.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const updateProfile = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/me', { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); setMessage('Profile and security settings saved.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const normalizedRole = String(profile.role || '').trim().toLowerCase().replace(/_/g, ' ');
+  const canEditPermissions = ['admin', 'super admin', 'superadministrator'].includes(normalizedRole);
+  const permissionDefinitions = [['users', 'Users'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['reports', 'Reports'], ['ai', 'AI'], ['analytics', 'Analytics'], ['audit_logs', 'Audit Logs'], ['settings', 'Settings']];
+  const savePermissions = async () => { if (!canEditPermissions || !profile.id) return; setPermissionsSaving(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); setMessageType('success'); setMessage('Permissions saved successfully.'); } catch (error) { setMessageType('error'); setMessage(error.message || 'Unable to save permissions.'); } finally { setPermissionsSaving(false); } };
   const securityAction = async (path) => { setBusy(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); setMessage(data.message || 'Security action completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
   const startTwoFactorSetup = async () => { setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup', { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
-  const verifyTwoFactorSetup = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup/verify', { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); setProfile((current) => ({ ...current, two_factor_enabled: Boolean(data.enabled) })); setSetupData(null); setSetupCode(''); setMessage(data.message || 'Authenticator setup completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
-  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { setMessage('Enter your current password or a valid authenticator/backup code.'); return; } setBusy(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setMessage(data.message || 'Security action completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const verifyTwoFactorSetup = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup/verify', { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); const enabled = Boolean(data.enabled); setProfile((current) => ({ ...current, two_factor_enabled: enabled })); onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), two_factor_enabled: enabled })); setSetupData(null); setSetupCode(''); setMessageType('success'); setMessage(data.message || 'Authenticator setup completed.'); refreshSecurityData(); } catch (error) { setMessageType('error'); setMessage(error.message); } finally { setBusy(false); } };
+  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { setMessage('Enter your current password or a valid authenticator/backup code.'); return; } setBusy(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); setMessage(data.message || 'Security action completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
   const copyBackupCodes = async () => { if (!backupCodes.length || !navigator.clipboard) { setMessage('Clipboard access is unavailable.'); return; } try { await navigator.clipboard.writeText(backupCodes.join('\n')); setBackupCodesCopied(true); window.setTimeout(() => setBackupCodesCopied(false), 2000); } catch { setMessage('Could not copy backup codes.'); } };
   const downloadBackupCodes = () => { if (!backupCodes.length) return; const generatedDate = new Date().toISOString().slice(0, 10); const contents = `DG Market Admin - Backup Codes (Generated: ${generatedDate}). Keep these safe. Each code can only be used once.\n\n${backupCodes.join('\n')}\n`; const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'dg-market-backup-codes.txt'; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); };
   const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); setMessage('Profile photo updated.'); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
   const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions']];
-  const permissions = ['Users', 'Products', 'Orders', 'Payments', 'Reports', 'AI', 'Analytics', 'Audit Logs', 'Settings'];
   const field = (label, key, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{label}</span><input type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500" /></label>;
-  return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>{message && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</div>}
+  if (profileLoading) return <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-500 shadow-sm" role="status">Loading your admin profile...</div>;
+  return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>{message && <div className={`rounded-xl px-4 py-3 text-sm font-semibold ${messageType === 'error' ? 'border border-rose-200 bg-rose-50 text-rose-700' : 'border border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{message}</div>}
     {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={profile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER} alt="Admin profile" className="h-20 w-20 rounded-full object-cover" /><label className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white">Upload Photo<input type="file" accept="image/*" onChange={uploadAvatar} className="hidden" /></label></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="mt-6 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white disabled:opacity-60">Save Changes</button></form>}
     {section === 'password' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="grid gap-4 md:grid-cols-2">{field('Current Password', 'current_password', 'password')}{field('New Password', 'new_password', 'password')}</div>{form.new_password && <div className="mt-4"><div className="flex h-2 gap-1">{[0, 1, 2, 3, 4].map((item) => <span key={item} className={`flex-1 rounded-full ${item < passwordScore ? (passwordScore < 3 ? 'bg-rose-500' : passwordScore < 5 ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-200'}`} />)}</div><p className="mt-2 text-xs text-slate-500">{passwordScore}/5 password requirements met</p></div>}{field('Confirm New Password', 'confirm_password', 'password')}<label className="mt-5 flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={form.logout_all_sessions} onChange={(event) => setForm((current) => ({ ...current, logout_all_sessions: event.target.checked }))} />Log out of all active sessions</label><button disabled={busy} className="mt-6 rounded-xl bg-slate-900 px-5 py-3 text-sm font-bold text-white disabled:opacity-60">Update Password</button></form>}
-    {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection</h3><p className="mt-2 text-sm text-slate-500">Status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={startTwoFactorSetup} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('backup-codes')} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('disable')} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700">Disable 2FA</button></div>{backupCodes.length > 0 && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs font-bold uppercase tracking-wider text-amber-800">Save these one-time backup codes</p><div className="flex flex-wrap gap-2"><button type="button" onClick={copyBackupCodes} className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100">{backupCodesCopied ? 'Copied!' : 'Copy All Codes'}</button><button type="button" onClick={downloadBackupCodes} className="rounded-xl border border-amber-300 bg-white px-3 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100">Download as .txt</button></div></div><div className="mt-3 grid grid-cols-2 gap-2 font-mono text-sm">{backupCodes.map((code) => <span key={code}>{code}</span>)}</div></div>}</div>}
+    {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection for this admin</h3><p className="mt-2 text-sm text-slate-500">Current admin status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><p className="mt-2 text-xs font-medium leading-5 text-slate-500">This status reflects the authenticated admin&apos;s configured authenticator, not the system-wide login policy in Settings.</p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={startTwoFactorSetup} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('backup-codes')} title={profile.two_factor_enabled ? 'Generate one-time backup codes' : 'Enable 2FA first to generate backup codes'} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('disable')} title={profile.two_factor_enabled ? 'Disable authenticator protection' : 'Enable 2FA first'} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">Disable 2FA</button></div></div>}
     {setupData && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={verifyTwoFactorSetup} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Set up authenticator</h3><p className="mt-2 text-sm text-slate-600">Scan this QR code with Google Authenticator or Authy, then enter the six-digit code.</p><img src={setupData.qr_code} alt="Authenticator setup QR code" className="mx-auto mt-5 h-52 w-52" /><p className="mt-3 break-all text-center font-mono text-xs text-slate-500">Manual key: {setupData.secret}</p><input autoFocus inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={setupCode} onChange={(event) => setSetupCode(event.target.value.replace(/\D/g, ''))} placeholder="6-digit code" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-lg tracking-[0.3em]" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setSetupData(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy || setupCode.length !== 6} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">Verify and Enable</button></div></form></div>}
     {reauthAction && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={confirmReauthentication} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Confirm security action</h3><p className="mt-2 text-sm text-slate-600">Re-authenticate with your current password or a valid authenticator/backup code before continuing.</p><input type="password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} placeholder="Current password" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3" /><div className="my-3 text-center text-xs font-bold uppercase text-slate-400">or</div><input inputMode="numeric" value={reauthCode} onChange={(event) => setReauthCode(event.target.value.trim())} placeholder="Authenticator or backup code" className="w-full rounded-xl border border-slate-300 px-4 py-3" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setReauthAction(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">Confirm</button></div></form></div>}
+    {backupCodes.length > 0 && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><div role="dialog" aria-modal="true" aria-labelledby="backup-codes-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 id="backup-codes-title" className="text-xl font-black">Backup codes generated</h3><p className="mt-2 text-sm font-semibold text-amber-700">These codes will only be shown once. Store them somewhere secure before closing this dialog.</p><div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 font-mono text-sm">{backupCodes.map((code) => <span key={code}>{code}</span>)}</div><div className="mt-5 flex flex-wrap justify-end gap-3"><button type="button" onClick={copyBackupCodes} className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 hover:bg-amber-100">{backupCodesCopied ? 'Copied!' : 'Copy All Codes'}</button><button type="button" onClick={downloadBackupCodes} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Download as .txt</button><button type="button" onClick={() => setBackupCodes([])} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white">Close</button></div></div></div>}
     {section === 'sessions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-black">Active Sessions</h3><button disabled={busy} onClick={() => securityAction('sessions/logout-others')} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white">Logout Other Sessions</button></div><div className="mt-5 space-y-3">{sessions.map((item) => <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-4 text-sm md:grid-cols-4"><span className="font-bold">{item.is_current ? 'Current session' : 'Active session'}</span><span>{item.device_browser || 'Unknown browser'}</span><span>{item.ip_address || 'Unknown IP'}</span><span>{item.last_active ? new Date(item.last_active).toLocaleString() : 'Unknown activity'}</span></div>)}{sessions.length === 0 && <p className="text-sm text-slate-500">No active sessions were found for this account.</p>}</div></div>}
     {section === 'history' && <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Login History</h3><table className="mt-5 w-full min-w-[680px] text-left text-sm"><thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><th className="pb-3">Date & Time</th><th className="pb-3">Event</th><th className="pb-3">IP Address</th><th className="pb-3">Browser / Device</th></tr></thead><tbody>{history.map((item) => <tr key={item.id} className="border-b border-slate-100"><td className="py-3">{item.created_at ? new Date(item.created_at).toLocaleString() : '-'}</td><td className="py-3 font-semibold">{item.event_type}</td><td className="py-3">{item.ip_address || '-'}</td><td className="py-3">{item.device_browser || '-'}</td></tr>)}</tbody></table></div>}
-    {section === 'permissions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Role & Permissions</h3><p className="mt-2 text-sm text-slate-500">Role</p><p className="font-bold">Primary Super Admin</p><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{permissions.map((permission) => <label key={permission} className="flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold"><input type="checkbox" checked readOnly />{permission}</label>)}</div></div>}
+    {section === 'permissions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Role & Permissions</h3><p className="mt-2 text-sm text-slate-500">Role</p><p className="font-bold">{profile.role || 'Unavailable'}</p><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{permissionDefinitions.map(([key, label]) => <label key={key} className={`flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold ${!canEditPermissions ? 'cursor-not-allowed opacity-60' : ''}`}><input type="checkbox" checked={Boolean(permissionState[key])} disabled={!canEditPermissions || permissionsSaving} onChange={(event) => setPermissionState((current) => ({ ...current, [key]: event.target.checked }))} />{label}</label>)}</div>{canEditPermissions ? <button type="button" onClick={savePermissions} disabled={permissionsSaving} className="mt-6 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{permissionsSaving ? 'Saving...' : 'Save Changes'}</button> : <p className="mt-5 text-sm font-semibold text-slate-500">Your role can view permissions but cannot edit them.</p>}</div>}
   </div>;
 }
 
@@ -308,17 +341,18 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
-    fullName: 'Primary Administrator',
-    username: 'mau9999',
-    email: 'admin@campace.edu',
+    fullName: '',
+    username: '',
+    email: '',
     phone: '',
     currentPassword: '',
     newPassword: '',
     confirmPassword: '',
-    twoFactorEnabled: true,
+    twoFactorEnabled: false,
   });
   const [profileMsg, setProfileMsg] = useState('');
   const [profileLoading, setProfileLoading] = useState(false);
+  const [profileDataLoading, setProfileDataLoading] = useState(true);
   const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -328,15 +362,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [backupCodes, setBackupCodes] = useState([]);
   const [profileSection, setProfileSection] = useState('personal');
   const [adminProfile, setAdminProfile] = useState({
-    fullName: 'Primary Administrator',
-    username: 'mau9999',
-    email: 'admin@campace.edu',
-    role: 'Primary Super Admin',
-    status: 'Active',
-    last_login: '2026-08-13T08:10:00',
-    total_actions: 148,
+    fullName: '',
+    username: '',
+    email: '',
+    phone: '',
+    role: '',
+    status: '',
+    last_login: null,
+    total_actions: 0,
     avatarUrl: ADMIN_AVATAR_PLACEHOLDER,
-    sessionIp: '192.168.10.24',
+    sessionIp: '',
   });
 
   const getAdminSessionToken = () => {
@@ -680,8 +715,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   useEffect(() => {
     const fetchAdminProfile = async () => {
+      setProfileDataLoading(true);
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/profile?username=mau9999');
+        const sessionToken = getAdminSessionToken();
+        const response = await fetch('http://127.0.0.1:8000/api/admin/me', {
+          headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+        });
         if (!response.ok) {
           throw new Error('Admin profile endpoint unavailable');
         }
@@ -701,25 +740,31 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         }
         if (data && data.username) {
           const nextProfile = {
-            username: data.username || 'mau9999',
-            email: data.email || 'admin@campace.edu',
-            role: data.role || 'Primary Super Admin',
-            status: data.status || 'Active',
-            last_login: data.last_login || new Date().toISOString(),
-            total_actions: Number(data.total_actions ?? data.totalActions ?? 0),
-            avatarUrl: data.avatarUrl || data.avatar_url || ADMIN_AVATAR_PLACEHOLDER,
-            sessionIp: data.session_ip || data.sessionIp || '192.168.10.24',
+            fullName: data.full_name || '',
+            username: data.username,
+            email: data.email || '',
+            phone: data.phone || '',
+            role: data.role || '',
+            status: data.status || '',
+            last_login: data.last_login || null,
+            total_actions: Number(data.total_actions ?? 0),
+            avatarUrl: data.avatarUrl || ADMIN_AVATAR_PLACEHOLDER,
+            sessionIp: data.session_ip || '',
           };
           setAdminProfile(nextProfile);
           setProfileForm((prev) => ({
             ...prev,
+            fullName: data.full_name || '',
             username: nextProfile.username,
             email: nextProfile.email,
+            phone: data.phone || '',
             twoFactorEnabled: data.two_factor_enabled ?? prev.twoFactorEnabled,
           }));
         }
       } catch (err) {
-        console.warn('Failed to fetch admin profile details, using fallback values.', err);
+        console.warn('Failed to fetch the authenticated admin profile.', err);
+      } finally {
+        setProfileDataLoading(false);
       }
     };
 
@@ -2700,12 +2745,17 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setProfileLoading(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/profile', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch('http://127.0.0.1:8000/api/admin/me', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAdminSessionToken()}`,
+        },
         body: JSON.stringify({
+          full_name: profileForm.fullName,
           username: profileForm.username,
           email: profileForm.email,
+          phone: profileForm.phone,
           current_password: profileForm.currentPassword,
           new_password: profileForm.newPassword,
           confirm_password: profileForm.confirmPassword,
@@ -2734,7 +2784,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         performed_by: profileForm.username,
         entity_type: 'Admin',
         entity_id: 1,
-        ip_address: adminProfile.sessionIp || '192.168.10.24',
+        ip_address: adminProfile.sessionIp || 'Unavailable',
         date_time: new Date().toISOString(),
         status: 'Success',
         severity: 'success'
@@ -2758,7 +2808,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!file) return;
 
     const formData = new FormData();
-    const username = profileForm.username || adminProfile.username || 'mau9999';
+    const username = profileForm.username || adminProfile.username;
+    if (!username) {
+      setProfileMsg('Admin profile is not loaded yet.');
+      return;
+    }
     formData.append('username', username);
     formData.append('image', file);
     console.log('[AdminAvatar] Starting upload:', {
@@ -2782,7 +2836,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         throw new Error(data.detail || 'Avatar upload failed');
       }
 
-      const baseAvatarUrl = data.imageUrl || data.avatarUrl || 'http://127.0.0.1:8000/static/uploads/avatars/admin_mau9999.jpg';
+      const baseAvatarUrl = data.imageUrl || data.avatarUrl;
+      if (!baseAvatarUrl) throw new Error('Avatar upload did not return an image URL.');
       const urlWithTs = `${baseAvatarUrl}${baseAvatarUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
       console.log('[AdminAvatar] Cache-busted avatar URL:', urlWithTs);
       setAdminProfile((prev) => ({ ...prev, avatarUrl: urlWithTs }));
@@ -2846,9 +2901,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   }, [announcementLog, notificationsSearch, notificationsFilter]);
 
   const renderTabContent = () => {
-    if (activeTab === 'profile') return <AdminSecurityProfile user={user} />;
+    if (activeTab === 'profile') return <AdminSecurityProfile user={user} onUserUpdate={onUserUpdate} />;
     switch (activeTab) {
       case 'profile':
+        if (profileDataLoading) {
+          return <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm" role="status">Loading your admin profile...</div>;
+        }
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -2882,8 +2940,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </div>
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Primary Account</p>
-                    <h3 className="mt-2 text-2xl font-black text-slate-950">{profileForm.username || 'mau9999'}</h3>
-                    <p className="text-sm text-slate-500">{adminProfile.role || 'Primary Super Admin'}</p>
+                    <h3 className="mt-2 text-2xl font-black text-slate-950">{profileForm.username || 'Unavailable'}</h3>
+                    <p className="text-sm text-slate-500">{adminProfile.role || 'Unavailable'}</p>
                     <label className="mt-3 inline-flex cursor-pointer items-center rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-600">
                       Choose Photo
                       <input type="file" accept="image/*" className="hidden" onChange={handleProfileAvatarUpload} />
@@ -2896,21 +2954,21 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Username</label>
                     <input
                       type="text"
-                      value={profileForm.username || 'mau9999'}
+                      value={profileForm.username}
                       disabled
                       className="w-full rounded-2xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-500 outline-none"
                     />
                   </div>
 
-                  <div>
+                  {/* <div>
                     <label className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Admin Email</label>
                     <input
                       type="email"
-                      value={profileForm.email || 'admin@campace.edu'}
+                      value={profileForm.email}
                       onChange={(e) => handleProfileFieldChange('email', e.target.value)}
                       className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white"
                     />
-                  </div>
+                  </div> */}
 
                   <div className="grid gap-4 md:grid-cols-2">
                     <div>
@@ -3015,17 +3073,17 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <div className="mt-5 space-y-4">
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Last Login</p>
-                    <p className="mt-2 text-lg font-bold text-slate-900">August 17, 2026 — 9:25 AM</p>
+                    <p className="mt-2 text-lg font-bold text-slate-900">{adminProfile.last_login ? new Date(adminProfile.last_login).toLocaleString() : 'Unavailable'}</p>
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Local IP Address</p>
-                    <p className="mt-2 text-lg font-bold text-slate-900">127.0.0.1</p>
+                    <p className="mt-2 text-lg font-bold text-slate-900">{adminProfile.sessionIp || 'Unavailable'}</p>
                   </div>
 
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Role</p>
-                    <p className="mt-2 text-lg font-bold text-slate-900">Primary Super Admin</p>
+                    <p className="mt-2 text-lg font-bold text-slate-900">{adminProfile.role || 'Unavailable'}</p>
                   </div>
                 </div>
               </div>
@@ -6624,9 +6682,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'settings':
-        var toggleCard = (label, checked, onChange) => (
-          <label className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
-            <span>{label}</span>
+        var toggleCard = (label, checked, onChange, description = '') => (
+          <label className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+            <span>
+              <span className="block">{label}</span>
+              {description && <span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{description}</span>}
+            </span>
             <button
               type="button"
               onClick={onChange}
@@ -6816,7 +6877,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <h3 className="text-lg font-black text-slate-950">Security</h3>
                 <div className="mt-4 space-y-4">
                   {toggleCard('Require Student Verification', securitySettings.requireStudentVerification, () => setSecuritySettings({ ...securitySettings, requireStudentVerification: !securitySettings.requireStudentVerification }))}
-                  {toggleCard('Admin 2FA', securitySettings.admin2FA, () => setSecuritySettings({ ...securitySettings, admin2FA: !securitySettings.admin2FA }))}
+                  {toggleCard(
+                    'Require 2FA for all admins',
+                    securitySettings.admin2FA,
+                    () => setSecuritySettings({ ...securitySettings, admin2FA: !securitySettings.admin2FA }),
+                    'System login policy. This does not show whether your own authenticator is configured.'
+                  )}
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Max Login Attempts</label>
@@ -7106,7 +7172,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <span className={`inline-block h-5 w-5 rounded-full bg-white transition ${profileForm.twoFactorEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                     </button>
                   </div>
-                  <p className="text-sm text-slate-300">Security status: {profileForm.twoFactorEnabled ? 'Enabled' : 'Disabled'} • Session IP: {adminProfile.sessionIp || '192.168.10.24'}</p>
+                  <p className="text-sm text-slate-300">Security status: {profileForm.twoFactorEnabled ? 'Enabled' : 'Disabled'} • Session IP: {adminProfile.sessionIp || 'Unavailable'}</p>
                 </div>
               </div>
 

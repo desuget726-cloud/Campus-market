@@ -106,16 +106,25 @@ function SettingsCenter({
             setPayoutProvidersError('');
             try {
                 const providerPath = `/api/payout-providers?type=${encodeURIComponent(payoutType)}`;
-                const response = await fetch(`http://127.0.0.1:8000${providerPath}`, { signal: controller.signal });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok) throw new Error(data?.detail || 'Unable to load payout provider list.');
+                const [providerResponse, chapaResponse] = await Promise.all([
+                    fetch(`http://127.0.0.1:8000${providerPath}`, { signal: controller.signal }),
+                    fetch('http://127.0.0.1:8000/api/payment/banks', { signal: controller.signal }),
+                ]);
+                const data = await providerResponse.json().catch(() => ({}));
+                const chapaData = await chapaResponse.json().catch(() => ([]));
+                if (!providerResponse.ok) throw new Error(data?.detail || 'Unable to load payout provider list.');
                 const providerList = data?.providers;
                 if (!Array.isArray(providerList)) throw new Error('Payout provider service returned an invalid list.');
+                const chapaProviders = Array.isArray(chapaData)
+                    ? chapaData.map((provider) => [String(provider?.code || ''), String(provider?.name || '')])
+                    : [];
+                const chapaNamesByCode = new Map(chapaProviders.filter(([code, name]) => code && name));
                 const liveProviders = providerList
                     .filter((provider) => provider?.code && provider?.name && String(provider.type || '').toLowerCase() === payoutType && String(provider.integration_status || '').toLowerCase() === 'available')
+                    .filter((provider) => !chapaNamesByCode.size || chapaNamesByCode.has(String(provider.code)))
                     .map((provider) => ({
                         code: String(provider.code),
-                        name: String(provider.name),
+                        name: chapaNamesByCode.get(String(provider.code)) || String(provider.name),
                         type: String(provider.type).toLowerCase(),
                         integration_status: String(provider.integration_status).toLowerCase(),
                     }));

@@ -1,18 +1,53 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import dg from '../../assets/dg.jpg';
 import { useLanguage } from '../../context/LanguageContext';
 
 function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [profileUser, setProfileUser] = useState(user);
   const { t, language, setLanguage } = useLanguage();
-  const effectiveRole = userRole || user?.role || 'student';
+  const effectiveRole = String(userRole || user?.role || 'student').toLowerCase();
   const isAdmin = effectiveRole === 'admin';
-  const displayName = isAdmin ? (user?.username || user?.name || 'mau9999') : (user?.name || user?.studentId || 'Student');
-  const displayEmail = user?.email || 'student@campus.edu';
-  const avatarSrc = user?.avatarUrl || (isAdmin
-    ? `http://127.0.0.1:8000/static/uploads/avatars/${user?.username || 'mau9999'}.jpg`
-    : (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : ''));
+  const displayUser = isAdmin ? { ...user, ...profileUser } : user;
+  const displayName = isAdmin
+    ? (displayUser?.username || displayUser?.name || 'Admin')
+    : (displayUser?.name || displayUser?.studentId || 'Student');
+  const displayEmail = displayUser?.email || 'Email unavailable';
+  const displayRole = String(displayUser?.role || effectiveRole).toUpperCase();
+  const avatarSrc = displayUser?.avatarUrl || (isAdmin
+    ? (displayUser?.username ? `http://127.0.0.1:8000/static/uploads/avatars/${displayUser.username}.jpg` : '')
+    : (displayUser?.studentId ? `/static/uploads/avatars/${displayUser.studentId}.jpg` : ''));
+
+  useEffect(() => {
+    setProfileUser(user);
+  }, [user]);
+
+  useEffect(() => {
+    if (!isAdmin) return undefined;
+
+    let cancelled = false;
+    const fetchAdminProfile = async () => {
+      try {
+        const savedSession = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+        const token = user?.access_token || user?.accessToken || savedSession.access_token || savedSession.accessToken;
+        if (!token) return;
+
+        const response = await fetch('http://127.0.0.1:8000/api/admin/me', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+
+        const data = await response.json();
+        if (!cancelled) setProfileUser((current) => ({ ...current, ...data }));
+      } catch (error) {
+        console.warn('Failed to refresh the admin navbar profile.', error);
+      }
+    };
+
+    fetchAdminProfile();
+    return () => { cancelled = true; };
+  }, [isAdmin, user?.accessToken, user?.access_token]);
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 h-20 bg-sky-600 text-white border-b border-blue-900">
@@ -108,7 +143,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   </div>
                   <div className="hidden sm:block leading-tight">
                     <div className="text-sm font-bold leading-tight text-slate-900">{displayName}</div>
-                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{isAdmin ? 'SUPER ADMIN' : 'STUDENT'}</div>
+                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{displayRole}</div>
                   </div>
                   <svg
                     xmlns="http://www.w3.org/2000/svg"

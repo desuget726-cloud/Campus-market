@@ -291,6 +291,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [depositAmount, setDepositAmount] = useState('');
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
+  const [copiedTransactionHash, setCopiedTransactionHash] = useState('');
   const [paymentVerificationState, setPaymentVerificationState] = useState('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
@@ -454,7 +455,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const normalized = raw.toLowerCase();
     if (normalized.includes('fail')) return 'Failed';
     if (normalized.includes('pend')) return 'Pending';
+    if (normalized.includes('process')) return 'Processing';
     if (normalized.includes('refun')) return 'Refunded';
+    if (normalized.includes('success') || normalized.includes('complete') || normalized.includes('paid')) return 'Successful';
     return 'Successful';
   };
 
@@ -526,23 +529,52 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const getTransactionSummaryText = (tx) => {
     if (!tx) return 'No transactions yet';
 
-    const label = tx.label || tx.type || 'Transaction';
+    const label = getTransactionLabel(tx);
     const amount = Number(tx.amount ?? tx.value ?? 0);
-    const type = String(tx.type || '').trim().toLowerCase();
-    const sign = CREDIT_TRANSACTION_TYPES.has(type) ? '+' : '-';
+    const { sign } = getTransactionDirection(tx);
     const formatted = formatETB(Math.abs(amount));
 
     return `${label} — ${sign}${formatted}`;
   };
 
+  const getTransactionLabel = (tx) => {
+    const label = tx?.label || tx?.type || 'Transaction';
+    const status = String(tx?.status || '').trim().toLowerCase();
+    return status === 'successful' ? label.replace(/initiated/gi, 'completed') : label;
+  };
+
   const getTransactionDirection = (tx) => {
+    const direction = String(tx?.direction || '').trim().toLowerCase();
     const type = String(tx?.type || '').trim().toLowerCase();
-    const isCredit = CREDIT_TRANSACTION_TYPES.has(type);
-    const isDebit = DEBIT_TRANSACTION_TYPES.has(type);
+    const label = String(tx?.label || '').trim().toLowerCase();
+    const isPayoutOrWithdrawal = type.includes('payout')
+      || type.includes('withdrawal')
+      || label.includes('payout')
+      || label.includes('withdrawal');
+    const isDebit = direction === 'debit' || DEBIT_TRANSACTION_TYPES.has(type) || isPayoutOrWithdrawal;
+    const isCredit = !isDebit && (direction === 'credit' || CREDIT_TRANSACTION_TYPES.has(type));
     return {
       sign: isCredit ? '+' : '-',
       colorClass: isCredit ? 'text-emerald-600' : isDebit ? 'text-rose-600' : 'text-slate-700',
     };
+  };
+
+  const getTransactionStatusClass = (status) => {
+    const normalizedStatus = String(status || '').trim().toLowerCase();
+    if (normalizedStatus.includes('fail')) return 'border-rose-100 bg-rose-50 text-rose-700';
+    if (normalizedStatus.includes('pend') || normalizedStatus.includes('process')) return 'border-amber-100 bg-amber-50 text-amber-700';
+    return 'border-emerald-100 bg-emerald-50 text-emerald-700';
+  };
+
+  const copyTransactionHash = async (hash) => {
+    if (!hash || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(hash);
+      setCopiedTransactionHash(hash);
+      window.setTimeout(() => setCopiedTransactionHash(''), 2000);
+    } catch (error) {
+      console.error('Could not copy transaction hash:', error);
+    }
   };
 
   const recentTransactionText = transactionLedger[0]
@@ -1124,7 +1156,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setSearchQuery('');
   };
 
-  const studentId = user?.studentId || '';
+  const studentId = user?.studentId || user?.student_id || user?.username || user?.email || '';
 
   useEffect(() => {
     if (!studentId) return;
@@ -1968,7 +2000,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.detail || 'Failed to initialize payment.');
+        const error = new Error(
+          res.status === 422
+            ? (data.detail || 'Payment setup issue. Please contact support.')
+            : res.status >= 500
+              ? 'Payment service is temporarily unavailable. Please try again shortly.'
+              : (data.detail || 'Failed to initialize payment.')
+        );
+        error.status = res.status;
+        throw error;
       }
 
       if (data.checkout_url) {
@@ -2032,11 +2072,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         payout_account_id: payoutAccount.id,
       };
 
+      const token = getStudentSessionToken();
       const res = await fetch('http://127.0.0.1:8000/api/student/wallet/withdraw', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${user?.access_token || user?.accessToken || ''}`,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload)
       });
@@ -2060,6 +2101,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           recentTx: data.message || 'Withdrawal request processed.',
         }));
       }
+      await fetchBuyerDashboardData();
       setShowWithdrawModal(false);
       setWithdrawAmount('');
     } catch (err) {
@@ -2071,7 +2113,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const refreshWithdrawalStatus = async () => {
-    const token = user?.access_token || user?.accessToken || '';
+    const token = getStudentSessionToken();
     if (!token) return;
     setWithdrawalStatusLoading(true);
     try {
@@ -2080,6 +2122,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        setWithdrawError('Your student session has expired. Please sign in again.');
+        onLogout?.();
+        return;
+      }
       if (!response.ok) throw new Error(data?.detail || 'Unable to refresh payout status.');
       setActiveWithdrawal(data?.active_payout || null);
       setWithdrawError(data?.active_payout
@@ -2122,7 +2169,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const refreshPayoutAccount = async () => {
-    const token = user?.access_token || user?.accessToken || '';
+    const token = getStudentSessionToken();
     if (!token) {
       setPayoutAccount(null);
       setWithdrawProviderUnavailable(false);
@@ -2595,10 +2642,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         department: user?.department,
         context: 'academic_defense'
       };
+      const sessionToken = getStudentSessionToken();
 
       const res = await fetch('http://127.0.0.1:8000/api/ai/advisor', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+        },
         body: JSON.stringify(payload),
         signal: abortController.signal
       });
@@ -4359,6 +4410,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <div className="rounded-2xl bg-sky-50/40 border border-sky-100 p-4">
                             <p className="text-xs text-sky-600 font-semibold uppercase">Wallet Balance</p>
                             <p className="mt-2 text-3xl font-black text-slate-900">{formatETB(currentWalletBalance)}</p>
+                            {transactionLedger.find((transaction) => CREDIT_TRANSACTION_TYPES.has(String(transaction.type || '').trim().toLowerCase())) && (
+                              <p className="mt-1 text-xs font-semibold text-emerald-700">
+                                Recent credit: +{formatETB(Math.abs(Number(transactionLedger.find((transaction) => CREDIT_TRANSACTION_TYPES.has(String(transaction.type || '').trim().toLowerCase())).amount || 0)))}
+                              </p>
+                            )}
                           </div>
                           <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                             <div className="flex items-center justify-between gap-3">
@@ -4369,13 +4425,23 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               const recentTransaction = transactionLedger[0];
                               const amount = Number(recentTransaction.amount ?? recentTransaction.value ?? 0);
                               const { sign, colorClass } = getTransactionDirection(recentTransaction);
+                              const status = normalizePaymentStatus(recentTransaction.status);
                               return (
-                                <p className="text-md mt-2 font-semibold text-slate-800">
-                                  {recentTransaction.label || recentTransaction.type || 'Transaction'} — <span className={colorClass}>{sign}{formatETB(Math.abs(amount))}</span>
-                                </p>
+                                <div className="mt-3 flex items-start justify-between gap-4">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-semibold text-slate-900">{getTransactionLabel(recentTransaction)}</p>
+                                    <p className="mt-1 text-xs text-slate-500">{recentTransaction.date || recentTransaction.created_at?.slice(0, 10) || 'Date unavailable'}</p>
+                                  </div>
+                                  <div className="shrink-0 text-right">
+                                    <p className={`text-sm font-black ${colorClass}`}>{sign}{formatETB(Math.abs(amount))}</p>
+                                    <span className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${getTransactionStatusClass(status)}`}>
+                                      {status}
+                                    </span>
+                                  </div>
+                                </div>
                               );
                             })() : (
-                              <p className="text-md mt-2 font-semibold text-slate-800">{recentTransactionText}</p>
+                              <p className="mt-3 text-sm font-semibold text-slate-800">{recentTransactionText}</p>
                             )}
                           </div>
                         </div>
@@ -4394,6 +4460,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               transactionLedger.map((tx) => {
                                 const amount = Number(tx.amount ?? tx.value ?? 0);
                                 const { sign, colorClass } = getTransactionDirection(tx);
+                                const status = normalizePaymentStatus(tx.status);
                                 const isPendingTransaction = ['pending', 'processing'].includes(String(tx.status || '').trim().toLowerCase());
                                 const isWithdrawal = String(tx.type || '').trim().toLowerCase() === 'wallet withdrawal';
                                 const isDeposit = String(tx.type || '').trim().toLowerCase() === 'wallet deposit';
@@ -4402,11 +4469,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                                     <div className="flex items-start justify-between gap-3">
                                       <div>
-                                        <p className="text-sm font-semibold text-slate-900">{tx.label || tx.type || 'Transaction'}</p>
-                                        <p className="mt-1 text-xs text-slate-500">{tx.date || '2026-08-13'} • {tx.status || 'Successful'}</p>
+                                        <p className="text-sm font-semibold text-slate-900">{getTransactionLabel(tx)}</p>
+                                        <p className="mt-1 text-xs text-slate-500">{tx.date || tx.created_at?.slice(0, 10) || 'Date unavailable'}</p>
                                       </div>
-                                      <span className="rounded-full border border-emerald-100 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase text-emerald-700">
-                                        {tx.status || 'Successful'}
+                                      <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase ${getTransactionStatusClass(status)}`}>
+                                        {status}
                                       </span>
                                     </div>
                                     {isPendingTransaction && (isWithdrawal || isDeposit) && (
@@ -4423,7 +4490,20 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       <span className={`text-lg font-black ${colorClass}`}>
                                         {sign}{formatETB(Math.abs(amount))}
                                       </span>
-                                      <span className="text-[11px] font-medium text-slate-500">Hash: {tx.hash || 'N/A'}</span>
+                                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
+                                        Hash: {tx.hash || 'N/A'}
+                                        {tx.hash && (
+                                          <button
+                                            type="button"
+                                            onClick={() => copyTransactionHash(tx.hash)}
+                                            title={copiedTransactionHash === tx.hash ? 'Copied' : 'Copy transaction hash'}
+                                            aria-label={copiedTransactionHash === tx.hash ? 'Transaction hash copied' : 'Copy transaction hash'}
+                                            className="rounded p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                                          >
+                                            {copiedTransactionHash === tx.hash ? 'OK' : '⧉'}
+                                          </button>
+                                        )}
+                                      </span>
                                     </div>
                                   </div>
                                 );
@@ -4479,7 +4559,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <button
                                 type="submit"
                                 disabled={depositLoading || !isValidDepositAmount}
-                                className="w-full rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-emerald-300"
+                                className="w-full rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-500 disabled:opacity-60"
                               >
                                 {depositLoading ? 'Redirecting to Chapa…' : 'Deposit via Chapa'}
                               </button>

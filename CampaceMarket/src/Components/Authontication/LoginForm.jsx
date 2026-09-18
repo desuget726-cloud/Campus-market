@@ -41,6 +41,14 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
   const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
+    fetch(apiUrl('/api/auth/session'), { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const data = await response.json();
+        onLoginSuccess?.(data.user, data.role);
+      })
+      .catch(() => { });
+
     const callbackUrl = new URL(window.location.href);
     const oauthFragment = new URLSearchParams(callbackUrl.hash.slice(1));
     const oauthAccessToken = oauthFragment.get('access_token');
