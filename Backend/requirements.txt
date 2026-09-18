@@ -6,6 +6,8 @@ fastapi
 httpx
 openai
 passlib[bcrypt]
+pyotp
+qrcode[pil]
 pydantic
 pymysql
 python-dotenv

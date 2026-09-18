@@ -24,6 +24,34 @@ const getSellerImage = (rawImage) => {
 const formatSellerEtb = (value) =>
   `${Number(value || 0).toLocaleString("en-ET")} ETB`;
 
+const normalizeInsightMetric = (value) => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) && numericValue >= 0 ? numericValue : 0;
+};
+
+const normalizeSellerInsight = (listing) => {
+  const views = normalizeInsightMetric(
+    listing?.views ?? listing?.view_count,
+  );
+  const orders = normalizeInsightMetric(
+    listing?.completed_orders ?? listing?.order_count ?? listing?.orders,
+  );
+  const conversionRate = views > 0
+    ? (orders / views) * 100
+    : 0;
+  return {
+    ...listing,
+    views,
+    orderCount: orders,
+    conversionRate: normalizeInsightMetric(
+      listing?.conversion_rate ?? conversionRate,
+    ),
+    revenue: normalizeInsightMetric(
+      listing?.completed_revenue ?? listing?.revenue,
+    ),
+  };
+};
+
 function SellerOperationsCenter({
   user,
   sellerData,
@@ -301,20 +329,8 @@ function SellerOperationsCenter({
     };
   };
 
-  const topProducts = visibleListings
-    .map((listing) => {
-      const views = Number(listing.views ?? listing.view_count ?? 0);
-      const orderCount = Number(
-        listing.completed_orders ?? listing.order_count ?? 0,
-      );
-      const revenue = Number(
-        listing.completed_revenue ??
-        listing.revenue ??
-        orderCount *
-        Number(String(listing.price || 0).replace(/[^0-9.]/g, "")),
-      );
-      return { ...listing, views, orderCount, revenue };
-    })
+  const normalizedInsights = visibleListings.map(normalizeSellerInsight);
+  const topProducts = normalizedInsights
     .sort(
       (left, right) =>
         right.views +
@@ -323,10 +339,9 @@ function SellerOperationsCenter({
     )
     .slice(0, 3);
   const lowConversionProduct =
-    visibleListings.find(
+    normalizedInsights.find(
       (listing) =>
-        Number(listing.views || 0) > 0 &&
-        Number(listing.conversion_rate || 0) < 2,
+        listing.views > 0 && listing.conversionRate < 2,
     ) || topProducts[0];
   const analyticsStats = salesAnalytics.stats || {};
   const analyticsComparisons = salesAnalytics.comparisons || {};
@@ -1892,7 +1907,7 @@ function SellerOperationsCenter({
               </p>
               <p className="mt-1 text-xs leading-5 text-slate-300">
                 {lowConversionProduct
-                  ? `${lowConversionProduct.title} gets ${lowConversionProduct.views.toLocaleString()} views but only ${lowConversionProduct.orderCount} orders (${lowConversionProduct.views ? ((lowConversionProduct.orderCount / lowConversionProduct.views) * 100).toFixed(2) : "0.00"}% conversion).`
+                  ? `${lowConversionProduct.title} gets ${lowConversionProduct.views.toLocaleString()} views but only ${lowConversionProduct.orderCount} orders (${lowConversionProduct.conversionRate.toFixed(2)}% conversion).`
                   : "Add listings to receive conversion recommendations."}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">

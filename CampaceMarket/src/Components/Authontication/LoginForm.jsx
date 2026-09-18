@@ -34,6 +34,8 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
   const [otpEmail, setOtpEmail] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpMode, setOtpMode] = useState('authenticator');
+  const [remainingBackupCodes, setRemainingBackupCodes] = useState(null);
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -183,6 +185,10 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
         setOtpRole(nextRole);
         setOtpEmail(nextEmail);
         setOtpCode('');
+        setOtpMode(nextRole === 'admin'
+          ? (data.two_factor_method === 'email' ? 'email' : 'authenticator')
+          : 'email');
+        setRemainingBackupCodes(Number.isFinite(Number(data.remaining_backup_codes)) ? Number(data.remaining_backup_codes) : null);
         setShowOtpModal(true);
         setError('');
         return;
@@ -199,17 +205,18 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
 
   const handleOtpSubmit = async (event) => {
     event.preventDefault();
-    if (!/^\d{6}$/.test(otpCode)) {
+    if (otpMode === 'authenticator' && !/^\d{6}$/.test(otpCode)) {
       setError(t('auth.enterCode'));
+      return;
+    }
+    if (otpMode === 'backup' && !otpCode.trim()) {
+      setError('Enter a backup code.');
       return;
     }
 
     try {
-      const isStudent = otpRole === 'student';
-      const endpoint = isStudent ? 'http://127.0.0.1:8000/api/auth/verify-login-otp' : 'http://127.0.0.1:8000/api/login/verify-otp';
-      const body = isStudent
-        ? { email: otpEmail, otp_code: otpCode }
-        : { email: otpEmail, otp_code: otpCode };
+      const endpoint = otpRole === 'student' ? 'http://127.0.0.1:8000/api/auth/verify-login-otp' : 'http://127.0.0.1:8000/api/login/verify-otp';
+      const body = { email: otpEmail, otp_code: otpCode.trim() };
 
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -222,6 +229,8 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
       onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
       setIsSuccess(true);
       setShowOtpModal(false);
+      setOtpMode('authenticator');
+      setRemainingBackupCodes(null);
       setError('');
     } catch (err) {
       setError(err.message || t('auth.couldNotVerify'));
@@ -314,21 +323,32 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
                 </div>
 
                 <p className="mb-4 text-sm leading-6 text-slate-600">
-                  Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.
+                  {otpMode === 'backup'
+                    ? 'Enter one unused backup code for this administrator account.'
+                    : otpMode === 'email'
+                      ? <>Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.</>
+                      : 'Enter the 6-digit code from your authenticator app.'}
                 </p>
+
+                {remainingBackupCodes !== null && remainingBackupCodes <= 2 && (
+                  <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                    Only {remainingBackupCodes} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining. Consider regenerating them after signing in.
+                  </p>
+                )}
 
                 <form onSubmit={handleOtpSubmit} className="space-y-4">
                   <input
                     type="text"
                     inputMode="numeric"
-                    maxLength={6}
+                    maxLength={otpMode === 'backup' ? 32 : 6}
                     value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="000000"
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.45em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    onChange={(e) => setOtpCode(otpMode === 'backup' ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ''))}
+                    placeholder={otpMode === 'backup' ? 'BACKUP-CODE' : '000000'}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                   <button type="submit" className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">{t('auth.verifyCode')}</button>
                 </form>
+                {otpRole === 'admin' && otpMode !== 'email' && <button type="button" onClick={() => { setOtpMode(otpMode === 'backup' ? 'authenticator' : 'backup'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">{otpMode === 'backup' ? 'Use authenticator code instead' : 'Use a backup code instead'}</button>}
               </div>
             </div>
           )}

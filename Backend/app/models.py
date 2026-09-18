@@ -346,6 +346,7 @@ class Admin(Base):
     status = Column(String(50), default="Active", nullable=False)
     two_factor_enabled = Column(Boolean, default=True, nullable=False)
     two_factor_secret = Column(String(64), nullable=True)
+    two_factor_pending_secret = Column(String(64), nullable=True)
     backup_codes = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     last_login = Column(DateTime, nullable=True)

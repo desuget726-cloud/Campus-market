@@ -438,6 +438,20 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const aiScrollRef = useRef(null);
 
+  const openProduct = (product) => {
+    if (!product?.id) return;
+    setSelectedProduct(product);
+    onAction?.(product);
+  };
+
+  const handleProductCardKeyDown = (event, product) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openProduct(product);
+    }
+  };
+
   const visibleCategories = showAllCategories ? categories : categories.slice(0, 8);
 
   const handlePrevBanner = () => {
@@ -816,13 +830,13 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
 
                   <div ref={aiScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {aiRecommendations.map((product, index) => (
-                      <article key={product.id ?? `${product.title}-${index}`} className="w-[calc(50%-0.5rem)] shrink-0 snap-start overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md lg:w-[calc(25%_-_0.75rem)]">
+                      <article key={product.id ?? `${product.title}-${index}`} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="w-[calc(50%-0.5rem)] shrink-0 snap-start cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md lg:w-[calc(25%_-_0.75rem)]">
                         <img src={getPrimaryImage(product) || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=700&q=80'} alt={product.title || 'Recommended product'} className="h-32 w-full object-cover" />
                         <div className="p-4">
                           <p className="truncate text-xs font-bold text-emerald-600">{product.category || 'Marketplace pick'}</p>
                           <h4 className="mt-1 truncate font-black text-slate-950">{product.title || 'Recommended product'}</h4>
                           <p className="mt-2 text-sm font-bold text-slate-700">{formatEtb(product.price)}</p>
-                          <button type="button" onClick={() => { setSelectedProduct(product); onAction && onAction(product); }} className="mt-3 w-full rounded-full border border-slate-950 bg-white px-3 py-2 text-xs font-bold text-slate-950 hover:bg-slate-50 transition-colors cursor-pointer">View Details</button>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="mt-3 w-full rounded-full border border-slate-950 bg-white px-3 py-2 text-xs font-bold text-slate-950 hover:bg-slate-50 transition-colors cursor-pointer">View Details</button>
                         </div>
                       </article>
                     ))}
@@ -844,7 +858,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
               ) : (
                 <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
                   {searchResults.map((product, idx) => (
-                    <article key={idx} className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col justify-between">
+                    <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="cursor-pointer overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col justify-between">
                       <div>
                         <img src={getPrimaryImage(product) || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=700&q=80'} alt={product.title} className="h-44 w-full object-cover" />
                         <div className="p-4">
@@ -860,9 +874,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                         <div className="flex items-center justify-between border-t border-slate-50 pt-3">
                           <span className="text-lg font-bold text-slate-900">{formatEtb(product.price)}</span>
                           <button
-                            onClick={() => {
-                              setSelectedProduct(product);
-                              onAction && onAction(product);
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openProduct(product);
                             }}
                             className="rounded-full bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors cursor-pointer"
                           >

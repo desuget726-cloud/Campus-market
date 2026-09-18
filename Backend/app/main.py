@@ -50,6 +50,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
 import socket
+import io
+import pyotp
+import qrcode
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from deep_translator import GoogleTranslator
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -1285,6 +1288,12 @@ class PayoutRecoveryRequest(BaseModel):
 
 class AdminTwoFactorRequest(BaseModel):
     session_token: Optional[str] = None
+    current_password: Optional[str] = None
+    otp_code: Optional[str] = None
+
+
+class AdminTwoFactorVerifyRequest(AdminTwoFactorRequest):
+    code: str
 
 
 class AdminProfileUpdate(BaseModel):
@@ -2151,6 +2160,7 @@ def ensure_database_compatibility(db: Session) -> None:
             "failed_login_attempts": "ALTER TABLE admins ADD COLUMN failed_login_attempts INT NOT NULL DEFAULT 0",
             "locked_until": "ALTER TABLE admins ADD COLUMN locked_until DATETIME NULL",
             "two_factor_secret": "ALTER TABLE admins ADD COLUMN two_factor_secret VARCHAR(64) NULL",
+            "two_factor_pending_secret": "ALTER TABLE admins ADD COLUMN two_factor_pending_secret VARCHAR(64) NULL",
             "backup_codes": "ALTER TABLE admins ADD COLUMN backup_codes TEXT NULL",
         }
         for column_name, statement in admin_add_statements.items():
@@ -2579,6 +2589,15 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+        if admin.two_factor_enabled and admin.two_factor_secret:
+            return {
+                "role": "admin",
+                "requires_2fa": True,
+                "otp_email": admin.email,
+                "two_factor_method": "authenticator",
+                "remaining_backup_codes": _admin_backup_codes_remaining(admin),
+                "message": "Enter the six-digit code from your authenticator app, or use a backup code.",
+            }
         if security.admin_2fa:
             otp = _generate_otp_code()
             db.add(PasswordReset(
@@ -2595,6 +2614,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "role": "admin",
                 "requires_2fa": True,
                 "otp_email": admin.email,
+                "two_factor_method": "email",
                 "message": (
                     "A verification code was sent to the administrator email."
                     if email_sent
@@ -2602,6 +2622,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 ),
                 "email_sent": email_sent,
                 "dev_mode": not email_sent,
+                "remaining_backup_codes": _admin_backup_codes_remaining(admin),
             }
         token = _create_session_token(admin.username, "admin", security.session_timeout, _get_session_secret())
         _create_admin_session(db, admin, token, request)
@@ -3034,6 +3055,22 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
     admin = db.query(Admin).filter(Admin.email.ilike(request.email.strip().lower())).first()
     if not admin:
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
+    if admin.two_factor_enabled:
+        admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+        second_factor_code = request.otp_code.strip()
+        valid_totp = bool(
+            admin.two_factor_secret
+            and pyotp.TOTP(admin.two_factor_secret).verify(second_factor_code, valid_window=1)
+        )
+        if valid_totp or _consume_admin_backup_code(admin, second_factor_code):
+            token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
+            _create_admin_session(db, admin, token, http_request)
+            _record_admin_login_event(db, admin.id, "login_success_2fa", http_request)
+            db.commit()
+            return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}, "remaining_backup_codes": _admin_backup_codes_remaining(admin)}
+        if admin.two_factor_secret:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Invalid authenticator or backup code.")
     otp_record = (
         db.query(PasswordReset)
         .filter(
@@ -3423,20 +3460,96 @@ def get_admin_login_history(
 @app.post("/api/admin/2fa/setup")
 def setup_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
     admin, _ = _admin_for_session(db, payload.session_token)
-    secret = base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=")
+    secret = pyotp.random_base32()
+    admin.two_factor_pending_secret = secret
+    db.commit()
+    provisioning_uri = pyotp.TOTP(secret).provisioning_uri(
+        name=admin.email,
+        issuer_name="Campus Market",
+    )
+    qr_buffer = io.BytesIO()
+    qrcode.make(provisioning_uri).save(qr_buffer, format="PNG")
+    qr_code = base64.b64encode(qr_buffer.getvalue()).decode("ascii")
+    return {
+        "enabled": bool(admin.two_factor_enabled),
+        "secret": secret,
+        "qr_code": f"data:image/png;base64,{qr_code}",
+        "message": "Scan the QR code, then enter the six-digit code to finish setup.",
+    }
+
+
+@app.post("/api/admin/2fa/setup/verify")
+def verify_admin_two_factor_setup(payload: AdminTwoFactorVerifyRequest, request: Request, db: Session = Depends(get_db)):
+    admin, _ = _admin_for_session(db, payload.session_token)
+    admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    secret = str(admin.two_factor_pending_secret or "").strip()
+    if not secret or not pyotp.TOTP(secret).verify(payload.code.strip(), valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid authenticator code.")
     admin.two_factor_secret = secret
+    admin.two_factor_pending_secret = None
     admin.two_factor_enabled = True
     _record_admin_login_event(db, admin.id, "2fa_enabled", request)
-    db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Enabled", entity_type="Admin", entity_id=admin.id, description="Authenticator setup enabled.", status="SUCCESS", ip_address=request.client.host if request.client else None))
+    db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Enabled", entity_type="Admin", entity_id=admin.id, description="Authenticator setup was verified and enabled.", status="SUCCESS", ip_address=request.client.host if request.client else None))
     db.commit()
-    return {"enabled": True, "message": "Two-factor authentication setup is enabled."}
+    return {"enabled": True, "message": "Authenticator-based two-factor authentication is enabled."}
+
+
+def _hash_admin_backup_code(code: str, salt: Optional[str] = None) -> str:
+    code_salt = salt or secrets.token_hex(16)
+    digest = hashlib.sha256(f"{code_salt}:{code.strip().upper()}".encode("utf-8")).hexdigest()
+    return f"{code_salt}${digest}"
+
+
+def _consume_admin_backup_code(admin: Admin, code: str) -> bool:
+    raw_codes = str(admin.backup_codes or "").strip()
+    if not raw_codes or not code.strip():
+        return False
+    try:
+        stored_codes = json.loads(raw_codes)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(stored_codes, list):
+        return False
+    normalized_code = code.strip().upper()
+    for index, stored_code in enumerate(stored_codes):
+        if "$" in str(stored_code):
+            salt, _, expected_hash = str(stored_code).partition("$")
+            candidate_hash = _hash_admin_backup_code(normalized_code, salt).partition("$")[2]
+            matches = hmac.compare_digest(candidate_hash, expected_hash)
+        else:
+            matches = hmac.compare_digest(normalized_code, str(stored_code).upper())
+        if matches:
+            stored_codes.pop(index)
+            admin.backup_codes = json.dumps(stored_codes)
+            return True
+    return False
+
+
+def _admin_backup_codes_remaining(admin: Admin) -> int:
+    try:
+        stored_codes = json.loads(str(admin.backup_codes or "[]"))
+    except (TypeError, json.JSONDecodeError):
+        return 0
+    return len(stored_codes) if isinstance(stored_codes, list) else 0
+
+
+def _verify_admin_reauthentication(admin: Admin, current_password: Optional[str], otp_code: Optional[str]) -> bool:
+    if current_password and verify_password(current_password, admin.password_hash):
+        return True
+    candidate = str(otp_code or "").strip()
+    if candidate and admin.two_factor_secret and pyotp.TOTP(admin.two_factor_secret).verify(candidate, valid_window=1):
+        return True
+    return _consume_admin_backup_code(admin, candidate)
 
 
 @app.post("/api/admin/2fa/backup-codes")
 def generate_admin_backup_codes(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
     admin, _ = _admin_for_session(db, payload.session_token)
-    codes = [uuid.uuid4().hex[:10].upper() for _ in range(8)]
-    admin.backup_codes = json.dumps(codes)
+    admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    if not _verify_admin_reauthentication(admin, payload.current_password, payload.otp_code):
+        raise HTTPException(status_code=403, detail="Re-authentication is required to generate backup codes.")
+    codes = [secrets.token_hex(5).upper() for _ in range(8)]
+    admin.backup_codes = json.dumps([_hash_admin_backup_code(code) for code in codes])
     _record_admin_login_event(db, admin.id, "backup_codes_generated", request)
     db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Backup Codes Generated", entity_type="Admin", entity_id=admin.id, description="Generated a new set of authenticator backup codes.", status="SUCCESS", ip_address=request.client.host if request.client else None))
     db.commit()
@@ -3446,7 +3559,12 @@ def generate_admin_backup_codes(payload: AdminTwoFactorRequest, request: Request
 @app.post("/api/admin/2fa/disable")
 def disable_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
     admin, _ = _admin_for_session(db, payload.session_token)
+    admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    if not _verify_admin_reauthentication(admin, payload.current_password, payload.otp_code):
+        raise HTTPException(status_code=403, detail="Re-authentication is required to disable two-factor authentication.")
     admin.two_factor_enabled = False
+    admin.two_factor_secret = None
+    admin.two_factor_pending_secret = None
     _record_admin_login_event(db, admin.id, "2fa_disabled", request)
     db.add(AuditLog(admin_id=admin.id, action="Admin 2FA Disabled", entity_type="Admin", entity_id=admin.id, description="Authenticator-based two-factor authentication disabled.", status="SUCCESS", ip_address=request.client.host if request.client else None))
     db.commit()
@@ -9760,9 +9878,12 @@ async def withdraw_student_wallet(
     payout_account = _require_active_payout_account(db, student)
     if request.payout_account_id and (not payout_account or payout_account.id != request.payout_account_id):
         raise HTTPException(status_code=400, detail="The selected payout account does not belong to this seller.")
-    active_payout = db.query(PayoutTransaction).filter(
+    active_payout = db.query(PayoutTransaction).join(
+        Transaction, Transaction.tx_id == PayoutTransaction.internal_reference,
+    ).filter(
         PayoutTransaction.student_id == student.student_id,
         PayoutTransaction.status.in_(["pending", "processing"]),
+        func.lower(Transaction.type).in_(("withdrawal", "wallet withdrawal", "payout", "seller payout")),
     ).order_by(PayoutTransaction.created_at.desc()).first()
     if active_payout:
         raise HTTPException(
@@ -9921,15 +10042,21 @@ async def refresh_student_wallet_withdrawals(
 ):
     """Recheck this student's pending payouts without force-failing them."""
     student = _student_from_authorization(authorization, db)
-    payout_ids = [payout_id for (payout_id,) in db.query(PayoutTransaction.id).filter(
+    payout_ids = [payout_id for (payout_id,) in db.query(PayoutTransaction.id).join(
+        Transaction, Transaction.tx_id == PayoutTransaction.internal_reference,
+    ).filter(
         PayoutTransaction.student_id == student.student_id,
         PayoutTransaction.status.in_(["pending", "processing"]),
+        func.lower(Transaction.type).in_(("withdrawal", "wallet withdrawal", "payout", "seller payout")),
     ).all()]
     summary = await _reconcile_pending_payouts(payout_ids=payout_ids) if payout_ids else {
         "checked": 0, "completed": 0, "failed": 0, "skipped": 0, "errors": 0,
     }
-    refreshed = db.query(PayoutTransaction).filter(
+    refreshed = db.query(PayoutTransaction).join(
+        Transaction, Transaction.tx_id == PayoutTransaction.internal_reference,
+    ).filter(
         PayoutTransaction.student_id == student.student_id,
+        func.lower(Transaction.type).in_(("withdrawal", "wallet withdrawal", "payout", "seller payout")),
     ).order_by(PayoutTransaction.created_at.desc()).all()
     return {
         "success": True,
@@ -9939,7 +10066,8 @@ async def refresh_student_wallet_withdrawals(
             "status": payout.status,
             "amount": float(payout.amount or 0),
             "internal_reference": payout.internal_reference,
-        } for payout in refreshed if payout.status in {"pending", "processing"}), None),
+        } for payout in refreshed if payout.status in {"pending", "processing"}
+    ), None),
     }
 
 

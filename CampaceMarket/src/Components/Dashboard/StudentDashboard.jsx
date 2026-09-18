@@ -3086,6 +3086,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     onNavigate?.('product-details', { productId });
   };
 
+  const handleProductCardKeyDown = (event, productId) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleViewProductFromChat(productId);
+    }
+  };
+
   const handleRecommendationClick = async (productId) => {
     if (!productId || !user?.studentId) return;
     try {
@@ -3793,7 +3801,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             }
 
                             return (
-                              <div key={item.id} className="flex h-full min-w-0 flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4">
+                              <div key={item.id} onClick={() => handleViewProductFromChat(item.id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.id)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4">
                                 <div className="flex min-w-0 flex-col gap-4">
                                   <img
                                     src={displayImage}
@@ -3814,9 +3822,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 <div className="mt-auto flex min-w-0 flex-col gap-2">
                                   {isOwnProduct ? (
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
-                                      <button type="button" onClick={() => handleViewProductFromChat(item.id)} className="w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-700">View</button>
-                                      <button type="button" onClick={() => handleEditProduct(item)} className="w-full rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">Edit</button>
-                                      <button type="button" onClick={() => handleDeleteProduct(item)} className="w-full rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">Delete</button>
+                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleViewProductFromChat(item.id); }} className="w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-700">View</button>
+                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleEditProduct(item); }} className="w-full rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">Edit</button>
+                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleDeleteProduct(item); }} className="w-full rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">Delete</button>
                                     </div>
                                   ) : (
                                     <>
@@ -3824,11 +3832,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                         <span className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700">Out of Stock</span>
                                       ) : sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
                                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
-                                        {!isOutOfStock && <button type="button" onClick={() => handleAddToCartFromSearch(item.id)} disabled={purchaseBlocked} className="w-full rounded-full bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>}
+                                        {!isOutOfStock && <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToCartFromSearch(item.id); }} disabled={purchaseBlocked} className="w-full rounded-full bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>}
                                         {isInWishlist ? (
-                                          <button type="button" disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
+                                          <button type="button" onClick={(event) => event.stopPropagation()} disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
                                         ) : (
-                                          <button type="button" onClick={() => handleAddToWishlist(item.id)} className="w-full rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">♡ Add to Wishlist</button>
+                                          <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToWishlist(item.id); }} className="w-full rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">♡ Add to Wishlist</button>
                                         )}
                                       </div>
                                     </>
@@ -3878,7 +3886,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           const itemPrice = formatETB(normalizePrice(item.price));
 
                           return (
-                            <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 shadow-sm transition hover:shadow-md">
+                            <div key={item.id} onClick={() => handleViewProductFromChat(item.product_id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.product_id)} role="button" tabIndex={0} className="cursor-pointer rounded-[24px] border border-slate-200 bg-slate-50 p-4 shadow-sm transition hover:shadow-md">
                               <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
                                 <div className="flex items-center gap-4">
                                   <img
@@ -3909,7 +3917,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <div className="flex flex-wrap items-center justify-end gap-2">
                                     <button
                                       type="button"
-                                      onClick={() => handleMoveToCart(item.id, item.product_id)}
+                                      onClick={(event) => { event.stopPropagation(); handleMoveToCart(item.id, item.product_id); }}
                                       disabled={!available}
                                       className={`rounded-full px-4 py-2 text-xs font-semibold transition ${available ? 'bg-emerald-500 text-white hover:bg-emerald-600' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}
                                     >
@@ -3919,7 +3927,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                     {!available && (
                                       <button
                                         type="button"
-                                        onClick={() => handleFindSimilar(item)}
+                                        onClick={(event) => { event.stopPropagation(); handleFindSimilar(item); }}
                                         className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 transition"
                                       >
                                         Find Similar
@@ -3928,7 +3936,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                                     <button
                                       type="button"
-                                      onClick={() => handleRemoveFromWishlist(item.id)}
+                                      onClick={(event) => { event.stopPropagation(); handleRemoveFromWishlist(item.id); }}
                                       className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition"
                                     >
                                       Remove
@@ -3992,7 +4000,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             }
 
                             return (
-                              <div key={item.id} className="grid gap-4 rounded-[28px] border border-slate-200 bg-slate-50 p-4 shadow-sm sm:grid-cols-[auto_1fr_auto] sm:items-center">
+                              <div key={item.id} onClick={() => handleViewProductFromChat(item.product_id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.product_id)} role="button" tabIndex={0} className="grid cursor-pointer gap-4 rounded-[28px] border border-slate-200 bg-slate-50 p-4 shadow-sm sm:grid-cols-[auto_1fr_auto] sm:items-center">
                                 <img
                                   src={displayImage}
                                   alt={item.title}
@@ -4009,16 +4017,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <p className="mt-3 text-sm font-medium text-slate-500">Price: {formatETB(normalizePrice(item.price))}</p>
                                   <div className="mt-3 flex items-center gap-3">
                                     <span className="text-sm font-semibold text-slate-600">Quantity</span>
-                                    <button type="button" onClick={() => handleUpdateCartQuantity(item.id, quantity - 1)} disabled={quantity <= 1} className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Decrease ${item.title} quantity`}>-</button>
+                                    <button type="button" onClick={(event) => { event.stopPropagation(); handleUpdateCartQuantity(item.id, quantity - 1); }} disabled={quantity <= 1} className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Decrease ${item.title} quantity`}>-</button>
                                     <span className="min-w-6 text-center font-bold text-slate-900">{quantity}</span>
-                                    <button type="button" onClick={() => handleUpdateCartQuantity(item.id, quantity + 1)} disabled={quantity >= Number(item.stock ?? 1)} className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Increase ${item.title} quantity`}>+</button>
+                                    <button type="button" onClick={(event) => { event.stopPropagation(); handleUpdateCartQuantity(item.id, quantity + 1); }} disabled={quantity >= Number(item.stock ?? 1)} className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-300 bg-white font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label={`Increase ${item.title} quantity`}>+</button>
                                   </div>
                                 </div>
 
                                 <div className="flex flex-col items-end gap-3">
                                   <span className="text-lg font-bold text-slate-900">{formatETB(lineTotal)}</span>
                                   <button
-                                    onClick={() => handleRemoveFromCart(item.id)}
+                                    onClick={(event) => { event.stopPropagation(); handleRemoveFromCart(item.id); }}
                                     className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
                                   >
                                     Remove
