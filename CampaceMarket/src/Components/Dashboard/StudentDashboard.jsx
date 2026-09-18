@@ -297,6 +297,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [payoutAccount, setPayoutAccount] = useState(null);
   const [payoutAccountLoading, setPayoutAccountLoading] = useState(false);
   const [withdrawProviderUnavailable, setWithdrawProviderUnavailable] = useState(false);
+  const [activeWithdrawal, setActiveWithdrawal] = useState(null);
+  const [withdrawalStatusLoading, setWithdrawalStatusLoading] = useState(false);
+  const [payoutStatusCheckId, setPayoutStatusCheckId] = useState(null);
   const [returnToWithdrawAfterPayoutSetup, setReturnToWithdrawAfterPayoutSetup] = useState(false);
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
@@ -916,61 +919,61 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setPaymentVerificationState('confirming');
       while (isMounted && Date.now() - startedAt <= 60000 && status === 'Pending') {
         try {
-        const response = await fetch('http://127.0.0.1:8000/api/payment/verify/' + transactionReference);
-        const data = await response.json().catch(() => ({}));
-        status = String(data?.status || '').trim().toLowerCase() === 'successful'
-          ? 'Successful'
-          : String(data?.status || '').trim().toLowerCase() === 'failed'
-            ? 'Failed'
-            : 'Pending';
+          const response = await fetch('http://127.0.0.1:8000/api/payment/verify/' + transactionReference);
+          const data = await response.json().catch(() => ({}));
+          status = String(data?.status || '').trim().toLowerCase() === 'successful'
+            ? 'Successful'
+            : String(data?.status || '').trim().toLowerCase() === 'failed'
+              ? 'Failed'
+              : 'Pending';
 
-        await refreshWalletLedger();
+          await refreshWalletLedger();
 
-        if (response.ok && status === 'Successful') {
-          const verifiedBalance = Number(data?.wallet_balance ?? data?.walletBalance ?? data?.balance);
-          if (Number.isFinite(verifiedBalance)) {
-            walletBalanceRef.current = verifiedBalance;
-            setWalletBalance(verifiedBalance);
-            setPaymentInfo((previousPaymentInfo) => ({
-              ...previousPaymentInfo,
-              balance: verifiedBalance,
+          if (response.ok && status === 'Successful') {
+            const verifiedBalance = Number(data?.wallet_balance ?? data?.walletBalance ?? data?.balance);
+            if (Number.isFinite(verifiedBalance)) {
+              walletBalanceRef.current = verifiedBalance;
+              setWalletBalance(verifiedBalance);
+              setPaymentInfo((previousPaymentInfo) => ({
+                ...previousPaymentInfo,
+                balance: verifiedBalance,
+              }));
+            }
+
+            transactionStatusesRef.current.set(String(transactionReference), 'successful');
+            const verifiedAmount = Number(data?.amount ?? 0);
+            const formattedAmount = Number.isFinite(verifiedAmount) && verifiedAmount > 0
+              ? ` ${verifiedAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`
+              : '';
+            window.dispatchEvent(new CustomEvent('campace:payment-verified', {
+              detail: {
+                message: `Payment Verified!${formattedAmount} has been added to your wallet.`,
+              },
             }));
+            window.alert(`Payment successful!${formattedAmount} has been added to your wallet.`);
+
+            await fetchBuyerDashboardData();
+            if (isMounted) setPaymentVerificationState('successful');
+
+            callbackUrl.searchParams.delete('trx_ref');
+            callbackUrl.searchParams.delete('tx_ref');
+            window.history.replaceState(
+              {},
+              document.title,
+              `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
+            );
+          } else if (!response.ok || status === 'Failed') {
+            if (isMounted) {
+              setPaymentVerificationState('failed');
+              setDepositError(data?.detail || 'We could not confirm your payment. Please try again.');
+            }
+            break;
+          } else if (Date.now() - startedAt < 60000) {
+            if (isMounted) setPaymentVerificationState('pending');
+            await new Promise((resolve) => {
+              verificationTimeoutId = window.setTimeout(resolve, 5000);
+            });
           }
-
-          transactionStatusesRef.current.set(String(transactionReference), 'successful');
-          const verifiedAmount = Number(data?.amount ?? 0);
-          const formattedAmount = Number.isFinite(verifiedAmount) && verifiedAmount > 0
-            ? ` ${verifiedAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`
-            : '';
-          window.dispatchEvent(new CustomEvent('campace:payment-verified', {
-            detail: {
-              message: `Payment Verified!${formattedAmount} has been added to your wallet.`,
-            },
-          }));
-          window.alert(`Payment successful!${formattedAmount} has been added to your wallet.`);
-
-          await fetchBuyerDashboardData();
-          if (isMounted) setPaymentVerificationState('successful');
-
-          callbackUrl.searchParams.delete('trx_ref');
-          callbackUrl.searchParams.delete('tx_ref');
-          window.history.replaceState(
-            {},
-            document.title,
-            `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
-          );
-        } else if (!response.ok || status === 'Failed') {
-          if (isMounted) {
-            setPaymentVerificationState('failed');
-            setDepositError(data?.detail || 'We could not confirm your payment. Please try again.');
-          }
-          break;
-        } else if (Date.now() - startedAt < 60000) {
-          if (isMounted) setPaymentVerificationState('pending');
-          await new Promise((resolve) => {
-            verificationTimeoutId = window.setTimeout(resolve, 5000);
-          });
-        }
         } catch (error) {
           console.error('Returned payment verification failed:', error);
           if (isMounted) {
@@ -1545,36 +1548,46 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const handleProfileSubmit = async (e) => {
     e.preventDefault();
     setProfileMessage('');
-    setProfileSaving(true);
 
     if (!/^0\d{9}$/.test(profileForm.phone)) {
       setProfileMessage('Please enter a valid phone number (e.g., 0962714305).');
-      setProfileSaving(false);
       return;
     }
 
+    const token = user?.access_token || '';
+    if (!token) {
+      setProfileMessage('Your authenticated session is missing. Please sign in again.');
+      return;
+    }
+
+    setProfileSaving(true);
+
     try {
       const payload = {
-        student_id: user.studentId,
         name: profileForm.name,
-        phone: profileForm.phone,
+        phone_number: profileForm.phone,
         college: profileForm.college,
         department: profileForm.department,
       };
 
-      const res = await fetch('http://127.0.0.1:8000/api/student/profile', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch('http://127.0.0.1:8000/students/me', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify(payload)
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.detail || 'Failed to save profile.');
       }
 
       const updatedUser = {
         ...user,
+        ...data.user,
+        access_token: data.access_token || user.access_token,
         name: data.user.name,
         phone: data.user.phone,
         college: data.user.college,
@@ -2002,6 +2015,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
+    if (activeWithdrawal) {
+      setWithdrawError('You have a payout currently processing. You can request a new withdrawal once it completes.');
+      return;
+    }
+
     if (!user?.studentId) {
       setWithdrawError('Student ID is missing. Please log in again.');
       return;
@@ -2052,6 +2070,57 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
+  const refreshWithdrawalStatus = async () => {
+    const token = user?.access_token || user?.accessToken || '';
+    if (!token) return;
+    setWithdrawalStatusLoading(true);
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/student/wallet/withdrawals/refresh', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.detail || 'Unable to refresh payout status.');
+      setActiveWithdrawal(data?.active_payout || null);
+      setWithdrawError(data?.active_payout
+        ? 'You have a payout currently processing. You can request a new withdrawal once it completes.'
+        : 'Payout status refreshed. Withdrawals are available.');
+    } catch (error) {
+      console.error('Payout status refresh failed:', error);
+      setWithdrawError(error.message || 'Unable to refresh payout status.');
+    } finally {
+      setWithdrawalStatusLoading(false);
+    }
+  };
+
+  const handlePayoutStatusCheck = async (transaction) => {
+    setPayoutStatusCheckId(transaction.id || transaction.hash);
+    try {
+      await refreshWithdrawalStatus();
+      await fetchBuyerDashboardData();
+    } finally {
+      setPayoutStatusCheckId(null);
+    }
+  };
+
+  const handleDepositStatusCheck = async (transaction) => {
+    setPayoutStatusCheckId(transaction.id || transaction.hash);
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/payment/verify/${encodeURIComponent(transaction.hash)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.detail || 'Unable to check deposit status.');
+      await fetchBuyerDashboardData();
+      setWithdrawError(data?.status === 'Successful'
+        ? `${transaction.amount || 0} ETB deposit confirmed and added to your wallet.`
+        : 'Chapa has not confirmed this deposit yet.');
+    } catch (error) {
+      console.error('Deposit status check failed:', error);
+      setWithdrawError(error.message || 'Unable to check deposit status.');
+    } finally {
+      setPayoutStatusCheckId(null);
+    }
+  };
+
   const refreshPayoutAccount = async () => {
     const token = user?.access_token || user?.accessToken || '';
     if (!token) {
@@ -2087,8 +2156,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     if (!showWithdrawModal) return undefined;
     refreshPayoutAccount();
+    refreshWithdrawalStatus();
     return undefined;
   }, [showWithdrawModal, user]);
+
+  useEffect(() => {
+    if (!user?.studentId) return undefined;
+    refreshWithdrawalStatus();
+    return undefined;
+  }, [user?.studentId]);
 
   const isWishlistItemAvailable = (item) => {
     const statusValue = String(item?.status || '').trim().toLowerCase();
@@ -3257,7 +3333,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button type="button" onClick={() => { setBuyerTab('payments'); setActiveTab('buyer'); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-2 py-3 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">Add Funds</button>
-                    <button type="button" onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300">Withdraw</button>
+                    <button type="button" disabled={String(sellerData?.account_status || sellerDashboardData?.account_status || '').trim().toLowerCase() !== 'active' || activeWithdrawal} title={activeWithdrawal ? 'A payout is currently processing' : String(sellerData?.account_status || sellerDashboardData?.account_status || '').trim().toLowerCase() !== 'active' ? 'Configure payouts first' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
                   </div>
                 </>
               ) : (
@@ -4310,6 +4386,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               transactionLedger.map((tx) => {
                                 const amount = Number(tx.amount ?? tx.value ?? 0);
                                 const { sign, colorClass } = getTransactionDirection(tx);
+                                const isPendingTransaction = ['pending', 'processing'].includes(String(tx.status || '').trim().toLowerCase());
+                                const isWithdrawal = String(tx.type || '').trim().toLowerCase() === 'wallet withdrawal';
+                                const isDeposit = String(tx.type || '').trim().toLowerCase() === 'wallet deposit';
 
                                 return (
                                   <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -4322,6 +4401,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                         {tx.status || 'Successful'}
                                       </span>
                                     </div>
+                                    {isPendingTransaction && (isWithdrawal || isDeposit) && (
+                                      <button
+                                        type="button"
+                                        onClick={() => isWithdrawal ? handlePayoutStatusCheck(tx) : handleDepositStatusCheck(tx)}
+                                        disabled={payoutStatusCheckId === (tx.id || tx.hash)}
+                                        className="mt-3 rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {payoutStatusCheckId === (tx.id || tx.hash) ? 'Checking status...' : isDeposit ? 'Check Deposit Status' : 'Check Payout Status'}
+                                      </button>
+                                    )}
                                     <div className="mt-3 flex items-center justify-between">
                                       <span className={`text-lg font-black ${colorClass}`}>
                                         {sign}{formatETB(Math.abs(amount))}
@@ -4341,12 +4430,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-0 flex-1">Wallet Actions</h3>
                           <button
                             type="button"
+                            disabled={Boolean(activeWithdrawal)}
+                            title={activeWithdrawal ? 'A payout is currently processing' : 'Withdraw funds'}
                             onClick={() => setShowWithdrawModal(true)}
-                            className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                            className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                           >
                             Withdraw Funds
                           </button>
                         </div>
+                        {activeWithdrawal && (
+                          <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                            <span>You have a payout currently processing. You can request a new withdrawal once it completes.</span>
+                            <button type="button" onClick={refreshWithdrawalStatus} disabled={withdrawalStatusLoading} className="font-bold text-amber-900 underline underline-offset-2 disabled:opacity-60">
+                              {withdrawalStatusLoading ? 'Refreshing...' : 'Refresh status'}
+                            </button>
+                          </div>
+                        )}
 
                         <div className="space-y-5">
                           <div>
@@ -5442,11 +5541,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   </p>
                   <button type="button" onClick={() => { setReturnToWithdrawAfterPayoutSetup(true); setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('payout'); }} className="font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800">Change Payout Method</button>
                 </div>
+              ) : activeWithdrawal ? (
+                <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                  <p>You have a payout currently processing. You can request a new withdrawal once it completes.</p>
+                  <button type="button" onClick={refreshWithdrawalStatus} disabled={withdrawalStatusLoading} className="font-semibold text-amber-900 underline underline-offset-2 disabled:opacity-60">
+                    {withdrawalStatusLoading ? 'Refreshing status...' : 'Refresh payout status'}
+                  </button>
+                </div>
               ) : withdrawError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{withdrawError}</p>}
 
               <button
                 type="submit"
-                disabled={payoutAccountLoading || !payoutAccount?.id || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
+                disabled={payoutAccountLoading || !payoutAccount?.id || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
                 className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
               >
                 {withdrawLoading ? 'Processing...' : 'Submit Withdrawal'}

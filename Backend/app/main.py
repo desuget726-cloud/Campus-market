@@ -60,7 +60,7 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_payout_adapter
@@ -742,6 +742,20 @@ def _resolve_pending_payout(
                 f"Your payout of {refund_amount} ETB could not be completed. The amount was returned to your wallet.",
                 "payment",
             )
+            if "timeout" in reason.lower() or "did not confirm" in reason.lower():
+                db.add(AuditLog(
+                    admin_id=None,
+                    action="Stale Payout Alert",
+                    entity_type="PayoutTransaction",
+                    entity_id=payout.id,
+                    description=(
+                        f"Payout {payout.internal_reference} exceeded its processing confirmation window. "
+                        f"The payout was failed and {refund_amount} ETB was refunded to student {student.student_id}."
+                    ),
+                    status="WARNING",
+                    severity="high",
+                    ip_address="127.0.0.1",
+                ))
             audit_action = "Wallet Payout Refunded"
             audit_description = f"Payout {payout.internal_reference} failed for student {student.student_id}; refunded {refund_amount} ETB. Reason: {reason}"
 
@@ -766,7 +780,12 @@ async def _reconcile_pending_payouts(
         timeout_hours = max(1, float(os.getenv("PAYOUT_TIMEOUT_HOURS", "24")))
     except (TypeError, ValueError):
         timeout_hours = 24
+    try:
+        processing_timeout_minutes = max(30, float(os.getenv("PAYOUT_PROCESSING_TIMEOUT_MINUTES", "60")))
+    except (TypeError, ValueError):
+        processing_timeout_minutes = 60
     cutoff = datetime.now() - timedelta(hours=timeout_hours)
+    processing_cutoff = datetime.now() - timedelta(minutes=processing_timeout_minutes)
     logger = logging.getLogger("app.payments")
     logger.info(
         "Starting pending payout reconciliation timeout_hours=%s selected_ids=%s force_fail=%s.",
@@ -796,7 +815,9 @@ async def _reconcile_pending_payouts(
                 continue
 
             summary["checked"] += 1
+            payout_status = str(payout.status or "pending").strip().lower()
             is_stale = payout.created_at < cutoff
+            is_processing_stale = payout_status == "processing" and payout.created_at < processing_cutoff
             provider = db.query(PayoutProvider).filter(PayoutProvider.id == payout.provider_id).first()
             provider_code = provider.code if provider else None
             adapter = get_payout_adapter(provider_code) if provider_code else None
@@ -828,7 +849,7 @@ async def _reconcile_pending_payouts(
                     provider_code,
                     bool(os.getenv("CHAPA_SECRET_KEY", "").strip()),
                 )
-            elif is_stale:
+            elif is_stale and not is_processing_stale:
                 logger.warning(
                     "Skipping provider status lookup for stale payout id=%s internal_reference=%s; timeout_hours=%s.",
                     payout.id,
@@ -867,7 +888,7 @@ async def _reconcile_pending_payouts(
                         error,
                     )
 
-            if force_fail or (is_stale and result is None):
+            if force_fail or ((is_stale or is_processing_stale) and result is None):
                 _resolve_pending_payout(
                     db,
                     payout.id,
@@ -900,12 +921,16 @@ async def _reconcile_pending_payouts(
                     failure_reason=result.message,
                 )
                 summary["failed"] += 1
-            elif is_stale:
+            elif is_stale or is_processing_stale:
                 _resolve_pending_payout(
                     db,
                     payout.id,
                     "failed",
-                    failure_reason="Provider did not confirm within the timeout window",
+                    failure_reason=(
+                        f"Provider did not confirm within the {processing_timeout_minutes:g}-minute processing timeout"
+                        if is_processing_stale
+                        else "Provider did not confirm within the timeout window"
+                    ),
                 )
                 summary["failed"] += 1
         except Exception:
@@ -1297,6 +1322,19 @@ class StudentProfileUpdate(BaseModel):
     department: str
     password: Optional[str] = None
     preferred_pickup_location: Optional[str] = None
+
+
+class StudentSelfProfileUpdate(BaseModel):
+    student_id: Optional[str] = None
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    college: Optional[str] = None
+    department: Optional[str] = None
+
+
+class StudentIdChangeDecision(BaseModel):
+    status: str
+    admin_note: Optional[str] = None
 
 
 class StudentNotificationSettingsUpdate(BaseModel):
@@ -2310,6 +2348,23 @@ async def on_startup():
         mask_google_value("GOOGLE_CLIENT_SECRET", google_config["GOOGLE_CLIENT_SECRET"]),
         mask_google_value("GOOGLE_REDIRECT_URI", google_config["GOOGLE_REDIRECT_URI"]),
     )
+    google_client_id = google_config["GOOGLE_CLIENT_ID"]
+    google_client_id_is_placeholder = google_client_id.lower() in {
+        "your-real-client-id",
+        "replace-with-google-oauth-client-id",
+        "your-google-client-id",
+    }
+    if google_client_id and (
+        google_client_id_is_placeholder
+        or not google_client_id.endswith(".apps.googleusercontent.com")
+    ):
+        startup_logger.error(
+            "WARNING: GOOGLE_CLIENT_ID does not look like a real Google OAuth client ID: %s. "
+            "Create a Web application OAuth client in Google Cloud Console and replace this value in %s. "
+            "It must end with .apps.googleusercontent.com.",
+            google_client_id,
+            ENV_FILE_PATH,
+        )
     missing_google_variables = [
         variable_name for variable_name, value in google_config.items() if not value
     ]
@@ -3823,6 +3878,18 @@ def _resolve_selected_provider(db: Session, payload: SellerPayoutSetupRequest) -
     raise HTTPException(status_code=400, detail="Selected payout provider is not recognized.")
 
 
+def _require_active_payout_account(db: Session, student: Student) -> SellerPaymentAccount:
+    account = db.query(SellerPaymentAccount).filter(
+        SellerPaymentAccount.student_id == student.student_id,
+    ).first()
+    if not account or str(account.account_status or "").strip().lower() != "active":
+        raise HTTPException(
+            status_code=403,
+            detail="Complete payout setup before listing products or fulfilling orders, so you can receive payment for sales.",
+        )
+    return account
+
+
 @app.get("/api/admin/settings/{id}")
 def get_setting_by_id(id: int):
     return {"id": id, "value": True, "message": "Setting retrieved successfully"}
@@ -4073,6 +4140,219 @@ def get_student_profile(student_id: str, db: Session = Depends(get_db)):
             },
         },
     }
+
+
+@app.patch("/students/me")
+def update_student_me(
+    profile: StudentSelfProfileUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    if profile.student_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Student ID changes require an admin-approved verification request.",
+        )
+
+    if profile.phone_number is not None:
+        student.phone = profile.phone_number.strip() or None
+    if profile.name is not None:
+        student.name = profile.name.strip()
+    if profile.college is not None:
+        student.college = profile.college.strip()
+    if profile.department is not None:
+        student.department = profile.department.strip()
+
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That student ID is already in use.") from error
+    db.refresh(student)
+
+    access_token = _create_session_token(
+        student.student_id,
+        "student",
+        _session_timeout_minutes(db),
+        _get_session_secret(),
+    )
+    return {
+        "success": True,
+        "message": "Profile updated successfully.",
+        "access_token": access_token,
+        "user": {
+            "name": student.name,
+            "studentId": student.student_id,
+            "email": student.email,
+            "phone": student.phone,
+            "college": student.college,
+            "department": student.department,
+            "is_verified": bool(student.is_verified),
+            "two_factor_enabled": bool(student.two_factor_enabled),
+        },
+    }
+
+
+def _serialize_student_id_change_request(request: StudentIdChangeRequest) -> dict:
+    return {
+        "id": request.id,
+        "student_id": request.student.student_id if request.student else None,
+        "student_name": request.student.name if request.student else None,
+        "requested_student_id": request.requested_student_id,
+        "status": request.status,
+        "evidence_url": request.evidence_url,
+        "admin_note": request.admin_note,
+        "created_at": request.created_at.isoformat() if request.created_at else None,
+        "reviewed_at": request.reviewed_at.isoformat() if request.reviewed_at else None,
+        "reviewed_by": request.reviewed_by,
+    }
+
+
+@app.post("/students/me/id-change-request")
+async def create_student_id_change_request(
+    requested_student_id: str = Form(...),
+    evidence: Optional[UploadFile] = File(None),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    if not student.student_id.upper().startswith("OAUTH-"):
+        raise HTTPException(status_code=403, detail="Verified student IDs do not require an ID change request.")
+
+    normalized_id = requested_student_id.strip().upper()
+    if not re.fullmatch(r"MAU\d+", normalized_id):
+        raise HTTPException(status_code=400, detail="Student ID must start with MAU and contain digits only.")
+
+    existing_student = db.query(Student).filter(
+        func.lower(Student.student_id) == normalized_id.lower(),
+        Student.id != student.id,
+    ).first()
+    if existing_student and not existing_student.student_id.upper().startswith("OAUTH-"):
+        raise HTTPException(status_code=409, detail="That student ID is already assigned to a verified student.")
+
+    pending_request = db.query(StudentIdChangeRequest).filter(
+        StudentIdChangeRequest.student_id == student.id,
+        StudentIdChangeRequest.status == "pending",
+    ).first()
+    if pending_request:
+        raise HTTPException(status_code=409, detail="You already have a student ID request under review.")
+
+    evidence_url = None
+    if evidence is not None:
+        extension = os.path.splitext(evidence.filename or "")[1].lower()
+        if extension not in {".jpg", ".jpeg", ".png", ".webp", ".jfif"}:
+            raise HTTPException(status_code=400, detail="Evidence must be a JPG, PNG, WEBP, or JFIF image.")
+        evidence_name = f"student-id-{student.id}-{uuid.uuid4().hex}{extension}"
+        evidence_path = os.path.join(ID_CARD_DIR, evidence_name)
+        try:
+            os.makedirs(ID_CARD_DIR, exist_ok=True)
+            with open(evidence_path, "wb") as output:
+                shutil.copyfileobj(evidence.file, output)
+            evidence_url = f"/static/uploads/id_cards/{evidence_name}"
+        finally:
+            await evidence.close()
+
+    request = StudentIdChangeRequest(
+        student_id=student.id,
+        requested_student_id=normalized_id,
+        status="pending",
+        evidence_url=evidence_url,
+    )
+    db.add(request)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.student_id_verification").exception(
+            "Unable to persist student ID change request for student_id=%s.",
+            student.id,
+        )
+        raise HTTPException(status_code=500, detail="Unable to save the verification request. Please try again.")
+    db.refresh(request)
+    return {"success": True, "request": _serialize_student_id_change_request(request)}
+
+
+@app.get("/students/me/id-change-request-status")
+def get_student_id_change_request_status(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    request = db.query(StudentIdChangeRequest).filter(
+        StudentIdChangeRequest.student_id == student.id,
+    ).order_by(StudentIdChangeRequest.created_at.desc(), StudentIdChangeRequest.id.desc()).first()
+    return {
+        "request": _serialize_student_id_change_request(request) if request else None,
+    }
+
+
+@app.get("/admin/id-change-requests")
+def list_student_id_change_requests(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    requests = db.query(StudentIdChangeRequest).join(Student).filter(
+        StudentIdChangeRequest.status == "pending",
+    ).order_by(StudentIdChangeRequest.created_at.asc()).all()
+    return {"requests": [_serialize_student_id_change_request(request) for request in requests]}
+
+
+@app.patch("/admin/id-change-requests/{request_id}")
+def review_student_id_change_request(
+    request_id: int,
+    payload: StudentIdChangeDecision,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin(authorization, session_token, db)
+    decision = payload.status.strip().lower()
+    if decision not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="Status must be approved or rejected.")
+
+    request = db.query(StudentIdChangeRequest).filter(
+        StudentIdChangeRequest.id == request_id,
+    ).with_for_update().first()
+    if not request:
+        raise HTTPException(status_code=404, detail="Student ID change request not found.")
+    if request.status != "pending":
+        raise HTTPException(status_code=409, detail="Only pending requests can be reviewed.")
+
+    student = db.query(Student).filter(Student.id == request.student_id).with_for_update().first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student account not found.")
+
+    if decision == "approved":
+        duplicate = db.query(Student).filter(
+            func.lower(Student.student_id) == request.requested_student_id.lower(),
+            Student.id != student.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="That student ID is already assigned to another student.")
+        if not student.student_id.upper().startswith("OAUTH-"):
+            raise HTTPException(status_code=409, detail="This student no longer has an OAuth placeholder ID.")
+        student.student_id = request.requested_student_id
+        student.is_verified = True
+        student.verification_reason = f"Admin approved student ID change request #{request.id}."
+
+    request.status = decision
+    request.admin_note = (payload.admin_note or "").strip() or None
+    request.reviewed_by = admin.id
+    request.reviewed_at = datetime.now(timezone.utc)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        logging.getLogger("app.student_id_verification").exception(
+            "Unable to review student ID change request %s.",
+            request_id,
+        )
+        raise HTTPException(status_code=409, detail="The student ID change could not be saved because of a database constraint.") from error
+    db.refresh(request)
+    return {"success": True, "request": _serialize_student_id_change_request(request)}
 
 
 @app.put("/api/student/profile/notification-settings")
@@ -4868,6 +5148,14 @@ def create_product(
             raise HTTPException(
                 status_code=403,
                 detail="Unverified profiles are restricted from creating listings.",
+            )
+        payout_account = db.query(SellerPaymentAccount).filter(
+            SellerPaymentAccount.student_id == normalized_student_id,
+        ).first()
+        if not payout_account or str(payout_account.account_status or "").strip().lower() != "active":
+            raise HTTPException(
+                status_code=403,
+                detail="Complete payout setup before listing products, so you can receive payment for sales.",
             )
         
         # ስዕል ወደ ፋይል ያስቀምጡ (Save image if provided)
@@ -9082,6 +9370,8 @@ def _seller_order_action(
     order_seller = _seller_for_order(db, order)
     if order_seller.student_id != seller.student_id:
         raise HTTPException(status_code=403, detail="Only the seller for this order can perform this action.")
+    if str(action or "").strip().lower().replace(" ", "_") in {"accept", "ready", "handover", "verify_pickup"}:
+        _require_active_payout_account(db, seller)
 
     message = apply_seller_order_action(order, action, input_code)
 
@@ -9467,13 +9757,18 @@ async def withdraw_student_wallet(
     db: Session = Depends(get_db),
 ):
     student = _student_from_authorization(authorization, db)
-    payout_account = db.query(SellerPaymentAccount).filter(
-        SellerPaymentAccount.student_id == student.student_id,
-    ).first()
+    payout_account = _require_active_payout_account(db, student)
     if request.payout_account_id and (not payout_account or payout_account.id != request.payout_account_id):
         raise HTTPException(status_code=400, detail="The selected payout account does not belong to this seller.")
-    if not payout_account or payout_account.account_status != "Active":
-        raise HTTPException(status_code=400, detail="Set up an active seller payout account before withdrawing.")
+    active_payout = db.query(PayoutTransaction).filter(
+        PayoutTransaction.student_id == student.student_id,
+        PayoutTransaction.status.in_(["pending", "processing"]),
+    ).order_by(PayoutTransaction.created_at.desc()).first()
+    if active_payout:
+        raise HTTPException(
+            status_code=409,
+            detail="You have a payout currently processing. You can request a new withdrawal once it completes.",
+        )
     provider = db.query(PayoutProvider).filter(PayoutProvider.id == payout_account.provider_id).first()
     if not provider or not provider.is_active or provider.integration_status != "available":
         raise HTTPException(status_code=503, detail="This payout provider is not currently available.")
@@ -9619,6 +9914,35 @@ def get_student_wallet_withdrawals(
     }
 
 
+@app.post("/api/student/wallet/withdrawals/refresh")
+async def refresh_student_wallet_withdrawals(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Recheck this student's pending payouts without force-failing them."""
+    student = _student_from_authorization(authorization, db)
+    payout_ids = [payout_id for (payout_id,) in db.query(PayoutTransaction.id).filter(
+        PayoutTransaction.student_id == student.student_id,
+        PayoutTransaction.status.in_(["pending", "processing"]),
+    ).all()]
+    summary = await _reconcile_pending_payouts(payout_ids=payout_ids) if payout_ids else {
+        "checked": 0, "completed": 0, "failed": 0, "skipped": 0, "errors": 0,
+    }
+    refreshed = db.query(PayoutTransaction).filter(
+        PayoutTransaction.student_id == student.student_id,
+    ).order_by(PayoutTransaction.created_at.desc()).all()
+    return {
+        "success": True,
+        "summary": summary,
+        "active_payout": next(({
+            "id": payout.id,
+            "status": payout.status,
+            "amount": float(payout.amount or 0),
+            "internal_reference": payout.internal_reference,
+        } for payout in refreshed if payout.status in {"pending", "processing"}), None),
+    }
+
+
 @app.post("/api/webhooks/payout-provider")
 async def handle_payout_provider_webhook(
     request: Request,
@@ -9731,6 +10055,20 @@ async def handle_payout_provider_webhook(
             if transaction:
                 transaction.status = "Successful" if next_status == "completed" else "Failed" if next_status in {"failed", "cancelled"} else "Pending"
                 transaction.description = f"Payout provider status: {next_status}."
+            if previous_status != next_status:
+                db.add(AuditLog(
+                    admin_id=None,
+                    action="Wallet Payout Webhook Applied",
+                    entity_type="PayoutTransaction",
+                    entity_id=payout.id,
+                    description=(
+                        f"Signed payout webhook changed {payout.internal_reference} from "
+                        f"{previous_status} to {next_status}."
+                    ),
+                    status="SUCCESS",
+                    severity="informational",
+                    ip_address="127.0.0.1",
+                ))
     except HTTPException:
         db.rollback()
         raise
@@ -11941,12 +12279,18 @@ async def simulate_chapa_webhook(
     db: Session = Depends(get_db),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
+    webhook_logger = logging.getLogger("app.payments.webhook")
     raw_body = await request.body()
     try:
         incoming_payload = await request.json()
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         incoming_payload = {}
-    logging.getLogger("app.payments").info("Incoming Chapa webhook body: %s", incoming_payload)
+    webhook_logger.info(
+        "Chapa payment webhook received path=%s signature_present=%s payload_reference=%s",
+        request.url.path,
+        bool(request.headers.get("x-chapa-signature") or authorization or incoming_payload.get("signature") if isinstance(incoming_payload, dict) else False),
+        incoming_payload.get("tx_ref") or incoming_payload.get("transaction_id") if isinstance(incoming_payload, dict) else None,
+    )
     raw_payload = incoming_payload
     if not raw_payload and raw_body:
         try:
@@ -11972,8 +12316,10 @@ async def simulate_chapa_webhook(
     # signature is verified. Admin review remains the fallback for rejected
     # or invalid callbacks; it is never required for a valid success callback.
     if not secret:
+        webhook_logger.error("Rejected Chapa payment webhook: CHAPA_WEBHOOK_SECRET is not configured.")
         raise HTTPException(status_code=503, detail="Webhook verification is not configured.")
     if not callback_signature:
+        webhook_logger.warning("Rejected Chapa payment webhook: signature is missing.")
         raise HTTPException(status_code=401, detail="Missing transaction signature.")
     if callback_signature.lower().startswith("bearer "):
         callback_signature = callback_signature.split(" ", 1)[1].strip()
@@ -11983,7 +12329,7 @@ async def simulate_chapa_webhook(
         hmac.compare_digest(callback_signature.lower(), raw_body_signature.lower())
         or hmac.compare_digest(callback_signature.lower(), canonical_signature.lower())
     ):
-        logging.getLogger("app.payments").warning(
+        webhook_logger.warning(
             "Rejected Chapa callback with an invalid signature for transaction %s.",
             payload_dict.get("tx_ref") or payload_dict.get("transaction_id") or payload_dict.get("tx_id"),
         )
@@ -11997,6 +12343,7 @@ async def simulate_chapa_webhook(
         or "pending"
     ).strip().lower()
     if status_value not in {"success", "successful", "paid", "completed", "charge.success"}:
+        webhook_logger.warning("Rejected Chapa payment webhook for %s: non-success status=%s.", tx_ref if 'tx_ref' in locals() else None, status_value)
         raise HTTPException(status_code=400, detail="Payment callback status is not successful.")
 
     tx_ref = str(
@@ -12093,6 +12440,13 @@ async def simulate_chapa_webhook(
         db.commit()
         db.refresh(transaction)
         db.refresh(student)
+        webhook_logger.info(
+            "Chapa payment webhook settled tx_ref=%s student_id=%s amount=%s wallet_balance=%s.",
+            transaction.tx_id,
+            student.student_id,
+            settlement["amount"],
+            student.wallet_balance,
+        )
     except HTTPException:
         db.rollback()
         raise

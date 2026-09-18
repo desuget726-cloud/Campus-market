@@ -860,8 +860,15 @@ function SellerOperationsCenter({
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={onAddProduct}
-              className="rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600"
+              onClick={() => {
+                if (payoutStatus !== "active") {
+                  onNavigate("payout-settings");
+                  return;
+                }
+                onAddProduct();
+              }}
+              title={payoutStatus !== "active" ? "Configure payouts first" : "Add a product"}
+              className="rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
             >
               + Add Product
             </button>

@@ -1,7 +1,19 @@
+import {
+  ArrowRight,
+  BadgeDollarSign,
+  CheckCircle2,
+  CreditCard,
+  Handshake,
+  Leaf,
+  MapPin,
+  MessageCircle,
+  Sparkles,
+} from 'lucide-react';
+
 const badges = [
-  { label: 'Eco-Friendly', icon: '🌱', tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
-  { label: 'Peer-to-Peer', icon: '🤝', tone: 'border-sky-200 bg-sky-50 text-sky-700' },
-  { label: 'Affordable', icon: '💰', tone: 'border-amber-200 bg-amber-50 text-amber-700' },
+  { label: 'Eco-Friendly', icon: Leaf, tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
+  { label: 'Peer-to-Peer', icon: Handshake, tone: 'border-sky-200 bg-sky-50 text-sky-700' },
+  { label: 'Affordable', icon: BadgeDollarSign, tone: 'border-amber-200 bg-amber-50 text-amber-700' },
 ];
 
 const steps = [
@@ -11,12 +23,12 @@ const steps = [
 ];
 
 const benefits = [
-  { icon: '🔐', title: 'Secure & Verified', text: 'Verified student accounts help keep every campus exchange trustworthy.', tone: 'border-emerald-200 bg-emerald-50/70' },
-  { icon: '💬', title: 'Real-Time Chat', text: 'Buyers and sellers can communicate directly before making a trade.', tone: 'border-sky-200 bg-sky-50/70' },
-  { icon: '🤖', title: 'Smart Recommendations', text: 'AI recommends relevant products based on your department and interests.', tone: 'border-indigo-200 bg-indigo-50/70' },
-  { icon: '💰', title: 'Affordable', text: 'Student-friendly prices without the high markups of traditional retail.', tone: 'border-amber-200 bg-amber-50/70' },
-  { icon: '📍', title: 'Campus-Based', text: 'Designed specifically for convenient university communities and pickup points.', tone: 'border-rose-200 bg-rose-50/70' },
-  { icon: '💳', title: 'Secure Payments', text: 'Integrated online payment support helps make transactions simpler and safer.', tone: 'border-cyan-200 bg-cyan-50/70' },
+  { icon: CheckCircle2, title: 'Secure & Verified', text: 'Verified student accounts help keep every campus exchange trustworthy.', tone: 'border-emerald-200 bg-emerald-50/70' },
+  { icon: MessageCircle, title: 'Real-Time Chat', text: 'Buyers and sellers can communicate directly before making a trade.', tone: 'border-sky-200 bg-sky-50/70' },
+  { icon: Sparkles, title: 'Smart Recommendations', text: 'AI recommends relevant products based on your department and interests.', tone: 'border-indigo-200 bg-indigo-50/70' },
+  { icon: BadgeDollarSign, title: 'Affordable', text: 'Student-friendly prices without the high markups of traditional retail.', tone: 'border-amber-200 bg-amber-50/70' },
+  { icon: MapPin, title: 'Campus-Based', text: 'Designed specifically for convenient university communities and pickup points.', tone: 'border-rose-200 bg-rose-50/70' },
+  { icon: CreditCard, title: 'Secure Payments', text: 'Payments are held in escrow via Chapa until both the buyer and seller confirm the exchange.', tone: 'border-cyan-200 bg-cyan-50/70' },
 ];
 
 const technologies = [
@@ -27,7 +39,7 @@ const technologies = [
   ['Payments Gateway', 'Chapa'],
 ];
 
-const AboutView = () => (
+const AboutView = ({ onNavigate }) => (
   <main className="space-y-8 pb-8 text-slate-900">
     <section className="relative overflow-hidden rounded-[32px] bg-slate-950 px-6 py-12 text-white shadow-xl sm:px-10 lg:px-14 lg:py-16">
       <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-emerald-500/20 blur-3xl" />
@@ -36,7 +48,7 @@ const AboutView = () => (
         <div className="flex flex-wrap gap-2">
           {badges.map((badge) => (
             <span key={badge.label} className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${badge.tone}`}>
-              <span aria-hidden="true">{badge.icon}</span>
+              <badge.icon size={14} strokeWidth={2.5} aria-hidden="true" />
               {badge.label}
             </span>
           ))}
@@ -92,12 +104,24 @@ const AboutView = () => (
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {benefits.map((benefit) => (
           <article key={benefit.title} className={`rounded-[24px] border p-6 shadow-sm transition hover:-translate-y-1 hover:shadow-md ${benefit.tone}`}>
-            <span className="text-3xl" aria-hidden="true">{benefit.icon}</span>
+            <benefit.icon className="h-8 w-8" strokeWidth={2.25} aria-hidden="true" />
             <h3 className="mt-4 text-lg font-black text-slate-950">{benefit.title}</h3>
             <p className="mt-2 text-sm leading-6 text-slate-600">{benefit.text}</p>
           </article>
         ))}
       </div>
+    </section>
+
+    <section className="flex flex-col gap-5 rounded-[28px] bg-emerald-600 p-7 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
+      <div>
+        <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-100">Ready to trade smarter?</p>
+        <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the campus exchange.</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-emerald-50">Buy from verified students, sell what you no longer need, and keep every exchange close to campus.</p>
+      </div>
+      <button type="button" onClick={() => onNavigate?.('signup')} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-black text-emerald-700 transition hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-emerald-600">
+        Create Your Account
+        <ArrowRight size={17} aria-hidden="true" />
+      </button>
     </section>
 
     {/* <footer className="rounded-[28px] border border-slate-200 bg-slate-900 p-7 text-white shadow-lg sm:p-9">

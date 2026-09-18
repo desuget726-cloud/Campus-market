@@ -45,6 +45,7 @@ function SettingsCenter({
     onPayoutAccountUpdated,
 }) {
     const safeUniversityStructure = universityStructure || {};
+    const studentIdEditable = String(user?.studentId || user?.student_id || '').toUpperCase().startsWith('OAUTH-');
     const [notificationPrefs, setNotificationPrefs] = useState({
         messagesInApp: true,
         messagesEmail: true,
@@ -88,6 +89,12 @@ function SettingsCenter({
     const [loadingProviders, setLoadingProviders] = useState(true);
     const [payoutProvidersError, setPayoutProvidersError] = useState('');
     const [providerReloadKey, setProviderReloadKey] = useState(0);
+    const [idChangeRequest, setIdChangeRequest] = useState(null);
+    const [showIdChangeForm, setShowIdChangeForm] = useState(false);
+    const [requestedStudentId, setRequestedStudentId] = useState('');
+    const [idEvidence, setIdEvidence] = useState(null);
+    const [idChangeMessage, setIdChangeMessage] = useState('');
+    const [idChangeSaving, setIdChangeSaving] = useState(false);
 
     useEffect(() => {
         let active = true;
@@ -220,6 +227,79 @@ function SettingsCenter({
         }
     };
 
+    useEffect(() => {
+        if (!studentIdEditable) {
+            setIdChangeRequest(null);
+            return undefined;
+        }
+        let active = true;
+        const loadIdChangeStatus = async () => {
+            const token = getStudentSessionToken();
+            if (!token) return;
+            try {
+                const response = await fetch('http://127.0.0.1:8000/students/me/id-change-request-status', {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                const data = await response.json().catch(() => ({}));
+                if (active && response.ok) setIdChangeRequest(data.request || null);
+            } catch (error) {
+                console.error('Student ID request status failed:', error);
+            }
+        };
+        loadIdChangeStatus();
+        return () => { active = false; };
+    }, [studentIdEditable, user?.studentId, user?.access_token]);
+
+    const handleIdChangeRequestSubmit = async (event) => {
+        event.preventDefault();
+        setIdChangeMessage('');
+        const normalizedId = requestedStudentId.trim().toUpperCase();
+        if (!/^MAU\d+$/.test(normalizedId)) {
+            setIdChangeMessage('Student ID must start with MAU and contain digits only.');
+            return;
+        }
+        const token = getStudentSessionToken();
+        if (!token) {
+            setIdChangeMessage('Your authenticated session is missing. Please sign in again.');
+            return;
+        }
+
+        setIdChangeSaving(true);
+        try {
+            const formData = new FormData();
+            formData.append('requested_student_id', normalizedId);
+            if (idEvidence) formData.append('evidence', idEvidence);
+            const response = await fetch('http://127.0.0.1:8000/students/me/id-change-request', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+                body: formData,
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                console.error('[Student ID verification] Submit failed', {
+                    url: response.url,
+                    status: response.status,
+                    response: data,
+                });
+                throw new Error(data.detail || `Unable to submit the verification request (HTTP ${response.status}).`);
+            }
+            if (!data?.request?.id || data.request.status !== 'pending') {
+                console.error('[Student ID verification] Unexpected successful response', data);
+                throw new Error('The server did not confirm a pending verification request.');
+            }
+            setIdChangeRequest(data.request);
+            setRequestedStudentId('');
+            setIdEvidence(null);
+            setShowIdChangeForm(false);
+            setIdChangeMessage('Your request is under review.');
+        } catch (error) {
+            console.error('[Student ID verification] Submit request failed', error);
+            setIdChangeMessage(error.message || 'Unable to submit the verification request.');
+        } finally {
+            setIdChangeSaving(false);
+        }
+    };
+
     const getBrowserAndOS = (userAgent = '') => {
         const value = userAgent || '';
         const browser = value.includes('Edg') ? 'Edge'
@@ -340,7 +420,14 @@ function SettingsCenter({
                         </div>
                         <form onSubmit={handleProfileSubmit} className="grid gap-4 sm:grid-cols-2">
                             <Field label="Full Name"><input value={profileForm.name} onChange={(event) => handleProfileFieldChange('name', event.target.value)} className={inputClass} /></Field>
-                            <Field label="Student ID"><input value={profileForm.studentId} disabled className={`${inputClass} bg-slate-100 text-slate-500`} /></Field>
+                            <Field label="Student ID"><input value={profileForm.studentId} readOnly className={`${inputClass} bg-slate-100 text-slate-500`} /></Field>
+                            {studentIdEditable && <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                                <p className="text-sm font-bold text-amber-900">Student ID verification required</p>
+                                <p className="mt-1 text-sm text-amber-800">Your Google account has a temporary ID. An administrator must approve your real university ID before it is applied.</p>
+                                {idChangeRequest?.status === 'pending' ? <p className="mt-3 text-sm font-bold text-amber-900">Your request is under review.</p> : idChangeRequest?.status === 'approved' ? <p className="mt-3 text-sm font-bold text-emerald-700">Your student ID was approved. Sign out and sign in again to refresh your verified account.</p> : idChangeRequest?.status === 'rejected' ? <div className="mt-3 space-y-3"><p className="text-sm font-semibold text-rose-700">Request rejected{idChangeRequest.admin_note ? `: ${idChangeRequest.admin_note}` : '.'}</p><button type="button" onClick={() => setShowIdChangeForm(true)} className="rounded-full bg-amber-600 px-4 py-2 text-sm font-bold text-white">Submit Again</button></div> : <button type="button" onClick={() => setShowIdChangeForm((current) => !current)} className="mt-3 rounded-full bg-amber-600 px-4 py-2 text-sm font-bold text-white">{showIdChangeForm ? 'Cancel Request' : 'Request Student ID Verification'}</button>}
+                                {showIdChangeForm && idChangeRequest?.status !== 'pending' && <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="block text-sm font-semibold text-amber-950">Real Student ID<input value={requestedStudentId} onChange={(event) => setRequestedStudentId(event.target.value)} placeholder="MAU1600007" className="mt-2 block w-full rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500" /></label><label className="block text-sm font-semibold text-amber-950">Student card photo<input type="file" accept="image/jpeg,image/png,image/webp,image/jfif" onChange={(event) => setIdEvidence(event.target.files?.[0] || null)} className="mt-2 block w-full text-sm" /></label><div className="sm:col-span-2"><button type="button" onClick={handleIdChangeRequestSubmit} disabled={idChangeSaving} className="rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white disabled:opacity-60">{idChangeSaving ? 'Submitting...' : 'Submit for Review'}</button></div></div>}
+                                {idChangeMessage && <p className="mt-3 text-sm font-semibold text-slate-700">{idChangeMessage}</p>}
+                            </div>}
                             <Field label="Campus Email"><input type="email" value={profileForm.email} disabled className={`${inputClass} bg-slate-100 text-slate-500`} /></Field>
                             <Field label="Phone Number"><input type="tel" value={profileForm.phone} onChange={(event) => handleProfileFieldChange('phone', event.target.value)} className={inputClass} /></Field>
                             <Field label="Select College"><select value={profileForm.college} onChange={(event) => handleProfileFieldChange('college', event.target.value)} className={inputClass}><option value="">Select College</option>{Object.keys(safeUniversityStructure).map((college) => <option key={college} value={college}>{college}</option>)}</select></Field>
@@ -580,12 +667,12 @@ function SettingsCenter({
                         <Field label={payoutType === 'mobile_wallet' ? 'Mobile Wallet' : 'Ethiopian Bank'}>
                             <div className="relative">
                                 <select required value={formData.bankCode} onChange={(event) => { const provider = providers.find((item) => item.code === event.target.value); setFormData((previous) => ({ ...previous, provider_id: '', bankCode: provider?.code || '' })); }} className={inputClass}>
-                                <option value="">{loadingProviders ? 'Loading live provider list...' : payoutProvidersError ? 'Unable to load provider list' : providers.length ? (payoutType === 'mobile_wallet' ? 'Select your wallet' : 'Select your bank') : 'No supported providers returned'}</option>
-                                {providers.map((provider) => (
-                                    <option key={`${provider.code}-${provider.name}`} value={provider.code}>
-                                        {provider.name}
-                                    </option>
-                                ))}
+                                    <option value="">{loadingProviders ? 'Loading live provider list...' : payoutProvidersError ? 'Unable to load provider list' : providers.length ? (payoutType === 'mobile_wallet' ? 'Select your wallet' : 'Select your bank') : 'No supported providers returned'}</option>
+                                    {providers.map((provider) => (
+                                        <option key={`${provider.code}-${provider.name}`} value={provider.code}>
+                                            {provider.name}
+                                        </option>
+                                    ))}
                                 </select>
                                 {loadingProviders && <span className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-slate-300 border-t-emerald-500" aria-label="Loading providers" />}
                             </div>

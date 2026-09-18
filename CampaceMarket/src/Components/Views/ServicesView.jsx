@@ -3,7 +3,7 @@ const coreServices = [
     icon: '💳',
     eyebrow: 'Chapa powered',
     title: 'Secure Online Payments',
-    text: 'Integrated Chapa payments let students fund wallets and complete checkouts safely, without introducing complex escrow risks into campus meetups.',
+    text: 'Integrated Chapa payments let students fund wallets and complete checkouts. Deposits are held as pending until Chapa confirms the transaction.',
     tone: 'border-emerald-200 bg-emerald-50/70',
     iconTone: 'bg-emerald-500',
   },
@@ -18,20 +18,21 @@ const coreServices = [
   {
     icon: '📈',
     eyebrow: 'AI assisted',
-    title: 'AI Listing Optimization',
-    text: 'TF-IDF and Cosine Similarity help categorize listings, suggest prices, and improve product visibility for sellers.',
+    title: 'AI-Assisted Price Suggestions',
+    text: 'TF-IDF and Cosine Similarity help suggest prices and categorize listings.',
     tone: 'border-indigo-200 bg-indigo-50/70',
     iconTone: 'bg-indigo-500',
   },
 ];
 
 const features = [
-  ['🔐', 'Secure Authentication', 'Token-based encrypted student login and registration.'],
+  // TODO: Restore "encrypted" after token encryption is added to the authentication flow.
+  ['🔐', 'Secure Authentication', 'Token-based student login and registration.'],
   ['🛡', 'Student Verification', 'Academic ID verification keeps the campus directory safe.'],
   ['💬', 'Real-time WebSocket Chat', 'Instant messaging with online and offline status indicators.'],
   ['🤖', 'Smart AI Recommendations', "A tailored item feed based on the student's department."],
   ['📦', 'Order Fulfillment Tracker', 'Multi-step trade workflow tracking from placed to pickup.'],
-  ['🔔', 'Instant Notifications', 'Real-time alerts for orders, messages, and wallet loads.'],
+  ['🔔', 'In-App Notifications and Alerts', 'In-app alerts for orders, messages, and wallet loads.'],
   ['💳', 'Secure Wallet Integration', 'Seamless top-ups via Chapa and secure checkouts.'],
 ];
 

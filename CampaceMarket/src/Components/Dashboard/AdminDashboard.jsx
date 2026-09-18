@@ -230,6 +230,7 @@ const adminTabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'M4 6h16M4 12h16M4 18h16' },
   { id: 'user-management', label: 'User Management', icon: 'M12 14l9-5-9-5-9 5 9 5z M12 14l6.16-3.422M12 14L5.84 10.578' },
   { id: 'student-verification', label: 'Student Verification', icon: 'M12 11c2.761 0 5-2.238 5-5S14.761 1 12 1 7 3.238 7 6s2.239 5 5 5z M4 23c0-4.418 3.582-8 8-8s8 3.582 8 8' },
+  { id: 'id-change-requests', label: 'ID Verification Requests', icon: 'M4 5h16v14H4z M8 9h8 M8 13h5' },
   { id: 'product-management', label: 'Product Management', icon: 'M4 7h16v13H4z M8 7v-3h8v3' },
   { id: 'categories', label: 'Categories', icon: 'M5 5h14v4H5z M5 15h14v4H5z' },
   { id: 'orders', label: 'Orders', icon: 'M6 6h12l2 10H4z M8 22h8' },
@@ -387,6 +388,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [verifications, setVerifications] = useState([]);
   const [verificationMetrics, setVerificationMetrics] = useState({ pending: 0, verified: 0, rejected: 0 });
   const [selectedVerificationIds, setSelectedVerificationIds] = useState([]);
+  const [idChangeRequests, setIdChangeRequests] = useState([]);
+  const [idChangeRequestNotes, setIdChangeRequestNotes] = useState({});
+  const [idChangeRequestsLoading, setIdChangeRequestsLoading] = useState(false);
 
   // 3. Product Management States
   const [prodSearch, setProdSearch] = useState('');
@@ -849,9 +853,50 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
   };
 
+  const fetchIdChangeRequests = async () => {
+    setIdChangeRequestsLoading(true);
+    try {
+      const token = getAdminSessionToken();
+      const response = await fetch('http://127.0.0.1:8000/admin/id-change-requests', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'ID verification request endpoint unavailable.');
+      setIdChangeRequests(Array.isArray(data.requests) ? data.requests : []);
+    } catch (error) {
+      console.error('Failed to fetch ID change requests:', error);
+      setIdChangeRequests([]);
+    } finally {
+      setIdChangeRequestsLoading(false);
+    }
+  };
+
+  const reviewIdChangeRequest = async (requestId, status) => {
+    try {
+      const token = getAdminSessionToken();
+      const response = await fetch(`http://127.0.0.1:8000/admin/id-change-requests/${requestId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ status, admin_note: idChangeRequestNotes[requestId] || '' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to review ID change request.');
+      setIdChangeRequests((requests) => requests.filter((request) => request.id !== requestId));
+    } catch (error) {
+      window.alert(error.message || 'Unable to review ID change request.');
+    }
+  };
+
   useEffect(() => {
     fetchFilteredVerifications();
   }, [verificationSearchTerm, verificationFilterCollege, verificationFilterDept]);
+
+  useEffect(() => {
+    if (activeTab === 'id-change-requests') fetchIdChangeRequests();
+  }, [activeTab]);
 
   useEffect(() => {
     const visibleIds = new Set(verifications.filter((request) => request.status === 'Pending').map((request) => request.id));
@@ -3683,6 +3728,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
             )}
 
+          </div>
+        );
+      }
+      case 'id-change-requests': {
+        return (
+          <div className="space-y-6 animate-fade-in text-slate-900">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-2xl font-black text-slate-950">ID Verification Requests</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-500">Review real university IDs submitted by Google OAuth users before changing their account identity.</p>
+            </div>
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+              {idChangeRequestsLoading ? <p className="py-10 text-center text-sm font-semibold text-slate-500">Loading requests...</p> : idChangeRequests.length === 0 ? <p className="py-10 text-center text-sm font-semibold text-slate-500">No pending ID verification requests.</p> : <div className="overflow-x-auto"><table className="min-w-full text-left text-sm text-slate-700"><thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Student</th><th className="px-3 py-3">Current ID</th><th className="px-3 py-3">Requested ID</th><th className="px-3 py-3">Evidence</th><th className="px-3 py-3">Submitted</th><th className="px-3 py-3">Review</th></tr></thead><tbody>{idChangeRequests.map((request) => <tr key={request.id} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-bold text-slate-900">{request.student_name || 'Unknown student'}</td><td className="px-3 py-4 font-mono text-xs">{request.student_id}</td><td className="px-3 py-4 font-mono font-bold">{request.requested_student_id}</td><td className="px-3 py-4">{request.evidence_url ? <a href={`http://127.0.0.1:8000${request.evidence_url}`} target="_blank" rel="noreferrer" className="text-emerald-700 underline">View photo</a> : <span className="text-slate-400">Not provided</span>}</td><td className="px-3 py-4 text-xs">{request.created_at ? new Date(request.created_at).toLocaleString() : '-'}</td><td className="min-w-[260px] px-3 py-4"><textarea value={idChangeRequestNotes[request.id] || ''} onChange={(event) => setIdChangeRequestNotes((notes) => ({ ...notes, [request.id]: event.target.value }))} placeholder="Optional admin note" rows={2} className="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-emerald-500" /><div className="flex gap-2"><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'approved')} className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white">Approve</button><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'rejected')} className="rounded-full bg-rose-500 px-3 py-1.5 text-xs font-bold text-white">Reject</button></div></td></tr>)}</tbody></table></div>}
+            </div>
           </div>
         );
       }

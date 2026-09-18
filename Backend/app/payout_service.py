@@ -178,9 +178,9 @@ class ChapaPayoutAdapter(PayoutAdapter):
             message = response_payload.get("message") if isinstance(response_payload, dict) else None
             raise PayoutProviderError(str(message or "The payout provider could not resolve the transfer."), retryable=True)
         if status in {"success", "successful", "paid", "completed"}:
-            if not provider_reference:
-                raise PayoutProviderError("The payout provider did not return a transfer reference.")
-            return PayoutResult("completed", str(provider_reference), "Payout completed by the provider.")
+            # Some Chapa status responses omit the reference even though the
+            # request succeeded; the verified reference is the one we queried.
+            return PayoutResult("completed", str(provider_reference or reference), "Payout completed by the provider.")
         if status in {"failed", "cancelled", "canceled"}:
             return PayoutResult("cancelled" if status in {"cancelled", "canceled"} else "failed", str(provider_reference) if provider_reference else None, "The payout provider reported a failed transfer.")
         return PayoutResult("processing", str(provider_reference) if provider_reference else None, "Payout remains pending with the provider.")

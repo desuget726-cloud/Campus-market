@@ -50,6 +50,9 @@ function AppContent() {
   const [currentView, setCurrentView] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     try {
+      const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+      if (pathname === '/login') return 'login';
+      if (pathname === '/signup' || pathname === '/register') return 'register';
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
       return session?.currentView || 'home';
@@ -185,6 +188,10 @@ function AppContent() {
   const handleRegisterSuccess = (studentData) => {
     const nextUser = { ...studentData, access_token: studentData?.access_token || studentData?.accessToken || null };
     setUser(nextUser);
+    setUserRole('student');
+    setDashboardTab('home');
+    setStudentTab('home');
+    setCurrentView('student-dashboard');
     persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home');
   };
 
@@ -256,8 +263,12 @@ function AppContent() {
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
 
   const handleNavigate = (view, params = {}) => {
-    if (view === 'signup') {
-      setCurrentView('register');
+    if (view === 'login' || view === 'register' || view === 'signup') {
+      if (user) {
+        setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
+        return;
+      }
+      setCurrentView(view === 'signup' ? 'register' : view);
       return;
     }
 
@@ -309,6 +320,11 @@ function AppContent() {
 
     setCurrentView(view);
   };
+
+  useEffect(() => {
+    if (!user || !['login', 'register'].includes(currentView)) return;
+    setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
+  }, [activeRole, currentView, user]);
 
   const handleNotificationClick = async () => {
     const effectiveRole = userRole || user?.role;
@@ -402,6 +418,7 @@ function AppContent() {
               <RegisterForm
                 onRegisterSuccess={handleRegisterSuccess}
                 onCancel={() => setCurrentView('home')}
+                onToggleLogin={() => setCurrentView('login')}
               />
             </div>
           )}
@@ -427,7 +444,7 @@ function AppContent() {
             />
           )}
 
-          {currentView === 'about' && <AboutView />}
+          {currentView === 'about' && <AboutView onNavigate={handleNavigate} />}
 
           {currentView === 'services' && <ServicesView />}
 

@@ -36,6 +36,21 @@ def make_order():
 
 
 class OrderLifecycleTests(unittest.TestCase):
+    def test_direct_student_id_profile_edit_is_rejected(self):
+        student = SimpleNamespace(student_id="OAUTH-875D73CE2C")
+        original_auth = main_module._student_from_authorization
+        main_module._student_from_authorization = lambda _authorization, _db: student
+        try:
+            with self.assertRaises(HTTPException) as error:
+                main_module.update_student_me(
+                    main_module.StudentSelfProfileUpdate(student_id="MAU1600007"),
+                    "Bearer test-token",
+                    SimpleNamespace(),
+                )
+            self.assertEqual(error.exception.status_code, 403)
+        finally:
+            main_module._student_from_authorization = original_auth
+
     def test_seller_analytics_query_is_scoped_to_authenticated_seller(self):
         captured_filters = []
 

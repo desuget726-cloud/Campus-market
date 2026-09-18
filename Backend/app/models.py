@@ -64,6 +64,7 @@ class Student(Base):
     ai_recommendation_logs = relationship("AIRecommendationLog", back_populates="student", cascade="all, delete-orphan")
     wallet = relationship("Wallet", uselist=False, back_populates="student", cascade="all, delete-orphan")
     seller_payment_account = relationship("SellerPaymentAccount", uselist=False, back_populates="student", cascade="all, delete-orphan")
+    id_change_requests = relationship("StudentIdChangeRequest", back_populates="student", cascade="all, delete-orphan")
 
 
 class PayoutProvider(Base):
@@ -85,7 +86,7 @@ class SellerPaymentAccount(Base):
     __tablename__ = "seller_payment_accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), unique=True, nullable=False, index=True)
     provider_id = Column(Integer, ForeignKey("payout_providers.id", ondelete="SET NULL"), nullable=True, index=True)
     chapa_sub_account_id = Column(String(100), nullable=True)
     business_name = Column(String(150), nullable=False)
@@ -104,7 +105,7 @@ class PayoutTransaction(Base):
     __tablename__ = "payout_transactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     wallet_id = Column(Integer, ForeignKey("wallets.id", ondelete="RESTRICT"), nullable=True, index=True)
     payout_account_id = Column(Integer, ForeignKey("seller_payment_accounts.id", ondelete="RESTRICT"), nullable=False, index=True)
     provider_id = Column(Integer, ForeignKey("payout_providers.id", ondelete="RESTRICT"), nullable=False, index=True)
@@ -127,7 +128,7 @@ class Wallet(Base):
     __tablename__ = "wallets"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), unique=True, nullable=False, index=True)
     balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -191,7 +192,7 @@ class ProductView(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
-    viewer_id = Column(String(50), ForeignKey("students.student_id", ondelete="SET NULL"), nullable=True, index=True)
+    viewer_id = Column(String(50), ForeignKey("students.student_id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, index=True)
     visitor_key = Column(String(255), nullable=False)
     viewed_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -202,7 +203,7 @@ class AIRecommendationLog(Base):
     __tablename__ = "ai_recommendation_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
     action_type = Column(String(20), nullable=False, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
@@ -214,7 +215,7 @@ class WishlistItem(Base):
     __tablename__ = "wishlist_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
@@ -225,7 +226,7 @@ class CartItem(Base):
     __tablename__ = "cart_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
     quantity = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -237,7 +238,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(150), nullable=False)
     price = Column(String(50), nullable=False)
@@ -280,8 +281,8 @@ class Dispute(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
-    buyer_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
-    seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    buyer_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
     reason = Column(String(120), nullable=False)
     description = Column(Text, nullable=False)
     evidence_image = Column(String(500), nullable=True)
@@ -304,7 +305,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     wallet_id = Column(Integer, ForeignKey("wallets.id", ondelete="SET NULL"), nullable=True, index=True)
     tx_id = Column(String(50), unique=True, nullable=False)
     type = Column(String(50), nullable=False)
@@ -324,7 +325,7 @@ class Review(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     rating = Column(Integer, nullable=False)
     comment = Column(String(500), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -354,6 +355,24 @@ class Admin(Base):
     audit_logs = relationship("AuditLog", back_populates="admin", cascade="all, delete-orphan")
     sessions = relationship("AdminSession", back_populates="admin", cascade="all, delete-orphan")
     login_history = relationship("AdminLoginHistory", back_populates="admin", cascade="all, delete-orphan")
+    reviewed_student_id_change_requests = relationship("StudentIdChangeRequest", back_populates="reviewer")
+
+
+class StudentIdChangeRequest(Base):
+    __tablename__ = "student_id_change_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True)
+    requested_student_id = Column(String(50), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    evidence_url = Column(String(500), nullable=True)
+    admin_note = Column(Text, nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    reviewed_at = Column(DateTime, nullable=True)
+
+    student = relationship("Student", back_populates="id_change_requests")
+    reviewer = relationship("Admin", back_populates="reviewed_student_id_change_requests")
 
 
 class AdminSession(Base):
@@ -422,7 +441,7 @@ class Report(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=True)
     seller_id = Column(String(50), nullable=True, index=True)
     student_name = Column(String(150), nullable=False)
     email = Column(String(100), nullable=True)
@@ -455,7 +474,7 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     title = Column(String(200), nullable=True)
     message = Column(String(500), nullable=False)
     target = Column(String(150), nullable=True)
@@ -470,8 +489,8 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True)
-    sender_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
-    receiver_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE"), nullable=False)
+    sender_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    receiver_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True)
     message_text = Column(Text, nullable=False)
     attachment_url = Column(String(500), nullable=True)
