@@ -3067,6 +3067,12 @@ def get_oauth_session(request: Request, db: Session = Depends(get_db)):
     }
 
 
+@app.post("/api/auth/logout")
+def logout_session(response: Response):
+    response.delete_cookie(key="session_token", path="/")
+    return {"success": True}
+
+
 @app.post("/api/auth/google-callback")
 async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, db: Session = Depends(get_db)):
     try:
@@ -6108,12 +6114,17 @@ def get_seller_dashboard_data(
 @app.get("/api/seller/analytics")
 @app.get("/seller/analytics")
 def get_seller_sales_analytics(
+    request: Request,
     range_value: str = Query("3m", alias="range"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     """Return range-scoped seller KPIs, comparisons, and revenue series."""
-    student = _student_from_authorization(authorization, db)
+    session_token = request.cookies.get("session_token", "").strip()
+    student = _student_from_authorization(
+        authorization or (f"Bearer {session_token}" if session_token else None),
+        db,
+    )
     normalized_range = str(range_value or "3m").strip().lower()
     if normalized_range not in {"7d", "30d", "3m"}:
         raise HTTPException(status_code=400, detail="Range must be 7d, 30d, or 3m.")
@@ -10023,6 +10034,7 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
+    wallet = db.query(Wallet).filter(Wallet.student_id == student_id).first()
 
     transactions = (
         db.query(Transaction)
@@ -10054,7 +10066,7 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
         })
 
     return {
-        "balance": float(student.wallet_balance or 0),
+        "balance": float((wallet.balance if wallet else student.wallet_balance) or 0),
         "recentTx": recent_tx,
         "transactions": ledger,
     }
@@ -10352,11 +10364,15 @@ async def withdraw_student_wallet(
         raise HTTPException(status_code=400, detail="The saved payout account is missing destination details.")
 
     wallet = _get_or_create_wallet_for_student(db, student)
+    locked_student = db.query(Student).filter(
+        Student.student_id == student.student_id,
+    ).with_for_update().first()
+    if not locked_student:
+        raise HTTPException(status_code=404, detail="Student wallet owner not found.")
     db.flush()
-    wallet_balance = Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01"))
-    wallet.balance = wallet_balance
+    wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
     current_balance = wallet_balance
-    if wallet_balance < amount:
+    if current_balance < amount:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance for withdrawal.")
 
     tx_ref = f"PAYOUT-{uuid.uuid4().hex[:10].upper()}"
@@ -10383,10 +10399,14 @@ async def withdraw_student_wallet(
     db.add(payout)
 
     # Commit the debit before contacting Chapa so concurrent requests cannot reuse these funds.
-    student.wallet_balance = current_balance - amount
-    wallet.balance = wallet_balance - amount
+    new_balance = current_balance - amount
+    wallet.balance = Wallet.balance - amount
+    locked_student.wallet_balance = new_balance
+    student.wallet_balance = new_balance
     db.flush()
     db.commit()
+    db.refresh(wallet)
+    db.refresh(locked_student)
     db.refresh(withdrawal)
 
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
@@ -10446,14 +10466,15 @@ async def withdraw_student_wallet(
     ))
     db.commit()
     db.refresh(withdrawal)
-    db.refresh(student)
+    db.refresh(wallet)
+    db.refresh(locked_student)
 
     return {
         "success": True,
         "message": withdrawal.description,
         "status": withdrawal.status,
         "transaction_id": withdrawal.tx_id,
-        "wallet_balance": float(student.wallet_balance),
+        "wallet_balance": float(wallet.balance),
         "amount": float(amount),
     }
 

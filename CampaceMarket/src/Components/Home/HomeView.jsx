@@ -1,7 +1,7 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import ProductDetails from './ProductDetails';
 import { apiUrl } from '../../api/config';
-import c1 from '../../assets/c1.png';
+import logs from '../../assets/logs.png';
 import c2 from '../../assets/c2.jpg';
 import laptop_586 from '../../assets/laptop_586.webp';
 import phone1 from '../../assets/phone1.jpg';
@@ -15,7 +15,7 @@ const fetchWithTimeout = (url, timeoutMs = 10000) => {
 };
 
 const bannerImages = [
-  // c1,
+  logs,
   // c2,
   c3,
   laptop_586,

@@ -433,10 +433,14 @@ function SellerOperationsCenter({
       setSalesAnalyticsError("");
       setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
       try {
+        const sessionToken = getSessionToken();
         const response = await fetch(
           `http://127.0.0.1:8000/api/student/seller/sales-analytics?range=${rangeKey}`,
           {
-            headers: { Authorization: `Bearer ${getSessionToken()}` },
+            ...(sessionToken
+              ? { headers: { Authorization: `Bearer ${sessionToken}` } }
+              : {}),
+            credentials: "include",
           },
         );
         const result = await response.json().catch(() => ({}));

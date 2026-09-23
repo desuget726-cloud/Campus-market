@@ -106,6 +106,45 @@ function AppContent() {
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
 
   useEffect(() => {
+    let cancelled = false;
+
+    let hasStoredUserSession = false;
+    try {
+      const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      hasStoredUserSession = Boolean(saved && JSON.parse(saved)?.user);
+    } catch (error) {
+      hasStoredUserSession = false;
+    }
+
+    if (!hasStoredUserSession) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    fetch('http://127.0.0.1:8000/api/auth/session', { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok || cancelled) return;
+
+        const data = await response.json();
+        if (!data?.user || data.role !== 'student' || cancelled) return;
+
+        setUser((currentUser) => {
+          const nextUser = { ...data.user, ...(currentUser || {}) };
+          persistSession(nextUser, 'student', 'student-dashboard', dashboardTab, studentTab);
+          return nextUser;
+        });
+        setUserRole('student');
+        setCurrentView((view) => view === 'login' || view === 'home' ? 'student-dashboard' : view);
+      })
+      .catch(() => { });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!user || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
     persistSession(user, activeRole, currentView, dashboardTab, studentTab);
   }, [currentView, dashboardTab, adminTab, studentTab, user, activeRole]);
@@ -198,20 +237,14 @@ function AppContent() {
   const handleLoginSuccess = (userData, role) => {
     const nextView = role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
 
-    const username =
-      nextView === 'admin-dashboard'
-        ? (userData?.name || 'Admin')
-        : userData?.studentId || userData?.name || 'Student';
-
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
     setUser(nextUser);
     setUserRole(role);
     setDashboardTab('home');
     setStudentTab('home');
-    persistSession(nextUser, role, 'login', 'home', 'home');
-    setPendingView(nextView);
-    setPendingUsername(username);
-    setShowSuccessModal(true);
+    setCurrentView(nextView);
+    setShowSuccessModal(false);
+    persistSession(nextUser, role, nextView, 'home', 'home');
   };
 
   const handleContinueToDashboard = () => {
@@ -221,6 +254,11 @@ function AppContent() {
   };
 
   const handleLogout = () => {
+    fetch('http://127.0.0.1:8000/api/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+    }).catch(() => { });
+
     setUser(null);
     setUserRole(null);
     setUnreadCount(0);
@@ -238,6 +276,10 @@ function AppContent() {
 
     let timeoutId;
     const expireSession = () => {
+      fetch('http://127.0.0.1:8000/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      }).catch(() => { });
       window.localStorage.clear();
       setUser(null);
       setUserRole(null);

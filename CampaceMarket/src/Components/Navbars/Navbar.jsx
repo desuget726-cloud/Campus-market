@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import dg from '../../assets/dg.jpg';
+import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 
 function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick }) {
@@ -55,10 +55,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Logo */}
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate('home')}>
-          <img src={dg} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
+          <img src={logs} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
           <div className="flex items-center gap-1 text-2xl font-black text-white">
 
-            <span className="text-slate-300">DG Market</span>
+            <span className="text-slate-300">UniXchange</span>
           </div>
           <button
             type="button"

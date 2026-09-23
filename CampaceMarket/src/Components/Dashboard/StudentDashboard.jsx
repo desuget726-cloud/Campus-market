@@ -519,6 +519,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const platformFee = cartTotal * 0.035;
   const checkoutTotal = cartTotal + platformFee;
   const walletHasSufficientFunds = currentWalletBalance > 0 && currentWalletBalance >= checkoutTotal;
+  const withdrawalEntryBlocked = currentWalletBalance <= 0 || Boolean(activeWithdrawal);
   const withdrawAmountValue = Number(withdrawAmount);
   const withdrawExceedsBalance = withdrawAmount !== '' && Number.isFinite(withdrawAmountValue) && withdrawAmountValue > currentWalletBalance;
 
@@ -605,7 +606,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=true`, {
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
-        fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`),
+        fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`, { cache: 'no-store' }),
       ]);
 
       if (wishRes.ok) {
@@ -926,7 +927,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const refreshWalletLedger = async () => {
       if (!user?.studentId) return;
-      const response = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`);
+      const response = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`, { cache: 'no-store' });
       if (!response.ok) return;
       const data = await response.json().catch(() => ({}));
       const nextBalance = Number(data?.balance ?? data?.walletBalance ?? data?.wallet_balance ?? 0);
@@ -1416,7 +1417,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const fetchWalletBalance = async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${user.studentId}`);
+        const res = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${user.studentId}`, { cache: 'no-store' });
         if (!res.ok) return;
         const data = await res.json();
         const nextBalance = Number(data.balance ?? data.walletBalance ?? data.wallet_balance ?? 0);
@@ -3392,7 +3393,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button type="button" onClick={() => { setBuyerTab('payments'); setActiveTab('buyer'); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-2 py-3 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">Add Funds</button>
-                    <button type="button" disabled={String(sellerData?.account_status || sellerDashboardData?.account_status || '').trim().toLowerCase() !== 'active' || activeWithdrawal} title={activeWithdrawal ? 'A payout is currently processing' : String(sellerData?.account_status || sellerDashboardData?.account_status || '').trim().toLowerCase() !== 'active' ? 'Configure payouts first' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
+                    <button type="button" disabled={withdrawalEntryBlocked} title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
                   </div>
                 </>
               ) : (
@@ -4518,8 +4519,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-0 flex-1">Wallet Actions</h3>
                           <button
                             type="button"
-                            disabled={Boolean(activeWithdrawal)}
-                            title={activeWithdrawal ? 'A payout is currently processing' : 'Withdraw funds'}
+                            disabled={withdrawalEntryBlocked}
+                            title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'}
                             onClick={() => setShowWithdrawModal(true)}
                             className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                           >
