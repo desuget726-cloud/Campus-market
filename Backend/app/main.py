@@ -8,6 +8,11 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_FILE_PATH = os.path.join(BACKEND_DIR, ".env")
 ENV_FILE_EXISTS = os.path.isfile(ENV_FILE_PATH)
 ENV_FILE_LOADED = load_dotenv(ENV_FILE_PATH)
+DISABLE_ADMIN_2FA = os.getenv("DISABLE_ADMIN_2FA", "false").strip().lower() == "true"
+try:
+    MAX_TOTAL_ADMINS = max(1, int(os.getenv("MAX_TOTAL_ADMINS", "3").strip()))
+except ValueError:
+    MAX_TOTAL_ADMINS = 3
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_API_KEY:
@@ -56,8 +61,12 @@ import qrcode
 from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from deep_translator import GoogleTranslator
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+except (ImportError, OSError):
+    TfidfVectorizer = None
+    cosine_similarity = None
 
 # ßêüßêëßèòßê¥ ßï¿ßï│ßë│ßëñßï¥ ßê░ßèòßîáßê¿ßïªßë╜ (Models) ßèÑßèô ßê¢ßîêßèôßè¢ßïÄßë╜ßèò ßè¿ßêîßêÄßë╣ ßìïßï¡ßêÄßë╜ ßèÑßèòßîáßê½ßêêßèò
 from .models import (
@@ -366,24 +375,85 @@ def _tokenize(text: Optional[str]) -> List[str]:
     return re.findall(r"[a-zA-Z0-9]+", str(text).lower())
 
 
+class _FallbackTfidfMatrix:
+    def __init__(self, rows: List[Dict[str, float]]):
+        self.rows = rows
+        self.shape = (len(rows), len({term for row in rows for term in row}))
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return _FallbackTfidfMatrix(self.rows[item])
+        return _FallbackTfidfMatrix([self.rows[item]])
+
+
+class _FallbackTfidfVectorizer:
+    def __init__(self, ngram_range=(1, 1), lowercase=True):
+        self.ngram_range = ngram_range
+        self.lowercase = lowercase
+
+    def _terms(self, document: str) -> List[str]:
+        text = document.lower() if self.lowercase else document
+        tokens = re.findall(r"[a-zA-Z0-9]+", text)
+        terms = []
+        for size in range(self.ngram_range[0], self.ngram_range[1] + 1):
+            terms.extend(' '.join(tokens[index:index + size]) for index in range(len(tokens) - size + 1))
+        return terms
+
+    def fit_transform(self, documents: List[str]) -> _FallbackTfidfMatrix:
+        term_counts = [Counter(self._terms(document)) for document in documents]
+        document_frequency = Counter(term for counts in term_counts for term in counts)
+        row_count = len(documents)
+        rows = []
+        for counts in term_counts:
+            total = sum(counts.values()) or 1
+            row = {
+                term: (count / total) * (math.log((1 + row_count) / (1 + document_frequency[term])) + 1)
+                for term, count in counts.items()
+            }
+            magnitude = math.sqrt(sum(value * value for value in row.values())) or 1.0
+            rows.append({term: value / magnitude for term, value in row.items()})
+        return _FallbackTfidfMatrix(rows)
+
+
+def _fallback_cosine_similarity(matrix_a: _FallbackTfidfMatrix, matrix_b: _FallbackTfidfMatrix):
+    values = []
+    for row_a in matrix_a.rows:
+        row_values = []
+        magnitude_a = math.sqrt(sum(value * value for value in row_a.values())) or 1.0
+        for row_b in matrix_b.rows:
+            magnitude_b = math.sqrt(sum(value * value for value in row_b.values())) or 1.0
+            score = sum(value * row_b.get(term, 0.0) for term, value in row_a.items())
+            row_values.append(score / (magnitude_a * magnitude_b))
+        values.append(row_values)
+    return values
+
+
+def _get_tfidf_vectorizer():
+    if TfidfVectorizer is not None:
+        return TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+    return _FallbackTfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+
+
 def _build_tfidf_vectors(corpus: List[str]):
-    """Build recommendation vectors with the same sklearn TF-IDF model as the advisor."""
+    """Build recommendation vectors with scikit-learn or a standard-library fallback."""
     documents = [str(document or '') for document in corpus]
     if not any(document.strip() for document in documents):
         return None, None
 
     try:
-        vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+        vectorizer = _get_tfidf_vectorizer()
         return vectorizer.fit_transform(documents), vectorizer
     except ValueError:
         return None, None
 
 
 def _cosine_similarity(vec_a, vec_b) -> float:
-    """Return sklearn's cosine similarity for two TF-IDF rows."""
+    """Return cosine similarity for two TF-IDF rows."""
     if vec_a is None or vec_b is None:
         return 0.0
-    return float(cosine_similarity(vec_a, vec_b)[0][0])
+    if cosine_similarity is not None:
+        return float(cosine_similarity(vec_a, vec_b)[0][0])
+    return float(_fallback_cosine_similarity(vec_a, vec_b)[0][0])
 
 
 def _student_interest_text(student: Student, db: Session) -> str:
@@ -1342,6 +1412,14 @@ class AdminProfileUpdate(BaseModel):
 
 class AdminPermissionsUpdate(BaseModel):
     permissions: Dict[str, bool]
+
+
+class SubAdminCreate(BaseModel):
+    username: str
+    email: str
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    password: str
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -2420,6 +2498,8 @@ def ensure_database_compatibility(db: Session) -> None:
 async def on_startup():
     global payment_scheduler
     startup_logger = logging.getLogger("app.startup")
+    if DISABLE_ADMIN_2FA:
+        startup_logger.warning("WARNING: Admin 2FA is DISABLED (development only)")
     ai_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
     if ai_provider == "ollama":
         ollama_config = get_ollama_service().config()
@@ -2700,7 +2780,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
         if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
             avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
-        if admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret):
+        if not DISABLE_ADMIN_2FA and admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret):
             return {
                 "role": "admin",
                 "requires_2fa": True,
@@ -2709,7 +2789,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
                 "message": "Enter the six-digit code from your authenticator app, or use a backup code.",
             }
-        if security.admin_2fa:
+        if not DISABLE_ADMIN_2FA and security.admin_2fa:
             otp = _generate_otp_code()
             db.add(PasswordReset(
                 email=admin.email,
@@ -3050,11 +3130,18 @@ async def google_callback(code: str, state: str, request: Request, db: Session =
 
 
 @app.get("/api/auth/session")
-def get_oauth_session(request: Request, db: Session = Depends(get_db)):
+def get_oauth_session(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
     session_token = request.cookies.get("session_token", "").strip()
-    if not session_token:
+    if session_token:
+        student = _student_from_authorization(f"Bearer {session_token}", db)
+    elif authorization:
+        student = _student_from_authorization(authorization, db)
+    else:
         raise HTTPException(status_code=401, detail="No active student session.")
-    student = _student_from_authorization(f"Bearer {session_token}", db)
     return {
         "role": "student",
         "user": {
@@ -3374,6 +3461,134 @@ def _admin_permissions(admin: Admin) -> Dict[str, bool]:
 
 def _admin_two_factor_configured(admin: Admin) -> bool:
     return bool(admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret))
+
+
+def _active_admin_count(db: Session) -> int:
+    return db.query(Admin).filter(
+        func.lower(Admin.role).in_(["admin", "sub_admin"]),
+        func.lower(Admin.status) == "active",
+    ).count()
+
+
+def _sub_admin_limit_payload(db: Session) -> dict:
+    current_count = _active_admin_count(db)
+    return {
+        "current_count": current_count,
+        "max_allowed": MAX_TOTAL_ADMINS,
+        "can_add": current_count < MAX_TOTAL_ADMINS,
+    }
+
+
+@app.get("/api/admin/sub-admins")
+def get_sub_admins(
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    sub_admins = db.query(Admin).filter(
+        func.lower(Admin.role) == "sub_admin",
+    ).order_by(Admin.id.asc()).all()
+    return {
+        **_sub_admin_limit_payload(db),
+        "sub_admins": [
+            {
+                "id": admin.id,
+                "username": admin.username,
+                "email": admin.email,
+                "full_name": admin.full_name or "",
+                "phone": admin.phone or "",
+                "status": admin.status or "Active",
+            }
+            for admin in sub_admins
+        ],
+    }
+
+
+@app.post("/api/admin/sub-admins", status_code=status.HTTP_201_CREATED)
+def create_sub_admin(
+    payload: SubAdminCreate,
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    username = payload.username.strip()
+    email = payload.email.strip().lower()
+    if not username or not email or not payload.password:
+        raise HTTPException(status_code=400, detail="Username, email, and password are required.")
+
+    try:
+        db.query(Admin).with_for_update().all()
+        if _active_admin_count(db) >= MAX_TOTAL_ADMINS:
+            raise HTTPException(status_code=400, detail=f"Maximum number of admins ({MAX_TOTAL_ADMINS}) reached")
+        if db.query(Admin).filter(
+            or_(Admin.username == username, func.lower(Admin.email) == email),
+        ).first():
+            raise HTTPException(status_code=400, detail="Username or email is already in use.")
+
+        sub_admin = Admin(
+            username=username,
+            email=email,
+            full_name=payload.full_name.strip() if payload.full_name else None,
+            phone=payload.phone.strip() if payload.phone else None,
+            password_hash=hash_password(payload.password),
+            role="sub_admin",
+            status="Active",
+        )
+        db.add(sub_admin)
+        db.commit()
+        db.refresh(sub_admin)
+        return {"message": "Sub admin created successfully.", "sub_admin": {"id": sub_admin.id, "username": sub_admin.username}}
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to create sub admin.")
+
+
+@app.patch("/api/admin/sub-admins/{admin_id}/status")
+def update_sub_admin_status(
+    admin_id: int,
+    payload: UserStatusUpdate,
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    sub_admin = db.query(Admin).filter(
+        Admin.id == admin_id,
+        func.lower(Admin.role) == "sub_admin",
+    ).first()
+    if not sub_admin:
+        raise HTTPException(status_code=404, detail="Sub admin not found.")
+    if payload.status.strip().lower() == "active" and str(sub_admin.status or "").strip().lower() != "active":
+        db.query(Admin).with_for_update().all()
+        if _active_admin_count(db) >= MAX_TOTAL_ADMINS:
+            raise HTTPException(status_code=400, detail=f"Maximum number of admins ({MAX_TOTAL_ADMINS}) reached")
+    sub_admin.status = payload.status.strip() or "Inactive"
+    db.commit()
+    return {"success": True, "status": sub_admin.status}
+
+
+@app.delete("/api/admin/sub-admins/{admin_id}")
+def delete_sub_admin(
+    admin_id: int,
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
+    sub_admin = db.query(Admin).filter(
+        Admin.id == admin_id,
+        func.lower(Admin.role) == "sub_admin",
+    ).first()
+    if not sub_admin:
+        raise HTTPException(status_code=404, detail="Sub admin not found.")
+    db.delete(sub_admin)
+    db.commit()
+    return {"success": True}
 
 @app.get("/api/admin/profile")
 def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_db)):
@@ -6369,9 +6584,12 @@ def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tup
     product_texts = [f"{p.title or ''} {p.description or ''} {p.category or ''} {p.subcategory or ''}" for p in products]
     
     try:
-        vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+        vectorizer = _get_tfidf_vectorizer()
         vectors = vectorizer.fit_transform([query] + product_texts)
-        similarities = cosine_similarity(vectors[0:1], vectors[1:]).flatten()
+        if cosine_similarity is not None:
+            similarities = cosine_similarity(vectors[0:1], vectors[1:]).flatten()
+        else:
+            similarities = _fallback_cosine_similarity(vectors[0:1], vectors[1:])[0]
         scored_products = list(zip(products, similarities))
         scored_products.sort(key=lambda x: x[1], reverse=True)
         return scored_products

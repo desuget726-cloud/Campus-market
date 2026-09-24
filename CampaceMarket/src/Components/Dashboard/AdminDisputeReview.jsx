@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import toast from 'react-hot-toast';
 import { API_BASE } from '../../api/config';
+import { notifyError, notifySuccess } from '../../utils/notify';
 
 const ACTIVE_STATUSES = ['OPEN', 'UNDER_REVIEW'];
 
@@ -208,7 +208,7 @@ export default function AdminDisputeReview({ user, onCountChange }) {
       const detail = await request(`/api/admin/disputes/${dispute.id}`);
       setSelectedDispute(detail);
     } catch (detailError) {
-      toast.error(detailError.message);
+      notifyError(detailError, 'admin-dispute-detail');
     }
   };
 
@@ -225,9 +225,9 @@ export default function AdminDisputeReview({ user, onCountChange }) {
       setPendingDecision(null);
       onCountChange?.(disputes.length - 1);
       await loadDisputes();
-      toast.success(pendingDecision === 'BUYER' ? 'Buyer refunded successfully.' : 'Funds released to seller successfully.');
+      notifySuccess(pendingDecision === 'BUYER' ? 'Buyer refunded successfully.' : 'Funds released to seller successfully.', 'admin-dispute-resolve');
     } catch (resolveError) {
-      toast.error(resolveError.message);
+      notifyError(resolveError, 'admin-dispute-resolve');
     } finally {
       setResolving(false);
     }

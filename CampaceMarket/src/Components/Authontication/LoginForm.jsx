@@ -41,6 +41,16 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
   const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
+    let hasStoredUserSession = false;
+    try {
+      const savedSession = window.localStorage.getItem('campaceSession');
+      hasStoredUserSession = Boolean(savedSession && JSON.parse(savedSession)?.user);
+    } catch {
+      hasStoredUserSession = false;
+    }
+
+    if (!hasStoredUserSession) return;
+
     fetch(apiUrl('/api/auth/session'), { credentials: 'include' })
       .then(async (response) => {
         if (!response.ok) return;

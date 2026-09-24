@@ -56,7 +56,7 @@ function AppContent() {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
       return session?.currentView || 'home';
-    } catch (error) {
+    } catch {
       return 'home';
     }
   });
@@ -66,7 +66,7 @@ function AppContent() {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
       return session?.user || null;
-    } catch (error) {
+    } catch {
       return null;
     }
   });
@@ -108,21 +108,26 @@ function AppContent() {
   useEffect(() => {
     let cancelled = false;
 
-    let hasStoredUserSession = false;
+    let storedSession = null;
     try {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
-      hasStoredUserSession = Boolean(saved && JSON.parse(saved)?.user);
+      storedSession = saved ? JSON.parse(saved) : null;
     } catch (error) {
-      hasStoredUserSession = false;
+      storedSession = null;
     }
 
-    if (!hasStoredUserSession) {
+    const storedUser = storedSession?.user;
+    const storedRole = storedSession?.userRole || storedUser?.role;
+    if (!storedUser || storedRole !== 'student') {
       return () => {
         cancelled = true;
       };
     }
 
-    fetch('http://127.0.0.1:8000/api/auth/session', { credentials: 'include' })
+    fetch('http://127.0.0.1:8000/api/auth/session', {
+      credentials: 'include',
+      headers: storedUser.access_token ? { Authorization: `Bearer ${storedUser.access_token}` } : {},
+    })
       .then(async (response) => {
         if (!response.ok || cancelled) return;
 
@@ -403,7 +408,8 @@ function AppContent() {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-800">
       <Toaster
-        position="top-center"
+        position="top-right"
+        containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
         toastOptions={{
           duration: 7000,
           style: {
@@ -421,6 +427,17 @@ function AppContent() {
             iconTheme: {
               primary: '#ffffff',
               secondary: '#047857',
+            },
+          },
+          error: {
+            style: {
+              background: '#b91c1c',
+              border: '2px solid #f87171',
+              boxShadow: '0 16px 40px rgba(185, 28, 28, 0.35)',
+            },
+            iconTheme: {
+              primary: '#ffffff',
+              secondary: '#b91c1c',
             },
           },
         }}

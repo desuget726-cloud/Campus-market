@@ -27,13 +27,13 @@ const Footer = ({ onNavigate }) => {
   return (
     <footer className="w-full border-t border-slate-800 bg-slate-950 px-4 py-12 text-sm text-slate-300 sm:px-6 lg:px-8">
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-4">
-        <div>
+        {/* <div>
           <button type="button" onClick={() => navigate('home')} className="flex items-center gap-3 text-left">
             <img src={dg} alt="DG Market logo" className="h-14 w-14 rounded-2xl object-cover ring-2 ring-white/30" />
             <span className="text-xl font-black tracking-tight">DG Market</span>
           </button>
           <p className="mt-4 max-w-xs leading-6 text-blue-100">Your trusted campus marketplace for buying, selling, and exchanging with confidence.</p>
-        </div>
+        </div> */}
 
         <nav aria-label="Footer quick links">
           <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Quick Links</h2>

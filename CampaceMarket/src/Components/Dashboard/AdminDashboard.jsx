@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import AdminDisputeReview from './AdminDisputeReview';
+import { notifyError, notifySuccess } from '../../utils/notify';
+import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
 
 const generateLinePath = (data, maxVal) => {
@@ -244,15 +246,13 @@ const adminTabs = [
   { id: 'settings', label: 'Settings', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8z M4.93 4.93l2.12 2.12 M17.95 17.95l2.12 2.12 M4.93 19.07l2.12-2.12 M17.95 6.05l2.12-2.12' }
 ];
 
-function AdminSecurityProfile({ user, onUserUpdate }) {
-  const [section, setSection] = useState('personal');
+function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' }) {
+  const [section, setSection] = useState(initialSection);
   const [profile, setProfile] = useState({ id: null, full_name: '', username: '', email: '', phone: '', role: '', two_factor_enabled: false, permissions: {}, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
   const [form, setForm] = useState({ full_name: '', username: '', email: '', phone: '', current_password: '', new_password: '', confirm_password: '', logout_all_sessions: false });
   const [sessions, setSessions] = useState([]);
   const [history, setHistory] = useState([]);
   const [backupCodes, setBackupCodes] = useState([]);
-  const [message, setMessage] = useState('');
-  const [messageType, setMessageType] = useState('success');
   const [busy, setBusy] = useState(false);
   const [profileLoading, setProfileLoading] = useState(true);
   const [backupCodesCopied, setBackupCodesCopied] = useState(false);
@@ -275,7 +275,7 @@ function AdminSecurityProfile({ user, onUserUpdate }) {
   const refreshSecurityData = async () => {
     const sessionToken = token(); if (!sessionToken) return;
     const headers = { Authorization: `Bearer ${sessionToken}` };
-    try { const [sessionData, historyData] = await Promise.all([request('http://127.0.0.1:8000/api/admin/sessions', { headers }), request('http://127.0.0.1:8000/api/admin/login-history', { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { setMessage(error.message); }
+    try { const [sessionData, historyData] = await Promise.all([request('http://127.0.0.1:8000/api/admin/sessions', { headers }), request('http://127.0.0.1:8000/api/admin/login-history', { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { notifyError(error, 'admin-security-data'); }
   };
   useEffect(() => {
     const load = async () => {
@@ -295,7 +295,7 @@ function AdminSecurityProfile({ user, onUserUpdate }) {
           confirm_password: '',
         }));
       } catch (error) {
-        setMessage(error.message);
+        notifyError(error, 'admin-profile-load');
       } finally {
         setProfileLoading(false);
       }
@@ -306,22 +306,23 @@ function AdminSecurityProfile({ user, onUserUpdate }) {
     return () => window.clearInterval(interval);
   }, []);
   const passwordScore = [form.new_password.length >= 8, /[A-Z]/.test(form.new_password), /[a-z]/.test(form.new_password), /\d/.test(form.new_password), /[^A-Za-z0-9]/.test(form.new_password)].filter(Boolean).length;
-  const updateProfile = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/me', { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); setMessage('Profile and security settings saved.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
+  const updateProfile = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request('http://127.0.0.1:8000/api/admin/me', { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); notifySuccess('Profile saved successfully', 'admin-profile-save'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-profile-save'); } finally { setBusy(false); } };
   const normalizedRole = String(profile.role || '').trim().toLowerCase().replace(/_/g, ' ');
+  const isMainAdmin = normalizedRole === 'admin';
   const canEditPermissions = ['admin', 'super admin', 'superadministrator'].includes(normalizedRole);
   const permissionDefinitions = [['users', 'Users'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['reports', 'Reports'], ['ai', 'AI'], ['analytics', 'Analytics'], ['audit_logs', 'Audit Logs'], ['settings', 'Settings']];
-  const savePermissions = async () => { if (!canEditPermissions || !profile.id) return; setPermissionsSaving(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); setMessageType('success'); setMessage('Permissions saved successfully.'); } catch (error) { setMessageType('error'); setMessage(error.message || 'Unable to save permissions.'); } finally { setPermissionsSaving(false); } };
-  const securityAction = async (path) => { setBusy(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); setMessage(data.message || 'Security action completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
-  const startTwoFactorSetup = async () => { setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup', { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
-  const verifyTwoFactorSetup = async (event) => { event.preventDefault(); setBusy(true); setMessage(''); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup/verify', { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); const enabled = Boolean(data.enabled); setProfile((current) => ({ ...current, two_factor_enabled: enabled })); onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), two_factor_enabled: enabled })); setSetupData(null); setSetupCode(''); setMessageType('success'); setMessage(data.message || 'Authenticator setup completed.'); refreshSecurityData(); } catch (error) { setMessageType('error'); setMessage(error.message); } finally { setBusy(false); } };
-  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { setMessage('Enter your current password or a valid authenticator/backup code.'); return; } setBusy(true); setMessage(''); try { const data = await request(`http://127.0.0.1:8000/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); setMessage(data.message || 'Security action completed.'); refreshSecurityData(); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
-  const copyBackupCodes = async () => { if (!backupCodes.length || !navigator.clipboard) { setMessage('Clipboard access is unavailable.'); return; } try { await navigator.clipboard.writeText(backupCodes.join('\n')); setBackupCodesCopied(true); window.setTimeout(() => setBackupCodesCopied(false), 2000); } catch { setMessage('Could not copy backup codes.'); } };
+  const savePermissions = async () => { if (!canEditPermissions || !profile.id || permissionsSaving) return; setPermissionsSaving(true); try { const data = await request(`http://127.0.0.1:8000/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); notifySuccess('Permissions saved successfully', 'admin-permissions-save'); } catch (error) { notifyError(error, 'admin-permissions-save'); } finally { setPermissionsSaving(false); } };
+  const securityAction = async (path) => { if (busy) return; setBusy(true); try { const data = await request(`http://127.0.0.1:8000/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); notifySuccess(data.message || 'Security action completed.', `admin-security-${path}`); refreshSecurityData(); } catch (error) { notifyError(error, `admin-security-${path}`); } finally { setBusy(false); } };
+  const startTwoFactorSetup = async () => { if (busy) return; setBusy(true); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup', { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); notifySuccess('Authenticator setup started', 'admin-2fa-setup'); } catch (error) { notifyError(error, 'admin-2fa-setup'); } finally { setBusy(false); } };
+  const verifyTwoFactorSetup = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup/verify', { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); const enabled = Boolean(data.enabled); setProfile((current) => ({ ...current, two_factor_enabled: enabled })); onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), two_factor_enabled: enabled })); setSetupData(null); setSetupCode(''); notifySuccess(data.message || 'Authenticator setup completed.', 'admin-2fa-setup-verify'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-setup-verify'); } finally { setBusy(false); } };
+  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { notifyError(new Error('Enter your current password or a valid authenticator/backup code.'), 'admin-2fa-reauth'); return; } if (busy) return; setBusy(true); try { const data = await request(`http://127.0.0.1:8000/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); notifySuccess(data.message || 'Security action completed.', 'admin-2fa-reauth'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-reauth'); } finally { setBusy(false); } };
+  const copyBackupCodes = async () => { if (!backupCodes.length || !navigator.clipboard) { notifyError(new Error('Clipboard access is unavailable.'), 'admin-backup-codes-copy'); return; } try { await navigator.clipboard.writeText(backupCodes.join('\n')); setBackupCodesCopied(true); notifySuccess('Backup codes copied.', 'admin-backup-codes-copy'); window.setTimeout(() => setBackupCodesCopied(false), 2000); } catch (error) { notifyError(error, 'admin-backup-codes-copy'); } };
   const downloadBackupCodes = () => { if (!backupCodes.length) return; const generatedDate = new Date().toISOString().slice(0, 10); const contents = `DG Market Admin - Backup Codes (Generated: ${generatedDate}). Keep these safe. Each code can only be used once.\n\n${backupCodes.join('\n')}\n`; const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'dg-market-backup-codes.txt'; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); };
-  const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); setMessage('Profile photo updated.'); } catch (error) { setMessage(error.message); } finally { setBusy(false); } };
-  const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions']];
+  const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file || busy) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); notifySuccess('Profile photo updated', 'admin-avatar-upload'); } catch (error) { notifyError(error, 'admin-avatar-upload'); } finally { setBusy(false); } };
+  const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions'], ...(isMainAdmin ? [['admin-accounts', 'Admin Accounts']] : [])];
   const field = (label, key, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{label}</span><input type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500" /></label>;
   if (profileLoading) return <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-500 shadow-sm" role="status">Loading your admin profile...</div>;
-  return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>{message && <div className={`rounded-xl px-4 py-3 text-sm font-semibold ${messageType === 'error' ? 'border border-rose-200 bg-rose-50 text-rose-700' : 'border border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{message}</div>}
+  return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>
     {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={profile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER} alt="Admin profile" className="h-20 w-20 rounded-full object-cover" /><label className="cursor-pointer rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white">Upload Photo<input type="file" accept="image/*" onChange={uploadAvatar} className="hidden" /></label></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="mt-6 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white disabled:opacity-60">Save Changes</button></form>}
     {section === 'password' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="grid gap-4 md:grid-cols-2">{field('Current Password', 'current_password', 'password')}{field('New Password', 'new_password', 'password')}</div>{form.new_password && <div className="mt-4"><div className="flex h-2 gap-1">{[0, 1, 2, 3, 4].map((item) => <span key={item} className={`flex-1 rounded-full ${item < passwordScore ? (passwordScore < 3 ? 'bg-rose-500' : passwordScore < 5 ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-200'}`} />)}</div><p className="mt-2 text-xs text-slate-500">{passwordScore}/5 password requirements met</p></div>}{field('Confirm New Password', 'confirm_password', 'password')}<label className="mt-5 flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={form.logout_all_sessions} onChange={(event) => setForm((current) => ({ ...current, logout_all_sessions: event.target.checked }))} />Log out of all active sessions</label><button disabled={busy} className="mt-6 rounded-xl bg-slate-900 px-5 py-3 text-sm font-bold text-white disabled:opacity-60">Update Password</button></form>}
     {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection for this admin</h3><p className="mt-2 text-sm text-slate-500">Current admin status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><p className="mt-2 text-xs font-medium leading-5 text-slate-500">This status reflects the authenticated admin&apos;s configured authenticator, not the system-wide login policy in Settings.</p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={startTwoFactorSetup} className="rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('backup-codes')} title={profile.two_factor_enabled ? 'Generate one-time backup codes' : 'Enable 2FA first to generate backup codes'} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('disable')} title={profile.two_factor_enabled ? 'Disable authenticator protection' : 'Enable 2FA first'} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">Disable 2FA</button></div></div>}
@@ -331,7 +332,127 @@ function AdminSecurityProfile({ user, onUserUpdate }) {
     {section === 'sessions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-black">Active Sessions</h3><button disabled={busy} onClick={() => securityAction('sessions/logout-others')} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white">Logout Other Sessions</button></div><div className="mt-5 space-y-3">{sessions.map((item) => <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-4 text-sm md:grid-cols-4"><span className="font-bold">{item.is_current ? 'Current session' : 'Active session'}</span><span>{item.device_browser || 'Unknown browser'}</span><span>{item.ip_address || 'Unknown IP'}</span><span>{item.last_active ? new Date(item.last_active).toLocaleString() : 'Unknown activity'}</span></div>)}{sessions.length === 0 && <p className="text-sm text-slate-500">No active sessions were found for this account.</p>}</div></div>}
     {section === 'history' && <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Login History</h3><table className="mt-5 w-full min-w-[680px] text-left text-sm"><thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><th className="pb-3">Date & Time</th><th className="pb-3">Event</th><th className="pb-3">IP Address</th><th className="pb-3">Browser / Device</th></tr></thead><tbody>{history.map((item) => <tr key={item.id} className="border-b border-slate-100"><td className="py-3">{item.created_at ? new Date(item.created_at).toLocaleString() : '-'}</td><td className="py-3 font-semibold">{item.event_type}</td><td className="py-3">{item.ip_address || '-'}</td><td className="py-3">{item.device_browser || '-'}</td></tr>)}</tbody></table></div>}
     {section === 'permissions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Role & Permissions</h3><p className="mt-2 text-sm text-slate-500">Role</p><p className="font-bold">{profile.role || 'Unavailable'}</p><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{permissionDefinitions.map(([key, label]) => <label key={key} className={`flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold ${!canEditPermissions ? 'cursor-not-allowed opacity-60' : ''}`}><input type="checkbox" checked={Boolean(permissionState[key])} disabled={!canEditPermissions || permissionsSaving} onChange={(event) => setPermissionState((current) => ({ ...current, [key]: event.target.checked }))} />{label}</label>)}</div>{canEditPermissions ? <button type="button" onClick={savePermissions} disabled={permissionsSaving} className="mt-6 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">{permissionsSaving ? 'Saving...' : 'Save Changes'}</button> : <p className="mt-5 text-sm font-semibold text-slate-500">Your role can view permissions but cannot edit them.</p>}</div>}
+    {section === 'admin-accounts' && isMainAdmin && <AdminAccountsPanel user={user} />}
   </div>;
+}
+
+function AdminAccountsPanel({ user }) {
+  const [limitInfo, setLimitInfo] = useState({ current_count: 0, max_allowed: 3, can_add: true });
+  const [subAdmins, setSubAdmins] = useState([]);
+  const [form, setForm] = useState({ username: '', email: '', full_name: '', phone: '', password: '' });
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const token = () => {
+    try {
+      const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+      return session.access_token || session.accessToken || user?.access_token || '';
+    } catch {
+      return user?.access_token || '';
+    }
+  };
+
+  const loadAdmins = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/sub-admins', { headers: { Authorization: `Bearer ${token()}` } });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to load admin accounts.');
+      setLimitInfo({ current_count: data.current_count, max_allowed: data.max_allowed, can_add: data.can_add });
+      setSubAdmins(Array.isArray(data.sub_admins) ? data.sub_admins : []);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAdmins(); }, []);
+
+  const handleCreate = async (event) => {
+    event.preventDefault();
+    setSaving(true); setMessage(''); setError('');
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/admin/sub-admins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify(form),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to create sub admin.');
+      setForm({ username: '', email: '', full_name: '', phone: '', password: '' });
+      notifySuccess('Sub admin added successfully', 'admin-sub-admin-create');
+      await loadAdmins();
+    } catch (createError) {
+      notifyError(createError, 'admin-sub-admin-create');
+      await loadAdmins();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateStatus = async (adminId, status) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/sub-admins/${adminId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ status }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to update sub admin status.');
+      notifySuccess(status === 'Active' ? 'Sub admin activated successfully' : 'Sub admin deactivated successfully', `admin-sub-admin-status-${adminId}`);
+    } catch (statusError) {
+      notifyError(statusError, `admin-sub-admin-status-${adminId}`);
+    } finally {
+      await loadAdmins();
+    }
+  };
+
+  const deleteAdmin = async (adminId) => {
+    try {
+      const response = await fetch(`http://127.0.0.1:8000/api/admin/sub-admins/${adminId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to delete sub admin.');
+      notifySuccess('Sub admin deleted successfully', `admin-sub-admin-delete-${adminId}`);
+    } catch (deleteError) {
+      notifyError(deleteError, `admin-sub-admin-delete-${adminId}`);
+    } finally {
+      await loadAdmins();
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in text-slate-900">
+      <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-emerald-600">Access control</p>
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-2xl font-black text-slate-950">Admin Accounts</h2>
+          <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm font-bold text-slate-700">{limitInfo.current_count} / {limitInfo.max_allowed} active admins</span>
+        </div>
+        {message && <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">{message}</p>}
+        {error && <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700">{error}</p>}
+      </div>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+        <form onSubmit={handleCreate} autoComplete="off" className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 className="text-lg font-black text-slate-950">Add Sub Admin</h3>
+          <div className="mt-4 space-y-3">
+            {['username', 'email', 'full_name', 'phone', 'password'].map((field) => <input key={field} required={['username', 'email', 'password'].includes(field)} type={field === 'password' ? 'password' : field === 'email' ? 'email' : 'text'} autoComplete={field === 'password' ? 'new-password' : field === 'username' ? 'off' : undefined} placeholder={field.replace('_', ' ')} value={form[field]} onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))} className="block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-emerald-500" />)}
+          </div>
+          <button type="submit" disabled={saving || loading || !limitInfo.can_add} className="mt-4 w-full rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500">{saving ? 'Adding...' : 'Add Sub Admin'}</button>
+          {!limitInfo.can_add && <p className="mt-3 text-sm font-bold text-slate-500">Maximum of 3 admins reached</p>}
+        </form>
+        <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <h3 className="text-lg font-black text-slate-950">Sub Admins</h3>
+          <div className="mt-4 space-y-3">
+            {subAdmins.map((admin) => <div key={admin.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-4"><div><p className="font-bold text-slate-900">{admin.full_name || admin.username}</p><p className="text-sm text-slate-500">{admin.email} · {admin.status}</p></div><div className="flex gap-2"><button type="button" onClick={() => updateStatus(admin.id, admin.status === 'Active' ? 'Inactive' : 'Active')} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold">{admin.status === 'Active' ? 'Deactivate' : 'Activate'}</button><button type="button" onClick={() => deleteAdmin(admin.id)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">Delete</button></div></div>)}
+            {!loading && subAdmins.length === 0 && <p className="text-sm text-slate-500">No sub admins have been added.</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
@@ -468,7 +589,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [newCatIcon, setNewCatIcon] = useState('');
   const [newSubName, setNewSubName] = useState('');
   const [newSubParentId, setNewSubParentId] = useState('');
-  const [catMsg, setCatMsg] = useState('');
 
   // 5. Order Management State
   const [ordersList, setOrdersList] = useState([]);
@@ -528,6 +648,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [selectedReport, setSelectedReport] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportActionLoading, setReportActionLoading] = useState(false);
+  const [broadcastSending, setBroadcastSending] = useState(false);
   const [evidenceImage, setEvidenceImage] = useState(null);
   const [conversationLogs, setConversationLogs] = useState(null);
   const [conversationLoading, setConversationLoading] = useState(false);
@@ -943,8 +1064,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || 'Unable to review ID change request.');
       setIdChangeRequests((requests) => requests.filter((request) => request.id !== requestId));
+      notifySuccess(`ID change request ${status.toLowerCase()} successfully.`, `admin-id-change-${requestId}`);
     } catch (error) {
-      window.alert(error.message || 'Unable to review ID change request.');
+      notifyError(error, `admin-id-change-${requestId}`);
     }
   };
 
@@ -1172,8 +1294,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     maintenanceMessage: 'The marketplace is temporarily unavailable for maintenance.'
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
-  const [settingsSaveMessage, setSettingsSaveMessage] = useState('');
-  const [settingsMessageType, setSettingsMessageType] = useState('success');
 
   // KPI calculations
   const [metrics, setMetrics] = useState({
@@ -1440,7 +1560,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const loadSystemSettings = async () => {
     setSettingsLoading(true);
-    setSettingsSaveMessage('');
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
       if (!response.ok) throw new Error('Settings endpoint unavailable');
@@ -1481,8 +1600,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setMaintenanceSettings((prev) => ({ ...prev, ...(data.maintenance || {}) }));
     } catch (error) {
       console.error('Failed to fetch system settings:', error);
-      setSettingsMessageType('error');
-      setSettingsSaveMessage('Could not load system settings from the backend.');
+      notifyError(error, 'admin-settings-load');
     } finally {
       setSettingsLoading(false);
     }
@@ -1641,14 +1759,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   const handleTestChapaConnection = async () => {
+    if (chapaConnectionLoading) return;
     setChapaConnectionLoading(true);
     setChapaConnectionMessage('');
     try {
       const response = await fetch('http://127.0.0.1:8000/api/admin/payments/test-connection', { method: 'POST' });
       const data = await response.json().catch(() => ({}));
-      setChapaConnectionMessage(response.ok && data.success ? 'Chapa connection verified.' : (data.status || 'Chapa connection is not configured.'));
+      if (!response.ok || !data.success) throw new Error(data.detail || data.status || 'Chapa connection is not configured.');
+      notifySuccess('Chapa connection verified.', 'admin-chapa-test');
     } catch (error) {
-      setChapaConnectionMessage('Unable to test Chapa connection.');
+      notifyError(error, 'admin-chapa-test');
     } finally {
       setChapaConnectionLoading(false);
     }
@@ -1711,7 +1831,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const handleRetryPaymentVerification = async () => {
     const txRef = selectedPaymentDetail?.chapa_reference || selectedPaymentDetail?.transaction_id;
-    if (!txRef) return;
+    if (!txRef || paymentVerificationLoading) return;
 
     setPaymentVerificationLoading(true);
     setPaymentVerificationMessage('');
@@ -1724,8 +1844,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         ? { ...payment, status: data.status }
         : payment));
       setSelectedPaymentDetail((previous) => previous ? { ...previous, status: data.status } : previous);
+      notifySuccess('Payment verification updated.', `admin-payment-verify-${txRef}`);
     } catch (error) {
-      setPaymentVerificationMessage(error.message || 'Unable to verify payment.');
+      notifyError(error, `admin-payment-verify-${txRef}`);
     } finally {
       setPaymentVerificationLoading(false);
     }
@@ -1767,9 +1888,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }, ...prev]);
 
       setSelectedOrderDetails(null);
+      notifySuccess('Order status updated successfully.', `admin-order-update-${orderId}`);
     } catch (err) {
       console.error('Error saving order status updates:', err);
-      setDisputeResolutionMessage(err.message || 'Failed to persist order status update.');
+      notifyError(err, `admin-order-update-${orderId}`);
       setOrdersList(prev => prev.map(item => item.id === orderId ? {
         ...item,
         order_status: previousOrderStatus,
@@ -1812,8 +1934,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       await fetchUsersData();
       setAddStudentForm({ name: '', student_id: '', email: '', phone: '', college: '', department: '', password: '' });
       setShowAddStudentModal(false);
+      notifySuccess('Student added successfully.', 'admin-student-add');
     } catch (error) {
       setAddStudentError(error.message || 'Unable to register student.');
+      notifyError(error, 'admin-student-add');
     } finally {
       setAddStudentLoading(false);
     }
@@ -1841,10 +1965,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ? { ...user, is_verified: payload.is_verified ?? nextStatus === 'Verified', verification_reason: payload.reason ?? '' }
           : user
       ));
-      window.alert(`${student.name} verification status updated to ${nextStatus}.`);
+      notifySuccess(`${student.name} verification status updated to ${nextStatus}.`, `admin-verification-${student.id}`);
     } catch (error) {
       console.error('Failed to update student verification:', error);
-      window.alert('Failed to update student verification. Please try again.');
+      notifyError(error, `admin-verification-${student.id}`);
     }
   };
 
@@ -1902,13 +2026,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         console.warn('User notification endpoint unavailable; continuing without it.', notificationError);
       }
 
-      if (payload && payload.message) {
-        console.info(payload.message);
-      }
+      notifySuccess(payload?.message || `User ${newStatus.toLowerCase()} successfully.`, `admin-user-status-${userId}`);
       await fetchFilteredVerifications();
     } catch (error) {
       console.error('Failed to update user status:', error);
-      window.alert('Unable to update the user status. Please try again.');
+      notifyError(error, `admin-user-status-${userId}`);
     } finally {
       setShowEnforcementModal(false);
       setEnforcementTarget(null);
@@ -1940,9 +2062,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setStudentUsers((previousUsers) => previousUsers.filter((student) => student.id !== user.id));
       setSelectedUser(null);
       setEditingUser(null);
+      notifySuccess('Student deleted successfully.', `admin-student-delete-${user.id}`);
     } catch (error) {
       console.error('Failed to delete student:', error);
-      window.alert(error.message || 'Unable to delete student. Please try again.');
+      notifyError(error, `admin-student-delete-${user.id}`);
     }
   };
 
@@ -1958,10 +2081,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       if (!response.ok) throw new Error(payload.detail || 'Unable to approve selected users.');
       setStudentUsers((users) => users.map((user) => selectedUserIds.includes(user.id) ? { ...user, is_verified: true } : user));
       setSelectedUserIds([]);
-      window.alert(payload.message || 'Selected users approved successfully.');
+      notifySuccess(payload.message || 'Selected users approved successfully.', 'admin-users-bulk-approve');
     } catch (error) {
       console.error('Failed to bulk approve users:', error);
-      window.alert(error.message || 'Unable to approve selected users.');
+      notifyError(error, 'admin-users-bulk-approve');
     }
   };
 
@@ -1981,10 +2104,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         ? { ...user, is_verified: false, verification_reason: reason }
         : user));
       setSelectedUserIds([]);
-      window.alert(payload.message || 'Selected users rejected successfully.');
+      notifySuccess(payload.message || 'Selected users rejected successfully.', 'admin-users-bulk-reject');
     } catch (error) {
       console.error('Failed to bulk reject users:', error);
-      window.alert(error.message || 'Unable to reject selected users.');
+      notifyError(error, 'admin-users-bulk-reject');
     }
   };
 
@@ -2013,9 +2136,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         student.id === editingUser.id ? { ...student, ...payload.student } : student
       )));
       setEditingUser(null);
+      notifySuccess('Student updated successfully.', `admin-student-update-${editingUser.id}`);
     } catch (error) {
       console.error('Failed to update student:', error);
-      window.alert(error.message || 'Unable to update student. Please try again.');
+      notifyError(error, `admin-student-update-${editingUser?.id || 'unknown'}`);
     }
   };
 
@@ -2082,7 +2206,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
     } catch (error) {
       console.error('Failed to update verification status:', error);
-      window.alert('Unable to update the verification request. Please try again.');
+      notifyError(error, `admin-verification-review-${id}`);
     } finally {
       setShowRejectReasonModal(false);
       setSelectedVerificationRequest(null);
@@ -2105,10 +2229,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setVerifications((requests) => requests.filter((request) => !selectedVerificationIds.includes(request.id)));
       setSelectedVerificationIds([]);
       await fetchFilteredVerifications();
-      window.alert(payload.message || 'Selected students approved successfully.');
+      notifySuccess(payload.message || 'Selected students approved successfully.', 'admin-verifications-bulk-approve');
     } catch (error) {
       console.error('Failed to bulk approve students:', error);
-      window.alert(error.message || 'Unable to approve selected students.');
+      notifyError(error, 'admin-verifications-bulk-approve');
     }
   };
 
@@ -2129,10 +2253,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setVerifications((requests) => requests.filter((request) => !selectedVerificationIds.includes(request.id)));
       setSelectedVerificationIds([]);
       await fetchFilteredVerifications();
-      window.alert(payload.message || 'Selected students rejected successfully.');
+      notifySuccess(payload.message || 'Selected students rejected successfully.', 'admin-verifications-bulk-reject');
     } catch (error) {
       console.error('Failed to bulk reject students:', error);
-      window.alert(error.message || 'Unable to reject selected students.');
+      notifyError(error, 'admin-verifications-bulk-reject');
     }
   };
 
@@ -2159,10 +2283,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ? { ...product, status: 'Approved', moderation_reason: '', rejection_reason: '' }
           : product
       ));
-      window.alert('Product approved successfully.');
+      notifySuccess('Product approved successfully.', `admin-product-approve-${productId}`);
     } catch (error) {
       console.error('Failed to approve product:', error);
-      window.alert('Unable to approve the product. Please try again.');
+      notifyError(error, `admin-product-approve-${productId}`);
     }
   };
 
@@ -2182,10 +2306,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setProductsList((products) => products.filter((item) => item.id !== product.id));
       setSelectedProductIds((ids) => ids.filter((id) => id !== product.id));
       if (selectedProductDetails?.id === product.id) setSelectedProductDetails(null);
-      window.alert(payload.message || 'Product deleted successfully.');
+      notifySuccess(payload.message || 'Product deleted successfully.', `admin-product-delete-${product.id}`);
     } catch (error) {
       console.error('Failed to delete product:', error);
-      window.alert(error.message || 'Unable to delete product.');
+      notifyError(error, `admin-product-delete-${product.id}`);
     }
   };
 
@@ -2210,9 +2334,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           : product
       ));
       setSelectedProductIds([]);
+      notifySuccess('Product status updated successfully.', 'admin-products-flag');
     } catch (error) {
       console.error('Failed to flag product:', error);
-      window.alert('Unable to update the product status. Please try again.');
+      notifyError(error, 'admin-products-flag');
     } finally {
       setShowRejectModal(false);
       setPendingRejectProduct(null);
@@ -2234,9 +2359,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         ? { ...product, status: 'Approved', moderation_reason: '', rejection_reason: '' }
         : product));
       setSelectedProductIds([]);
+      notifySuccess('Selected products approved successfully.', 'admin-products-bulk-approve');
     } catch (error) {
       console.error('Failed to bulk approve products:', error);
-      window.alert('Unable to approve the selected products. Please try again.');
+      notifyError(error, 'admin-products-bulk-approve');
     }
   };
 
@@ -2266,10 +2392,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       if (response.ok) {
         await fetchCategories();
 
-        // Show success message
-        setCatMsg('Category added successfully!');
         setNewCatName('');
         setNewCatIcon('📁');
+        notifySuccess('Category added successfully.', 'admin-category-add');
 
         // Log to audit logs
         setAuditLogs(prev => [
@@ -2281,13 +2406,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ...prev
         ]);
 
-        setTimeout(() => setCatMsg(''), 3000);
       } else {
-        setCatMsg('Failed to add category');
+        const payload = await response.json().catch(() => ({}));
+        notifyError(new Error(payload.detail || 'Failed to add category.'), 'admin-category-add');
       }
     } catch (err) {
       console.error('Error adding category:', err);
-      setCatMsg('Error adding category');
+      notifyError(err, 'admin-category-add');
     }
   };
 
@@ -2295,7 +2420,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const handleAddSubcategory = async (e) => {
     e.preventDefault();
     if (!newSubName.trim() || !newSubParentId) {
-      setCatMsg('Please fill in all fields');
+      notifyError(new Error('Please fill in all fields.'), 'admin-subcategory-add');
       return;
     }
 
@@ -2313,10 +2438,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       if (response.ok) {
         await fetchCategories();
 
-        // Show success message
-        setCatMsg('Subcategory added successfully!');
         setNewSubName('');
         setNewSubParentId('');
+        notifySuccess('Subcategory added successfully.', 'admin-subcategory-add');
 
         // Log to audit logs
         const parentCat = categoriesList.find(c => c.id === parseInt(newSubParentId));
@@ -2329,13 +2453,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ...prev
         ]);
 
-        setTimeout(() => setCatMsg(''), 3000);
       } else {
-        setCatMsg('Failed to add subcategory');
+        const payload = await response.json().catch(() => ({}));
+        notifyError(new Error(payload.detail || 'Failed to add subcategory.'), 'admin-subcategory-add');
       }
     } catch (err) {
       console.error('Error adding subcategory:', err);
-      setCatMsg('Error adding subcategory');
+      notifyError(err, 'admin-subcategory-add');
     }
   };
 
@@ -2359,9 +2483,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         // Update local state - remove the deleted category
         setCategoriesList(prev => prev.filter(cat => cat.id !== id));
 
-        // Show success message
-        setCatMsg('Category deleted successfully!');
-        setTimeout(() => setCatMsg(''), 3000);
+        notifySuccess('Category deleted successfully.', `admin-category-delete-${id}`);
 
         // Log to audit logs
         const deletedCat = categoriesList.find(c => c.id === id);
@@ -2374,11 +2496,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ...prev
         ]);
       } else {
-        setCatMsg('Failed to delete category');
+        const payload = await response.json().catch(() => ({}));
+        notifyError(new Error(payload.detail || 'Failed to delete category.'), `admin-category-delete-${id}`);
       }
     } catch (err) {
       console.error('Error deleting category:', err);
-      setCatMsg('Error deleting category');
+      notifyError(err, `admin-category-delete-${id}`);
     }
   };
 
@@ -2405,9 +2528,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             : cat
         ));
 
-        // Show success message
-        setCatMsg('Subcategory deleted successfully!');
-        setTimeout(() => setCatMsg(''), 3000);
+        notifySuccess('Subcategory deleted successfully.', `admin-subcategory-delete-${subId}`);
 
         // Log to audit logs
         const parentCat = categoriesList.find(c => c.id === catId);
@@ -2421,17 +2542,18 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ...prev
         ]);
       } else {
-        setCatMsg('Failed to delete subcategory');
+        const payload = await response.json().catch(() => ({}));
+        notifyError(new Error(payload.detail || 'Failed to delete subcategory.'), `admin-subcategory-delete-${subId}`);
       }
     } catch (err) {
       console.error('Error deleting subcategory:', err);
-      setCatMsg('Error deleting subcategory');
+      notifyError(err, `admin-subcategory-delete-${subId}`);
     }
   };
 
   const handleCloseCase = async (id) => {
     const report = reportsList.find(r => r.id === id);
-    if (!report) return;
+    if (!report || reportActionLoading) return;
 
     setReportActionLoading(true);
 
@@ -2463,11 +2585,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         // Close modal and reset
         setSelectedReport(null);
+        notifySuccess('Report closed successfully.', `admin-report-close-${id}`);
       } else {
-        console.error('Failed to close case:', response.status);
+        const payload = await response.json().catch(() => ({}));
+        notifyError(new Error(payload.detail || 'Failed to close report.'), `admin-report-close-${id}`);
       }
     } catch (err) {
       console.error('Error closing case:', err);
+      notifyError(err, `admin-report-close-${id}`);
     } finally {
       setReportActionLoading(false);
     }
@@ -2475,7 +2600,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const handleResolveReport = async (id, decision) => {
     const report = reportsList.find(r => r.id === id);
-    if (!report) return;
+    if (!report || reportActionLoading) return;
 
     const confirmed = window.confirm(`Resolve report ${report.report_id} with the decision: ${decision}?`);
     if (!confirmed) return;
@@ -2510,11 +2635,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         setSelectedReport(null);
         setShowReportModal(false);
+        notifySuccess('Report resolved successfully.', `admin-report-resolve-${id}`);
       } else {
-        console.error('Failed to resolve report:', response.status);
+        const payload = await response.json().catch(() => ({}));
+        notifyError(new Error(payload.detail || 'Failed to resolve report.'), `admin-report-resolve-${id}`);
       }
     } catch (err) {
       console.error('Error resolving report:', err);
+      notifyError(err, `admin-report-resolve-${id}`);
     } finally {
       setReportActionLoading(false);
       setReportDecision('Warning');
@@ -2565,6 +2693,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setPreviewAnnouncement(null);
       setShowPreviewModal(false);
     }
+    notifySuccess('Announcement deleted successfully.', `admin-announcement-delete-${id}`);
   };
 
   const fetchBroadcastHistory = async () => {
@@ -2604,12 +2733,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     e.preventDefault();
 
     if (!announcementForm.title.trim() || !announcementForm.message.trim()) {
-      alert('Please enter a title and message before previewing the broadcast.');
+      notifyError(new Error('Please enter a title and message before previewing the broadcast.'), 'admin-broadcast-preview');
       return;
     }
 
     if (announcementForm.sendType === 'schedule' && (!announcementForm.scheduleDate || !announcementForm.scheduleTime)) {
-      alert('Please choose both the schedule date and time before previewing a scheduled notification.');
+      notifyError(new Error('Please choose both the schedule date and time before previewing a scheduled notification.'), 'admin-broadcast-preview');
       return;
     }
 
@@ -2638,7 +2767,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   const handleConfirmBroadcast = async () => {
-    if (!previewAnnouncement) return;
+    if (!previewAnnouncement || broadcastSending) return;
+    setBroadcastSending(true);
 
     const payload = {
       title: previewAnnouncement.title,
@@ -2661,10 +2791,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
 
       await fetchBroadcastHistory();
+      notifySuccess('Broadcast sent successfully.', 'admin-broadcast-send');
     } catch (error) {
       console.error('Failed to send broadcast notification:', error);
-      alert('The broadcast could not be delivered. Please try again.');
+      notifyError(error, 'admin-broadcast-send');
     } finally {
+      setBroadcastSending(false);
       setAnnouncementForm({
         title: '',
         message: '',
@@ -2679,6 +2811,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   const handleSaveSystemSettings = async () => {
+    if (settingsLoading) return;
     const payload = {
       general: generalSettings,
       marketplace: productSettings,
@@ -2711,17 +2844,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }
 
       await fetchDashboardOverview();
-      setSettingsMessageType('success');
-      setSettingsSaveMessage(data.changes?.length ? `Saved ${data.changes.length} change(s) and logged them to Audit Logs.` : 'System configurations saved successfully.');
+      notifySuccess('System configurations saved successfully.', 'admin-settings-save');
     } catch (error) {
       console.error('Failed to save settings:', error);
-      setSettingsMessageType('error');
-      setSettingsSaveMessage(error.message || 'Could not reach the backend. Changes were not persisted.');
+      notifyError(error, 'admin-settings-save');
     } finally {
       setSettingsLoading(false);
     }
 
-    window.setTimeout(() => setSettingsSaveMessage(''), 3000);
   };
 
   const handleProfileFieldChange = (field, value) => {
@@ -2775,7 +2905,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         status: 'Active',
       }));
       setProfileForm((prev) => ({ ...prev, currentPassword: '', newPassword: '', confirmPassword: '' }));
-      setProfileMsg('Profile updated successfully.');
+      notifySuccess('Profile saved successfully.', 'admin-profile-save-legacy');
       setAuditLogs((prev) => [{
         id: Date.now(),
         action: 'Admin Profile Updated',
@@ -2791,7 +2921,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }, ...prev]);
     } catch (error) {
       console.error('Profile update failed:', error);
-      setProfileMsg(error.message || 'Unable to update profile right now.');
+      notifyError(error, 'admin-profile-save-legacy');
     } finally {
       setProfileLoading(false);
       window.setTimeout(() => setProfileMsg(''), 3000);
@@ -2810,7 +2940,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     const formData = new FormData();
     const username = profileForm.username || adminProfile.username;
     if (!username) {
-      setProfileMsg('Admin profile is not loaded yet.');
+      notifyError(new Error('Admin profile is not loaded yet.'), 'admin-avatar-upload-legacy');
       return;
     }
     formData.append('username', username);
@@ -2873,11 +3003,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       window.dispatchEvent(new Event('storage'));
       console.log('[AdminAvatar] Dispatched storage event for navbar synchronization.');
 
-      setProfileMsg('Avatar uploaded successfully.');
+      notifySuccess('Profile photo updated.', 'admin-avatar-upload-legacy');
       window.setTimeout(() => setProfileMsg(''), 2500);
     } catch (error) {
       console.error('Avatar upload failed:', error);
-      setProfileMsg(error.message || 'Avatar upload failed.');
+      notifyError(error, 'admin-avatar-upload-legacy');
       window.setTimeout(() => setProfileMsg(''), 2500);
     }
   };
@@ -2901,7 +3031,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   }, [announcementLog, notificationsSearch, notificationsFilter]);
 
   const renderTabContent = () => {
-    if (activeTab === 'profile') return <AdminSecurityProfile user={user} onUserUpdate={onUserUpdate} />;
+    if (activeTab === 'profile' || activeTab === 'admin-accounts') return <AdminSecurityProfile user={user} onUserUpdate={onUserUpdate} initialSection={activeTab === 'admin-accounts' ? 'admin-accounts' : 'personal'} />;
     switch (activeTab) {
       case 'profile':
         if (profileDataLoading) {
@@ -4567,16 +4697,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
               {/* Right Column: Forms for Creating Categories & Subcategories */}
               <div className="space-y-4">
-
-                {/* Status Message */}
-                {catMsg && (
-                  <div className={`rounded-2xl p-4 text-sm font-semibold ${catMsg.includes('success')
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-100'
-                    : 'bg-rose-50 text-rose-700 border border-rose-100'
-                    }`}>
-                    {catMsg}
-                  </div>
-                )}
 
                 {/* Create Main Category Form */}
                 <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -6972,11 +7092,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   {settingsLoading ? 'Saving...' : 'Save System Configurations'}
                 </button>
               </div>
-              {settingsSaveMessage && (
-                <div className={`mt-4 rounded-2xl px-4 py-3 text-sm font-semibold ${settingsMessageType === 'success' ? 'border border-emerald-200 bg-emerald-50 text-emerald-700' : 'border border-rose-200 bg-rose-50 text-rose-700'}`}>
-                  {settingsSaveMessage}
-                </div>
-              )}
 
             </div>
           </div>
@@ -6996,7 +7111,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
           <div className="relative z-10 mb-8 flex min-h-0 items-start gap-3 overflow-hidden">
             {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
-            <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
+            <img src={logs} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
             <div className="min-w-0 flex-1">
               <div className="relative z-10 max-w-full overflow-hidden rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
                 Admin Console
@@ -7090,9 +7205,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             })}
           </nav>
         </aside>
-        {isSidebarOpen && (
-          <div onClick={() => setIsSidebarOpen(false)} className="fixed top-20 bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
-        )}
+        {
+          isSidebarOpen && (
+            <div onClick={() => setIsSidebarOpen(false)} className="fixed top-20 bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
+          )
+        }
 
         {/* Main Panel Content Area */}
         {/* Start content directly below the global navbar; the former empty hero card is removed. */}
@@ -7106,7 +7223,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             )}
           </section>
         </main>
-      </div>
+      </div >
 
       {showProfileModal && (
         <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
@@ -7269,8 +7386,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
           </div>
         </div>
-      )}
-    </div>
+      )
+      }
+    </div >
   );
 }
 
