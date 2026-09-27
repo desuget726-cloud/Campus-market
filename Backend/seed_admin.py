@@ -14,7 +14,7 @@ def create_admin_if_missing():
     db = SessionLocal()
     try:
         existing = db.query(Admin).filter(
-            (Admin.username == "mau9999") | (Admin.email == "admin@campace.edu")
+            (Admin.username == "mau9999") | (Admin.email == "desu5392@gmail.com")
         ).first()
 
         if existing:
@@ -24,7 +24,7 @@ def create_admin_if_missing():
         hashed = pwd_context.hash("admin123")
         admin = Admin(
             username="mau9999",
-            email="admin@campace.edu",
+            email="desu5392@gmail.com",
             full_name="System Administrator",
             password_hash=hashed,
             role="Admin",
