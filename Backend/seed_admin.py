@@ -17,9 +17,11 @@ def create_admin_if_missing():
             (Admin.username == "mau9999") | (Admin.email == "desu5392@gmail.com")
         ).first()
 
-        if existing:
-            print("Admin already exists:", existing.username)
-            return
+      if existing:
+    existing.two_factor_enabled = False
+    db.commit()
+    print("Admin already exists. 2FA disabled:", existing.username)
+    return
 
         hashed = pwd_context.hash("admin123")
         admin = Admin(
