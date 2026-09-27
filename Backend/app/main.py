@@ -2999,8 +2999,8 @@ def _get_or_create_oauth_student(email: str, name: Optional[str], db: Session) -
 
     security = get_security_settings(db)
     require_university_email = _setting_bool(
-        _get_setting_value(db, "studentVerification", "requireUniversityEmail", True),
-        True,
+        _get_setting_value(db, "studentVerification", "requireUniversityEmail", False),
+        False,
     )
     allowed_email_domain = str(
         _get_setting_value(db, "studentVerification", "allowedEmailDomain", "university.edu.et")
