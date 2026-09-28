@@ -7185,8 +7185,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pt-[88px] lg:pt-[80px]">
-      <div className="flex min-h-screen flex-col gap-3 px-2 py-2 lg:h-[calc(100vh-80px)] lg:overflow-hidden lg:flex-row lg:px-4 lg:py-0">
+    <div className="flex min-h-screen flex-col bg-slate-50 pt-[88px] text-slate-900 lg:pt-[80px]">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-2 py-2 lg:h-[calc(100vh-80px)] lg:flex-row lg:overflow-hidden lg:px-4 lg:py-0">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className="relative hidden lg:flex lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
@@ -7246,7 +7246,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </nav>
         </aside>
 
-        <aside className={`fixed left-0 top-20 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <aside id="admin-mobile-navigation" className={`fixed left-0 top-20 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           {/* The mobile header uses the same relative/clipped containment as desktop. */}
           <div className="relative z-10 mb-8 flex min-h-0 items-start gap-3 overflow-hidden">
             <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
@@ -7294,7 +7294,26 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         {/* Main Panel Content Area */}
         {/* Start content directly below the global navbar; the former empty hero card is removed. */}
-        <main className="min-w-0 flex-1 h-screen overflow-y-auto pt-4 lg:pt-2 lg:pr-2">
+        <main className="min-w-0 min-h-0 flex-1 overflow-y-auto pt-4 lg:pt-2 lg:pr-2">
+
+          <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:hidden">
+            <button
+              type="button"
+              onClick={() => setIsSidebarOpen(true)}
+              aria-controls="admin-mobile-navigation"
+              aria-expanded={isSidebarOpen}
+              aria-label="Open admin navigation"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-900 text-white"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase text-slate-500">Admin Console</p>
+              <p className="truncate text-sm font-bold text-slate-900">{adminTabs.find((tab) => tab.id === activeTab)?.label || 'Dashboard'}</p>
+            </div>
+          </div>
 
           <section className="min-w-0 overflow-hidden rounded-[32px] bg-slate-50 shadow-sm">
             {isReady ? renderTabContent() : (
