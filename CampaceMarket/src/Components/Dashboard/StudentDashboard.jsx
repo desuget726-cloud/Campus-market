@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import jsPDF from 'jspdf';
+import { useLanguage } from '../../context/LanguageContext';
+import { notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
 import SellerOperationsCenter from './SellerOperationsCenter';
 import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
@@ -111,6 +113,8 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 
 
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, onOpenPrivacy, onOpenTerms }) {
+  const { t } = useLanguage();
+  const studentToast = (key) => t(`studentToast.${key}`);
   const getStudentSessionToken = () => {
     const userToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
     if (userToken) return userToken;
@@ -286,8 +290,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
   const [paymentInfo, setPaymentInfo] = useState({ balance: 0.00, recentTx: 'No transactions yet' });
-  const transactionStatusesRef = useRef(new Map());
-  const hasLoadedTransactionsRef = useRef(false);
+  const payoutStatusTrackerRef = useRef({
+    studentId: '',
+    lastStatusByPayoutId: new Map(),
+    notifiedEventIds: new Set(),
+  });
+  const dashboardRefreshInFlightRef = useRef(false);
   const [depositAmount, setDepositAmount] = useState('');
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
@@ -304,6 +312,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [returnToWithdrawAfterPayoutSetup, setReturnToWithdrawAfterPayoutSetup] = useState(false);
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
+  const withdrawSubmitInFlightRef = useRef(false);
   const [highlights, setHighlights] = useState({ aiPicks: 0, latestListings: 0, cartValue: 0.00, pendingMessages: 0 });
   const [recommendedProducts, setRecommendedProducts] = useState([]);
   const [recentCampusActivity, setRecentCampusActivity] = useState([]);
@@ -334,7 +343,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     quantity: '1',
     condition: 'New',
     pickupLocation: '',
-    pickupHours: '08:00-17:00',
+    pickupHours: '12 AM:00-12:00 PM',
     negotiable: false,
     imageNotes: [],
     description: '',
@@ -649,33 +658,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const normalizedBalance = Number.isFinite(nextBalance) ? nextBalance : 0;
         const normalizedTransactions = Array.isArray(payData?.transactions) ? payData.transactions : [];
 
-        if (hasLoadedTransactionsRef.current) {
-          normalizedTransactions.forEach((transaction) => {
-            const transactionId = transaction.id ?? transaction.transaction_id ?? transaction.tx_id;
-            const previousStatus = transactionStatusesRef.current.get(String(transactionId));
-            const currentStatus = String(transaction.status || '').trim().toLowerCase();
-            if (previousStatus === 'pending' && currentStatus === 'successful') {
-              const amount = Number(transaction.amount ?? transaction.value ?? 0);
-              const formattedAmount = amount.toLocaleString('en-US', {
-                minimumFractionDigits: 0,
-                maximumFractionDigits: 2,
-              });
-              window.dispatchEvent(new CustomEvent('campace:payment-verified', {
-                detail: {
-                  message: `Payment Verified! ${formattedAmount} ETB has been added to your wallet.`,
-                },
-              }));
-            }
-          });
-        }
-        transactionStatusesRef.current = new Map(
-          normalizedTransactions.map((transaction) => [
-            String(transaction.id ?? transaction.transaction_id ?? transaction.tx_id),
-            String(transaction.status || '').trim().toLowerCase(),
-          ]),
-        );
-        hasLoadedTransactionsRef.current = true;
-
         setPaymentInfo({
           balance: normalizedBalance,
           recentTx: payData?.recentTx || payData?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : 'No transactions yet'),
@@ -754,8 +736,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setOrders((previous) => previous.filter((item) => item.id !== order.id));
       setHiddenOrdersCount((previous) => Math.max(0, previous + (isHidden ? -1 : 1)));
       setReviewFeedback(isHidden ? 'Order restored to My Orders.' : 'Order hidden from My Orders.');
+      notifySuccess(studentToast('orderHidden'), `student-order-visibility-${order.id}`);
     } catch (error) {
       setReviewFeedback(error.message || `Unable to ${isHidden ? 'restore' : 'hide'} this order.`);
+      notifyError(error, `student-order-visibility-${order.id}`);
     }
   };
 
@@ -973,17 +957,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               }));
             }
 
-            transactionStatusesRef.current.set(String(transactionReference), 'successful');
             const verifiedAmount = Number(data?.amount ?? 0);
             const formattedAmount = Number.isFinite(verifiedAmount) && verifiedAmount > 0
               ? ` ${verifiedAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`
               : '';
             window.dispatchEvent(new CustomEvent('campace:payment-verified', {
               detail: {
-                message: `Payment Verified!${formattedAmount} has been added to your wallet.`,
+                message: `${studentToast('paymentVerified')}${formattedAmount ? ` ${formattedAmount}` : ''}`,
               },
             }));
-            window.alert(`Payment successful!${formattedAmount} has been added to your wallet.`);
 
             await fetchBuyerDashboardData();
             if (isMounted) setPaymentVerificationState('successful');
@@ -1000,9 +982,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               setPaymentVerificationState('failed');
               setDepositError(data?.detail || 'We could not confirm your payment. Please try again.');
             }
+            notifyError({ detail: data?.detail || studentToast('paymentFailed') }, 'student-payment-failed');
             break;
           } else if (Date.now() - startedAt < 60000) {
             if (isMounted) setPaymentVerificationState('pending');
+            notifyInfo(studentToast('paymentPending'), 'student-payment-pending');
             await new Promise((resolve) => {
               verificationTimeoutId = window.setTimeout(resolve, 5000);
             });
@@ -1113,6 +1097,55 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const data = await response.json();
       const listings = Array.isArray(data.my_listings) ? data.my_listings : [];
       const orders = Array.isArray(data.received_orders) ? data.received_orders : [];
+      const payoutTracker = payoutStatusTrackerRef.current;
+      if (payoutTracker.studentId !== String(user.studentId)) {
+        let notifiedEventIds = new Set();
+        try {
+          const savedEventIds = JSON.parse(
+            window.sessionStorage.getItem(`campaceNotifiedPayoutEvents:${user.studentId}`) || '[]',
+          );
+          if (Array.isArray(savedEventIds)) notifiedEventIds = new Set(savedEventIds.map(String));
+        } catch {
+          // Storage may be unavailable; in-memory deduplication still applies.
+        }
+        payoutTracker.studentId = String(user.studentId);
+        payoutTracker.lastStatusByPayoutId = new Map();
+        payoutTracker.notifiedEventIds = notifiedEventIds;
+      }
+      orders.forEach((order) => {
+        const payoutId = String(order.payout_id ?? order.id ?? order.order_id ?? '');
+        if (!payoutId) return;
+        const currentStatus = String(order.payout_status || (order.is_funds_released ? 'Released' : 'Escrow Hold'))
+          .trim()
+          .toLowerCase();
+        const previousStatus = payoutTracker.lastStatusByPayoutId.get(payoutId);
+        const eventId = `payout-${payoutId}-${currentStatus}`;
+        if (
+          previousStatus !== undefined
+          && previousStatus !== currentStatus
+          && currentStatus === 'released'
+          && String(order.status || '').trim().toLowerCase() === 'completed'
+          && !payoutTracker.notifiedEventIds.has(eventId)
+        ) {
+          const netAmount = Number(order.net_amount);
+          if (Number.isFinite(netAmount)) {
+            const message = studentToast('orderPayoutReleased')
+              .replace('{orderId}', String(order.order_id ?? order.id))
+              .replace('{netAmount}', netAmount.toLocaleString(undefined, { maximumFractionDigits: 2 }));
+            payoutTracker.notifiedEventIds.add(eventId);
+            try {
+              window.sessionStorage.setItem(
+                `campaceNotifiedPayoutEvents:${user.studentId}`,
+                JSON.stringify([...payoutTracker.notifiedEventIds]),
+              );
+            } catch {
+              // Keep the event deduplicated for this mount if storage is unavailable.
+            }
+            notifySuccess(message, eventId);
+          }
+        }
+        payoutTracker.lastStatusByPayoutId.set(payoutId, currentStatus);
+      });
       const stats = data.stats || {};
       const alerts = data.alerts || {};
       setSellerDashboardData({ stats, alerts, performance: data.performance || {}, disputes: data.disputes || [], my_listings: listings, received_orders: orders });
@@ -1133,16 +1166,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setSellerOrdersLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (!user?.studentId || activeTab !== 'seller') return;
-
-    const loadSellerAnalytics = async () => {
-      await fetchSellerDashboardData();
-    };
-
-    loadSellerAnalytics();
-  }, [user?.studentId, activeTab]);
 
   useEffect(() => {
     if (activeTab === 'profile') {
@@ -1276,18 +1299,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         }
         return previousNotifications.filter((notification) => String(notification.id) !== String(id));
       });
+      notifySuccess(studentToast('notificationsRead'), `student-notification-delete-${id}`);
     } catch (err) {
       console.error('Error deleting notification:', err);
+      notifyError(err, `student-notification-delete-${id}`);
     }
   };
-
-  useEffect(() => {
-    if (!studentId || activeTab !== 'buyer') return;
-
-    fetchBuyerDashboardData();
-    // onUserUpdate is intentionally excluded because the parent recreates it on render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, studentId]);
 
   useEffect(() => {
     if (!studentId) return;
@@ -1464,16 +1481,42 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   }, [user?.studentId]);
 
   useEffect(() => {
-    if (!studentId) return undefined;
+    if (!studentId || !['buyer', 'seller'].includes(activeTab)) return undefined;
 
-    const refreshOrders = () => {
-      if (activeTab === 'buyer') fetchBuyerDashboardData();
-      if (activeTab === 'buyer' && selectedOrder?.id) fetchOrderDetails(selectedOrder.id);
-      if (activeTab === 'seller') fetchSellerDashboardData();
+    let intervalId = null;
+    let isActive = true;
+    const refreshActiveDashboard = async () => {
+      if (!isActive || document.visibilityState !== 'visible' || dashboardRefreshInFlightRef.current) return;
+      dashboardRefreshInFlightRef.current = true;
+      try {
+        if (activeTab === 'buyer') {
+          await fetchBuyerDashboardData();
+          if (selectedOrder?.id) await fetchOrderDetails(selectedOrder.id);
+        } else {
+          await fetchSellerDashboardData();
+        }
+      } finally {
+        dashboardRefreshInFlightRef.current = false;
+      }
     };
-    const intervalId = window.setInterval(refreshOrders, 15000);
-    return () => window.clearInterval(intervalId);
-    // Dashboard fetch functions are recreated on render; active tab and student are the refresh scope.
+    const syncPolling = () => {
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
+      if (document.visibilityState !== 'visible') return;
+      void refreshActiveDashboard();
+      intervalId = window.setInterval(refreshActiveDashboard, 30000);
+    };
+
+    document.addEventListener('visibilitychange', syncPolling);
+    syncPolling();
+    return () => {
+      isActive = false;
+      if (intervalId !== null) window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', syncPolling);
+    };
+    // Dashboard fetch functions are recreated on render; scope refresh to the active tab and selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, studentId, selectedOrder?.id]);
 
@@ -1501,12 +1544,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setSupportCategory('General Inquiry');
         setSupportEvidenceImage(null);
         setSupportMsg(`Your support ticket ${data.ticket_reference || ''} has been submitted to the Admin! 🎉`);
+        notifySuccess(studentToast('supportSubmitted'), 'student-support-submit');
         setTimeout(() => setShowSupportModal(false), 2000);
       } else {
         setSupportMsg('Failed to submit support ticket.');
+        const data = await res.json().catch(() => ({}));
+        notifyError(data, 'student-support-submit');
       }
     } catch (err) {
       setSupportMsg('Connection error. Please try again.');
+      notifyError(err, 'student-support-submit');
     }
   };
 
@@ -1533,6 +1580,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       if (!res.ok) {
         const errorBody = await res.json().catch(() => null);
         setAvatarUploadMessage(errorBody?.detail || 'Upload failed. Please try again.');
+        notifyError(errorBody || new Error('Upload failed. Please try again.'), 'student-avatar-upload');
         return;
       }
 
@@ -1562,9 +1610,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         }
       }
       setAvatarUploadMessage('Avatar uploaded successfully.');
+      notifySuccess(studentToast('avatarUploaded'), 'student-avatar-upload');
     } catch (err) {
       console.error('Avatar upload error:', err);
       setAvatarUploadMessage('Upload failed. Please try again.');
+      notifyError(err, 'student-avatar-upload');
     } finally {
       setAvatarUploading(false);
     }
@@ -1629,6 +1679,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       onUserUpdate(updatedUser);
       setProfileMessage('Profile updated successfully.');
+      notifySuccess(studentToast('profileSaved'), 'student-profile-save');
 
       if (typeof window !== 'undefined') {
         const saved = window.localStorage.getItem('campaceSession');
@@ -1641,6 +1692,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (err) {
       console.error('Profile update failed:', err);
       setProfileMessage(err.message || 'Could not save profile.');
+      notifyError(err, 'student-profile-save');
     } finally {
       setProfileSaving(false);
     }
@@ -1679,6 +1731,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       if (!res.ok) {
         const message = await getErrorString(res);
         setWishlistMessage(message);
+        notifyError({ detail: message }, `student-wishlist-add-${productId}`);
         return;
       }
 
@@ -1709,10 +1762,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       setWishlistBadgeCount((prev) => Math.max(prev, wishlist.length + 1));
       setWishlistMessage('Added to wishlist.');
+      notifySuccess(studentToast('wishlistAdded'), `student-wishlist-add-${productId}`);
       setBuyerTab('wishlist');
     } catch (err) {
       console.error('Error adding to wishlist:', err);
       setWishlistMessage('Connection error. Please try again.');
+      notifyError(err, `student-wishlist-add-${productId}`);
     }
   };
 
@@ -1756,14 +1811,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setWishlistBadgeCount(Number.isFinite(nextWishlistCount) ? nextWishlistCount : wishlistCount);
         await fetchBuyerDashboardData();
         setCartMessage('Added to cart.');
+        notifySuccess(studentToast('cartAdded'), `student-cart-add-${safePayload.product_id}`);
         setBuyerTab('cart');
       } else {
         const message = await getErrorString(res);
         setCartMessage(message);
+        notifyError({ detail: message }, `student-cart-add-${safePayload.product_id}`);
       }
     } catch (err) {
       console.error('Error adding to cart:', err);
       setCartMessage('Connection error. Please try again.');
+      notifyError(err, `student-cart-add-${safePayload.product_id}`);
     }
   };
 
@@ -1774,9 +1832,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       if (res.ok) {
         setWishlist((prev) => prev.filter((item) => item.id !== itemId));
+        notifySuccess(studentToast('wishlistRemoved'), `student-wishlist-remove-${itemId}`);
+      } else {
+        notifyError(await getErrorString(res), `student-wishlist-remove-${itemId}`);
       }
     } catch (err) {
       console.error('Error removing wishlist item:', err);
+      notifyError(err, `student-wishlist-remove-${itemId}`);
     }
   };
 
@@ -1787,9 +1849,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       if (res.ok) {
         setCart((prev) => prev.filter((item) => item.id !== itemId));
+        notifySuccess(studentToast('cartRemoved'), `student-cart-remove-${itemId}`);
+      } else {
+        notifyError(await getErrorString(res), `student-cart-remove-${itemId}`);
       }
     } catch (err) {
       console.error('Error removing cart item:', err);
+      notifyError(err, `student-cart-remove-${itemId}`);
     }
   };
 
@@ -1811,8 +1877,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
       setCart((previous) => previous.map((item) => item.id === itemId ? { ...item, quantity: data.item?.quantity ?? nextQuantity } : item));
       setCartMessage('Cart quantity updated.');
+      notifySuccess(studentToast('cartUpdated'), `student-cart-update-${itemId}`);
     } catch (error) {
       setCartMessage('Connection error. Please try again.');
+      notifyError(error, `student-cart-update-${itemId}`);
     }
   };
 
@@ -1838,16 +1906,20 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       if (res.ok) {
         setReviewFeedback('Review submitted. Thank you!');
+        notifySuccess(studentToast('reviewSubmitted'), `student-review-${targetOrderId}`);
         setOrders((prev) => prev.map((order) => order.id === targetOrderId ? { ...order, reviewed: true, payment_status: 'Successful' } : order));
         setReviewOrderId(null);
         setReviewComment('');
         setReviewRating(5);
       } else {
-        setReviewFeedback('Could not submit review.');
+        const message = await getErrorString(res);
+        setReviewFeedback(message);
+        notifyError(message, `student-review-${targetOrderId}`);
       }
     } catch (err) {
       console.error('Error submitting review:', err);
       setReviewFeedback('Connection error. Please try again.');
+      notifyError(err, `student-review-${targetOrderId}`);
     } finally {
       setIsSubmittingReview(false);
     }
@@ -1880,7 +1952,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
 
       if (!response.ok) {
-        setDisputeFeedback(await getErrorString(response));
+        const message = await getErrorString(response);
+        setDisputeFeedback(message);
+        notifyError(message, `student-dispute-${targetOrderId}`);
         return;
       }
       const result = await response.json().catch(() => ({}));
@@ -1896,9 +1970,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setDisputeDescription('');
       setDisputeEvidenceFiles([]);
       setDisputeFeedback('Dispute submitted. Status: Open.');
+      notifySuccess(studentToast('disputeSubmitted'), `student-dispute-${targetOrderId}`);
     } catch (error) {
       console.error('Error raising dispute:', error);
       setDisputeFeedback('Connection error. Please try again.');
+      notifyError(error, `student-dispute-${targetOrderId}`);
     } finally {
       setIsSubmittingDispute(false);
     }
@@ -1928,9 +2004,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           : item
       )));
       await fetchOrderDetails(orderId);
+      await fetchBuyerDashboardData();
       setReceiptState((previous) => ({ ...previous, [orderId]: { success: result.message || 'Item received.' } }));
+      notifySuccess(studentToast('receiptConfirmed'), `student-receipt-${orderId}`);
     } catch (error) {
       setReceiptState((previous) => ({ ...previous, [orderId]: { error: error.message || 'Unable to confirm receipt.' } }));
+      notifyError(error, `student-receipt-${orderId}`);
     }
   };
 
@@ -2013,6 +2092,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
 
       if (data.checkout_url) {
+        notifyInfo('Payment is awaiting confirmation after checkout.', 'student-payment-initialize');
         window.location.href = data.checkout_url;
         return;
       }
@@ -2033,6 +2113,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleWithdrawSubmit = async (e) => {
     e.preventDefault();
+    if (withdrawSubmitInFlightRef.current) return;
     setWithdrawError('');
     const amount = Number(withdrawAmount);
 
@@ -2066,6 +2147,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return;
     }
 
+    // Guard synchronously: React's disabled-state render may not occur before
+    // a rapid second submit event reaches this handler.
+    withdrawSubmitInFlightRef.current = true;
     setWithdrawLoading(true);
     try {
       const payload = {
@@ -2092,23 +2176,52 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         throw new Error(data.detail || data.message || 'Withdrawal request failed.');
       }
 
-      const nextBalance = Number(data.wallet_balance ?? data.walletBalance ?? data.balance);
-      if (Number.isFinite(nextBalance)) {
-        walletBalanceRef.current = nextBalance;
-        setWalletBalance(nextBalance);
-        setPaymentInfo((previousPaymentInfo) => ({
-          ...previousPaymentInfo,
-          balance: nextBalance,
-          recentTx: data.message || 'Withdrawal request processed.',
-        }));
+      if (data?.success !== true || data?.persisted !== true || !data?.transaction_id) {
+        throw new Error(data?.detail || data?.message || 'The server did not confirm that the withdrawal was saved.');
       }
+
+      // Confirm the committed ledger row and balance from the read endpoint;
+      // do not close the form or report success from an optimistic response.
+      const confirmationResponse = await fetch(
+        `http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(studentId)}`,
+        { cache: 'no-store' },
+      );
+      const confirmationData = await confirmationResponse.json().catch(() => ({}));
+      if (!confirmationResponse.ok) {
+        throw new Error(confirmationData?.detail || 'Unable to confirm the saved withdrawal.');
+      }
+      const confirmedBalance = Number(confirmationData?.balance);
+      const committedTransaction = Array.isArray(confirmationData?.transactions)
+        ? confirmationData.transactions.find((transaction) => transaction?.hash === data.transaction_id)
+        : null;
+      const responseBalance = Number(data.wallet_balance);
+      if (!committedTransaction || !Number.isFinite(confirmedBalance) || !Number.isFinite(responseBalance)
+        || Math.abs(confirmedBalance - responseBalance) >= 0.01) {
+        throw new Error('The withdrawal could not be verified in the wallet ledger. Please refresh before trying again.');
+      }
+
+      walletBalanceRef.current = confirmedBalance;
+      setWalletBalance(confirmedBalance);
+      setPaymentInfo((previousPaymentInfo) => ({
+        ...previousPaymentInfo,
+        balance: confirmedBalance,
+        recentTx: data.message || 'Withdrawal request recorded.',
+        transactions: confirmationData.transactions,
+      }));
       await fetchBuyerDashboardData();
       setShowWithdrawModal(false);
       setWithdrawAmount('');
+      if (String(data.status || '').toLowerCase() === 'successful') {
+        notifySuccess(studentToast('withdrawalSubmitted'), 'student-withdrawal-submit');
+      } else {
+        notifyInfo(data.message || 'Withdrawal request recorded and awaiting payout confirmation.', 'student-withdrawal-submit');
+      }
     } catch (err) {
       console.error('Withdrawal failed:', err);
       setWithdrawError(err.message || 'Could not process the withdrawal.');
+      notifyError(err, 'student-withdrawal-submit');
     } finally {
+      withdrawSubmitInFlightRef.current = false;
       setWithdrawLoading(false);
     }
   };
@@ -2132,7 +2245,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setActiveWithdrawal(data?.active_payout || null);
       setWithdrawError(data?.active_payout
         ? 'You have a payout currently processing. You can request a new withdrawal once it completes.'
-        : 'Payout status refreshed. Withdrawals are available.');
+        : '');
     } catch (error) {
       console.error('Payout status refresh failed:', error);
       setWithdrawError(error.message || 'Unable to refresh payout status.');
@@ -2161,9 +2274,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setWithdrawError(data?.status === 'Successful'
         ? `${transaction.amount || 0} ETB deposit confirmed and added to your wallet.`
         : 'Chapa has not confirmed this deposit yet.');
+      if (String(data?.status || '').toLowerCase() === 'successful') {
+        notifySuccess(studentToast('paymentVerified'), `student-payment-check-${transaction.hash}`);
+      } else {
+        notifyInfo(studentToast('paymentPending'), `student-payment-check-${transaction.hash}`);
+      }
     } catch (error) {
       console.error('Deposit status check failed:', error);
       setWithdrawError(error.message || 'Unable to check deposit status.');
+      notifyError(error, `student-payment-check-${transaction.hash}`);
     } finally {
       setPayoutStatusCheckId(null);
     }
@@ -2206,12 +2325,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     refreshPayoutAccount();
     refreshWithdrawalStatus();
     return undefined;
-  }, [showWithdrawModal, user]);
+    // The refresh functions are recreated on render; modal visibility and student identity scope this request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showWithdrawModal, user?.studentId]);
 
   useEffect(() => {
     if (!user?.studentId) return undefined;
     refreshWithdrawalStatus();
     return undefined;
+    // The student identity scopes this one-time silent refresh; the helper is recreated on render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.studentId]);
 
   const isWishlistItemAvailable = (item) => {
@@ -2254,11 +2377,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const deleteRes = await fetch(`http://127.0.0.1:8000/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' });
         if (deleteRes.ok) {
           setWishlist((prev) => prev.filter((item) => item.id !== wishlistItemId));
+          notifySuccess(studentToast('cartAdded'), `student-move-to-cart-${wishlistItemId}`);
+        } else {
+          notifyError(await getErrorString(deleteRes), `student-move-to-cart-${wishlistItemId}`);
         }
         setBuyerTab('cart');
+      } else {
+        notifyError({ detail: data.detail || data.message || 'Unable to move item to cart.' }, `student-move-to-cart-${wishlistItemId}`);
       }
     } catch (err) {
       console.error("Error moving item to cart:", err);
+      notifyError(err, `student-move-to-cart-${wishlistItemId}`);
     }
   };
 
@@ -2346,8 +2475,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     try {
       await updateSellerProduct(product, { price: discountedPrice });
       setProductSuccessMsg(`${percentage}% price drop applied successfully.`);
+      notifySuccess(studentToast('productUpdated'), `student-product-price-drop-${product.id}`);
     } catch (error) {
       setProductError(error.message);
+      notifyError(error, `student-product-price-drop-${product.id}`);
     }
   };
 
@@ -2513,6 +2644,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           newImages: selectedImages,
         });
         setProductSuccessMsg('Product updated successfully.');
+        notifySuccess(studentToast('productUpdated'), `student-product-update-${editingProduct.id}`);
         setTimeout(() => {
           setShowProductModal(false);
           setProductSuccessMsg('');
@@ -2553,6 +2685,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
 
       setProductSuccessMsg('Product submitted successfully and is awaiting admin approval.');
+      notifySuccess(studentToast('productListed'), 'student-product-list');
       resetProductForm();
       await fetchSellerDashboardData();
 
@@ -2563,6 +2696,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (err) {
       console.error('Error submitting new product:', err);
       setProductError('Connection error. Please try again.');
+      notifyError(err, editingProduct ? `student-product-update-${editingProduct.id}` : 'student-product-list');
     } finally {
       setProductSubmitting(false);
     }
@@ -2665,9 +2799,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         if (data.recommendations && Array.isArray(data.recommendations)) {
           setRecommendedProducts(data.recommendations);
         }
+        notifySuccess(studentToast('aiResponseReady'), 'student-ai-advisor');
       } else {
         const errorMsg = data.detail || data.error || 'Sorry, I could not answer that right now.';
         setChatHistory((prev) => [...prev, { role: 'assistant', text: errorMsg }]);
+        notifyError({ detail: errorMsg }, 'student-ai-advisor');
       }
     } catch (err) {
       if (err.name === 'AbortError') {
@@ -2679,6 +2815,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         role: 'assistant',
         text: '⚠️ Connection error. Please try again in a moment. Ensure the backend server is running at http://127.0.0.1:8000'
       }]);
+      notifyError(err, 'student-ai-advisor');
     } finally {
       if (aiAbortControllerRef.current === abortController) {
         aiAbortControllerRef.current = null;
@@ -2713,6 +2850,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const result = await res.json().catch(() => null);
       if (res.ok) {
         setCartMessage('Checkout successful.');
+        notifySuccess(studentToast('checkoutCompleted'), 'student-checkout');
         setCart([]);
         const nextWalletBalance = Number(result?.wallet_balance);
         if (Number.isFinite(nextWalletBalance)) {
@@ -2728,10 +2866,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setBuyerTab('orders');
       } else {
         setCartMessage(result?.detail || result?.message || 'Checkout could not be completed.');
+        notifyError({ detail: result?.detail || result?.message || 'Checkout could not be completed.' }, 'student-checkout');
       }
     } catch (err) {
       console.error("Error completing checkout:", err);
       setCartMessage('Connection error. Please try again.');
+      notifyError(err, 'student-checkout');
     } finally {
       setIsCheckingOut(false);
     }
@@ -2834,13 +2974,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         { method: 'DELETE' }
       );
       if (!response.ok) {
-        throw new Error('Failed to delete message');
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to delete message');
       }
 
       setActiveChatMessages((previousMessages) => previousMessages.filter((message) => message.id !== messageId));
+      notifySuccess(studentToast('messageDeleted'), `student-message-delete-${messageId}`);
     } catch (error) {
       console.error('Error deleting message:', error);
-      window.alert('Unable to delete this message. Please try again.');
+      notifyError(error, `student-message-delete-${messageId}`);
     }
   };
 
@@ -3082,8 +3224,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         attachment_url: uploaded.attachment_url,
         attachment_type: uploaded.attachment_type,
       }));
+      notifySuccess(studentToast('attachmentUploaded'), 'student-chat-attachment');
     } catch (error) {
       console.error('Chat attachment upload failed:', error);
+      notifyError(error, 'student-chat-attachment');
     }
   };
 
@@ -3214,6 +3358,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       setReportReason('');
       setReportStatus('Your complaint was submitted for Admin review.');
+      notifySuccess(studentToast('reportSubmitted'), 'student-report-submit');
       setTimeout(() => {
         setShowReportModal(false);
         setReportStatus('');
@@ -3221,6 +3366,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (error) {
       console.error('Unable to submit chat report:', error);
       setReportStatus('Unable to submit the complaint. Please try again.');
+      notifyError(error, 'student-report-submit');
     } finally {
       setIsSubmittingReport(false);
     }
@@ -3279,9 +3425,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           ...notification,
           read: true
         })));
+        notifySuccess(studentToast('notificationsRead'), 'student-notifications-read');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        notifyError(data, 'student-notifications-read');
       }
     } catch (err) {
       console.error('Error marking notifications read:', err);
+      notifyError(err, 'student-notifications-read');
     } finally {
       setIsMarkingRead(false);
     }
@@ -3393,7 +3544,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button type="button" onClick={() => { setBuyerTab('payments'); setActiveTab('buyer'); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-2 py-3 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">Add Funds</button>
-                    <button type="button" disabled={withdrawalEntryBlocked} title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
+                    <button type="button" disabled={withdrawLoading || withdrawalEntryBlocked} title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
                   </div>
                 </>
               ) : (
@@ -4411,11 +4562,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <div className="rounded-2xl bg-sky-50/40 border border-sky-100 p-4">
                             <p className="text-xs text-sky-600 font-semibold uppercase">Wallet Balance</p>
                             <p className="mt-2 text-3xl font-black text-slate-900">{formatETB(currentWalletBalance)}</p>
-                            {transactionLedger.find((transaction) => CREDIT_TRANSACTION_TYPES.has(String(transaction.type || '').trim().toLowerCase())) && (
-                              <p className="mt-1 text-xs font-semibold text-emerald-700">
-                                Recent credit: +{formatETB(Math.abs(Number(transactionLedger.find((transaction) => CREDIT_TRANSACTION_TYPES.has(String(transaction.type || '').trim().toLowerCase())).amount || 0)))}
-                              </p>
-                            )}
+                            {transactionLedger[0] && (() => {
+                              const latestTransaction = transactionLedger[0];
+                              const { sign, colorClass } = getTransactionDirection(latestTransaction);
+                              return (
+                                <p className={`mt-1 text-xs font-semibold ${colorClass}`}>
+                                  Recent {sign === '+' ? 'credit' : 'debit'}: {sign}{formatETB(Math.abs(Number(latestTransaction.amount ?? latestTransaction.value ?? 0)))}
+                                </p>
+                              );
+                            })()}
                           </div>
                           <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                             <div className="flex items-center justify-between gap-3">
@@ -4519,7 +4674,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-0 flex-1">Wallet Actions</h3>
                           <button
                             type="button"
-                            disabled={withdrawalEntryBlocked}
+                            disabled={withdrawLoading || withdrawalEntryBlocked}
                             title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'}
                             onClick={() => setShowWithdrawModal(true)}
                             className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
@@ -4582,6 +4737,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 sellerOrdersLoading={sellerOrdersLoading}
                 sellerOrdersError={sellerOrdersError}
                 onRefreshOrders={fetchSellerDashboardData}
+                onRefreshWallet={fetchBuyerDashboardData}
                 setSellerDashboardData={setSellerDashboardData}
                 myListings={myListings}
                 setMyListings={setMyListings}

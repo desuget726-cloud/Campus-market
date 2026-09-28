@@ -8,7 +8,7 @@ const getCategory = (notification) => {
         `${notification.type || ""} ${notification.category || ""} ${notification.title || ""} ${notification.message || ""}`.toLowerCase();
     if (["product", "approval", "announcement"].includes(type)) return "System";
     if (/order|purchase|delivery|pickup/.test(value)) return "Orders";
-    if (/payment|wallet|chapa|transaction|refund/.test(value)) return "Payments";
+    if (/payment|wallet|chapa|transaction|refund|payout|withdraw/.test(value)) return "Payments";
     return "System";
 };
 

@@ -79,6 +79,8 @@ from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_payout_adapter
 from .order_lifecycle import apply_buyer_receipt_confirmation, apply_seller_order_action, payout_release_allowed
 from .ollama_service import OllamaServiceError, get_ollama_service
+from .wallet_service import apply_transaction
+from .commission_service import DEFAULT_COMMISSION_SETTINGS, as_decimal, calculate_commission, validate_commission_settings
 
 
 app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
@@ -631,6 +633,11 @@ def _settle_verified_chapa_transaction(
             )
             if not transaction:
                 raise HTTPException(status_code=404, detail="Payment transaction not found.")
+            if _normalize_payment_type(transaction.type) != "Wallet Deposit":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Only wallet deposit transactions can be settled through Chapa payment verification.",
+                )
 
             student = (
                 db.query(Student)
@@ -670,10 +677,16 @@ def _settle_verified_chapa_transaction(
             if expected_amount is not None and amount != expected_amount.quantize(Decimal("0.01")):
                 raise HTTPException(status_code=400, detail="Payment callback amount does not match the transaction.")
 
-            wallet.balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01")) + amount
-            student.wallet_balance = wallet.balance
-            transaction.type = "Wallet Deposit"
-            transaction.status = "Successful"
+            _, wallet, _ = apply_transaction(
+                db,
+                student_id=student.student_id,
+                tx_id=transaction.tx_id,
+                transaction_type="Wallet Deposit",
+                amount=amount,
+                description=transaction.description or f"Wallet deposit for {student.student_id}",
+                status="Successful",
+                transaction=transaction,
+            )
 
             return {
                 "transaction_id": transaction.tx_id,
@@ -813,39 +826,39 @@ def _resolve_pending_payout(
         if status == "completed":
             student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
             if transaction:
+                # A payout must remain a debit in the ledger. Older callback
+                # handling could reclassify this row as Wallet Deposit, making
+                # it appear as a credit and cancel the request-time debit.
+                transaction.type = "Wallet Withdrawal"
+                transaction.amount = -abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
                 transaction.status = "Successful"
                 transaction.description = "Payout completed by the provider."
+            _dispatch_student_notification(
+                db,
+                student,
+                "Withdraw completed",
+                f"Your withdraw of {Decimal(str(payout.amount or 0)).quantize(Decimal('0.01'))} ETB was completed successfully.",
+                "payout",
+            )
             audit_action = "Wallet Payout Completed"
             audit_description = f"Payout {payout.internal_reference} completed for student {student.student_id}."
         else:
             reason = failure_reason or "Provider reported payout failure."
             payout.failure_reason = reason
-            refund_amount = Decimal(str(payout.amount or 0)).quantize(Decimal("0.01"))
-            wallet.balance = (Decimal(str(wallet.balance or 0)) + refund_amount).quantize(Decimal("0.01"))
-            student.wallet_balance = wallet.balance
+            refund_amount = abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
             refund_tx_id = f"REFUND-{payout.internal_reference}"
-            refund_transaction = db.query(Transaction).filter(
-                Transaction.tx_id == refund_tx_id,
-            ).with_for_update().first()
-            if refund_transaction is None:
-                db.add(Transaction(
-                    student_id=payout.student_id,
-                    wallet_id=wallet.id,
-                    tx_id=refund_tx_id,
-                    type="Refund",
-                    amount=refund_amount,
-                    description=f"Refund for failed payout {payout.internal_reference}.",
-                    status="Successful",
-                ))
+            apply_transaction(db, student_id=payout.student_id, tx_id=refund_tx_id, transaction_type="Refund", amount=refund_amount, description=f"Refund for failed payout {payout.internal_reference}.")
             if transaction:
+                transaction.type = "Wallet Withdrawal"
+                transaction.amount = -refund_amount
                 transaction.status = "Failed"
                 transaction.description = f"Payout provider status: {status}; amount refunded."
             _dispatch_student_notification(
                 db,
                 student,
-                "Payout Refunded",
-                f"Your payout of {refund_amount} ETB could not be completed. The amount was returned to your wallet.",
-                "payment",
+                "Withdraw failed – refunded",
+                f"Your withdraw request of {refund_amount} ETB failed. The amount was refunded to your wallet.",
+                "payout",
             )
             if "timeout" in reason.lower() or "did not confirm" in reason.lower():
                 db.add(AuditLog(
@@ -938,6 +951,7 @@ async def _reconcile_pending_payouts(
                 is_stale,
             )
             result = None
+            status_checked = False
             if force_fail:
                 logger.warning(
                     "Force-failing payout id=%s internal_reference=%s at admin request.",
@@ -954,13 +968,6 @@ async def _reconcile_pending_payouts(
                     provider_code,
                     bool(os.getenv("CHAPA_SECRET_KEY", "").strip()),
                 )
-            elif is_stale and not is_processing_stale:
-                logger.warning(
-                    "Skipping provider status lookup for stale payout id=%s internal_reference=%s; timeout_hours=%s.",
-                    payout.id,
-                    payout.internal_reference,
-                    timeout_hours,
-                )
             else:
                 try:
                     status_reference = payout.provider_reference or payout.internal_reference
@@ -972,6 +979,7 @@ async def _reconcile_pending_payouts(
                         type(adapter).__name__,
                     )
                     result = adapter.get_transfer_status(status_reference)
+                    status_checked = True
                     logger.info(
                         "Payout adapter status returned payout_id=%s internal_reference=%s status=%s provider_reference=%s message=%s.",
                         payout.id,
@@ -993,7 +1001,7 @@ async def _reconcile_pending_payouts(
                         error,
                     )
 
-            if force_fail or ((is_stale or is_processing_stale) and result is None):
+            if force_fail or ((is_stale or is_processing_stale) and result is None and status_checked):
                 _resolve_pending_payout(
                     db,
                     payout.id,
@@ -1026,7 +1034,7 @@ async def _reconcile_pending_payouts(
                     failure_reason=result.message,
                 )
                 summary["failed"] += 1
-            elif is_stale or is_processing_stale:
+            elif (is_stale or is_processing_stale) and status_checked:
                 _resolve_pending_payout(
                     db,
                     payout.id,
@@ -1038,6 +1046,10 @@ async def _reconcile_pending_payouts(
                     ),
                 )
                 summary["failed"] += 1
+            elif is_stale or is_processing_stale:
+                # Do not refund a payout based solely on a local timeout when
+                # Chapa could not be queried; retry on the next scheduler run.
+                summary["skipped"] += 1
         except Exception:
             summary["errors"] += 1
             db.rollback()
@@ -1101,15 +1113,14 @@ async def _expire_processing_orders() -> None:
                 )
                 order_db.rollback()
                 continue
-            buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
-            order_db.add(Transaction(
+            apply_transaction(
+                order_db,
                 student_id=buyer.student_id,
                 tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
-                type="Refund",
+                transaction_type="Refund",
                 amount=refund_amount,
                 description=f"Automatic expiration refund for order #{order.id}",
-                status="Successful",
-            ))
+            )
             escrow_hold.status = "Cancelled"
 
             order.status = "Cancelled"
@@ -1684,7 +1695,7 @@ def _get_held_escrow_transaction(db: Session, order: Order) -> Optional[Transact
     return db.query(Transaction).filter(
         Transaction.student_id == order.student_id,
         Transaction.type == "Escrow Hold",
-        Transaction.status == "Held",
+        Transaction.status.in_(["Held", "Successful"]),
         Transaction.description == f"Escrow hold for order #{order.id}",
     ).with_for_update().first()
 
@@ -1713,7 +1724,7 @@ class DepositRequest(BaseModel):
 
 
 class WalletWithdrawalRequest(BaseModel):
-    amount: float
+    amount: Decimal
     payout_account_id: Optional[int] = None
     student_id: Optional[str] = None
 
@@ -1788,7 +1799,7 @@ DEFAULT_SETTINGS_BLOCKS = {
     "general": {
         "marketplaceName": "Campace Market",
         "description": "A secure campus marketplace for buying and selling university essentials.",
-        "supportEmail": "support@campace.edu.et",
+        "supportEmail": "support@gmail.com",
         "currency": "ETB",
         "timezone": "Africa/Addis_Ababa",
     },
@@ -1812,6 +1823,13 @@ DEFAULT_SETTINGS_BLOCKS = {
             "duplicateTransactionProtection": True,
             "adminApprovalForRefunds": True,
             "auditLogging": True,
+        },
+        "commission": {
+            "commission_enabled": True,
+            "commission_type": "percentage",
+            "commission_rate": "1.0",
+            "commission_min_fee": None,
+            "commission_max_fee": None,
         },
     },
     "ai": {
@@ -1914,12 +1932,14 @@ def get_payment_settings(db: Session) -> dict:
     """Return the payment settings with every schema field populated."""
     stored_record = db.query(SystemSetting).filter(SystemSetting.key == "payment").first()
     stored = _parse_setting_value(stored_record.value) if stored_record else {}
-    payment = {key: value for key, value in PAYMENT_SETTINGS_SCHEMA.items() if key != "security"}
+    payment = {key: value for key, value in PAYMENT_SETTINGS_SCHEMA.items() if key not in {"security", "commission"}}
     if isinstance(stored, dict):
         payment.update({key: stored[key] for key in payment if key in stored})
         stored_security = stored.get("security")
+        stored_commission = stored.get("commission")
     else:
         stored_security = None
+        stored_commission = None
     for key in ("enableOnlinePayment", "refundsEnabled"):
         payment[key] = _setting_bool(payment[key], PAYMENT_SETTINGS_SCHEMA[key])
     security_defaults = PAYMENT_SETTINGS_SCHEMA["security"]
@@ -1928,6 +1948,11 @@ def get_payment_settings(db: Session) -> dict:
         if isinstance(stored_security, dict) and key in stored_security
         else default
         for key, default in security_defaults.items()
+    }
+    commission_defaults = PAYMENT_SETTINGS_SCHEMA["commission"]
+    payment["commission"] = {
+        key: stored_commission.get(key) if isinstance(stored_commission, dict) and key in stored_commission else default
+        for key, default in commission_defaults.items()
     }
     return payment
 
@@ -2186,6 +2211,7 @@ NOTIFICATION_PREFERENCE_FIELDS = {
     "message": ("notif_msg_inapp", "notif_msg_email"),
     "order": ("notif_order_inapp", "notif_order_email"),
     "payment": ("notif_pay_inapp", "notif_pay_email"),
+    "payout": ("notif_pay_inapp", "notif_pay_email"),
 }
 
 
@@ -2272,6 +2298,73 @@ def _settings_change_details(previous, current, prefix=""):
         elif old_value != new_value:
             changes.append(f"{label} changed from {old_value!r} to {new_value!r}")
     return changes
+
+
+def _normalize_payment_commission_settings(raw_settings: Any) -> Dict[str, Any]:
+    defaults = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS["payment"]["commission"]))
+    configured = raw_settings if isinstance(raw_settings, dict) else {}
+    normalized = {**defaults, **configured}
+
+    enabled = bool(normalized.get("commission_enabled", defaults["commission_enabled"]))
+    commission_type = str(normalized.get("commission_type") or defaults["commission_type"]).strip().lower()
+    rate_value = normalized.get("commission_rate", defaults["commission_rate"])
+    min_fee = normalized.get("commission_min_fee", defaults["commission_min_fee"])
+    max_fee = normalized.get("commission_max_fee", defaults["commission_max_fee"])
+
+    try:
+        rate_decimal = as_decimal(rate_value, field_name="commission_rate")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Commission rate must be a valid decimal value.")
+
+    min_decimal = None if min_fee is None else as_decimal(min_fee, field_name="commission_min_fee")
+    max_decimal = None if max_fee is None else as_decimal(max_fee, field_name="commission_max_fee")
+    try:
+        validate_commission_settings(commission_type, rate_decimal, min_decimal, max_decimal)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    normalized["commission_enabled"] = enabled
+    normalized["commission_type"] = commission_type
+    normalized["commission_rate"] = str(rate_decimal.normalize().rstrip("0").rstrip(".")) if rate_decimal % 1 else str(rate_decimal.quantize(Decimal("0.01")))
+    normalized["commission_min_fee"] = None if min_decimal is None else str(min_decimal.quantize(Decimal("0.01")))
+    normalized["commission_max_fee"] = None if max_decimal is None else str(max_decimal.quantize(Decimal("0.01")))
+    return normalized
+
+
+def _get_commission_settings(db: Optional[Session] = None) -> Dict[str, Any]:
+    defaults = DEFAULT_SETTINGS_BLOCKS["payment"]["commission"]
+    stored = {}
+    if db is not None:
+        payment_record = db.query(SystemSetting).filter(SystemSetting.key == "payment").first()
+        if payment_record:
+            parsed = _parse_setting_value(payment_record.value)
+            if isinstance(parsed, dict):
+                stored = parsed.get("commission", {}) or {}
+    configured = {**defaults, **stored}
+    try:
+        return _normalize_payment_commission_settings(configured)
+    except HTTPException:
+        return {**defaults}
+
+
+def _calculate_platform_commission(db: Optional[Session], amount: Decimal) -> Decimal:
+    settings = _get_commission_settings(db)
+    if not settings["commission_enabled"]:
+        return Decimal("0.00")
+    commission_type = settings["commission_type"]
+    rate = as_decimal(settings["commission_rate"], field_name="commission_rate")
+    min_fee = None if settings.get("commission_min_fee") is None else as_decimal(settings["commission_min_fee"], field_name="commission_min_fee")
+    max_fee = None if settings.get("commission_max_fee") is None else as_decimal(settings["commission_max_fee"], field_name="commission_max_fee")
+    return calculate_commission(amount, commission_type, rate, min_fee, max_fee)
+
+
+def _get_platform_commission_percent(db: Optional[Session] = None) -> Decimal:
+    settings = _get_commission_settings(db)
+    if not settings["commission_enabled"]:
+        return Decimal("0")
+    if settings["commission_type"] != "percentage":
+        return Decimal("0")
+    return as_decimal(settings["commission_rate"], field_name="commission_rate")
 
 
 def _seed_default_system_settings(db: Session) -> None:
@@ -2396,6 +2489,10 @@ def ensure_database_compatibility(db: Session) -> None:
             column = db.execute(text(f"SHOW COLUMNS FROM {table_name} LIKE :column_name"), {"column_name": column_name})
             if column_name == "chapa_sub_account_id" or column.fetchone() is None:
                 db.execute(text(statement))
+        db.execute(text(
+            "ALTER TABLE wallets MODIFY COLUMN updated_at DATETIME NOT NULL "
+            "DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+        ))
         db.execute(text("UPDATE seller_payment_accounts SET payout_type = 'mobile_wallet' WHERE payout_type = 'wallet'"))
 
         order_add_statements = {
@@ -4191,6 +4288,8 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         submitted_payment = payload.get("payment", {})
         if isinstance(submitted_payment, dict) and isinstance(submitted_payment.get("security"), dict):
             payment_values["security"].update(submitted_payment["security"])
+        if isinstance(submitted_payment, dict) and isinstance(submitted_payment.get("commission"), dict):
+            payment_values["commission"].update(submitted_payment["commission"])
         payment_values["paymentProvider"] = "Chapa"
         payment_values["currency"] = "ETB"
         payment_values["paymentVerification"] = "Automatic"
@@ -4207,6 +4306,7 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
             or any(not isinstance(value, bool) for value in security_values.values())
         ):
             raise HTTPException(status_code=400, detail="Payment security rules must be boolean values.")
+        payment_values["commission"] = _normalize_payment_commission_settings(payment_values.get("commission"))
         payment_values.pop("publicKey", None)
         payment_values.pop("secretKey", None)
         normalized["payment"] = payment_values
@@ -5191,14 +5291,13 @@ async def setup_seller_payout_account(
     account_status = "Pending"
     secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
     if selected_provider.is_active and selected_provider.code.isdigit() and secret:
-        try:
-            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "1"))
-        except (InvalidOperation, ValueError):
-            commission_percent = Decimal("1")
-        if commission_percent < 0 or commission_percent >= 100:
-            raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
-        commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
-        chapa_payload.update({"split_type": "percentage", "split_value": str(commission_fraction)})
+        commission_settings = _get_commission_settings(db)
+        if commission_settings["commission_enabled"] and commission_settings["commission_type"] == "percentage":
+            commission_percent = as_decimal(commission_settings["commission_rate"], field_name="commission_rate")
+            if commission_percent < 0 or commission_percent >= 100:
+                raise HTTPException(status_code=500, detail="Commission rate must be between 0 and 100 for percentage mode.")
+            commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
+            chapa_payload.update({"split_type": "percentage", "split_value": str(commission_fraction)})
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.post(
@@ -5436,6 +5535,24 @@ def _seller_payout_status(db: Session, seller_identifier: Optional[str]) -> str:
         return "Pending"
     return "Active"
 
+
+def _public_marketplace_product_query(db: Session):
+    """Build the public product query with the admin sold-listing preference."""
+    auto_hide_sold = _setting_bool(
+        _get_setting_value(
+            db,
+            "marketplace",
+            "autoHideSold",
+            DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
+        ),
+        DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
+    )
+    visible_statuses = ("approved",) if auto_hide_sold else ("approved", "sold")
+    query = db.query(Product).filter(func.lower(Product.status).in_(visible_statuses))
+    if auto_hide_sold:
+        query = query.filter(Product.stock > 0)
+    return query
+
 # 4. የዕቃዎች ማውጫ እና ማጣሪያ ኤፒአይ (GET /api/products)
 @app.get("/api/products")
 def get_products(
@@ -5460,7 +5577,7 @@ def get_products(
             ),
         )
 
-    query = db.query(Product).filter(Product.status.ilike("Approved"))
+    query = _public_marketplace_product_query(db)
     try:
         auto_hide_reported = _setting_bool(
             _get_setting_value(
@@ -5477,18 +5594,6 @@ def get_products(
         raise HTTPException(status_code=500, detail="Could not load product moderation settings.") from error
     if auto_hide_reported:
         query = query.filter(Product.status.notin_(["Flagged", "Pending"]))
-    auto_hide_sold = _setting_bool(
-        _get_setting_value(
-            db,
-            "marketplace",
-            "autoHideSold",
-            DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
-        ),
-        DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
-    )
-    if auto_hide_sold:
-        query = query.filter(Product.status != "Sold", Product.stock > 0)
-
     manual_filters_active = bool(category or subcategory or search or seller)
 
     if category:
@@ -5574,7 +5679,7 @@ def get_product_detail(
     db: Session = Depends(get_db),
 ):
     """Fetch details for a single product by ID."""
-    product = db.query(Product).filter(Product.id == product_id).first()
+    product = _public_marketplace_product_query(db).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
 
@@ -5631,9 +5736,8 @@ def get_product_detail(
         for index, image_url in enumerate(image_values) if image_url
     ]
 
-    similar_query = db.query(Product).filter(
+    similar_query = _public_marketplace_product_query(db).filter(
         Product.id != product.id,
-        Product.status.ilike("Approved"),
     )
     if product.category:
         similar_query = similar_query.filter(Product.category == product.category)
@@ -6601,7 +6705,7 @@ def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tup
 def search_products_by_intent(db: Session, message: str, intent: str, department: str = None) -> List[Product]:
     try:
         keywords = extract_search_keywords(message)
-        query = db.query(Product).filter(Product.status == 'Approved', Product.stock > 0)
+        query = _public_marketplace_product_query(db)
         
         if keywords:
             keyword_filters = []
@@ -6953,7 +7057,7 @@ async def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
     try:
         intent = detect_intent(message)
         keywords = extract_search_keywords(message)
-        approved_products = db.query(Product).filter(Product.status == "Approved", Product.stock > 0).all()
+        approved_products = _public_marketplace_product_query(db).all()
         approved_database_context = "\n".join(
             f"[PRODUCT:{product.id}:{product.title}:{product.category}:{product.price}]"
             for product in approved_products
@@ -7540,7 +7644,7 @@ def get_student_recent_activity(student_id: str, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    products = db.query(Product).filter(Product.status.ilike('approved')).order_by(Product.created_at.desc()).limit(4).all()
+    products = _public_marketplace_product_query(db).order_by(Product.created_at.desc()).limit(4).all()
 
     activity = []
     dept_label = student.department or 'Campus'
@@ -8308,8 +8412,14 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
     seller_name = getattr(order, "seller_name", None) or (seller.name if seller else (product.seller if product else "Campus Seller"))
     buyer_name = getattr(order, "buyer_name", None) or (buyer.name if buyer else order.student_id)
     item_total = (Decimal(str(_parse_price_to_etb(order.price))) * int(getattr(order, "quantity", 1) or 1)).quantize(Decimal("0.01"))
-    commission_percent = _get_platform_commission_percent()
-    platform_commission = (item_total * commission_percent / Decimal("100")).quantize(Decimal("0.01"))
+    commission_settings = _get_commission_settings(db)
+    platform_commission = _calculate_platform_commission(db, item_total)
+    commission_percent = _get_platform_commission_percent(db)
+    released_payout = db.query(Transaction).filter(
+        Transaction.tx_id == f"RELEASE-{order.id}",
+        Transaction.type == "Escrow Release",
+        Transaction.status == "Successful",
+    ).first()
 
     payload = {
         "id": order.id,
@@ -8347,6 +8457,8 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "buyer_confirmed": bool(order.buyer_confirmed),
         "seller_confirmed": bool(order.seller_confirmed),
         "is_funds_released": bool(order.is_funds_released),
+        "payout_id": order.id,
+        "net_amount": float(released_payout.amount) if released_payout else None,
         "hidden_by_buyer": bool(getattr(order, "hidden_by_buyer", False)),
         "payout_status": "Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold"),
         "reviewed": bool(getattr(order, "reviewed", False)),
@@ -8788,11 +8900,10 @@ def checkout_student_cart(
         }
         cart_total += unit_price_etb * Decimal(int(cart_item.quantity or 1))
 
-    current_wallet_balance = Decimal(str(student.wallet_balance or 0))
+    wallet = _get_or_create_wallet_for_student(db, student)
+    current_wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
     if current_wallet_balance <= Decimal("0.00") or current_wallet_balance < cart_total:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance")
-
-    student.wallet_balance = current_wallet_balance - cart_total
 
     for cart_item in cart_items:
         line = locked_products[cart_item.product_id]
@@ -8830,14 +8941,15 @@ def checkout_student_cart(
         _sync_product_status_with_stock(product)
         db.add(order)
         db.flush()
-        db.add(Transaction(
+        apply_transaction(
+            db,
             student_id=data.student_id,
             tx_id=f"ESCROW-{uuid.uuid4().hex[:10].upper()}",
-            type="Escrow Hold",
+            transaction_type="Escrow Hold",
             amount=unit_price_etb * Decimal(int(cart_item.quantity or 1)),
             description=f"Escrow hold for order #{order.id}",
-            status="Held",
-        ))
+            status="Successful",
+        )
         recent_click = db.query(AIRecommendationLog.id).filter(
             AIRecommendationLog.student_id == data.student_id,
             AIRecommendationLog.product_id == product.id,
@@ -8861,17 +8973,6 @@ def checkout_student_cart(
             )
         order_payload.append(_serialize_order(db, order))
 
-    tx_id = f"TX-{uuid.uuid4().hex[:8].upper()}"
-    transaction = Transaction(
-        student_id=data.student_id,
-        tx_id=tx_id,
-        type="Purchase",
-        amount=cart_total,
-        description="Cart checkout",
-        status="Successful",
-    )
-    db.add(transaction)
-
     for cart_item in cart_items:
         db.delete(cart_item)
 
@@ -8880,19 +8981,9 @@ def checkout_student_cart(
     return {
         "message": "Checkout successful.",
         "total": float(cart_total),
-        "wallet_balance": float(student.wallet_balance),
+        "wallet_balance": float(wallet.balance),
         "orders": order_payload,
     }
-
-
-def _get_platform_commission_percent() -> Decimal:
-    try:
-        commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "1"))
-    except (InvalidOperation, ValueError):
-        commission_percent = Decimal("1")
-    if commission_percent < 0 or commission_percent >= 100:
-        raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
-    return commission_percent
 
 
 def _build_seller_listing_analytics(listings: list, completed_orders: list) -> list:
@@ -8920,7 +9011,7 @@ def _product_has_orders(db: Session, product_id: int) -> bool:
     return bool(db.query(Order.id).filter(Order.product_id == product_id).first())
 
 
-def release_escrow_funds(order_id: int, db: Session) -> Decimal:
+def _release_escrow_funds(order_id: int, db: Session) -> Decimal:
     """Release an order's held funds only after both parties confirm completion."""
     order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
     if not order:
@@ -8932,7 +9023,11 @@ def release_escrow_funds(order_id: int, db: Session) -> Decimal:
         raise HTTPException(status_code=409, detail="Seller payout is locked while the order dispute is open.")
     if not payout_release_allowed(order):
         raise HTTPException(status_code=409, detail="Seller payout requires buyer and seller confirmation.")
-    if order.is_funds_released:
+    if order.is_funds_released or db.query(Transaction.id).filter(
+        Transaction.type == "Escrow Release",
+        Transaction.description.like(f"%order #{order.id}%"),
+        Transaction.status == "Successful",
+    ).with_for_update().first():
         return Decimal("0.00")
 
     hold = _get_held_escrow_transaction(db, order)
@@ -8947,9 +9042,7 @@ def release_escrow_funds(order_id: int, db: Session) -> Decimal:
         raise HTTPException(status_code=409, detail="Seller not found for order.")
 
     total_price = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
-    commission_percent = _get_platform_commission_percent()
-    commission_rate = commission_percent / Decimal("100")
-    platform_cut = (total_price * commission_rate).quantize(Decimal("0.01"))
+    platform_cut = _calculate_platform_commission(db, total_price)
     seller_final_amount = total_price - platform_cut
 
     system_wallet = db.query(SystemSetting).filter(
@@ -8964,54 +9057,68 @@ def release_escrow_funds(order_id: int, db: Session) -> Decimal:
             value=str(platform_cut),
         ))
 
-    seller.wallet_balance = Decimal(str(seller.wallet_balance or 0)).quantize(Decimal("0.01")) + seller_final_amount
-    hold.status = "Released"
-    order.is_funds_released = True
-    db.add(Transaction(
+    apply_transaction(
+        db,
         student_id=seller.student_id,
-        tx_id=f"RELEASE-{uuid.uuid4().hex[:10].upper()}",
-        type="Escrow Release",
+        tx_id=f"RELEASE-{order.id}",
+        transaction_type="Escrow Release",
         amount=seller_final_amount,
         description=f"Escrow release for order #{order.id}; platform commission {platform_cut} ETB",
-        status="Successful",
-    ))
+    )
+    hold.status = "Released"
+    order.is_funds_released = True
+    db.commit()
     return seller_final_amount
+
+
+def release_escrow_funds(order_id: int, db: Session) -> Decimal:
+    try:
+        return _release_escrow_funds(order_id, db)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logging.getLogger("app.wallets").exception("Unable to release escrow for order %s.", order_id)
+        raise
 
 
 def refund_escrow_funds(order_id: int, db: Session) -> Decimal:
     """Refund an order's held funds to the buyer and close its escrow hold."""
-    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found.")
-
-    hold = db.query(Transaction).filter(
-        Transaction.student_id == order.student_id,
-        Transaction.type == "Escrow Hold",
-        Transaction.status == "Held",
-        Transaction.description == f"Escrow hold for order #{order.id}",
-    ).with_for_update().first()
-    if not hold:
-        raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
-
-    buyer = db.query(Student).filter(
-        Student.student_id == order.student_id
-    ).with_for_update().first()
-    if not buyer:
-        raise HTTPException(status_code=409, detail="Buyer not found for order.")
-
-    amount = _escrow_hold_refund_amount(hold)
-    buyer.wallet_balance = Decimal(str(buyer.wallet_balance or 0)).quantize(Decimal("0.01")) + amount
-    hold.status = "Refunded"
-    order.is_funds_released = False
-    db.add(Transaction(
-        student_id=buyer.student_id,
-        tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
-        type="Refund",
-        amount=amount,
-        description=f"Dispute refund for order #{order.id}",
-        status="Successful",
-    ))
-    return amount
+    try:
+        order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found.")
+        existing_refund = db.query(Transaction).filter(
+            Transaction.tx_id == f"REFUND-{order.id}",
+            Transaction.status == "Successful",
+        ).with_for_update().first()
+        if existing_refund:
+            return Decimal("0.00")
+        hold = db.query(Transaction).filter(
+            Transaction.student_id == order.student_id,
+            Transaction.type == "Escrow Hold",
+            Transaction.status.in_(["Held", "Successful"]),
+            Transaction.description == f"Escrow hold for order #{order.id}",
+        ).with_for_update().first()
+        if not hold:
+            raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
+        buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
+        if not buyer:
+            raise HTTPException(status_code=409, detail="Buyer not found for order.")
+        amount = _escrow_hold_refund_amount(hold)
+        apply_transaction(db, student_id=buyer.student_id, tx_id=f"REFUND-{order.id}", transaction_type="Refund", amount=amount, description=f"Dispute refund for order #{order.id}")
+        hold.status = "Refunded"
+        order.is_funds_released = False
+        db.commit()
+        return amount
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logging.getLogger("app.wallets").exception("Unable to refund escrow for order %s.", order_id)
+        raise
 
 
 def _notify_admins_of_order_event(db: Session, order: Order, action: str, description: str) -> None:
@@ -9131,19 +9238,19 @@ def get_student_order_receipt(
     quantity = int(getattr(order, "quantity", 1) or 1)
     unit_price = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
     item_total = (unit_price * quantity).quantize(Decimal("0.01"))
-    commission_percent = _get_platform_commission_percent()
-    platform_commission = (item_total * commission_percent / Decimal("100")).quantize(Decimal("0.01"))
+    commission_settings = _get_commission_settings(db)
+    commission_percent = _get_platform_commission_percent(db)
+    platform_commission = _calculate_platform_commission(db, item_total)
 
-    # Checkout currently records one successful purchase transaction for the cart.
-    # Match it to this order by the authenticated buyer, amount, and checkout time;
-    # no client-supplied transaction reference is accepted.
+    # Escrow Hold is the successful checkout debit for this order.
     payment_transaction = (
         db.query(Transaction)
         .filter(
             Transaction.student_id == order.student_id,
-            Transaction.type == "Purchase",
+            Transaction.type == "Escrow Hold",
             Transaction.status == "Successful",
             Transaction.amount == item_total,
+            Transaction.description == f"Escrow hold for order #{order.id}",
             Transaction.created_at >= order.created_at,
         )
         .order_by(Transaction.created_at.asc())
@@ -9229,18 +9336,10 @@ def cancel_student_order(
         if not escrow_hold:
             raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
         refund_amount = _escrow_hold_refund_amount(escrow_hold)
-        student.wallet_balance = Decimal(str(student.wallet_balance or 0)).quantize(Decimal("0.01")) + refund_amount
         order.status = "Cancelled"
         escrow_hold.status = "Cancelled"
         _restock_product_for_order(product, order)
-        db.add(Transaction(
-            student_id=student.student_id,
-            tx_id=f"REFUND-{uuid.uuid4().hex[:10].upper()}",
-            type="Refund",
-            amount=refund_amount,
-            description=f"Refund for cancelled order #{order.id}",
-            status="Successful",
-        ))
+        apply_transaction(db, student_id=student.student_id, tx_id=f"REFUND-{order.id}", transaction_type="Refund", amount=refund_amount, description=f"Refund for cancelled order #{order.id}")
         _dispatch_student_notification(
             db,
             student,
@@ -10268,7 +10367,7 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
 
     ledger = []
     for tx in transactions[:20]:
-        amount = Decimal(str(tx.amount or 0)).quantize(Decimal("0.01"))
+        amount = abs(Decimal(str(tx.amount or 0)).quantize(Decimal("0.01")))
         direction = _transaction_direction(tx.type)
         signed_amount = amount if direction == "credit" else -amount
         ledger.append({
@@ -10427,18 +10526,17 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
         "customization": {"title": cleaned_marketplace_name},
     }
     if seller_account:
-        try:
-            commission_percent = Decimal(os.getenv("CHAPA_PLATFORM_COMMISSION_PERCENT", "1"))
-        except (InvalidOperation, ValueError):
-            commission_percent = Decimal("1")
-        if commission_percent < 0 or commission_percent >= 100:
-            raise HTTPException(status_code=500, detail="CHAPA_PLATFORM_COMMISSION_PERCENT must be between 0 and 100.")
-        commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
-        chapa_payload["subaccounts"] = [{
-            "id": seller_account.chapa_sub_account_id,
-            "split_type": "percentage",
-            "split_value": str(commission_fraction),
-        }]
+        commission_settings = _get_commission_settings(db)
+        if commission_settings["commission_enabled"] and commission_settings["commission_type"] == "percentage":
+            commission_percent = as_decimal(commission_settings["commission_rate"], field_name="commission_rate")
+            if commission_percent < 0 or commission_percent >= 100:
+                raise HTTPException(status_code=500, detail="Commission rate must be between 0 and 100 for percentage mode.")
+            commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
+            chapa_payload["subaccounts"] = [{
+                "id": seller_account.chapa_sub_account_id,
+                "split_type": "percentage",
+                "split_value": str(commission_fraction),
+            }]
 
     payment_logger = logging.getLogger("app.payments")
     response = None
@@ -10526,8 +10624,10 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
                 "transaction_id": existing_transaction.id,
             }
 
+    wallet = _get_or_create_wallet_for_student(db, student)
     transaction = Transaction(
         student_id=student.student_id,
+        wallet_id=wallet.id,
         tx_id=tx_ref,
         type="Wallet Deposit",
         amount=Decimal(str(amount)),
@@ -10555,18 +10655,86 @@ async def withdraw_student_wallet(
     payout_account = _require_active_payout_account(db, student)
     if request.payout_account_id and (not payout_account or payout_account.id != request.payout_account_id):
         raise HTTPException(status_code=400, detail="The selected payout account does not belong to this seller.")
-    active_payout = db.query(PayoutTransaction).join(
-        Transaction, Transaction.tx_id == PayoutTransaction.internal_reference,
-    ).filter(
+
+    # Serialize withdrawal attempts for this student before checking for an
+    # active payout. The wallet is locked after the student row (same lock order
+    # used by apply_transaction) to avoid racing balance updates.
+    locked_student = db.query(Student).filter(
+        Student.student_id == student.student_id,
+    ).with_for_update().first()
+    if not locked_student:
+        raise HTTPException(status_code=404, detail="Student wallet owner not found.")
+
+    try:
+        amount = Decimal(str(request.amount))
+        if not amount.is_finite():
+            raise InvalidOperation
+        amount = amount.quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        raise HTTPException(status_code=400, detail="Withdrawal amount must be a valid ETB amount.")
+    if amount < Decimal("100.00"):
+        raise HTTPException(status_code=400, detail="Withdrawal amount must be at least 100 ETB.")
+
+    # Idempotency: a client retry of the same amount returns its existing
+    # in-flight payout instead of creating another transfer. The Student row
+    # lock above serializes this check with concurrent submissions.
+    try:
+        duplicate_window_seconds = max(30, int(os.getenv("PAYOUT_DUPLICATE_WINDOW_SECONDS", "300")))
+    except (TypeError, ValueError):
+        duplicate_window_seconds = 300
+    duplicate_cutoff = datetime.now() - timedelta(seconds=duplicate_window_seconds)
+    duplicate_payout = db.query(PayoutTransaction).filter(
         PayoutTransaction.student_id == student.student_id,
-        PayoutTransaction.status.in_(["pending", "processing"]),
-        func.lower(Transaction.type).in_(("withdrawal", "wallet withdrawal", "payout", "seller payout")),
-    ).order_by(PayoutTransaction.created_at.desc()).first()
+        PayoutTransaction.status.in_(("pending", "processing")),
+        PayoutTransaction.amount == amount,
+        PayoutTransaction.created_at >= duplicate_cutoff,
+    ).order_by(PayoutTransaction.created_at.asc()).with_for_update().first()
+    if duplicate_payout:
+        duplicate_transaction = db.query(Transaction).filter(
+            Transaction.tx_id == duplicate_payout.internal_reference,
+        ).first()
+        if not duplicate_transaction:
+            raise HTTPException(status_code=409, detail="A matching withdrawal is processing; refresh payout status before retrying.")
+        duplicate_wallet = db.query(Wallet).filter(
+            Wallet.student_id == student.student_id,
+        ).first()
+        return {
+            "success": True,
+            "persisted": True,
+            "duplicate": True,
+            "message": "This withdrawal request is already being processed.",
+            "status": duplicate_transaction.status,
+            "transaction_id": duplicate_transaction.tx_id,
+            "payout_id": duplicate_payout.id,
+            "wallet_balance": float(duplicate_wallet.balance if duplicate_wallet else student.wallet_balance or 0),
+            "amount": float(duplicate_payout.amount),
+        }
+
+    active_payout = db.query(PayoutTransaction).filter(
+        PayoutTransaction.student_id == student.student_id,
+        PayoutTransaction.status.in_(("pending", "processing")),
+    ).order_by(PayoutTransaction.created_at.desc()).with_for_update().first()
     if active_payout:
-        raise HTTPException(
-            status_code=409,
-            detail="You have a payout currently processing. You can request a new withdrawal once it completes.",
-        )
+        active_transaction = db.query(Transaction).filter(
+            Transaction.tx_id == active_payout.internal_reference,
+        ).first()
+        active_wallet = db.query(Wallet).filter(
+            Wallet.student_id == student.student_id,
+        ).first()
+        if not active_transaction or not active_wallet:
+            raise HTTPException(status_code=409, detail="A payout is already processing; refresh payout status before retrying.")
+        return {
+            "success": True,
+            "persisted": True,
+            "duplicate": True,
+            "message": "A withdrawal request is already being processed.",
+            "status": active_transaction.status,
+            "transaction_id": active_transaction.tx_id,
+            "payout_id": active_payout.id,
+            "wallet_balance": float(active_wallet.balance),
+            "amount": float(active_payout.amount),
+        }
+
     provider = db.query(PayoutProvider).filter(PayoutProvider.id == payout_account.provider_id).first()
     if not provider or not provider.is_active or provider.integration_status != "available":
         raise HTTPException(status_code=503, detail="This payout provider is not currently available.")
@@ -10574,55 +10742,82 @@ async def withdraw_student_wallet(
     if adapter is None:
         raise HTTPException(status_code=503, detail="This payout provider has no configured official payout integration.")
 
-    amount = Decimal(str(request.amount)).quantize(Decimal("0.01"))
-    if amount < Decimal("100.00"):
-        raise HTTPException(status_code=400, detail="Withdrawal amount must be at least 100 ETB.")
     account_number = str(payout_account.phone_number if payout_account.payout_type == "mobile_wallet" else payout_account.account_number or "").strip()
     if not account_number:
         raise HTTPException(status_code=400, detail="The saved payout account is missing destination details.")
 
-    wallet = _get_or_create_wallet_for_student(db, student)
-    locked_student = db.query(Student).filter(
-        Student.student_id == student.student_id,
-    ).with_for_update().first()
-    if not locked_student:
-        raise HTTPException(status_code=404, detail="Student wallet owner not found.")
+    wallet = _get_or_create_wallet_for_student(db, locked_student)
     db.flush()
     wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
     current_balance = wallet_balance
     if current_balance < amount:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance for withdrawal.")
 
-    tx_ref = f"PAYOUT-{uuid.uuid4().hex[:10].upper()}"
-    withdrawal = Transaction(
-        student_id=student.student_id,
-        wallet_id=wallet.id,
-        tx_id=tx_ref,
-        type="Wallet Withdrawal",
-        amount=amount,
-        description="Pending Withdrawal",
-        status="Pending",
-    )
-    db.add(withdrawal)
-    payout = PayoutTransaction(
-        student_id=student.student_id,
-        wallet_id=wallet.id,
-        payout_account_id=payout_account.id,
-        provider_id=provider.id,
-        amount=amount,
-        currency="ETB",
-        status="pending",
-        internal_reference=tx_ref,
-    )
-    db.add(payout)
+    # Chapa limits transfer references to 36 characters; PAYOUT- plus 28
+    # hexadecimal UUID characters is 35 characters and remains collision-safe.
+    tx_ref = f"PAYOUT-{uuid.uuid4().hex[:28].upper()}"
+    try:
+        # Apply a guarded SQL debit and create both ledger records in the same
+        # database transaction. The conditional prevents a stale balance from
+        # ever allowing an overdraft; any failure rolls all three writes back.
+        debit_result = db.execute(
+            text(
+                "UPDATE wallets "
+                "SET balance = balance - :amount, updated_at = CURRENT_TIMESTAMP "
+                "WHERE student_id = :student_id AND balance >= :amount"
+            ),
+            {"amount": amount, "student_id": student.student_id},
+        )
+        if debit_result.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Insufficient wallet balance for withdrawal.")
 
-    # Commit the debit before contacting Chapa so concurrent requests cannot reuse these funds.
-    new_balance = current_balance - amount
-    wallet.balance = Wallet.balance - amount
-    locked_student.wallet_balance = new_balance
-    student.wallet_balance = new_balance
-    db.flush()
-    db.commit()
+        db.refresh(wallet)
+        locked_student.wallet_balance = wallet.balance
+        withdrawal = Transaction(
+            student_id=student.student_id,
+            wallet_id=wallet.id,
+            tx_id=tx_ref,
+            type="Wallet Withdrawal",
+            amount=-amount,
+            description="Pending Withdrawal",
+            status="Pending",
+        )
+        db.add(withdrawal)
+
+        payout = PayoutTransaction(
+            student_id=student.student_id,
+            wallet_id=wallet.id,
+            payout_account_id=payout_account.id,
+            provider_id=provider.id,
+            amount=amount,
+            currency="ETB",
+            status="processing",
+            internal_reference=tx_ref,
+        )
+        db.add(payout)
+        _dispatch_student_notification(
+            db,
+            locked_student,
+            "Withdraw request submitted",
+            f"Your withdraw request of {amount} ETB was submitted and is awaiting payout confirmation.",
+            "payout",
+        )
+
+        # Persist the wallet debit, negative ledger row, notification, and
+        # payout row atomically before contacting Chapa.
+        db.flush()
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logging.getLogger("app.payouts").exception(
+            "Unable to atomically debit wallet and record withdrawal %s.", tx_ref,
+        )
+        raise HTTPException(status_code=500, detail="Unable to record withdrawal safely.")
+
     db.refresh(wallet)
     db.refresh(locked_student)
     db.refresh(withdrawal)
@@ -10630,12 +10825,26 @@ async def withdraw_student_wallet(
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
 
     def refund_with_failure(message: str, status_code: int = 400):
-        student.wallet_balance = current_balance
-        wallet.balance = current_balance
+        refund_amount = abs(amount)
+        apply_transaction(
+            db,
+            student_id=student.student_id,
+            tx_id=f"REFUND-{withdrawal.tx_id}",
+            transaction_type="Refund",
+            amount=refund_amount,
+            description=f"Refund for failed payout {withdrawal.tx_id}.",
+        )
         withdrawal.status = "Failed"
         withdrawal.description = message
         payout.status = "failed"
         payout.failure_reason = message
+        _dispatch_student_notification(
+            db,
+            locked_student,
+            "Withdraw failed – refunded",
+            f"Your withdraw request of {refund_amount} ETB failed. The amount was refunded to your wallet.",
+            "payout",
+        )
         db.add(AuditLog(
             admin_id=admin.id if admin else None,
             action="Wallet Withdrawal Failed",
@@ -10662,17 +10871,70 @@ async def withdraw_student_wallet(
         payout.failure_reason = str(error)
         if error.retryable:
             payout.status = "pending"
+            withdrawal.status = "Pending"
             withdrawal.description = str(error)
             db.commit()
-            raise HTTPException(status_code=202, detail=str(error))
+            db.refresh(withdrawal)
+            db.refresh(payout)
+            db.refresh(wallet)
+            db.refresh(locked_student)
+            return JSONResponse(status_code=202, content={
+                "success": True,
+                "persisted": True,
+                "message": withdrawal.description,
+                "status": withdrawal.status,
+                "transaction_id": withdrawal.tx_id,
+                "payout_id": payout.id,
+                "wallet_balance": float(wallet.balance),
+                "amount": float(amount),
+            })
         refund_with_failure(str(error), 502)
+    except Exception as error:
+        # The provider may have accepted a transfer before a transport or
+        # adapter error occurred. Keep the debit reserved and leave the payout
+        # pending rather than risk issuing a duplicate transfer or refund.
+        logging.getLogger("app.payouts").exception(
+            "Unexpected payout submission error for %s; leaving it pending.", tx_ref,
+        )
+        payout.status = "pending"
+        payout.failure_reason = str(error)
+        withdrawal.status = "Pending"
+        withdrawal.description = "Payout status could not be confirmed; the request remains pending."
+        db.commit()
+        db.refresh(withdrawal)
+        db.refresh(payout)
+        db.refresh(wallet)
+        db.refresh(locked_student)
+        return JSONResponse(status_code=202, content={
+            "success": True,
+            "persisted": True,
+            "message": withdrawal.description,
+            "status": withdrawal.status,
+            "transaction_id": withdrawal.tx_id,
+            "payout_id": payout.id,
+            "wallet_balance": float(wallet.balance),
+            "amount": float(amount),
+        })
 
     payout.status = result.status
     payout.provider_reference = result.provider_reference
     if result.status == "failed":
         refund_with_failure(result.message or "The payout provider reported a failed transfer.", 502)
-    withdrawal.status = "Pending" if result.status == "pending" else "Processing"
-    withdrawal.description = result.message or "Payout accepted and awaiting provider confirmation."
+    withdrawal.status = "Successful" if result.status == "completed" else "Pending" if result.status == "pending" else "Processing"
+    withdrawal.description = result.message or (
+        "Payout completed by the provider."
+        if result.status == "completed"
+        else "Payout accepted and awaiting provider confirmation."
+    )
+    if result.status == "completed":
+        withdrawal.status = "Successful"
+        _dispatch_student_notification(
+            db,
+            locked_student,
+            "Withdraw completed",
+            f"Your withdraw of {amount} ETB was completed successfully.",
+            "payout",
+        )
     db.add(AuditLog(
         admin_id=admin.id if admin else None,
         action="Wallet Payout Submitted",
@@ -10684,14 +10946,17 @@ async def withdraw_student_wallet(
     ))
     db.commit()
     db.refresh(withdrawal)
+    db.refresh(payout)
     db.refresh(wallet)
     db.refresh(locked_student)
 
     return {
         "success": True,
+        "persisted": True,
         "message": withdrawal.description,
         "status": withdrawal.status,
         "transaction_id": withdrawal.tx_id,
+        "payout_id": payout.id,
         "wallet_balance": float(wallet.balance),
         "amount": float(amount),
     }
@@ -10817,6 +11082,9 @@ async def handle_payout_provider_webhook(
                 raise HTTPException(status_code=404, detail="Payout transaction not found.")
 
             previous_status = str(payout.status or "pending").lower()
+            terminal_statuses = {"completed", "failed", "cancelled"}
+            if previous_status in terminal_statuses:
+                next_status = previous_status
             payout.status = next_status
             payout.provider_reference = provider_reference or payout.provider_reference
             if next_status in {"failed", "cancelled"}:
@@ -10835,23 +11103,16 @@ async def handle_payout_provider_webhook(
                 raise HTTPException(status_code=404, detail="Wallet records for payout transaction not found.")
 
             if next_status in {"failed", "cancelled"} and previous_status not in {"failed", "cancelled"}:
-                refund_amount = Decimal(str(payout.amount or 0)).quantize(Decimal("0.01"))
-                wallet.balance = (Decimal(str(wallet.balance or 0)) + refund_amount).quantize(Decimal("0.01"))
-                student.wallet_balance = wallet.balance
+                refund_amount = abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
                 refund_tx_id = f"REFUND-{payout.internal_reference}"
-                refund_transaction = db.query(Transaction).filter(
-                    Transaction.tx_id == refund_tx_id,
-                ).with_for_update().first()
-                if refund_transaction is None:
-                    db.add(Transaction(
-                        student_id=payout.student_id,
-                        wallet_id=wallet.id,
-                        tx_id=refund_tx_id,
-                        type="Refund",
-                        amount=refund_amount,
-                        description=f"Refund for failed payout {payout.internal_reference}.",
-                        status="Successful",
-                    ))
+                apply_transaction(db, student_id=payout.student_id, tx_id=refund_tx_id, transaction_type="Refund", amount=refund_amount, description=f"Refund for failed payout {payout.internal_reference}.")
+                _dispatch_student_notification(
+                    db,
+                    student,
+                    "Withdraw failed – refunded",
+                    f"Your withdraw request of {refund_amount} ETB failed. The amount was refunded to your wallet.",
+                    "payout",
+                )
                 db.add(AuditLog(
                     admin_id=None,
                     action="Wallet Withdrawal Refunded",
@@ -10866,8 +11127,18 @@ async def handle_payout_provider_webhook(
                 ))
             else:
                 student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
+                if next_status == "completed" and previous_status != "completed":
+                    _dispatch_student_notification(
+                        db,
+                        student,
+                        "Withdraw completed",
+                        f"Your withdraw of {Decimal(str(payout.amount or 0)).quantize(Decimal('0.01'))} ETB was completed successfully.",
+                        "payout",
+                    )
 
             if transaction:
+                transaction.type = "Wallet Withdrawal"
+                transaction.amount = -abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
                 transaction.status = "Successful" if next_status == "completed" else "Failed" if next_status in {"failed", "cancelled"} else "Pending"
                 transaction.description = f"Payout provider status: {next_status}."
             if previous_status != next_status:
@@ -10931,18 +11202,23 @@ def audit_student_wallet_balance(id: int, db: Session = Depends(get_db)):
 
             successful_transactions = db.query(Transaction).filter(
                 Transaction.student_id == student.student_id,
-                func.lower(Transaction.status) == "successful",
+                func.lower(Transaction.status).in_(("successful", "pending", "processing", "failed", "cancelled", "canceled")),
             ).all()
             total_credits = sum(
-                (Decimal(str(transaction.amount or 0))
+                (abs(Decimal(str(transaction.amount or 0)))
                  for transaction in successful_transactions
-                 if _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES),
+                 if str(transaction.status or "").lower() == "successful"
+                 and _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES),
                 Decimal("0.00"),
             )
             total_debits = sum(
-                (Decimal(str(transaction.amount or 0))
+                (abs(Decimal(str(transaction.amount or 0)))
                  for transaction in successful_transactions
-                 if _normalize_payment_type(transaction.type) in DEBIT_TRANSACTION_TYPES),
+                 if _normalize_payment_type(transaction.type) in DEBIT_TRANSACTION_TYPES
+                 and (
+                     _normalize_payment_type(transaction.type) == "Wallet Withdrawal"
+                     or str(transaction.status or "").lower() == "successful"
+                 )),
                 Decimal("0.00"),
             )
 
@@ -11008,20 +11284,34 @@ def reconcile_student_wallets(db: Session = Depends(get_db)):
             for student in students:
                 successful_transactions = db.query(Transaction).filter(
                     Transaction.student_id == student.student_id,
-                    func.lower(Transaction.status) == "successful",
+                    func.lower(Transaction.status).in_(
+                        ("successful", "pending", "processing", "failed", "cancelled", "canceled")
+                    ),
                 ).all()
                 successful_credits = sum(
-                    (Decimal(str(transaction.amount or 0))
+                    (abs(Decimal(str(transaction.amount or 0)))
                      for transaction in successful_transactions
-                     if _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES),
+                     if str(transaction.status or "").lower() == "successful"
+                     and _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES),
                     Decimal("0.00"),
                 )
                 successful_debits = sum(
-                    (Decimal(str(transaction.amount or 0))
+                    (abs(Decimal(str(transaction.amount or 0)))
                      for transaction in successful_transactions
-                     if _normalize_payment_type(transaction.type) in DEBIT_TRANSACTION_TYPES),
+                     if _normalize_payment_type(transaction.type) in DEBIT_TRANSACTION_TYPES
+                     and (
+                         _normalize_payment_type(transaction.type) == "Wallet Withdrawal"
+                         or str(transaction.status or "").lower() == "successful"
+                     )),
                     Decimal("0.00"),
                 )
+
+                for transaction in successful_transactions:
+                    if (
+                        _normalize_payment_type(transaction.type) in CREDIT_TRANSACTION_TYPES | DEBIT_TRANSACTION_TYPES
+                        and Decimal(str(transaction.amount or 0)) < 0
+                    ):
+                        transaction.amount = abs(Decimal(str(transaction.amount)).quantize(Decimal("0.01")))
 
                 calculated_balance = (
                     successful_credits
@@ -12664,6 +12954,8 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
     transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Payment transaction not found.")
+    if _normalize_payment_type(transaction.type) != "Wallet Deposit":
+        raise HTTPException(status_code=400, detail="Only wallet deposits can be verified through Chapa.")
 
     secret = (os.getenv("CHAPA_SECRET_KEY") or "").strip()
     if not secret:
@@ -13191,6 +13483,8 @@ async def simulate_chapa_webhook(
     transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Pending payment transaction not found for callback.")
+    if _normalize_payment_type(transaction.type) != "Wallet Deposit":
+        raise HTTPException(status_code=400, detail="Only wallet deposits can be settled through this payment webhook.")
 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payment callback amount must be greater than 0.")

@@ -1,6 +1,7 @@
 import io
 import unittest
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -248,6 +249,24 @@ class OrderLifecycleTests(unittest.TestCase):
         )
 
         self.assertEqual(_resolve_pickup_location(None, product), "Campus Bookstore")
+
+    def test_saved_commission_settings_override_hardcoded_default(self):
+        class FakeSystemSetting:
+            def __init__(self, value):
+                self.value = value
+
+        class FakeDatabase:
+            def query(self, model):
+                class Query:
+                    def filter(self, *_args, **_kwargs):
+                        return self
+
+                    def first(self):
+                        return FakeSystemSetting('{"commission_enabled": true, "commission_type": "percentage", "commission_rate": "2.5"}')
+
+                return Query()
+
+        self.assertEqual(main_module._get_platform_commission_percent(FakeDatabase()), Decimal("2.5"))
 
     def test_same_title_products_keep_separate_leaderboard_stats(self):
         listings = [

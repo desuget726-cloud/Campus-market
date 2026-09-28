@@ -1248,6 +1248,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       adminApprovalForRefunds: true,
       auditLogging: true,
     },
+    commission: {
+      commission_enabled: true,
+      commission_type: 'percentage',
+      commission_rate: '1.0',
+      commission_min_fee: null,
+      commission_max_fee: null,
+    },
   });
   const [chapaConnectionMessage, setChapaConnectionMessage] = useState('');
   const [chapaConnectionLoading, setChapaConnectionLoading] = useState(false);
@@ -6880,7 +6887,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </div>
                   {toggleCard('Require Approval', productSettings.requireApproval, () => setProductSettings({ ...productSettings, requireApproval: !productSettings.requireApproval }))}
                   {toggleCard('Allow Editing', productSettings.allowEditing, () => setProductSettings({ ...productSettings, allowEditing: !productSettings.allowEditing }))}
-                  {toggleCard('Auto Hide Sold', productSettings.autoHideSold, () => setProductSettings({ ...productSettings, autoHideSold: !productSettings.autoHideSold }))}
+                  {toggleCard('Auto Hide Sold', productSettings.autoHideSold, () => setProductSettings({ ...productSettings, autoHideSold: !productSettings.autoHideSold }), 'When enabled, sold or out-of-stock products are hidden from public listings. Save system settings to apply.')}
                 </div>
               </div>
 
@@ -6961,6 +6968,80 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </div>
                     <button type="button" onClick={handleTestChapaConnection} disabled={chapaConnectionLoading} className="mt-3 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-60">{chapaConnectionLoading ? 'Testing...' : 'Test Connection'}</button>
                     {chapaConnectionMessage && <p className="mt-2 text-xs font-semibold text-slate-600">{chapaConnectionMessage}</p>}
+                  </div>
+                  <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-4">
+                    <h4 className="text-sm font-black text-slate-900">Commission</h4>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(paymentSettings.commission?.commission_enabled)}
+                          onChange={(e) => setPaymentSettings({
+                            ...paymentSettings,
+                            commission: { ...paymentSettings.commission, commission_enabled: e.target.checked },
+                          })}
+                          className="h-4 w-4 rounded border-slate-300 text-emerald-600"
+                        />
+                        Enable platform commission
+                      </label>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Type</label>
+                        <select
+                          value={paymentSettings.commission?.commission_type || 'percentage'}
+                          onChange={(e) => setPaymentSettings({
+                            ...paymentSettings,
+                            commission: { ...paymentSettings.commission, commission_type: e.target.value },
+                          })}
+                          className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                        >
+                          <option value="percentage">Percentage</option>
+                          <option value="flat">Flat ETB</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Rate</label>
+                        <input
+                          type="number"
+                          step={paymentSettings.commission?.commission_type === 'flat' ? '0.01' : '0.01'}
+                          value={paymentSettings.commission?.commission_rate ?? '1.0'}
+                          onChange={(e) => setPaymentSettings({
+                            ...paymentSettings,
+                            commission: { ...paymentSettings.commission, commission_rate: e.target.value },
+                          })}
+                          className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Minimum</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={paymentSettings.commission?.commission_min_fee ?? ''}
+                          onChange={(e) => setPaymentSettings({
+                            ...paymentSettings,
+                            commission: { ...paymentSettings.commission, commission_min_fee: e.target.value === '' ? null : e.target.value },
+                          })}
+                          className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                          placeholder="Optional"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Maximum</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          value={paymentSettings.commission?.commission_max_fee ?? ''}
+                          onChange={(e) => setPaymentSettings({
+                            ...paymentSettings,
+                            commission: { ...paymentSettings.commission, commission_max_fee: e.target.value === '' ? null : e.target.value },
+                          })}
+                          className="mt-2 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                          placeholder="Optional"
+                        />
+                      </div>
+                    </div>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-white p-4">
                     <h4 className="text-sm font-black text-slate-900">Payment Security</h4>

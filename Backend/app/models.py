@@ -21,6 +21,13 @@ PAYMENT_SETTINGS_SCHEMA = {
         "adminApprovalForRefunds": True,
         "auditLogging": True,
     },
+    "commission": {
+        "commission_enabled": True,
+        "commission_type": "percentage",
+        "commission_rate": "1.0",
+        "commission_min_fee": None,
+        "commission_max_fee": None,
+    },
 }
 
 class Student(Base):

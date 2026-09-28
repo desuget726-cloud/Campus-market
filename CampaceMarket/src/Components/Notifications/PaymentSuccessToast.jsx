@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import toast from 'react-hot-toast';
+import { notifySuccess } from '../../utils/notify';
 
 function PaymentSuccessToast() {
   useEffect(() => {
@@ -7,7 +7,7 @@ function PaymentSuccessToast() {
       const message = event.detail?.message;
 
       if (message) {
-        toast.success(message);
+        notifySuccess(message, 'student-payment-verified');
       }
     };
 

@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useLanguage } from '../../context/LanguageContext';
+import { notifyError, notifySuccess } from '../../utils/notify';
 
 const settingsSections = [
     ['account', 'Account'],
@@ -44,6 +46,8 @@ function SettingsCenter({
     setSellerData,
     onPayoutAccountUpdated,
 }) {
+    const { t } = useLanguage();
+    const studentToast = (key) => t(`studentToast.${key}`);
     const safeUniversityStructure = universityStructure || {};
     const studentIdEditable = String(user?.studentId || user?.student_id || '').toUpperCase().startsWith('OAUTH-');
     const [notificationPrefs, setNotificationPrefs] = useState({
@@ -64,6 +68,7 @@ function SettingsCenter({
     });
     const [securityMessage, setSecurityMessage] = useState('');
     const [securityError, setSecurityError] = useState('');
+    const [securitySaving, setSecuritySaving] = useState(false);
     const [showConfirmPasswordModal, setShowConfirmPasswordModal] = useState(false);
     const [confirmPassword, setConfirmPassword] = useState('');
     const [confirmPasswordError, setConfirmPasswordError] = useState('');
@@ -217,10 +222,12 @@ function SettingsCenter({
             if (!response.ok) throw new Error(data?.detail || 'Unable to configure payout account.');
 
             setPayoutMessage(data?.message || 'Payout account configured successfully.');
+            notifySuccess(data?.message || studentToast('payoutAccountSaved'), 'student-payout-account-save');
             setSellerData?.((previous) => ({ ...previous, account_status: data?.account_status || 'Active' }));
             onPayoutAccountUpdated?.(data);
         } catch (error) {
             setPayoutError(error.message || 'Unable to configure payout account.');
+            notifyError(error, 'student-payout-account-save');
         } finally {
             setIsSubmitting(false);
         }
@@ -301,9 +308,11 @@ function SettingsCenter({
             setIdEvidence(null);
             setShowIdChangeForm(false);
             setIdChangeMessage('Your request is under review.');
+            notifySuccess(studentToast('supportSubmitted'), 'student-id-change-request');
         } catch (error) {
             console.error('[Student ID verification] Submit request failed', error);
             setIdChangeMessage(error.message || 'Unable to submit the verification request.');
+            notifyError(error, 'student-id-change-request');
         } finally {
             setIdChangeSaving(false);
         }
@@ -402,10 +411,12 @@ function SettingsCenter({
             }
 
             setNotificationToast('Notification preferences updated successfully!');
+            notifySuccess(studentToast('profileSaved'), 'student-notification-preferences');
             window.setTimeout(() => setNotificationToast(''), 3000);
         } catch (error) {
             console.error('Notification preferences update failed:', error);
             setNotificationToast(error.message || 'Unable to save notification preferences.');
+            notifyError(error, 'student-notification-preferences');
             window.setTimeout(() => setNotificationToast(''), 3000);
         } finally {
             setIsSavingNotificationPrefs(false);
@@ -469,6 +480,7 @@ function SettingsCenter({
                 }
 
                 const token = getStudentSessionToken();
+                setSecuritySaving(true);
 
                 try {
                     const response = await fetch('http://127.0.0.1:8000/api/student/profile/password', {
@@ -491,8 +503,12 @@ function SettingsCenter({
 
                     setSecurityForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
                     setSecurityMessage(data?.message || 'Password updated successfully.');
+                    notifySuccess(data?.message || 'Password updated successfully.', 'student-password-update');
                 } catch (error) {
                     setSecurityError(error.message || 'Password update failed.');
+                    notifyError(error, 'student-password-update');
+                } finally {
+                    setSecuritySaving(false);
                 }
             };
 
@@ -515,9 +531,11 @@ function SettingsCenter({
                         }
 
                         setTwoFactor(false);
+                        notifySuccess('Two-factor authentication disabled.', 'student-2fa-update');
                     } catch (error) {
                         console.error('Disable 2FA failed:', error);
                         setSecurityError(error.message || 'Unable to disable 2FA.');
+                        notifyError(error, 'student-2fa-update');
                     }
                     return;
                 }
@@ -571,8 +589,10 @@ function SettingsCenter({
                     setShowConfirmPasswordModal(false);
                     setConfirmPassword('');
                     setSecurityMessage('Two-factor authentication enabled.');
+                    notifySuccess('Two-factor authentication enabled.', 'student-2fa-update');
                 } catch (error) {
                     setConfirmPasswordError(error.message || 'Password verification failed.');
+                    notifyError(error, 'student-2fa-update');
                 }
             };
 
@@ -594,7 +614,7 @@ function SettingsCenter({
                                 </Field>
                             </div>
                             <div className="mt-5 flex items-center justify-between gap-3">
-                                <button type="submit" className="rounded-full bg-sky-600 px-5 py-3 text-sm font-bold text-white hover:bg-sky-700">Update Password</button>
+                                <button type="submit" disabled={securitySaving} className="rounded-full bg-sky-600 px-5 py-3 text-sm font-bold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300">{securitySaving ? 'Updating...' : 'Update Password'}</button>
                                 {securityMessage && <p className="text-sm font-semibold text-emerald-600">{securityMessage}</p>}
                             </div>
                             {securityError && <p className="mt-3 text-sm font-semibold text-rose-600">{securityError}</p>}

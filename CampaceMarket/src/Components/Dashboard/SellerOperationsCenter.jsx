@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import OrderDetailsView from "./OrderDetailsView";
+import { notifyError, notifySuccess } from '../../utils/notify';
 
 const SELLER_IMAGE_PLACEHOLDER =
   "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 200%22%3E%3Crect width=%22320%22 height=%22200%22 fill=%22%23e2e8f0%22/%3E%3Cpath d=%22M92 145l42-48 32 35 25-27 49 40H92z%22 fill=%22%2394a3b8%22/%3E%3Ccircle cx=%22125%22 cy=%2275%22 r=%2216%22 fill=%22%2394a3b8%22/%3E%3Ctext x=%22160%22 y=%22178%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2214%22 fill=%22%23475569%22%3ENo image available%3C/text%3E%3C/svg%3E";
@@ -59,6 +60,7 @@ function SellerOperationsCenter({
   sellerOrdersLoading,
   sellerOrdersError,
   onRefreshOrders,
+  onRefreshWallet,
   myListings,
   setMyListings,
   setSellerData,
@@ -157,11 +159,24 @@ function SellerOperationsCenter({
                 ? "Product paused."
                 : "Product resumed.",
       });
+      notifySuccess(
+        action === "delete"
+          ? "Product deleted successfully."
+          : action === "sold"
+            ? "Product marked as sold."
+            : action === "available"
+              ? "Product is available again."
+              : action === "pause"
+                ? "Product paused."
+                : "Product resumed.",
+        `student-product-action-${productId}-${action}`,
+      );
     } catch (error) {
       setProductActionFeedback({
         type: "error",
         message: error.message || "The product action failed.",
       });
+      notifyError(error, `student-product-action-${productId}-${action}`);
     } finally {
       setProductActionState((previous) => {
         const next = { ...previous };
@@ -667,16 +682,19 @@ function SellerOperationsCenter({
         is_funds_released: result.is_funds_released,
       });
       await onRefreshOrders?.();
+      await onRefreshWallet?.();
       await fetchSellerOrderDetails(orderId);
       setCompletionState((previous) => ({
         ...previous,
         [orderId]: { success: result.message || "Order updated." },
       }));
+      notifySuccess(result.message || "Order updated successfully.", `student-seller-order-${orderId}-${action}`);
     } catch (error) {
       setCompletionState((previous) => ({
         ...previous,
         [orderId]: { error: error.message || "Unable to update order." },
       }));
+      notifyError(error, `student-seller-order-${orderId}-${action}`);
     }
   };
 
@@ -717,6 +735,7 @@ function SellerOperationsCenter({
         ...previous,
         [dispute.id]: { response: "", success: "Response submitted." },
       }));
+      notifySuccess(result.message || "Dispute response submitted.", `student-dispute-response-${dispute.id}`);
       setDisputeEvidenceFiles((previous) => ({ ...previous, [dispute.id]: [] }));
       await onRefreshOrders?.();
       await fetchSellerOrderDetails(dispute.order_id);
@@ -726,6 +745,7 @@ function SellerOperationsCenter({
         ...previous,
         [dispute.id]: { ...state, error: error.message },
       }));
+      notifyError(error, `student-dispute-response-${dispute.id}`);
       throw error;
     }
   };

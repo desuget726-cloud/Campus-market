@@ -50,7 +50,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user?.accessToken, user?.access_token]);
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-50 h-20 bg-sky-600 text-white border-b border-blue-900">
+    <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-20 text-white border-b border-blue-900">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
 
         {/* Logo */}
@@ -58,7 +58,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           <img src={logs} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
           <div className="flex items-center gap-1 text-2xl font-black text-white">
 
-            <span className="text-slate-300">UniXchange</span>
+            <span className="text-white">UniXchange</span>
           </div>
           <button
             type="button"
@@ -78,10 +78,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Navigation Links */}
         <nav className="hidden md:flex items-center gap-6">
-          <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">Home</button>
-          <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">About</button>
-          <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">Services</button>
-          <button onClick={() => onNavigate('contact')} className="text-sm font-bold text-white hover:text-slate-200 transition duration-150">Contact</button>
+          <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Home</button>
+          <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">About</button>
+          <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Services</button>
+          <button onClick={() => onNavigate('contact')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Contact</button>
 
           {user && (
             <button
@@ -99,7 +99,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           <div className="hidden items-center gap-1 text-sm font-semibold md:flex" aria-label={t('navbar.language')}>
             <button type="button" onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white' : 'text-blue-200'}>{t('navbar.english')}</button>
             <span className="text-blue-200" aria-hidden="true">|</span>
-            <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-blue-200'}>{t('navbar.amharic')}</button>
+            <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-white/90'}>{t('navbar.amharic')}</button>
           </div>
           {user ? (
             // Logged In Dropdown View
@@ -115,7 +115,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0a3 3 0 11-6 0h6z" />
                 </svg>
                 {unreadCount > 0 && (
-                  <span className="-top-1 -right-1 absolute flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-white text-white border-2 border-blue-600">
+                  <span className="-top-1 -right-1 absolute flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-white text-white border-2 border-white">
                     {unreadCount}
                   </span>
                 )}
