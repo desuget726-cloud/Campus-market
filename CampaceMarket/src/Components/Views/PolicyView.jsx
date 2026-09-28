@@ -51,7 +51,7 @@ function PolicyView({ type, onNavigate }) {
                 ))}
             </div>
 
-            <button type="button" onClick={() => onNavigate?.('contact')} className="mt-7 rounded-full bg-sky-700 px-5 py-3 font-bold text-white transition hover:bg-sky-800">
+            <button type="button" onClick={() => onNavigate?.('contact')} className="btn-primary mt-7 rounded-full px-5 py-3 font-bold transition">
                 Contact support
             </button>
         </section>

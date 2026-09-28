@@ -2740,6 +2740,7 @@ async def on_startup():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=60,
     )
     payment_scheduler.add_job(
         _expire_processing_orders,
@@ -5562,6 +5563,7 @@ def get_products(
     limit: Optional[int] = None,
     department: Optional[str] = None,
     seller: Optional[str] = None,
+    product_ids: Optional[List[int]] = Query(None),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import case, or_
@@ -5594,7 +5596,10 @@ def get_products(
         raise HTTPException(status_code=500, detail="Could not load product moderation settings.") from error
     if auto_hide_reported:
         query = query.filter(Product.status.notin_(["Flagged", "Pending"]))
-    manual_filters_active = bool(category or subcategory or search or seller)
+    manual_filters_active = bool(category or subcategory or search or seller or product_ids is not None)
+
+    if product_ids is not None:
+        query = query.filter(Product.id.in_(product_ids))
 
     if category:
         query = query.filter(Product.category == category)

@@ -212,11 +212,11 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '', user = null }) {
                         <label className="block text-sm font-medium text-slate-700">Screenshot or evidence <span className="font-normal text-slate-400">(optional)</span><input type="file" accept="image/*,.pdf" onChange={(event) => setEvidenceImage(event.target.files?.[0] || null)} className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-normal text-slate-600" /></label>
                         {status.error && <p className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{status.error}</p>}
                         {status.success && <p className="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{status.success}</p>}
-                        <button type="submit" disabled={status.submitting} className="w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400">{status.submitting ? 'Sending...' : 'Send to Admin'}</button>
+                        <button type="submit" disabled={status.submitting} className="btn-primary w-full rounded-full px-4 py-3 text-sm font-semibold transition">{status.submitting ? 'Sending...' : 'Send to Admin'}</button>
                     </form>
                 )}
 
-                {type !== 'help' && <button type="button" onClick={handleClose} className="mt-8 w-full rounded-full bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700">Close</button>}
+                {type !== 'help' && <button type="button" onClick={handleClose} className="btn-primary mt-8 w-full rounded-full px-4 py-3 text-sm font-semibold transition">Close</button>}
                 {type === 'help' && <button type="button" onClick={handleClose} className="mt-3 w-full rounded-full border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">Close</button>}
             </section>
         </div>

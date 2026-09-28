@@ -17,7 +17,7 @@ const PostProductForm = () => {
     'Food & Beverages', 'Other'
   ];
 
-  
+
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -197,8 +197,8 @@ const PostProductForm = () => {
               type="button"
               disabled={!isFormValid}
               className={`w-full py-3 font-semibold rounded-full transition-colors ${isFormValid
-                  ? 'bg-emerald-500 text-white hover:bg-emerald-600 cursor-pointer'
-                  : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                ? 'btn-primary cursor-pointer'
+                : 'bg-slate-200 text-slate-500 cursor-not-allowed'
                 }`}
             >
               Next

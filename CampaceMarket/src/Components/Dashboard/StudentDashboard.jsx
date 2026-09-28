@@ -6,6 +6,7 @@ import SellerOperationsCenter from './SellerOperationsCenter';
 import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
+import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
@@ -2889,6 +2890,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const safeNotifications = Array.isArray(notifications) ? notifications : [];
   const notificationUnreadCount = safeNotifications.filter((notif) => !notif.read).length;
   const [productDetails, setProductDetails] = useState({});
+  const productFetchesRef = useRef(new Set());
 
   // Fetch conversations list from backend
   useEffect(() => {
@@ -3001,25 +3003,38 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     const productIdsToFetch = new Set();
     activeChatMessages.forEach((msg) => {
-      if (msg.productId && !productDetails[msg.productId]) {
+      if (msg.productId && !productDetails[msg.productId] && !productFetchesRef.current.has(msg.productId)) {
         productIdsToFetch.add(msg.productId);
       }
     });
 
     if (productIdsToFetch.size === 0) return;
 
-    productIdsToFetch.forEach((productId) => {
-      fetch(`http://127.0.0.1:8000/api/products/${productId}`)
-        .then((res) => res.json())
-        .then((data) => {
-          setProductDetails((prev) => ({
-            ...prev,
-            [productId]: data,
-          }));
-        })
-        .catch((error) => console.error(`Error fetching product ${productId}:`, error));
+    const productIds = Array.from(productIdsToFetch);
+    const params = new URLSearchParams();
+    productIds.forEach((productId) => {
+      productFetchesRef.current.add(productId);
+      params.append('product_ids', String(productId));
     });
-  }, [activeChatMessages]);
+
+    fetch(`http://127.0.0.1:8000/api/products?${params}`)
+      .then((response) => {
+        if (!response.ok) throw new Error(`Failed to fetch chat products: ${response.status}`);
+        return response.json();
+      })
+      .then((products) => {
+        const availableProducts = new Map((Array.isArray(products) ? products : []).map((product) => [String(product.id), product]));
+        setProductDetails((prev) => {
+          const next = { ...prev };
+          productIds.forEach((productId) => {
+            next[productId] = availableProducts.get(String(productId)) || { unavailable: true };
+          });
+          return next;
+        });
+      })
+      .catch((error) => console.error('Error fetching chat products:', error))
+      .finally(() => productIds.forEach((productId) => productFetchesRef.current.delete(productId)));
+  }, [activeChatMessages, productDetails]);
 
   const activeConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0] || null;
   const isActiveConversationBlocked = Boolean(activeConversation?.id && blockedConversations[activeConversation.id]);
@@ -3443,10 +3458,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       <div className="flex min-h-0 w-full flex-col gap-3 md:h-[calc(100vh-160px)] md:overflow-hidden md:flex-row md:items-start md:gap-3 md:pt-1 md:pb-2">
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
-        <aside className={`
-          fixed top-28 bottom-0 left-0 z-40 flex w-72 -translate-x-full flex-col overflow-y-auto bg-[#0a0e23] p-4 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          md:static md:relative md:top-28 md:h-full md:w-72 md:translate-x-0 md:overflow-hidden md:rounded-[32px] md:p-6 md:shadow-none
-          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+        <aside id="student-mobile-navigation" data-open={isSidebarOpen} style={{ transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }} className={`student-mobile-sidebar
+          fixed top-28 bottom-0 left-0 z-40 flex w-72 flex-col overflow-y-auto bg-[#0a0e23] p-4 text-white shadow-2xl transition-transform duration-300 ease-in-out
+          md:static md:relative md:top-28 md:h-full md:w-72 md:overflow-hidden md:rounded-[32px] md:p-6 md:shadow-none
           ${isSidebarCollapsed ? 'md:w-24 md:p-3' : 'md:w-72 md:p-6'}
         `}>
           <div className={`mb-8 flex items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
@@ -3586,18 +3600,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           />
         )}
 
-        <div className="flex items-center gap-3 bg-[#1d4ed8] px-4 py-3 text-white shadow-sm md:hidden">
-          <button
-            type="button"
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/20 bg-white/10 text-white transition hover:bg-white/20 cursor-pointer"
-            aria-label="Open navigation menu"
-          >
-            <span className="text-2xl leading-none">☰</span>
-          </button>
-          <span className="text-sm font-bold">Campus Portal</span>
-        </div>
-
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
         <main className="min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 md:h-full md:overflow-y-scroll md:pr-2 md:pt-1">
 
@@ -3647,7 +3649,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   </div>
 
                   <div className="flex gap-3">
-                    <button type="submit" className="flex-1 rounded-full bg-emerald-500 border border-slate-950 py-3 font-semibold text-white hover:bg-emerald-600 transition cursor-pointer">
+                    <button type="submit" className="btn-primary flex-1 rounded-full py-3 font-semibold transition cursor-pointer">
                       Submit Ticket
                     </button>
                     <button type="button" onClick={() => setShowSupportModal(false)} className="flex-1 rounded-full border border-slate-200 bg-white py-3 font-semibold text-slate-600 hover:bg-slate-50 transition cursor-pointer">
@@ -3664,9 +3666,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
               <div className="space-y-6">
-                <div className="rounded-[32px] border border-white/5 bg-[#16224f] p-8 shadow-[0_20px_40px_rgba(10,14,35,0.28)] sm:flex-row sm:items-center sm:justify-between">
+                <div className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-4">
-
                     {/* ዴስክቶፕ ላይ ማውጫው ከተዘጋ በኋላ ለመክፈቻ የሚሆን የ [|] ቁልፍ (ምስል 2 - Sidebar Toggle Open Button) */}
                     {!isSidebarOpen && (
                       <button
@@ -3683,12 +3684,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                     {/* በሞባይል ስልኮች ላይ የሚታየው የሜኑ መክፈቻ ቁልፍ (Mobile Hamburger Menu) */}
                     <div>
-                      <p className="text-sm uppercase tracking-[0.24em] text-sky-400">User Experience</p>
-                      <h2 className="mt-2 text-3xl font-semibold text-white">Buyer and Seller dashboard</h2>
+                      <p className="text-sm uppercase tracking-[0.24em] text-slate-600">User Experience</p>
+                      <div className="mt-2 flex items-center gap-3">
+                        <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
+                        <h2 className="text-3xl font-semibold text-slate-900">Buyer and Seller dashboard</h2>
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <button onClick={() => setShowSupportModal(true)} className="rounded-full bg-blue-500 px-5 py-3 text-sm font-semibold text-white shadow hover:bg-blue-600 cursor-pointer">Support</button>
+                    <button onClick={() => setShowSupportModal(true)} className="btn-primary rounded-full px-5 py-3 text-sm font-semibold shadow cursor-pointer">Support</button>
                   </div>
                 </div>
 
@@ -3799,6 +3803,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 {disputeFeedback && <p className={`mb-4 rounded-2xl px-4 py-3 text-sm font-bold ${disputeFeedback.startsWith('Dispute submitted') ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{disputeFeedback}</p>}
                 <OrderDetailsView
                   order={selectedOrder}
+                  isSidebarOpen={isSidebarOpen}
+                  onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                   role="buyer"
                   loading={orderDetailsLoading}
                   error={orderDetailsError}
@@ -3882,9 +3888,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
             {activeTab === 'buyer' && !selectedOrder && (
               <div className="space-y-6">
-                <div className="rounded-[32px] border border-white/5 bg-[#16224f] p-6 shadow-[0_20px_40px_rgba(10,14,35,0.28)]">
-                  <h3 className="text-xl font-bold text-white">Buyer Hub</h3>
-                  <p className="text-sm text-slate-300 mt-1">Search products, manage your wishlist, cart, orders, and payments.</p>
+                <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
+                  <div className="flex items-start gap-3">
+                    <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-900">Buyer Hub</h3>
+                      <p className="text-sm text-slate-600 mt-1">Search products, manage your wishlist, cart, orders, and payments.</p>
+                    </div>
+                  </div>
 
                   {/* Buyer Hub Sub-tabs (White Pill Buttons) */}
                   <div className="mt-6 flex flex-row gap-2 overflow-x-auto pb-1 scrollbar-none snap-x md:overflow-x-visible md:flex-wrap">
@@ -3892,11 +3903,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <button
                         key={tab.id}
                         onClick={() => setBuyerTab(tab.id)}
-                        className={`inline-flex shrink-0 items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold cursor-pointer transition-all duration-200 ${buyerTab === tab.id ? 'border border-white bg-white text-slate-950 shadow-sm' : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white'}`}
+                        className={`inline-flex shrink-0 items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold cursor-pointer transition-all duration-200 ${buyerTab === tab.id ? 'btn-primary border border-[var(--brand-primary)] shadow-sm' : 'border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                       >
                         <span>{tab.label}</span>
                         {tab.badge > 0 && (
-                          <span className={`inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold ${buyerTab === tab.id ? 'bg-blue-500/10 text-blue-400' : 'bg-white/10 text-slate-300'}`}>
+                          <span className={`inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold ${buyerTab === tab.id ? 'bg-slate-950 text-white' : 'bg-slate-200 text-slate-700'}`}>
                             {tab.badge}
                           </span>
                         )}
@@ -3914,7 +3925,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <p className="text-sm text-slate-500 mt-1">Find student listings by name, category, or subcategory.</p>
                       </div>
                       <div className="flex flex-col gap-3 sm:flex-row">
-                        <button onClick={handleSearchSubmit} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-emerald-600 transition cursor-pointer">Search</button>
+                        <button onClick={handleSearchSubmit} className="btn-primary rounded-full px-5 py-3 text-sm font-semibold shadow-sm transition cursor-pointer">Search</button>
                         <button onClick={() => { resetSearchFilters(); fetchProducts(); }} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer">Reset</button>
                       </div>
                     </div>
@@ -4025,7 +4036,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 <div className="mt-auto flex min-w-0 flex-col gap-2">
                                   {isOwnProduct ? (
                                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
-                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleViewProductFromChat(item.id); }} className="w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-700">View</button>
+                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleViewProductFromChat(item.id); }} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">View</button>
                                       <button type="button" onClick={(event) => { event.stopPropagation(); handleEditProduct(item); }} className="w-full rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">Edit</button>
                                       <button type="button" onClick={(event) => { event.stopPropagation(); handleDeleteProduct(item); }} className="w-full rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">Delete</button>
                                     </div>
@@ -4035,7 +4046,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                         <span className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700">Out of Stock</span>
                                       ) : sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
                                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
-                                        {!isOutOfStock && <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToCartFromSearch(item.id); }} disabled={purchaseBlocked} className="w-full rounded-full bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300">Add to Cart</button>}
+                                        {!isOutOfStock && <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToCartFromSearch(item.id); }} disabled={purchaseBlocked} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">Add to Cart</button>}
                                         {isInWishlist ? (
                                           <button type="button" onClick={(event) => event.stopPropagation()} disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
                                         ) : (
@@ -4067,7 +4078,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <button
                             type="button"
                             onClick={handleMoveAllToCart}
-                            className="rounded-full bg-sky-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-sky-700 transition"
+                            className="btn-primary rounded-full px-4 py-2.5 text-xs font-semibold transition"
                           >
                             Move All to Cart
                           </button>
@@ -4122,7 +4133,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       type="button"
                                       onClick={(event) => { event.stopPropagation(); handleMoveToCart(item.id, item.product_id); }}
                                       disabled={!available}
-                                      className={`rounded-full px-4 py-2 text-xs font-semibold transition ${available ? 'bg-emerald-500 text-white hover:bg-emerald-600' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}
+                                      className={`rounded-full px-4 py-2 text-xs font-semibold transition ${available ? 'btn-primary' : 'cursor-not-allowed bg-slate-200 text-slate-500'}`}
                                     >
                                       Move to Cart
                                     </button>
@@ -4288,7 +4299,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <button
                               onClick={handleCheckout}
                               disabled={!verifiedStudent || !cart.length || currentWalletBalance <= 0 || currentWalletBalance < checkoutTotal || isCheckingOut}
-                              className="w-full rounded-full bg-emerald-500 py-3.5 font-bold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-emerald-300"
+                              className="btn-primary w-full rounded-full py-3.5 font-bold transition"
                             >
                               {isCheckingOut ? 'Processing...' : walletHasSufficientFunds ? 'Pay with Wallet' : 'Insufficient Wallet Balance'}
                             </button>
@@ -4337,7 +4348,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             setBuyerTab('search');
                             setActiveTab('buyer');
                           }}
-                          className="mt-5 inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600"
+                          className="btn-primary mt-5 inline-flex items-center justify-center rounded-full px-5 py-3 text-sm font-semibold shadow-sm transition"
                         >
                           Browse Marketplace
                         </button>}
@@ -4534,7 +4545,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                         type="button"
                                         onClick={() => handleSubmitReview(order.id)}
                                         disabled={isSubmittingReview}
-                                        className="inline-flex items-center justify-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="btn-primary inline-flex items-center justify-center rounded-full px-5 py-3 text-sm font-semibold transition"
                                       >
                                         {isSubmittingReview ? 'Submitting...' : 'Submit Review'}
                                       </button>
@@ -4733,6 +4744,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'seller' && (
               <SellerOperationsCenter
                 user={user}
+                isSidebarOpen={isSidebarOpen}
+                onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                 sellerData={sellerData}
                 sellerOrdersLoading={sellerOrdersLoading}
                 sellerOrdersError={sellerOrdersError}
@@ -4872,7 +4885,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           type="button"
                           onClick={() => setShowProductModal(true)}
                           disabled={!verifiedStudent}
-                          className="inline-flex items-center rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300"
+                          className="btn-primary inline-flex items-center rounded-full px-4 py-2.5 text-sm font-semibold transition"
                         >
                           + Add Product
                         </button>
@@ -4887,7 +4900,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             type="button"
                             onClick={() => setShowProductModal(true)}
                             disabled={!verifiedStudent}
-                            className="mt-5 inline-flex items-center rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white hover:bg-emerald-600 transition disabled:cursor-not-allowed disabled:bg-slate-300"
+                            className="btn-primary mt-5 inline-flex items-center rounded-full px-5 py-3 text-sm font-semibold transition"
                           >
                             + Add Product
                           </button>
@@ -5175,7 +5188,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             type="button"
                             onClick={() => handleAiSend()}
                             disabled={!aiInput.trim()}
-                            className="rounded-full bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            className="btn-primary rounded-full px-3 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Send
                           </button>
@@ -5188,7 +5201,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   type="button"
                   onClick={() => setIsAiAdvisorOpen((prev) => !prev)}
-                  className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-green-600 text-white shadow-xl transition hover:bg-green-700"
+                  className="btn-primary fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full shadow-xl transition"
                   aria-label="Toggle AI Advisor"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -5204,9 +5217,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <aside className={`max-h-[360px] min-h-[280px] w-full shrink-0 flex-col justify-between border-b border-slate-100 p-4 sm:p-6 lg:flex lg:h-full lg:max-h-none lg:min-h-0 lg:w-[360px] lg:border-b-0 lg:border-r ${mobileChatView === 'list' ? 'flex' : 'hidden'}`}>
                     <div>
                       <div className="flex items-center justify-between border-b border-slate-200 pb-4">
-                        <div>
+                        <div className="min-w-0">
                           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Peer chat</p>
-                          <h3 className="mt-1 text-xl font-bold text-slate-900">Messages</h3>
+                          <div className="mt-1 flex items-center gap-3">
+                            <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
+                            <h3 className="text-xl font-bold text-slate-900">Messages</h3>
+                          </div>
                         </div>
                         <button
                           type="button"
@@ -5286,13 +5302,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           />
                           <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${activeConversation?.status === 'online' ? 'animate-pulse bg-emerald-500' : 'bg-slate-300'}`} />
                         </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-base font-bold text-slate-900">{activeConversation?.name || 'Student'}</p>
-                          {peerIsTyping ? (
-                            <p className="text-xs font-semibold text-sky-600 animate-pulse">{activeConversation?.name || 'Student'} is typing...</p>
-                          ) : (
-                            <p className="text-xs text-slate-500">{activeConversation?.status === 'online' ? '🟢 Online' : '⚪ Offline'}</p>
-                          )}
+                        <div className="flex min-w-0 items-center gap-2">
+                          <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
+                          <div className="min-w-0">
+                            <p className="truncate text-base font-bold text-slate-900">{activeConversation?.name || 'Student'}</p>
+                            {peerIsTyping ? (
+                              <p className="text-xs font-semibold text-sky-600 animate-pulse">{activeConversation?.name || 'Student'} is typing...</p>
+                            ) : (
+                              <p className="text-xs text-slate-500">{activeConversation?.status === 'online' ? '🟢 Online' : '⚪ Offline'}</p>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -5326,7 +5345,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         const messageTime = Number.isNaN(messageDate.getTime())
                           ? message.time || 'Unknown time'
                           : messageDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                        const product = message.productId ? productDetails[message.productId] : null;
+                        const productDetail = message.productId ? productDetails[message.productId] : null;
+                        const productUnavailable = productDetail?.unavailable === true;
+                        const product = productUnavailable ? null : productDetail;
                         const parentMessage = message.reply_to_id
                           ? activeChatMessages.find((candidate) => String(candidate.id) === String(message.reply_to_id))
                           : null;
@@ -5388,12 +5409,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                     <button
                                       type="button"
                                       onClick={() => handleViewProductFromChat(message.productId)}
-                                      className="rounded-full bg-sky-600 px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-sky-700"
+                                      className="btn-primary rounded-full px-3 py-1.5 text-[10px] font-semibold"
                                     >
                                       View Product
                                     </button>
                                   </div>
                                 </div>
+                              </div>
+                            )}
+                            {productUnavailable && (
+                              <div className={`mb-4 flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
+                                <p className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-500">This product is no longer available.</p>
                               </div>
                             )}
                           </div>
@@ -5410,7 +5436,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <p className="mt-1 text-xs text-slate-500">{activeConversation.product.category || productDetails[activeConversation.product.id]?.category || 'Campus marketplace item'}</p>
                               <p className="mt-1 text-sm font-bold text-emerald-600">{Number(activeConversation.product.price).toLocaleString('en-US')} ETB</p>
                             </div>
-                            <button type="button" onClick={() => handleViewProductFromChat(activeConversation.product.id)} className="shrink-0 rounded-full bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700">View Product</button>
+                            <button type="button" onClick={() => handleViewProductFromChat(activeConversation.product.id)} className="btn-primary shrink-0 rounded-full px-3 py-2 text-xs font-semibold">View Product</button>
                           </div>
                         </div>
                       )}
@@ -5481,7 +5507,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               placeholder="Type a message..."
                               className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
                             />
-                            <button type="button" onClick={sendChatMessage} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-600 text-lg font-bold text-white shadow-sm hover:bg-sky-700" aria-label="Send message">➤</button>
+                            <button type="button" onClick={sendChatMessage} className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold shadow-sm" aria-label="Send message">➤</button>
                           </div>
                         </div>
                       )}
@@ -5511,7 +5537,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">Student ID</dt><dd className="text-right text-sm font-semibold text-slate-900">{activeConversation.studentId || 'Not provided'}</dd></div>
                     <div className="flex items-start justify-between gap-4"><dt className="text-sm text-slate-500">Verification Status</dt><dd className="text-right text-sm font-semibold text-emerald-600">Verified campus student</dd></div>
                   </dl>
-                  <button type="button" onClick={() => setShowProfileDetailsModal(false)} className="mt-6 w-full rounded-full bg-sky-600 py-3 text-sm font-semibold text-white hover:bg-sky-700">Done</button>
+                  <button type="button" onClick={() => setShowProfileDetailsModal(false)} className="btn-primary mt-6 w-full rounded-full py-3 text-sm font-semibold">Done</button>
                 </div>
               </div>
             )}
@@ -5586,6 +5612,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'notifications' && (
               <NotificationCenter
                 notifications={safeNotifications}
+                isSidebarOpen={isSidebarOpen}
+                onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                 unreadCount={unreadCount}
                 isMarkingRead={isMarkingRead}
                 onMarkAllRead={handleMarkAllNotificationsRead}
@@ -5627,7 +5655,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         type="button"
                         onClick={handleMarkAllNotificationsRead}
                         disabled={safeNotifications.length === 0 || isMarkingRead}
-                        className="inline-flex items-center justify-center rounded-full bg-sky-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                        className="btn-primary inline-flex items-center justify-center rounded-full px-4 py-3 text-sm font-semibold shadow-sm transition"
                       >
                         {isMarkingRead ? 'Marking…' : 'Mark all as read'}
                       </button>
@@ -5699,6 +5727,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'settings' && (
               <SettingsCenter
                 settingsTab={settingsTab}
+                isSidebarOpen={isSidebarOpen}
+                onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                 setSettingsTab={setSettingsTab}
                 profileForm={profileForm}
                 handleProfileFieldChange={handleProfileFieldChange}
@@ -5838,7 +5868,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       const currentPrice = Number(String(productForm.price || editingProduct.price || 0).replace(/[^0-9.]/g, '')) || 0;
                       setProductForm((previous) => ({ ...previous, price: (currentPrice * 0.97).toFixed(2) }));
                     }}
-                    className="mt-3 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                    className="btn-primary mt-3 rounded-full px-4 py-2 text-xs font-bold transition"
                   >
                     Apply AI Price Suggestion
                   </button>
@@ -6000,7 +6030,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   type="submit"
                   disabled={productSubmitting}
-                  className="inline-flex justify-center rounded-full bg-emerald-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  className="btn-primary inline-flex justify-center rounded-full px-6 py-3 text-sm font-semibold transition"
                 >
                   {productSubmitting ? (editingProduct ? 'Saving...' : 'Posting...') : (editingProduct ? 'Save Changes' : 'Post Product')}
                 </button>

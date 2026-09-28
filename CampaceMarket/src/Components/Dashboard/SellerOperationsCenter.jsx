@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import OrderDetailsView from "./OrderDetailsView";
+import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { notifyError, notifySuccess } from '../../utils/notify';
 
 const SELLER_IMAGE_PLACEHOLDER =
@@ -55,6 +56,8 @@ const normalizeSellerInsight = (listing) => {
 
 function SellerOperationsCenter({
   user,
+  isSidebarOpen,
+  onToggleSidebar,
   sellerData,
   sellerDashboardData,
   sellerOrdersLoading,
@@ -855,6 +858,8 @@ function SellerOperationsCenter({
     return (
       <OrderDetailsView
         order={selectedOrder}
+        isSidebarOpen={isSidebarOpen}
+        onToggleSidebar={onToggleSidebar}
         role="seller"
         loading={selectedOrderLoading}
         error={selectedOrderError}
@@ -882,16 +887,19 @@ function SellerOperationsCenter({
           Open latest order details
         </button>
       )}
-      <section className="rounded-[30px] border border-white/5 bg-[#16224f] p-6 text-white shadow-[0_20px_40px_rgba(10,14,35,0.28)] sm:p-8">
+      <section className="rounded-[30px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm sm:p-8">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.24em] text-emerald-300">
+            <p className="text-xs font-bold uppercase tracking-[0.24em] text-slate-600">
               Seller Hub
             </p>
-            <h2 className="mt-2 text-3xl font-black">
-              Seller Operations Center
-            </h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+            <div className="mt-2 flex items-center gap-3">
+              <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
+              <h2 className="text-3xl font-black">
+                Seller Operations Center
+              </h2>
+            </div>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
               Monitor listings, fulfill customer orders, and turn marketplace
               activity into measurable campus sales.
             </p>
@@ -907,7 +915,7 @@ function SellerOperationsCenter({
                 onAddProduct();
               }}
               title={payoutStatus !== "active" ? "Configure payouts first" : "Add a product"}
-              className="rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+              className="btn-primary rounded-full px-4 py-2.5 text-sm font-bold"
             >
               + Add Product
             </button>
@@ -918,14 +926,14 @@ function SellerOperationsCenter({
                   .getElementById("seller-orders")
                   ?.scrollIntoView({ behavior: "smooth" })
               }
-              className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10"
+              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
             >
               Manage Orders
             </button>
             <button
               type="button"
               onClick={() => onNavigate("messages")}
-              className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10"
+              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
             >
               Messages
             </button>
@@ -936,14 +944,14 @@ function SellerOperationsCenter({
                   .getElementById("seller-analytics")
                   ?.scrollIntoView({ behavior: "smooth" })
               }
-              className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10"
+              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
             >
               View Analytics
             </button>
             <button
               type="button"
               onClick={onPaymentHistory}
-              className="rounded-full border border-slate-600 px-4 py-2.5 text-sm font-bold text-slate-100 hover:bg-white/10"
+              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
             >
               Payment History
             </button>
@@ -1171,7 +1179,7 @@ function SellerOperationsCenter({
                               type="button"
                               disabled={actionInProgress}
                               onClick={() => setViewedProductId(listing.id)}
-                              className="rounded-full border border-sky-200 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-50"
+                              className="btn-primary rounded-full px-3 py-1.5 text-xs font-bold transition"
                             >
                               View
                             </button>
@@ -1792,7 +1800,7 @@ function SellerOperationsCenter({
           <button
             type="button"
             onClick={onAddProduct}
-            className="mt-5 rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600"
+            className="btn-primary mt-5 rounded-full px-4 py-2.5 text-sm font-bold"
           >
             Edit target product
           </button>
@@ -1872,7 +1880,7 @@ function SellerOperationsCenter({
                 key={metric}
                 type="button"
                 onClick={() => setChartMetric(metric)}
-                className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartMetric === metric ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartMetric === metric ? "btn-primary" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
               >
                 {metric}
               </button>
@@ -1987,7 +1995,7 @@ function SellerOperationsCenter({
               <button
                 type="button"
                 onClick={onAddProduct}
-                className="mt-3 rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600"
+                className="btn-primary mt-3 rounded-full px-3 py-2 text-xs font-bold"
               >
                 Add Product
               </button>

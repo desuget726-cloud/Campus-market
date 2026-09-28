@@ -18,7 +18,7 @@ function SuccessModal({ username, onContinue }) {
         <button
           type="button"
           onClick={onContinue}
-          className="mt-8 w-full rounded-full border border-slate-950 bg-emerald-500 py-3.5 font-bold text-white shadow-md hover:bg-emerald-600"
+          className="btn-primary mt-8 w-full rounded-full py-3.5 font-bold shadow-md"
         >
           Continue to Dashboard
         </button>

@@ -365,6 +365,9 @@ function AppContent() {
       return;
     }
 
+    if (view === 'home') {
+      window.scrollTo(0, 0);
+    }
     setCurrentView(view);
   };
 
@@ -444,6 +447,7 @@ function AppContent() {
       />
       <PaymentSuccessToast />
       <Navbar
+        variant={isDashboardView ? 'dashboard' : 'public'}
         onNavigate={handleNavigate}
         user={user}
         userRole={userRole}
@@ -552,9 +556,7 @@ function AppContent() {
         </main>
       </div>
 
-      <Footer
-        onNavigate={handleNavigate}
-      />
+      {!isDashboardView && <Footer onNavigate={handleNavigate} />}
 
       {(showFooterPrivacy || showFooterTerms) && (
         <AuthInfoModal

@@ -420,7 +420,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
           <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
             <div className="relative"><button type="button" onClick={handleToggleWishlist} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-2xl shadow-md ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500`}>{isWishlisted ? '♥' : '♡'}</button><button type="button" onClick={() => setIsZoomed(true)} className="block w-full cursor-zoom-in" aria-label="Zoom product image"><img src={activeImage} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-[420px] w-full rounded-[20px] object-cover" /></button></div>
             <div className="mt-4 flex items-center gap-3">
-              <button type="button" onClick={() => setSelectedImageIndex((index) => (index - 1 + visibleImages.length) % visibleImages.length)} aria-label="Previous product image" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 hover:bg-slate-100">←</button>
+              <button type="button" onClick={() => setSelectedImageIndex((index) => (index - 1 + visibleImages.length) % visibleImages.length)} aria-label="Previous product image" className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold">←</button>
               <div className="flex min-w-0 flex-1 gap-3 overflow-x-auto pb-1">
                 {visibleImages.map((image, index) => (
                   <button key={`${image}-${index}`} type="button" onClick={() => setSelectedImageIndex(index)} className={`h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition ${selectedImageIndex === index ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200 hover:border-slate-400'}`} aria-label={`Show product image ${index + 1}`}>
@@ -429,7 +429,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
                   </button>
                 ))}
               </div>
-              <button type="button" onClick={() => setSelectedImageIndex((index) => (index + 1) % visibleImages.length)} aria-label="Next product image" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-lg font-bold text-white hover:bg-emerald-600">→</button>
+              <button type="button" onClick={() => setSelectedImageIndex((index) => (index + 1) % visibleImages.length)} aria-label="Next product image" className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold">→</button>
             </div>
           </div>
 
@@ -482,36 +482,36 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
           </div>
 
           <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm" aria-labelledby="similar-products-heading">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">More to explore</p>
-                  <h4 id="similar-products-heading" className="mt-1 text-xl font-black text-slate-900">Similar Products</h4>
-                </div>
-                {similarProducts.length > 0 && <div className="flex gap-2">
-                  <button type="button" onClick={() => scrollSimilarProducts(-1)} aria-label="Previous similar products" className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">&lt;</button>
-                  <button type="button" onClick={() => scrollSimilarProducts(1)} aria-label="Next similar products" className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-lg font-bold text-white transition hover:bg-emerald-600">&gt;</button>
-                </div>}
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">More to explore</p>
+                <h4 id="similar-products-heading" className="mt-1 text-xl font-black text-slate-900">Similar Products</h4>
               </div>
-              {similarProducts.length === 0 ? (
-                <p className="mt-5 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
-                  No similar products are available right now.
-                </p>
-              ) : (
-                <div ref={similarProductsScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  {similarProducts.map((similar) => (
-                    <article key={similar.id} className="flex w-48 shrink-0 snap-start flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md">
-                      <img src={similar.image || fallbackImage} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-32 w-full object-cover" />
-                      <div className="flex flex-1 flex-col p-4">
-                        <span className="w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{similar.category || 'Marketplace item'}</span>
-                        <h5 className="mt-2 truncate font-black text-slate-900" title={similar.title}>{similar.title || 'Campus item'}</h5>
-                        <p className="mt-2 text-sm font-bold text-emerald-700">{similar.price ? `${Number(similar.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</p>
-                        <button type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="mt-3 w-full rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800">View Details</button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
+              {similarProducts.length > 0 && <div className="flex gap-2">
+                <button type="button" onClick={() => scrollSimilarProducts(-1)} aria-label="Previous similar products" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&lt;</button>
+                <button type="button" onClick={() => scrollSimilarProducts(1)} aria-label="Next similar products" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&gt;</button>
+              </div>}
+            </div>
+            {similarProducts.length === 0 ? (
+              <p className="mt-5 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+                No similar products are available right now.
+              </p>
+            ) : (
+              <div ref={similarProductsScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {similarProducts.map((similar) => (
+                  <article key={similar.id} className="flex w-48 shrink-0 snap-start flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md">
+                    <img src={similar.image || fallbackImage} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-32 w-full object-cover" />
+                    <div className="flex flex-1 flex-col p-4">
+                      <span className="w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{similar.category || 'Marketplace item'}</span>
+                      <h5 className="mt-2 truncate font-black text-slate-900" title={similar.title}>{similar.title || 'Campus item'}</h5>
+                      <p className="mt-2 text-sm font-bold text-emerald-700">{similar.price ? `${Number(similar.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</p>
+                      <button type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="btn-primary mt-3 w-full rounded-full px-3 py-2 text-xs font-semibold transition">View Details</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
 
         {/* የቀኝ የጎን ፓነል (Sidebar) */}
@@ -535,7 +535,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
               type="button"
               onClick={handleAddToCart}
               disabled={purchaseBlocked}
-              className="mt-5 w-full rounded-full bg-blue-600 py-3.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              className="btn-primary mt-5 w-full rounded-full py-3.5 text-sm font-semibold transition"
             >
               Add to Cart
             </button>
@@ -588,7 +588,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
                   <button
                     onClick={handleStartChat}
                     disabled={!isChatEnabled || !verifiedCurrentUser || chatLoading || !messageText.trim()}
-                    className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white hover:bg-emerald-600 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    className="btn-primary w-full rounded-full py-3.5 text-sm font-semibold transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     <span>💬</span>
                     <span>{chatLoading ? 'Sending...' : 'Send Message & Start Chat'}</span>

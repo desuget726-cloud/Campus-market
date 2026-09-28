@@ -364,7 +364,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
                     placeholder={otpMode === 'backup' ? 'BACKUP-CODE' : '000000'}
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
-                  <button type="submit" className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">{t('auth.verifyCode')}</button>
+                  <button type="submit" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold">{t('auth.verifyCode')}</button>
                 </form>
                 {otpRole === 'admin' && otpMode !== 'email' && <button type="button" onClick={() => { setOtpMode(otpMode === 'backup' ? 'authenticator' : 'backup'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">{otpMode === 'backup' ? 'Use authenticator code instead' : 'Use a backup code instead'}</button>}
               </div>
@@ -411,7 +411,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
 
                 <button
                   type="submit"
-                  className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                  className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-blue-200"
                 >
                   Login
                 </button>

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
+import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 
 const settingsSections = [
     ['account', 'Account'],
@@ -29,6 +30,8 @@ const Toggle = ({ label, checked, onChange }) => (
 
 function SettingsCenter({
     settingsTab,
+    isSidebarOpen,
+    onToggleSidebar,
     setSettingsTab,
     profileForm,
     handleProfileFieldChange,
@@ -435,7 +438,7 @@ function SettingsCenter({
                                 <div><p className="text-sm font-semibold text-slate-900">Profile Avatar</p><p className="text-xs text-slate-500">Upload a new photo from your computer.</p></div>
                             </div>
                             <label className="block text-sm font-semibold text-slate-700">Choose Image<input type="file" accept="image/*" onChange={(event) => setAvatarFile(event.target.files?.[0] || null)} className="mt-3 block w-full text-sm text-slate-700" /></label>
-                            <button type="button" onClick={handleAvatarUploadSubmit} disabled={!avatarFile || avatarUploading} className="w-full rounded-full bg-sky-600 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-400">{avatarUploading ? 'Uploading...' : 'Upload Avatar'}</button>
+                            <button type="button" onClick={handleAvatarUploadSubmit} disabled={!avatarFile || avatarUploading} className="btn-primary w-full rounded-full py-3 text-sm font-semibold">{avatarUploading ? 'Uploading...' : 'Upload Avatar'}</button>
                             {avatarUploadMessage && <p className="text-sm text-emerald-600">{avatarUploadMessage}</p>}
                         </div>
                         <form onSubmit={handleProfileSubmit} className="grid gap-4 sm:grid-cols-2">
@@ -452,7 +455,7 @@ function SettingsCenter({
                             <Field label="Phone Number"><input type="tel" value={profileForm.phone} onChange={(event) => handleProfileFieldChange('phone', event.target.value)} className={inputClass} /></Field>
                             <Field label="Select College"><select value={profileForm.college} onChange={(event) => handleProfileFieldChange('college', event.target.value)} className={inputClass}><option value="">Select College</option>{Object.keys(safeUniversityStructure).map((college) => <option key={college} value={college}>{college}</option>)}</select></Field>
                             <Field label="Select Department"><select value={profileForm.department} onChange={(event) => handleProfileFieldChange('department', event.target.value)} disabled={!profileForm.college} className={`${inputClass} disabled:cursor-not-allowed disabled:opacity-60`}><option value="">Select Department</option>{profileForm.college && safeUniversityStructure[profileForm.college]?.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
-                            <div className="sm:col-span-2">{profileMessage && <p className={`mb-4 text-sm font-semibold ${profileMessage.includes('successfully') ? 'text-emerald-600' : 'text-rose-600'}`}>{profileMessage}</p>}<button type="submit" disabled={profileSaving} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{profileSaving ? 'Saving...' : 'Save Changes'}</button></div>
+                            <div className="sm:col-span-2">{profileMessage && <p className={`mb-4 text-sm font-semibold ${profileMessage.includes('successfully') ? 'text-emerald-600' : 'text-rose-600'}`}>{profileMessage}</p>}<button type="submit" disabled={profileSaving} className="btn-primary rounded-full px-5 py-3 text-sm font-bold">{profileSaving ? 'Saving...' : 'Save Changes'}</button></div>
                         </form>
                     </div>
                 </>
@@ -614,7 +617,7 @@ function SettingsCenter({
                                 </Field>
                             </div>
                             <div className="mt-5 flex items-center justify-between gap-3">
-                                <button type="submit" disabled={securitySaving} className="rounded-full bg-sky-600 px-5 py-3 text-sm font-bold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300">{securitySaving ? 'Updating...' : 'Update Password'}</button>
+                                <button type="submit" disabled={securitySaving} className="btn-primary rounded-full px-5 py-3 text-sm font-bold">{securitySaving ? 'Updating...' : 'Update Password'}</button>
                                 {securityMessage && <p className="text-sm font-semibold text-emerald-600">{securityMessage}</p>}
                             </div>
                             {securityError && <p className="mt-3 text-sm font-semibold text-rose-600">{securityError}</p>}
@@ -656,7 +659,7 @@ function SettingsCenter({
                                     {confirmPasswordError && <p className="text-sm font-semibold text-rose-600">{confirmPasswordError}</p>}
                                     <div className="flex gap-3 pt-2">
                                         <button type="button" onClick={() => setShowConfirmPasswordModal(false)} className="flex-1 rounded-full border border-slate-200 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">Cancel</button>
-                                        <button type="submit" className="flex-1 rounded-full bg-sky-600 py-3 text-sm font-semibold text-white hover:bg-sky-700">Verify</button>
+                                        <button type="submit" className="btn-primary flex-1 rounded-full py-3 text-sm font-semibold">Verify</button>
                                     </div>
                                 </form>
                             </div>
@@ -709,7 +712,7 @@ function SettingsCenter({
                         {payoutProvidersError && <div className="sm:col-span-2 flex items-center gap-3 text-sm font-semibold text-rose-600"><p>{payoutProvidersError}</p><button type="button" onClick={() => setProviderReloadKey((value) => value + 1)} className="underline underline-offset-2">Retry</button></div>}
                         <Field label={payoutType === 'mobile_wallet' ? 'Phone Number' : 'Account Number'}><input required inputMode="numeric" pattern={payoutType === 'mobile_wallet' ? '\\d{10}' : undefined} minLength={10} maxLength={payoutType === 'mobile_wallet' ? 10 : 15} value={formData.account_number} onChange={(event) => { setAccountNumberError(''); setFormData((previous) => ({ ...previous, account_number: event.target.value })); }} className={inputClass} placeholder={payoutType === 'mobile_wallet' ? 'Enter a valid 10-digit phone number' : 'Enter a 10-15 digit account number (CBE: 13 digits)'} /></Field>
                         {accountNumberError && <p className="sm:col-span-2 -mt-2 text-sm font-semibold text-rose-600">{accountNumberError}</p>}
-                        <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-2"><button type="submit" disabled={isSubmitting} className="inline-flex items-center gap-2 rounded-full bg-emerald-500 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">{isSubmitting && <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />}{isSubmitting ? 'Connecting...' : 'Save Payout Account'}</button>{payoutMessage && <p className="text-sm font-semibold text-emerald-600">{payoutMessage}</p>}{payoutError && <p className="text-sm font-semibold text-rose-600">{payoutError}</p>}</div>
+                        <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-2"><button type="submit" disabled={isSubmitting} className="btn-primary inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-bold">{isSubmitting && <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/40 border-t-current" aria-hidden="true" />}{isSubmitting ? 'Connecting...' : 'Save Payout Account'}</button>{payoutMessage && <p className="text-sm font-semibold text-emerald-600">{payoutMessage}</p>}{payoutError && <p className="text-sm font-semibold text-rose-600">{payoutError}</p>}</div>
                     </form>
                 </>
             );
@@ -752,7 +755,7 @@ function SettingsCenter({
                             type="button"
                             onClick={handleSaveNotificationPreferences}
                             disabled={isSavingNotificationPrefs}
-                            className="inline-flex w-full items-center justify-center rounded-full bg-sky-700 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                            className="btn-primary inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-bold shadow-sm transition"
                         >
                             {isSavingNotificationPrefs ? 'Saving...' : 'Save Preferences'}
                         </button>
@@ -779,7 +782,10 @@ function SettingsCenter({
             <div className="mx-auto max-w-7xl">
                 <div className="mb-6">
                     <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Student Control Center</p>
-                    <h2 className="mt-2 text-3xl font-black text-slate-950">Account Settings</h2>
+                    <div className="mt-2 flex items-center gap-3">
+                        <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
+                        <h2 className="text-3xl font-black text-slate-950">Account Settings</h2>
+                    </div>
                 </div>
 
                 <div className="flex flex-col gap-6">

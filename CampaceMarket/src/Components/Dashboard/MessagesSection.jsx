@@ -17,10 +17,10 @@ const MessagesSection = () => {
     <div className="min-h-screen bg-sky-50 p-6">
       <div className="max-w-7xl mx-auto">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[600px]">
-          
+
           {/* Left Sidebar */}
           <div className="lg:col-span-1 bg-white rounded-[28px] shadow-lg border border-slate-100 p-6 flex flex-col">
-            
+
             {/* Header */}
             <div className="mb-6">
               <h2 className="text-2xl font-bold text-slate-900">My messages</h2>
@@ -48,11 +48,10 @@ const MessagesSection = () => {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg font-semibold transition-all relative ${
-                    activeTab === tab.id
+                  className={`w-full text-left px-4 py-2.5 rounded-lg font-semibold transition-all relative ${activeTab === tab.id
                       ? 'text-emerald-600 bg-emerald-50'
                       : 'text-slate-600 hover:bg-slate-50'
-                  }`}
+                    }`}
                 >
                   {tab.label}
                   {activeTab === tab.id && (
@@ -181,7 +180,7 @@ const MessagesSection = () => {
                       setMessageText('');
                       if (textareaRef.current) textareaRef.current.style.height = 'auto';
                     }}
-                    className={`h-11 w-11 rounded-full transition flex items-center justify-center ${messageText.trim() ? 'bg-emerald-500 text-white hover:bg-emerald-600' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
+                    className={`h-11 w-11 rounded-full transition flex items-center justify-center ${messageText.trim() ? 'btn-primary' : 'bg-slate-200 text-slate-500 hover:bg-slate-300'}`}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-9.193-5.288A1 1 0 004 6.618v10.764a1 1 0 001.559.829l9.193-5.288a1 1 0 000-1.658z" />

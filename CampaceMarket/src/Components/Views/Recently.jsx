@@ -65,7 +65,7 @@ function Recently() {
                   <p className="mt-1 text-xs text-slate-500">{item.seller} • {item.department}</p>
                   <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
                     <span>{item.time}</span>
-                    <button className="rounded-full bg-emerald-500 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-emerald-600">
+                    <button className="btn-primary rounded-full px-2.5 py-1 text-[11px] font-semibold transition">
                       View
                     </button>
                   </div>

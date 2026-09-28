@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [profileUser, setProfileUser] = useState(user);
   const { t, language, setLanguage } = useLanguage();
+  const isDashboardLayout = variant === 'dashboard';
   const effectiveRole = String(userRole || user?.role || 'student').toLowerCase();
   const isAdmin = effectiveRole === 'admin';
   const displayUser = isAdmin ? { ...user, ...profileUser } : user;
@@ -54,49 +55,53 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
 
         {/* Logo */}
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate('home')}>
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
           <img src={logs} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
           <div className="flex items-center gap-1 text-2xl font-black text-white">
 
             <span className="text-white">UniXchange</span>
           </div>
-          <button
-            type="button"
-            aria-label="Open mobile navigation"
-            aria-expanded={isMobileMenuOpen}
-            onClick={(event) => {
-              event.stopPropagation();
-              setIsMobileMenuOpen(true);
-            }}
-            className="block rounded-lg p-2 text-white transition hover:bg-white/10 md:hidden"
-          >
-            <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <path d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
+          {!isDashboardLayout && (
+            <button
+              type="button"
+              aria-label="Open mobile navigation"
+              aria-expanded={isMobileMenuOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                setIsMobileMenuOpen(true);
+              }}
+              className="block rounded-lg p-2 text-white transition hover:bg-white/10 md:hidden"
+            >
+              <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+          )}
         </div>
 
         {/* Navigation Links */}
-        <nav className="hidden md:flex items-center gap-6">
-          <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Home</button>
-          <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">About</button>
-          <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Services</button>
-          <button onClick={() => onNavigate('contact')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Contact</button>
+        {!isDashboardLayout && (
+          <nav className="hidden md:flex items-center gap-6">
+            <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Home</button>
+            <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">About</button>
+            <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Services</button>
+            <button onClick={() => onNavigate('contact')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Contact</button>
 
-          {user && (
-            <button
-              type="button"
-              onClick={() => onNavigate(userRole === 'admin' ? 'admin-dashboard' : 'student-dashboard')}
-              className="text-xs font-bold text-blue-600 bg-white px-4 py-1.5 rounded-full hover:bg-blue-50 transition shadow-sm"
-            >
-              DASHBOARD
-            </button>
-          )}
-        </nav>
+            {user && (
+              <button
+                type="button"
+                onClick={() => onNavigate(userRole === 'admin' ? 'admin-dashboard' : 'student-dashboard')}
+                className="text-xs font-bold text-blue-600 bg-white px-4 py-1.5 rounded-full hover:bg-blue-50 transition shadow-sm"
+              >
+                DASHBOARD
+              </button>
+            )}
+          </nav>
+        )}
 
         {/* Right side: Login/Register OR Profile Dropdown */}
         <div className="flex items-center gap-4 relative">
-          <div className="hidden items-center gap-1 text-sm font-semibold md:flex" aria-label={t('navbar.language')}>
+          <div className={`${isDashboardLayout ? 'flex' : 'hidden md:flex'} items-center gap-1 text-sm font-semibold`} aria-label={t('navbar.language')}>
             <button type="button" onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white' : 'text-blue-200'}>{t('navbar.english')}</button>
             <span className="text-blue-200" aria-hidden="true">|</span>
             <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-white/90'}>{t('navbar.amharic')}</button>
@@ -230,7 +235,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
       </div>
 
-      {isMobileMenuOpen && (
+      {!isDashboardLayout && isMobileMenuOpen && (
         <>
           <button
             type="button"

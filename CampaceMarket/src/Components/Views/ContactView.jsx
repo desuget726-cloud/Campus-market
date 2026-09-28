@@ -15,13 +15,13 @@ const ContactView = ({ user }) => {
   return (
     <>
       <section className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:py-12">
-        <div className="rounded-[28px] bg-slate-950 px-6 py-10 text-white shadow-xl sm:px-10">
-          <p className="text-sm font-bold uppercase tracking-[0.2em] text-emerald-300">Campace Market support</p>
+        <div className="rounded-[28px] bg-white-950 px-6 py-10 text-slate-900 shadow-xl sm:px-10">
+          <p className="text-sm font-bold uppercase tracking-[0.2em] text-slate-900">Campace Market support</p>
           <h2 className="mt-3 text-4xl font-black tracking-tight sm:text-5xl">Contact Us</h2>
-          <p className="mt-4 max-w-2xl text-base leading-7 text-slate-300">Questions about payments, orders, accounts, or campus safety? We are here to help you trade with confidence.</p>
+          <p className="mt-4 max-w-2xl text-base leading-7 text-slate-900">Questions about payments, orders, accounts, or campus safety? We are here to help you trade with confidence.</p>
           <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
-            <button type="button" onClick={() => setIsSupportModalOpen(true)} className="rounded-full bg-emerald-400 px-6 py-3 font-bold text-slate-950 transition hover:bg-emerald-300">Open Support Form</button>
-            <span className="text-sm text-slate-300">We typically respond within 24 hours.</span>
+            <button type="button" onClick={() => setIsSupportModalOpen(true)} className="btn-primary rounded-full px-6 py-3 font-bold transition text-white">Open Support Form</button>
+            <span className="text-sm text-slate-900">We typically respond within 24 hours.</span>
           </div>
         </div>
 

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 
 const filters = ["All", "Orders", "Payments", "System"];
 
@@ -103,6 +104,8 @@ const getOrderId = (notification) => {
 
 function NotificationCenter({
     notifications,
+    isSidebarOpen,
+    onToggleSidebar,
     unreadCount,
     isMarkingRead,
     onMarkAllRead,
@@ -178,9 +181,12 @@ function NotificationCenter({
                         <p className="text-xs font-bold uppercase tracking-[0.28em] text-sky-600">
                             Notification Center
                         </p>
-                        <h2 className="mt-2 text-3xl font-black text-slate-950">
-                            Stay ahead of campus activity.
-                        </h2>
+                        <div className="mt-2 flex items-center gap-3">
+                            <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
+                            <h2 className="text-3xl font-black text-slate-950">
+                                Stay ahead of campus activity.
+                            </h2>
+                        </div>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
                             Orders, messages, payments, listings, and system updates organized
                             into one actionable feed.
@@ -196,7 +202,7 @@ function NotificationCenter({
                             type="button"
                             onClick={onMarkAllRead}
                             disabled={!safeNotifications.length || isMarkingRead}
-                            className="rounded-full bg-slate-900 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                            className="btn-primary rounded-full px-4 py-2.5 text-sm font-bold transition"
                         >
                             {isMarkingRead ? "Marking…" : "Mark all as read"}
                         </button>
@@ -209,7 +215,7 @@ function NotificationCenter({
                             key={filter}
                             type="button"
                             onClick={() => handleFilterChange(filter)}
-                            className={`rounded-full px-4 py-2 text-sm font-bold transition ${activeFilter === filter ? "bg-emerald-500 text-white shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+                            className={`rounded-full px-4 py-2 text-sm font-bold transition ${activeFilter === filter ? "btn-primary shadow-sm" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
                         >
                             {filter}
                         </button>
@@ -302,7 +308,7 @@ function NotificationCenter({
                                                         <button
                                                             type="button"
                                                             onClick={() => handleAction(notification)}
-                                                            className={`text-sm font-black ${isRead ? "text-sky-600 hover:text-sky-800" : "text-sky-700 hover:text-sky-900"}`}
+                                                            className="text-sm font-black text-[var(--brand-primary)] hover:text-[var(--brand-primary-hover)]"
                                                         >
                                                             {category === "Orders"
                                                                 ? (getDisputeTarget(notification) ? "View Dispute →" : "View Order →")

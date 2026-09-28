@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 
 const TIMELINE = [
   { key: 'placed', label: 'Order Placed' },
@@ -80,7 +81,7 @@ function PrintableReceipt({ receipt }) {
   );
 }
 
-function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt }) {
+function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt, isSidebarOpen, onToggleSidebar }) {
   const [sellerPickupCode, setSellerPickupCode] = useState('');
   const [sellerResponse, setSellerResponse] = useState('');
   const [sellerResponseError, setSellerResponseError] = useState('');
@@ -284,10 +285,13 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-300">Order Details</p>
-            <h1 className="mt-2 text-3xl font-black">Order #{order.id}</h1>
+            <div className="mt-2 flex items-center gap-3">
+              <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} tone="dark" />
+              <h1 className="text-3xl font-black">Order #{order.id}</h1>
+            </div>
             <p className="mt-2 text-sm text-slate-300">Placed {formatDate(order.created_at)}</p>
           </div>
-            <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2">
             <span className="rounded-full bg-[#0d1638] px-4 py-2 text-sm font-bold text-white">Order: {statusLabel}</span>
             <span className="rounded-full bg-emerald-400/15 px-4 py-2 text-sm font-bold text-emerald-200">Payment: {paymentStatus}</span>
           </div>
@@ -295,7 +299,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
       </section>
 
       <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Tracking</p><h2 className="mt-1 text-xl font-black text-slate-950">Order progress</h2></div><button type="button" onClick={onRefresh} className="inline-flex items-center gap-2 rounded-full border border-sky-200 px-3 py-2 text-sm font-bold text-sky-700 hover:bg-sky-50 hover:text-sky-950"><span aria-hidden="true" className="text-base">↻</span>Refresh</button></div>
+        <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Tracking</p><h2 className="mt-1 text-xl font-black text-slate-950">Order progress</h2></div><button type="button" onClick={onRefresh} className="inline-flex items-center gap-2 rounded-full border border-[var(--brand-primary)] px-3 py-2 text-sm font-bold text-[var(--brand-primary)] hover:bg-sky-50 hover:text-[var(--brand-primary-hover)]"><span aria-hidden="true" className="text-base">↻</span>Refresh</button></div>
         <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
           {TIMELINE.map((step, index) => {
             const complete = status === 'Disputed' ? index < currentIndex : index <= currentIndex;
@@ -341,12 +345,12 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
           </div>
         </div>
         <div className="mt-5 flex flex-wrap gap-3">
-        {isBuyer && canConfirm && <button type="button" disabled={hasActiveDispute} onClick={() => onConfirmReceived?.(order)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Confirm Item Received</button>}
-        {!isBuyer && action.includes('accept') && <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'accept')} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Accept Order</button>}
-        {!isBuyer && action.includes('prepare') && <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'ready')} className="rounded-full bg-sky-600 px-5 py-3 text-sm font-black text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300">Mark Ready for Pickup</button>}
-        {!isBuyer && action.includes('handover') && <div className="flex flex-wrap items-center gap-2"><input type="text" inputMode="numeric" maxLength={4} value={sellerPickupCode} onChange={(event) => setSellerPickupCode(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="Pickup code" disabled={hasActiveDispute} className="w-32 rounded-full border border-slate-200 px-4 py-3 text-sm font-bold tracking-[0.15em] outline-none focus:border-emerald-400 disabled:bg-slate-100" /><button type="button" disabled={hasActiveDispute || sellerPickupCode.length !== 4} onClick={() => onSellerAction?.(order, 'handover', sellerPickupCode)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Confirm Handover</button></div>}
-        {hasActiveDispute && <p className="basis-full text-sm font-bold text-rose-700">You can't confirm receipt while a dispute is open. Wait for admin resolution or withdraw your dispute.</p>}
-        {!isBuyer && <span className="rounded-full bg-slate-100 px-5 py-3 text-sm font-bold text-slate-700">{order.required_seller_action || 'Review order'}</span>}
+          {isBuyer && canConfirm && <button type="button" disabled={hasActiveDispute} onClick={() => onConfirmReceived?.(order)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Confirm Item Received</button>}
+          {!isBuyer && action.includes('accept') && <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'accept')} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Accept Order</button>}
+          {!isBuyer && action.includes('prepare') && <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'ready')} className="rounded-full bg-sky-600 px-5 py-3 text-sm font-black text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300">Mark Ready for Pickup</button>}
+          {!isBuyer && action.includes('handover') && <div className="flex flex-wrap items-center gap-2"><input type="text" inputMode="numeric" maxLength={4} value={sellerPickupCode} onChange={(event) => setSellerPickupCode(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="Pickup code" disabled={hasActiveDispute} className="w-32 rounded-full border border-slate-200 px-4 py-3 text-sm font-bold tracking-[0.15em] outline-none focus:border-emerald-400 disabled:bg-slate-100" /><button type="button" disabled={hasActiveDispute || sellerPickupCode.length !== 4} onClick={() => onSellerAction?.(order, 'handover', sellerPickupCode)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Confirm Handover</button></div>}
+          {hasActiveDispute && <p className="basis-full text-sm font-bold text-rose-700">You can't confirm receipt while a dispute is open. Wait for admin resolution or withdraw your dispute.</p>}
+          {!isBuyer && <span className="rounded-full bg-slate-100 px-5 py-3 text-sm font-bold text-slate-700">{order.required_seller_action || 'Review order'}</span>}
         </div>
       </section>
       {hasDispute && (<section className="rounded-[28px] border border-rose-200 bg-rose-50/60 p-5 shadow-sm sm:p-7">

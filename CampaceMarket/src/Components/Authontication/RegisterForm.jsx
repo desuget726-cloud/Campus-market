@@ -269,7 +269,7 @@ function RegisterForm({ onRegisterSuccess, onCancel, onToggleLogin }) {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-400"
+              className="btn-primary w-full rounded-full py-3.5 text-sm font-semibold transition"
             >
               {isSubmitting ? t('auth.creatingAccount') : t('auth.createAccount')}
             </button>

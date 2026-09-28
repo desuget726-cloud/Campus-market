@@ -55,376 +55,8 @@ const getCategoryAdCount = (value) => {
   return Number(match[1]) * multiplier;
 };
 
-
-const defaultCategories = [
-  {
-    id: 1,
-    name: 'Electronics',
-    icon: '💻',
-    adsCount: '1.2K listings',
-    items: [
-      { name: 'Laptop', icon: '💻', adsCount: '245 ads' },
-      { name: 'Desktop Computer', icon: '🖥️', adsCount: '84 ads' },
-      { name: 'Monitor', icon: '📺', adsCount: '56 ads' },
-      { name: 'Keyboard', icon: '⌨️', adsCount: '112 ads' },
-      { name: 'Mouse', icon: '🖱️', adsCount: '95 ads' },
-      { name: 'Webcam', icon: '📷', adsCount: '32 ads' },
-      { name: 'Printer', icon: '🖨️', adsCount: '47 ads' },
-      { name: 'Calculator', icon: '🧮', adsCount: '180 ads' },
-      { name: 'USB Flash Drive', icon: '💾', adsCount: '310 ads' },
-      { name: 'External Hard Drive', icon: '💾', adsCount: '88 ads' },
-      { name: 'SSD', icon: '💾', adsCount: '142 ads' },
-      { name: 'Power Bank', icon: '🔋', adsCount: '220 ads' },
-      { name: 'Phone Charger', icon: '🔌', adsCount: '340 ads' },
-      { name: 'Laptop Charger', icon: '🔌', adsCount: '150 ads' },
-      { name: 'Earphones', icon: '🎧', adsCount: '420 ads' },
-      { name: 'Headphones', icon: '🎧', adsCount: '180 ads' },
-      { name: 'Bluetooth Speaker', icon: '🔊', adsCount: '160 ads' },
-      { name: 'Tablet', icon: '📱', adsCount: '115 ads' },
-      { name: 'Smartwatch', icon: '⌚', adsCount: '95 ads' },
-      { name: 'Wi-Fi Router', icon: '📶', adsCount: '72 ads' }
-    ]
-  },
-  {
-    id: 2,
-    name: 'Mobile Phones & Accessories',
-    icon: '📱',
-    adsCount: '480 listings',
-    items: [
-      { name: 'Android Phone', icon: '📱', adsCount: '410 ads' },
-      { name: 'iPhone', icon: '📱', adsCount: '520 ads' },
-      { name: 'Feature Phone', icon: '📞', adsCount: '64 ads' },
-      { name: 'Phone Case', icon: '🔌', adsCount: '1.2K ads' },
-      { name: 'Screen Protector', icon: '🛡️', adsCount: '950 ads' },
-      { name: 'Memory Card', icon: '💾', adsCount: '320 ads' },
-      { name: 'SIM Card', icon: '💳', adsCount: '140 ads' },
-      { name: 'SIM Eject Tool', icon: '📌', adsCount: '60 ads' },
-      { name: 'USB Cable', icon: '🔌', adsCount: '850 ads' },
-      { name: 'OTG Adapter', icon: '🔌', adsCount: '110 ads' },
-      { name: 'Wireless Charger', icon: '🔋', adsCount: '95 ads' },
-      { name: 'Selfie Stick', icon: '🤳', adsCount: '40 ads' },
-      { name: 'Mobile Tripod', icon: '🔭', adsCount: '75 ads' },
-      { name: 'Ring Light', icon: '💡', adsCount: '115 ads' },
-      { name: 'Phone Holder', icon: '🚗', adsCount: '130 ads' },
-      { name: 'Bluetooth Earbuds', icon: '🎧', adsCount: '280 ads' }
-    ]
-  },
-  {
-    id: 3,
-    name: 'Academic Books',
-    icon: '📚',
-    adsCount: '2.4K listings',
-    items: [
-      { name: 'Programming Books', icon: '📚', adsCount: '410 ads' },
-      { name: 'Database Books', icon: '📚', adsCount: '150 ads' },
-      { name: 'Networking Books', icon: '📚', adsCount: '130 ads' },
-      { name: 'Cybersecurity Books', icon: '📚', adsCount: '95 ads' },
-      { name: 'Artificial Intelligence Books', icon: '📚', adsCount: '180 ads' },
-      { name: 'Data Structures Books', icon: '📚', adsCount: '210 ads' },
-      { name: 'Operating System Books', icon: '📚', adsCount: '85 ads' },
-      { name: 'Software Engineering Books', icon: '📚', adsCount: '140 ads' },
-      { name: 'Mathematics Books', icon: '📚', adsCount: '310 ads' },
-      { name: 'Physics Books', icon: '📚', adsCount: '240 ads' },
-      { name: 'Chemistry Books', icon: '📚', adsCount: '185 ads' },
-      { name: 'Biology Books', icon: '📚', adsCount: '195 ads' },
-      { name: 'Accounting Books', icon: '📚', adsCount: '165 ads' },
-      { name: 'Economics Books', icon: '📚', adsCount: '220 ads' },
-      { name: 'Marketing Books', icon: '📚', adsCount: '140 ads' },
-      { name: 'Management Books', icon: '📚', adsCount: '180 ads' },
-      { name: 'Law Books', icon: '📚', adsCount: '115 ads' },
-      { name: 'Medical Books', icon: '📚', adsCount: '290 ads' },
-      { name: 'English Grammar Books', icon: '📚', adsCount: '135 ads' },
-      { name: 'Dictionaries', icon: '📚', adsCount: '80 ads' },
-      { name: 'Research Methodology Books', icon: '📚', adsCount: '95 ads' },
-      { name: 'Thesis Writing Books', icon: '📚', adsCount: '70 ads' },
-      { name: 'Entrance Exam Books', icon: '📚', adsCount: '120 ads' }
-    ]
-  },
-  {
-    id: 4,
-    name: 'Stationery',
-    icon: '✏️',
-    adsCount: '350 listings',
-    items: [
-      { name: 'Notebook', icon: '📓', adsCount: '450 ads' },
-      { name: 'Exercise Book', icon: '📖', adsCount: '620 ads' },
-      { name: 'Pens', icon: '🖊️', adsCount: '850 ads' },
-      { name: 'Pencils', icon: '✏️', adsCount: '510 ads' },
-      { name: 'Mechanical Pencil', icon: '✏️', adsCount: '140 ads' },
-      { name: 'Eraser', icon: '🧼', adsCount: '95 ads' },
-      { name: 'Sharpener', icon: '🧼', adsCount: '80 ads' },
-      { name: 'Ruler', icon: '📏', adsCount: '120 ads' },
-      { name: 'Marker', icon: '🖊️', adsCount: '210 ads' },
-      { name: 'Highlighter', icon: '🖊️', adsCount: '160 ads' },
-      { name: 'Sticky Notes', icon: '📄', adsCount: '280 ads' },
-      { name: 'Folder', icon: '📁', adsCount: '195 ads' },
-      { name: 'Binder', icon: '📁', adsCount: '130 ads' },
-      { name: 'File Organizer', icon: '📁', adsCount: '85 ads' },
-      { name: 'Stapler', icon: '📎', adsCount: '95 ads' },
-      { name: 'Staples', icon: '📎', adsCount: '40 ads' },
-      { name: 'Glue', icon: '🧴', adsCount: '110 ads' },
-      { name: 'Scissors', icon: '✂️', adsCount: '75 ads' },
-      { name: 'A4 Paper', icon: '📄', adsCount: '340 ads' },
-      { name: 'Paper Clips', icon: '📎', adsCount: '150 ads' }
-    ]
-  },
-  {
-    id: 5,
-    name: 'IT & Computer Accessories',
-    icon: '🔌',
-    adsCount: '810 listings',
-    items: [
-      { name: 'RAM', icon: '🔌', adsCount: '120 ads' },
-      { name: 'SSD', icon: '💾', adsCount: '180 ads' },
-      { name: 'HDD', icon: '💾', adsCount: '95 ads' },
-      { name: 'Graphics Card', icon: '🖥️', adsCount: '45 ads' },
-      { name: 'Processor (CPU)', icon: '🧠', adsCount: '60 ads' },
-      { name: 'Motherboard', icon: '🔩', adsCount: '35 ads' },
-      { name: 'Ethernet Cable', icon: '🧵', adsCount: '210 ads' },
-      { name: 'HDMI Cable', icon: '📺', adsCount: '180 ads' },
-      { name: 'VGA Cable', icon: '🖥️', adsCount: '90 ads' },
-      { name: 'DisplayPort Cable', icon: '🖥️', adsCount: '50 ads' },
-      { name: 'USB Hub', icon: '🔌', adsCount: '115 ads' },
-      { name: 'USB Adapter', icon: '🔌', adsCount: '130 ads' },
-      { name: 'Laptop Stand', icon: '🪑', adsCount: '85 ads' },
-      { name: 'Cooling Pad', icon: '❄️', adsCount: '70 ads' },
-      { name: 'Raspberry Pi', icon: '🍓', adsCount: '40 ads' },
-      { name: 'Arduino Board', icon: '🔧', adsCount: '95 ads' },
-      { name: 'Breadboard', icon: '🧱', adsCount: '150 ads' },
-      { name: 'Sensors', icon: '📡', adsCount: '240 ads' },
-      { name: 'Power Supply', icon: '🔋', adsCount: '65 ads' },
-      { name: 'Network Switch', icon: '🔀', adsCount: '30 ads' }
-    ]
-  },
-  {
-    id: 6,
-    name: 'Laboratory Equipment',
-    icon: '🧪',
-    adsCount: '190 listings',
-    items: [
-      { name: 'Lab Coat', icon: '🥼', adsCount: '85 ads' },
-      { name: 'Safety Goggles', icon: '👓', adsCount: '40 ads' },
-      { name: 'Laboratory Gloves', icon: '🧤', adsCount: '110 ads' },
-      { name: 'Scientific Calculator', icon: '🧮', adsCount: '95 ads' },
-      { name: 'Lab Notebook', icon: '📓', adsCount: '60 ads' },
-      { name: 'Measuring Tape', icon: '📏', adsCount: '30 ads' },
-      { name: 'Digital Multimeter', icon: '📟', adsCount: '45 ads' },
-      { name: 'Electronic Components Kit', icon: '🔌', adsCount: '70 ads' },
-      { name: 'Breadboard Kit', icon: '🧱', adsCount: '80 ads' },
-      { name: 'Jumper Wires', icon: '🔌', adsCount: '150 ads' },
-      { name: 'Test Tubes', icon: '🧪', adsCount: '120 ads' },
-      { name: 'Beakers', icon: '🧪', adsCount: '95 ads' }
-    ]
-  },
-  {
-    id: 9,
-    name: 'Clothing',
-    icon: '👕',
-    adsCount: '1.5K listings',
-    items: [
-      { name: 'T-Shirts', icon: '👕', adsCount: '450 ads' },
-      { name: 'Polo Shirts', icon: '👕', adsCount: '180 ads' },
-      { name: 'Formal Shirts', icon: '👔', adsCount: '120 ads' },
-      { name: 'Jeans', icon: '👖', adsCount: '310 ads' },
-      { name: 'Trousers', icon: '👖', adsCount: '140 ads' },
-      { name: 'Jackets', icon: '🧥', adsCount: '210 ads' },
-      { name: 'Hoodies', icon: '🧥', adsCount: '280 ads' },
-      { name: 'Sweaters', icon: '🧥', adsCount: '130 ads' },
-      { name: 'Sportswear', icon: '👟', adsCount: '95 ads' },
-      { name: 'Shoes', icon: '👞', adsCount: '250 ads' },
-      { name: 'Sneakers', icon: '👟', adsCount: '420 ads' },
-      { name: 'Sandals', icon: '👡', adsCount: '110 ads' },
-      { name: 'Slippers', icon: '🥿', adsCount: '150 ads' },
-      { name: 'Belt', icon: '🧣', adsCount: '85 ads' },
-      { name: 'Cap', icon: '🧢', adsCount: '120 ads' },
-      { name: 'Scarf', icon: '🧣', adsCount: '60 ads' }
-    ]
-  },
-  {
-    id: 10,
-    name: 'Bags',
-    icon: '🎒',
-    adsCount: '320 listings',
-    items: [
-      { name: 'Backpack', icon: '🎒', adsCount: '180 ads' },
-      { name: 'Laptop Bag', icon: '💼', adsCount: '65 ads' },
-      { name: 'School Bag', icon: '🎒', adsCount: '45 ads' },
-      { name: 'Travel Bag', icon: '👜', adsCount: '30 ads' },
-      { name: 'Handbag', icon: '👜', adsCount: '85 ads' },
-      { name: 'Duffel Bag', icon: '👜', adsCount: '40 ads' },
-      { name: 'Shoulder Bag', icon: '👜', adsCount: '55 ads' },
-      { name: 'Tote Bag', icon: '👜', adsCount: '70 ads' },
-      { name: 'Gym Bag', icon: '🎒', adsCount: '25 ads' }
-    ]
-  },
-  {
-    id: 11,
-    name: 'Sports Equipment',
-    icon: '⚽',
-    adsCount: '270 listings',
-    items: [
-      { name: 'Football', icon: '⚽', adsCount: '110 ads' },
-      { name: 'Basketball', icon: '🏀', adsCount: '65 ads' },
-      { name: 'Volleyball', icon: '🏐', adsCount: '45 ads' },
-      { name: 'Handball', icon: '🤾', adsCount: '20 ads' },
-      { name: 'Badminton Racket', icon: '🏸', adsCount: '35 ads' },
-      { name: 'Shuttlecock', icon: '🏸', adsCount: '80 ads' },
-      { name: 'Tennis Racket', icon: '🎾', adsCount: '25 ads' },
-      { name: 'Table Tennis Bat', icon: '🏓', adsCount: '40 ads' },
-      { name: 'Running Shoes', icon: '👟', adsCount: '120 ads' },
-      { name: 'Gym Gloves', icon: '🥊', adsCount: '50 ads' },
-      { name: 'Yoga Mat', icon: '🧘', adsCount: '95 ads' },
-      { name: 'Skipping Rope', icon: '🤸', adsCount: '60 ads' },
-      { name: 'Water Bottle', icon: '🍼', adsCount: '150 ads' },
-      { name: 'Sports Bag', icon: '🎒', adsCount: '30 ads' }
-    ]
-  },
-  {
-    id: 12,
-    name: 'Musical Instruments',
-    icon: '🎸',
-    adsCount: '150 listings',
-    items: [
-      { name: 'Acoustic Guitar', icon: '🎸', adsCount: '65 ads' },
-      { name: 'Electric Guitar', icon: '🎸', adsCount: '25 ads' },
-      { name: 'Keyboard Piano', icon: '🎹', adsCount: '30 ads' },
-      { name: 'Violin', icon: '🎻', adsCount: '15 ads' },
-      { name: 'Drum Set', icon: '🥁', adsCount: '10 ads' },
-      { name: 'Flute', icon: '🎺', adsCount: '20 ads' },
-      { name: 'Recorder', icon: '🎺', adsCount: '35 ads' },
-      { name: 'Microphone', icon: '🎤', adsCount: '45 ads' },
-      { name: 'Guitar Amplifier', icon: '🔊', adsCount: '20 ads' },
-      { name: 'Guitar Strings', icon: '🎸', adsCount: '80 ads' },
-      { name: 'Music Stand', icon: '🎼', adsCount: '15 ads' },
-      { name: 'Headset', icon: '🎧', adsCount: '95 ads' }
-    ]
-  },
-  {
-    id: 13,
-    name: 'Bicycles & Transportation',
-    icon: '🚲',
-    adsCount: '110 listings',
-    items: [
-      { name: 'Bicycle', icon: '🚲', adsCount: '45 ads' },
-      { name: 'Mountain Bike', icon: '🚲', adsCount: '25 ads' },
-      { name: 'Road Bike', icon: '🚲', adsCount: '15 ads' },
-      { name: 'Bicycle Helmet', icon: '🪖', adsCount: '30 ads' },
-      { name: 'Bicycle Lock', icon: '🔒', adsCount: '55 ads' },
-      { name: 'Bicycle Pump', icon: '🔧', adsCount: '40 ads' },
-      { name: 'Bicycle Lights', icon: '💡', adsCount: '35 ads' },
-      { name: 'Bicycle Bell', icon: '🔔', adsCount: '60 ads' },
-      { name: 'Bicycle Basket', icon: '🧺', adsCount: '15 ads' },
-      { name: 'Spare Tire Tube', icon: '🚲', adsCount: '80 ads' }
-    ]
-  },
-  {
-    id: 15,
-    name: 'Art & Design Materials',
-    icon: '🎨',
-    adsCount: '230 listings',
-    items: [
-      { name: 'Sketchbook', icon: '📓', adsCount: '85 ads' },
-      { name: 'Drawing Pencil Set', icon: '✏️', adsCount: '110 ads' },
-      { name: 'Colored Pencils', icon: '✏️', adsCount: '120 ads' },
-      { name: 'Acrylic Paint', icon: '🎨', adsCount: '95 ads' },
-      { name: 'Watercolor Paint', icon: '🎨', adsCount: '60 ads' },
-      { name: 'Oil Paint', icon: '🎨', adsCount: '40 ads' },
-      { name: 'Paint Brushes', icon: '🖌️', adsCount: '130 ads' },
-      { name: 'Canvas', icon: '🖼️', adsCount: '75 ads' },
-      { name: 'Palette', icon: '🎨', adsCount: '50 ads' },
-      { name: 'Markers', icon: '🖊️', adsCount: '95 ads' },
-      { name: 'Charcoal Pencils', icon: '✏️', adsCount: '40 ads' },
-      { name: 'Easel', icon: '🖼️', adsCount: '20 ads' }
-    ]
-  },
-  {
-    id: 16,
-    name: 'Graduation Items',
-    icon: '🎓',
-    adsCount: '450 listings',
-    items: [
-      { name: 'Graduation Gown', icon: '🎓', adsCount: '180 ads' },
-      { name: 'Graduation Cap', icon: '🎓', adsCount: '140 ads' },
-      { name: 'Academic Hood', icon: '🎓', adsCount: '65 ads' },
-      { name: 'Graduation Shoes', icon: '👞', adsCount: '80 ads' },
-      { name: 'Graduation Sash', icon: '🧣', adsCount: '95 ads' },
-      { name: 'Graduation Frame', icon: '🖼️', adsCount: '110 ads' },
-      { name: 'Certificate Folder', icon: '📁', adsCount: '50 ads' },
-      { name: 'Graduation Decorations', icon: '🎈', adsCount: '130 ads' },
-      { name: 'Flower Bouquet', icon: '💐', adsCount: '220 ads' }
-    ]
-  },
-  {
-    id: 17,
-    name: 'Project Materials',
-    icon: '🛠️',
-    adsCount: '620 listings',
-    items: [
-      { name: 'Printed Thesis', icon: '📄', adsCount: '150 ads' },
-      { name: 'Spiral Binding', icon: '🌀', adsCount: '310 ads' },
-      { name: 'Hard Cover Binding', icon: '📖', adsCount: '180 ads' },
-      { name: 'Project Report', icon: '📄', adsCount: '115 ads' },
-      { name: 'Presentation Pointer', icon: '🔦', adsCount: '45 ads' },
-      { name: 'Poster Printing', icon: '📄', adsCount: '90 ads' },
-      { name: 'Electronic Components', icon: '🔌', adsCount: '420 ads' },
-      { name: 'Arduino Kit', icon: '🔧', adsCount: '240 ads' },
-      { name: 'Raspberry Pi Kit', icon: '🍓', adsCount: '80 ads' },
-      { name: 'Sensors', icon: '📡', adsCount: '310 ads' },
-      { name: 'Breadboard', icon: '🧱', adsCount: '180 ads' },
-      { name: 'Jumper Wires', icon: '🔌', adsCount: '250 ads' },
-      { name: 'Prototype Board', icon: '🧩', adsCount: '65 ads' }
-    ]
-  },
-  {
-    id: 18,
-    name: 'Health & Personal Care',
-    icon: '🧼',
-    adsCount: '580 listings',
-    items: [
-      { name: 'Face Mask', icon: '😷', adsCount: '180 ads' },
-      { name: 'Hand Sanitizer', icon: '🧴', adsCount: '220 ads' },
-      { name: 'First Aid Kit', icon: '🩹', adsCount: '50 ads' },
-      { name: 'Thermometer', icon: '🌡️', adsCount: '35 ads' },
-      { name: 'Water Bottle', icon: '🍼', adsCount: '410 ads' },
-      { name: 'Water Flask', icon: '🍼', adsCount: '130 ads' },
-      { name: 'Umbrella', icon: '🌂', adsCount: '210 ads' },
-      { name: 'Tissue Paper', icon: '🧻', adsCount: '350 ads' },
-      { name: 'Toothbrush', icon: '🪥', adsCount: '140 ads' },
-      { name: 'Toothpaste', icon: '🧴', adsCount: '180 ads' },
-      { name: 'Soap', icon: '🧼', adsCount: '290 ads' },
-      { name: 'Shampoo', icon: '🧴', adsCount: '115 ads' }
-    ]
-  },
-  {
-    id: 19,
-    name: 'Miscellaneous',
-    icon: '📦',
-    adsCount: '1.1K listings',
-    items: [
-      { name: 'Alarm Clock', icon: '⏰', adsCount: '140 ads' },
-      { name: 'Wall Clock', icon: '🕰️', adsCount: '65 ads' },
-      { name: 'Flashlight', icon: '🔦', adsCount: '110 ads' },
-      { name: 'Extension Cable', icon: '🔌', adsCount: '340 ads' },
-      { name: 'Power Strip', icon: '🔌', adsCount: '210 ads' },
-      { name: 'Tool Kit', icon: '🛠️', adsCount: '80 ads' },
-      { name: 'Screwdriver Set', icon: '🛠️', adsCount: '115 ads' },
-      { name: 'Tape', icon: '🩹', adsCount: '240 ads' },
-      { name: 'Glue Gun', icon: '🔫', adsCount: '95 ads' },
-      { name: 'Storage Box', icon: '📦', adsCount: '310 ads' },
-      { name: 'Laundry Basket', icon: '🧺', adsCount: '180 ads' },
-      { name: 'Clothes Hangers', icon: '👔', adsCount: '450 ads' },
-      { name: 'Mirror', icon: '🪞', adsCount: '120 ads' },
-      { name: 'Desk Lamp', icon: '💡', adsCount: '290 ads' },
-      { name: 'Calendar', icon: '📅', adsCount: '80 ads' },
-      { name: 'Whiteboard', icon: '📋', adsCount: '115 ads' },
-      { name: 'Marker Board', icon: '📋', adsCount: '70 ads' },
-      { name: 'Portable Fan', icon: '🌀', adsCount: '135 ads' }
-    ]
-  }
-];
-
 function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, onNavigateToMessages }) {
-  const [categories, setCategories] = useState(defaultCategories);
+  const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -487,11 +119,11 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
           }))
           : Array.isArray(category.items) ? category.items : [],
       }));
-      setCategories(normalizedCategories.length ? normalizedCategories : defaultCategories);
+      setCategories(normalizedCategories);
     } catch (error) {
       console.error('Category fetch error:', error);
       setLoadError('The marketplace service is unavailable. Please check the backend and try again.');
-      setCategories(defaultCategories);
+      setCategories([]);
     }
   };
 
@@ -704,7 +336,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
               />
               <button
                 type="submit"
-                className="rounded-full bg-emerald-500 px-8 py-3.5 font-semibold text-white hover:bg-emerald-600 transition shadow-md whitespace-nowrap"
+                className="btn-primary rounded-full px-8 py-3.5 font-semibold transition shadow-md whitespace-nowrap"
               >
                 Search Materials
               </button>
@@ -801,7 +433,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                   <button
                     type="button"
                     onClick={() => setShowAllCategories((prev) => !prev)}
-                    className="w-full rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 transition"
+                    className="btn-primary w-full rounded-full px-4 py-2 text-sm font-semibold transition"
                   >
                     {showAllCategories ? (
                       <span className="flex items-center justify-center gap-2">Show Less <span></span></span>
@@ -823,8 +455,8 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                       <p className="mt-1 text-sm text-slate-500">Relevant products selected from your campus marketplace activity.</p>
                     </div>
                     <div className="flex shrink-0 gap-2">
-                      <button type="button" onClick={() => scrollAiRecommendations(-1)} aria-label="Previous AI recommendations" className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-lg font-bold text-slate-700 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700">&lt;</button>
-                      <button type="button" onClick={() => scrollAiRecommendations(1)} aria-label="Next AI recommendations" className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-lg font-bold text-white transition hover:bg-emerald-600">&gt;</button>
+                      <button type="button" onClick={() => scrollAiRecommendations(-1)} aria-label="Previous AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&lt;</button>
+                      <button type="button" onClick={() => scrollAiRecommendations(1)} aria-label="Next AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&gt;</button>
                     </div>
                   </div>
 
@@ -836,7 +468,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                           <p className="truncate text-xs font-bold text-emerald-600">{product.category || 'Marketplace pick'}</p>
                           <h4 className="mt-1 truncate font-black text-slate-950">{product.title || 'Recommended product'}</h4>
                           <p className="mt-2 text-sm font-bold text-slate-700">{formatEtb(product.price)}</p>
-                          <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="mt-3 w-full rounded-full border border-slate-950 bg-white px-3 py-2 text-xs font-bold text-slate-950 hover:bg-slate-50 transition-colors cursor-pointer">View Details</button>
+                          <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="btn-primary mt-3 w-full rounded-full px-3 py-2 text-xs font-bold transition-colors cursor-pointer">View Details</button>
                         </div>
                       </article>
                     ))}
@@ -878,7 +510,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                               event.stopPropagation();
                               openProduct(product);
                             }}
-                            className="rounded-full bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                            className="btn-primary rounded-full px-4 py-1.5 text-xs font-semibold transition-colors cursor-pointer"
                           >
                             View Details
                           </button>

@@ -118,7 +118,7 @@ const AboutView = ({ onNavigate }) => (
         <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the campus exchange.</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-emerald-50">Buy from verified students, sell what you no longer need, and keep every exchange close to campus.</p>
       </div>
-      <button type="button" onClick={() => onNavigate?.('signup')} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-sm font-black text-emerald-700 transition hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-emerald-600">
+      <button type="button" onClick={() => onNavigate?.('signup')} className="btn-primary inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-black transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-emerald-600">
         Create Your Account
         <ArrowRight size={17} aria-hidden="true" />
       </button>
