@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
+import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
 const TIMELINE = [
   { key: 'placed', label: 'Order Placed' },
@@ -231,6 +232,8 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
   const itemTotal = Number(order.item_total ?? Number(order.price || 0) * quantity);
   const totalPaid = Number(order.total_paid ?? itemTotal);
   const isBuyer = role === 'buyer';
+  const hasSellerTimeout = Boolean(order.expired_at || order.expiry_reason === 'seller_timeout');
+  const refundStatus = String(order.refund_status || 'none');
   const dispute = order.dispute;
   const hasDispute = order.dispute_status !== null && order.dispute_status !== undefined;
   const hasActiveDispute = ['OPEN', 'UNDER_REVIEW'].includes(String(order.dispute_status || dispute?.status || '').toUpperCase());
@@ -309,13 +312,14 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
         </div>
         {status === 'Disputed' && <p className="mt-5 rounded-2xl bg-rose-50 p-4 text-sm font-bold text-rose-700">Disputed order. Payout remains on escrow hold while the case is reviewed.</p>}
         {status === 'Cancelled' && <p className="mt-5 rounded-2xl bg-slate-100 p-4 text-sm font-bold text-slate-600">This order was cancelled.</p>}
+        {hasSellerTimeout && <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800"><p>Cancelled - seller did not respond.</p><p className="mt-1">Refund: {refundStatus}</p><p className="mt-1 text-xs font-semibold">Expiry reason: {order.expiry_reason || 'Seller did not accept within 24 hours'}</p></div>}
         {waitingForConfirmation && <p className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm font-bold text-amber-800">Waiting for other party confirmation.</p>}
       </section>
 
       <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
         <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Product</p>
-          <div className="mt-5 flex flex-col gap-5 sm:flex-row"><div className="h-28 w-28 shrink-0 overflow-hidden rounded-2xl bg-slate-100">{order.image ? <img src={order.image} alt={order.title} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-xs font-bold text-slate-400">No image</div>}</div><div className="min-w-0 flex-1"><h2 className="text-xl font-black text-slate-950">{order.title || order.product_title || 'Campus Purchase'}</h2><p className="mt-2 text-sm text-slate-500">{order.condition ? `Condition: ${order.condition}` : 'Campus marketplace item'}</p><div className="mt-5 grid grid-cols-2 gap-3 text-sm"><div><p className="text-slate-500">Quantity</p><p className="mt-1 font-black text-slate-900">{quantity}</p></div><div><p className="text-slate-500">Unit price</p><p className="mt-1 font-black text-slate-900">{formatPrice(order.price)}</p></div><div><p className="text-slate-500">Item total</p><p className="mt-1 font-black text-slate-900">{formatPrice(itemTotal)}</p></div></div></div></div>
+          <div className="mt-5 flex flex-col gap-5 sm:flex-row"><div className="h-28 w-28 shrink-0 overflow-hidden rounded-2xl bg-slate-100">{order.image ? <img src={resolveImageUrl(order.image)} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={order.title} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-xs font-bold text-slate-400">No image</div>}</div><div className="min-w-0 flex-1"><h2 className="text-xl font-black text-slate-950">{order.title || order.product_title || 'Campus Purchase'}</h2><p className="mt-2 text-sm text-slate-500">{order.condition ? `Condition: ${order.condition}` : 'Campus marketplace item'}</p><div className="mt-5 grid grid-cols-2 gap-3 text-sm"><div><p className="text-slate-500">Quantity</p><p className="mt-1 font-black text-slate-900">{quantity}</p></div><div><p className="text-slate-500">Unit price</p><p className="mt-1 font-black text-slate-900">{formatPrice(order.price)}</p></div><div><p className="text-slate-500">Item total</p><p className="mt-1 font-black text-slate-900">{formatPrice(itemTotal)}</p></div></div></div></div>
         </section>
 
         <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7"><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">{isBuyer ? 'Seller' : 'Buyer'}</p><div className="mt-3 flex items-center gap-3"><div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sm font-black uppercase text-sky-700">{String(isBuyer ? (order.seller_name || 'Campus Seller') : (order.buyer_name || order.buyer_id || 'Student')).split(/\s+/).map((part) => part[0]).join('').slice(0, 2)}</div><div className="min-w-0"><h2 className="text-xl font-black text-slate-950">{isBuyer ? (order.seller_name || 'Campus Seller') : (order.buyer_name || order.buyer_id || 'Student')}</h2><p className="mt-1 text-sm text-slate-600">{isBuyer ? (order.seller_business_name || 'Verified campus seller') : `Student ID: ${order.buyer_id || 'Unavailable'}`}</p></div></div>{isBuyer && <div className="mt-4 flex flex-wrap items-center gap-2"><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black text-emerald-700">✓ Verified Student</span><button type="button" onClick={() => onViewSellerProfile?.(order.seller_id || order.seller)} className="text-sm font-bold text-sky-700 underline-offset-2 hover:text-sky-950 hover:underline">View Seller Profile</button></div>}</section>
@@ -379,7 +383,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
                         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
                           {message.attachments.map((image, index) => (
                             <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-                              <img src={image} alt={`${message.sender} evidence ${index + 1}`} className="h-24 w-full object-cover" />
+                              <img src={resolveImageUrl(image)} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={`${message.sender} evidence ${index + 1}`} className="h-24 w-full object-cover" />
                             </a>
                           ))}
                         </div>

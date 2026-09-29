@@ -3,6 +3,7 @@ import ForgotPasswordModal from './ForgotPasswordModal';
 import AuthInfoModal from './AuthInfoModal';
 import { useLanguage } from '../../context/LanguageContext';
 import { apiUrl } from '../../api/config';
+import { API_BASE_URL } from '../../config';
 
 const microsoftClientId = import.meta.env.VITE_MICROSOFT_CLIENT_ID || '';
 const microsoftRedirectUri = import.meta.env.VITE_MICROSOFT_REDIRECT_URI || `${window.location.origin}/login`;
@@ -233,7 +234,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
     }
 
     try {
-      const endpoint = otpRole === 'student' ? 'http://127.0.0.1:8000/api/auth/verify-login-otp' : 'http://127.0.0.1:8000/api/login/verify-otp';
+      const endpoint = otpRole === 'student' ? `${API_BASE_URL}/api/auth/verify-login-otp` : `${API_BASE_URL}/api/login/verify-otp`;
       const body = { email: otpEmail, otp_code: otpCode.trim() };
 
       const response = await fetch(endpoint, {

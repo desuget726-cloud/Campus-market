@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
 const settingsSections = [
     ['account', 'Account'],
@@ -115,8 +116,8 @@ function SettingsCenter({
             try {
                 const providerPath = `/api/payout-providers?type=${encodeURIComponent(payoutType)}`;
                 const [providerResponse, chapaResponse] = await Promise.all([
-                    fetch(`http://127.0.0.1:8000${providerPath}`, { signal: controller.signal }),
-                    fetch('http://127.0.0.1:8000/api/payment/banks', { signal: controller.signal }),
+                    fetch(`${API_BASE_URL}${providerPath}`, { signal: controller.signal }),
+                    fetch(`${API_BASE_URL}/api/payment/banks`, { signal: controller.signal }),
                 ]);
                 const data = await providerResponse.json().catch(() => ({}));
                 const chapaData = await chapaResponse.json().catch(() => ([]));
@@ -199,7 +200,7 @@ function SettingsCenter({
 
         setIsSubmitting(true);
         try {
-            const response = await fetch('http://127.0.0.1:8000/api/student/seller/setup-payout', {
+            const response = await fetch(`${API_BASE_URL}/api/student/seller/setup-payout`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -256,7 +257,7 @@ function SettingsCenter({
             const token = getStudentSessionToken();
             if (!token) return;
             try {
-                const response = await fetch('http://127.0.0.1:8000/students/me/id-change-request-status', {
+                const response = await fetch(`${API_BASE_URL}/students/me/id-change-request-status`, {
                     headers: { Authorization: `Bearer ${token}` },
                 });
                 const data = await response.json().catch(() => ({}));
@@ -288,7 +289,7 @@ function SettingsCenter({
             const formData = new FormData();
             formData.append('requested_student_id', normalizedId);
             if (idEvidence) formData.append('evidence', idEvidence);
-            const response = await fetch('http://127.0.0.1:8000/students/me/id-change-request', {
+            const response = await fetch(`${API_BASE_URL}/students/me/id-change-request`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },
                 body: formData,
@@ -353,7 +354,7 @@ function SettingsCenter({
         }
 
         try {
-            const response = await fetch('http://127.0.0.1:8000/api/student/session-info', {
+            const response = await fetch(`${API_BASE_URL}/api/student/session-info`, {
                 method: 'GET',
                 headers: {
                     Authorization: `Bearer ${token}`,
@@ -398,7 +399,7 @@ function SettingsCenter({
             };
 
             const token = getStudentSessionToken();
-            const response = await fetch('http://127.0.0.1:8000/api/student/profile/notification-settings', {
+            const response = await fetch(`${API_BASE_URL}/api/student/profile/notification-settings`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -434,7 +435,7 @@ function SettingsCenter({
                     <div className="mt-6 grid gap-6 xl:grid-cols-[260px_1fr]">
                         <div className="space-y-5 rounded-3xl border border-slate-200 bg-slate-50 p-5">
                             <div className="flex flex-col items-center gap-4 text-center">
-                                <img src={avatarUrl || (user?.studentId ? `http://127.0.0.1:8000/static/uploads/avatars/${user.studentId}.jpg` : 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=280&q=80')} alt="Profile avatar" className="h-32 w-32 rounded-full border border-slate-200 object-cover" />
+                                <img src={resolveImageUrl(avatarUrl || (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : IMAGE_PLACEHOLDER))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt="Profile avatar" className="h-32 w-32 rounded-full border border-slate-200 object-cover" />
                                 <div><p className="text-sm font-semibold text-slate-900">Profile Avatar</p><p className="text-xs text-slate-500">Upload a new photo from your computer.</p></div>
                             </div>
                             <label className="block text-sm font-semibold text-slate-700">Choose Image<input type="file" accept="image/*" onChange={(event) => setAvatarFile(event.target.files?.[0] || null)} className="mt-3 block w-full text-sm text-slate-700" /></label>
@@ -486,7 +487,7 @@ function SettingsCenter({
                 setSecuritySaving(true);
 
                 try {
-                    const response = await fetch('http://127.0.0.1:8000/api/student/profile/password', {
+                    const response = await fetch(`${API_BASE_URL}/api/student/profile/password`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
@@ -519,7 +520,7 @@ function SettingsCenter({
                 if (twoFactor) {
                     const token = getStudentSessionToken();
                     try {
-                        const response = await fetch('http://127.0.0.1:8000/api/student/profile/2fa', {
+                        const response = await fetch(`${API_BASE_URL}/api/student/profile/2fa`, {
                             method: 'PUT',
                             headers: {
                                 'Content-Type': 'application/json',
@@ -560,7 +561,7 @@ function SettingsCenter({
                 const token = getStudentSessionToken();
 
                 try {
-                    const verificationResponse = await fetch('http://127.0.0.1:8000/api/login', {
+                    const verificationResponse = await fetch(`${API_BASE_URL}/api/login`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -574,7 +575,7 @@ function SettingsCenter({
                         throw new Error(verificationData?.detail || 'Password confirmation failed.');
                     }
 
-                    const twoFactorResponse = await fetch('http://127.0.0.1:8000/api/student/profile/2fa', {
+                    const twoFactorResponse = await fetch(`${API_BASE_URL}/api/student/profile/2fa`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',

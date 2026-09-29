@@ -77,13 +77,24 @@ from .models import (
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_payout_adapter
-from .order_lifecycle import apply_buyer_receipt_confirmation, apply_seller_order_action, payout_release_allowed
+from .order_lifecycle import (
+    apply_buyer_receipt_confirmation,
+    apply_seller_order_action,
+    claim_seller_timeout_refund,
+    payout_release_allowed,
+)
 from .ollama_service import OllamaServiceError, get_ollama_service
 from .wallet_service import apply_transaction
-from .commission_service import DEFAULT_COMMISSION_SETTINGS, as_decimal, calculate_commission, validate_commission_settings
+from .commission_service import DEFAULT_COMMISSION_SETTINGS, as_decimal, commission_fee_from_settings, validate_commission_settings
+from .storage import save_attachment, save_upload
 
 
 app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
+
+SELLER_TIMEOUT_WARNING_COUNT = 1
+SELLER_TIMEOUT_SUSPENSION_COUNT = 3
+SELLER_TIMEOUT_SUSPENSION_DAYS = 7
+SELLER_TIMEOUT_MAX_REFUND_ATTEMPTS = 3
 
 
 def _get_public_payment_url(environment_name: str) -> str:
@@ -169,6 +180,16 @@ ATTACHMENT_DIR = os.path.join(STATIC_DIR, "attachments")
 os.makedirs(ATTACHMENT_DIR, exist_ok=True)
 ID_CARD_DIR = os.path.join(STATIC_DIR, "id_cards")
 os.makedirs(ID_CARD_DIR, exist_ok=True)
+DEFAULT_AVATAR_URL = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+
+
+def _get_avatar_url(user: Any, filename: str) -> str:
+    saved_url = str(getattr(user, "avatar_url", "") or "").strip()
+    if saved_url:
+        return saved_url
+    if os.path.exists(os.path.join(AVATAR_DIR, filename)):
+        return f"http://127.0.0.1:8000/static/uploads/avatars/{filename}"
+    return DEFAULT_AVATAR_URL
 
 # Mount static files directory
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
@@ -545,6 +566,8 @@ def _normalize_order_status(raw_value: Optional[str]) -> str:
         "out_for_delivery": "Ready for Pickup",
         "delivery": "Ready for Pickup",
         "completed": "Completed",
+        "expired": "Expired",
+        "refunded": "Refunded",
         "success": "Completed",
         "successful": "Completed",
         "disputed": "Disputed",
@@ -1106,7 +1129,7 @@ async def _expire_processing_orders() -> None:
                 order_db.rollback()
                 continue
             try:
-                refund_amount = _escrow_hold_refund_amount(escrow_hold)
+                refund_amount = _escrow_hold_refund_amount(escrow_hold, order)
             except HTTPException:
                 logging.getLogger("app.orders").error(
                     "Unable to expire order %s because its escrow hold amount is not refundable.", order.id
@@ -1155,6 +1178,294 @@ async def _expire_processing_orders() -> None:
             logging.getLogger("app.orders").exception("Unable to expire order %s.", order_id)
         finally:
             order_db.close()
+
+
+def _close_seller_timeout_refund_disputes(
+    db: Session,
+    order: Order,
+    buyer: Student,
+    *,
+    amount: Decimal,
+    admin_id: Optional[int] = None,
+) -> int:
+    disputes = db.query(Dispute).filter(
+        Dispute.order_id == order.id,
+        Dispute.reason == "refund_not_received",
+        Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
+    ).all()
+    for dispute in disputes:
+        dispute.status = "RESOLVED"
+        dispute.resolution = "REFUNDED"
+        dispute.resolved_by = admin_id
+        dispute.resolved_at = datetime.now(timezone.utc)
+        _dispatch_student_notification(
+            db,
+            buyer,
+            "Dispute Resolved",
+            f"Dispute #{dispute.id} was resolved because the order refund was credited to your wallet.",
+            "order",
+            order_id=order.id,
+        )
+        _notify_admins_of_order_event(
+            db,
+            order,
+            "Dispute Resolved",
+            f"Seller-timeout refund of {amount} ETB completed for dispute #{dispute.id}.",
+        )
+    return len(disputes)
+
+
+def _attempt_seller_timeout_refund(
+    order_id: int,
+    *,
+    admin_retry: bool = False,
+    admin_id: Optional[int] = None,
+) -> dict:
+    db = SessionLocal()
+    refund_reference = f"REFUND-SELLER-TIMEOUT-{order_id}"
+    attempt_number = 0
+    try:
+        order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+        if not order:
+            return {"success": False, "status": "missing"}
+        timeout_dispute = db.query(Dispute.id).filter(
+            Dispute.order_id == order.id,
+            Dispute.reason == "refund_not_received",
+            Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
+        ).first()
+        if order.status not in {"Expired", "Refunded"} and not (
+            order.status == "Disputed" and order.expired_at and timeout_dispute
+        ):
+            return {"success": False, "status": "not_expired"}
+        if not claim_seller_timeout_refund(
+            order,
+            SELLER_TIMEOUT_MAX_REFUND_ATTEMPTS,
+            admin_retry=admin_retry,
+        ):
+            if order.refund_status == "succeeded":
+                order.status = "Refunded"
+                order.payment_status = "Refunded"
+                buyer = db.query(Student).filter(Student.student_id == order.student_id).first()
+                if buyer:
+                    _close_seller_timeout_refund_disputes(
+                        db,
+                        order,
+                        buyer,
+                        amount=Decimal("0.00"),
+                        admin_id=admin_id,
+                    )
+                db.commit()
+                return {"success": True, "status": "succeeded", "reference": order.refund_reference}
+            return {"success": False, "status": "failed", "attempts": order.refund_attempts}
+        attempt_number = order.refund_attempts
+        buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
+        escrow_hold = _get_held_escrow_transaction(db, order)
+        if not buyer or not escrow_hold:
+            raise ValueError("Buyer or escrow hold is missing for the seller-timeout refund.")
+        amount = _escrow_hold_refund_amount(escrow_hold, order)
+        apply_transaction(
+            db,
+            student_id=buyer.student_id,
+            tx_id=refund_reference,
+            transaction_type="Refund",
+            amount=amount,
+            description=f"Seller timeout refund for order #{order.id}",
+        )
+        escrow_hold.status = "Cancelled"
+        order.refund_status = "succeeded"
+        order.refund_reference = refund_reference
+        order.payment_status = "Refunded"
+        order.status = "Refunded"
+        _dispatch_student_notification(
+            db,
+            buyer,
+            "Order Refund Complete",
+            f"Your refund of {amount} ETB for order #{order.id} has been credited to your wallet.",
+            "order",
+            order_id=order.id,
+        )
+        _notify_admins_of_order_event(
+            db,
+            order,
+            "Seller Timeout Refund Completed",
+            f"Seller-timeout refund for order #{order.id} was credited to buyer {buyer.student_id}.",
+        )
+        _close_seller_timeout_refund_disputes(
+            db,
+            order,
+            buyer,
+            amount=amount,
+            admin_id=admin_id,
+        )
+        seller = db.query(Student).filter(Student.student_id == order.seller_id).first() if order.seller_id else None
+        if seller:
+            _dispatch_student_notification(
+                db,
+                seller,
+                "Order Expired",
+                f"Order #{order.id} was refunded because it was not accepted before the deadline.",
+                "order",
+                order_id=order.id,
+            )
+        db.commit()
+        return {"success": True, "status": "succeeded", "reference": refund_reference}
+    except Exception:
+        db.rollback()
+        failure_db = SessionLocal()
+        try:
+            failed_order = failure_db.query(Order).filter(
+                Order.id == order_id,
+                Order.refund_status != "succeeded",
+            ).with_for_update().first()
+            if failed_order and (failed_order.refund_status != "pending" or admin_retry):
+                failed_order.refund_status = "failed"
+                failed_order.refund_reference = refund_reference
+                failed_order.refund_attempts = max(int(failed_order.refund_attempts or 0), attempt_number)
+                failure_db.commit()
+            else:
+                failure_db.rollback()
+        except Exception:
+            failure_db.rollback()
+            logging.getLogger("app.orders").exception("Unable to record seller timeout refund failure for order %s.", order_id)
+        finally:
+            failure_db.close()
+        logging.getLogger("app.orders").exception("Seller timeout refund failed for order %s.", order_id)
+        return {"success": False, "status": "failed"}
+    finally:
+        db.close()
+
+
+async def _process_seller_acceptance_deadlines() -> None:
+    now = datetime.now()
+    logger = logging.getLogger("app.orders")
+    db = SessionLocal()
+    try:
+        reminder_orders = db.query(Order.id, Order.seller_accept_deadline).filter(
+            func.lower(Order.status) == "pending",
+            Order.seller_accept_deadline > now,
+            Order.seller_accept_deadline <= now + timedelta(hours=22),
+        ).all()
+        for order_id, deadline in reminder_orders:
+            remaining = deadline - now
+            reminder_column = (
+                Order.seller_reminder_12h_sent
+                if remaining <= timedelta(hours=12)
+                else Order.seller_reminder_22h_sent
+            )
+            sent = db.query(Order).filter(
+                Order.id == order_id,
+                func.lower(Order.status) == "pending",
+                Order.seller_accept_deadline > now,
+                reminder_column.is_(False),
+            ).update({reminder_column: True}, synchronize_session=False)
+            if not sent:
+                continue
+            order = db.query(Order).filter(Order.id == order_id).first()
+            seller = db.query(Student).filter(Student.student_id == order.seller_id).first() if order and order.seller_id else None
+            if seller and order:
+                hours_left = max(1, int((deadline - now).total_seconds() // 3600))
+                _dispatch_student_notification(
+                    db,
+                    seller,
+                    "Order Acceptance Reminder",
+                    f"Order #{order.id} is waiting for your response. It expires in about {hours_left} hours.",
+                    "order",
+                    order_id=order.id,
+                )
+                db.commit()
+            else:
+                db.rollback()
+    except Exception:
+        db.rollback()
+        logger.exception("Unable to send seller acceptance reminders.")
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
+        expired_order_ids = [order_id for (order_id,) in db.query(Order.id).filter(
+            func.lower(Order.status) == "pending",
+            Order.seller_accept_deadline.is_not(None),
+            Order.seller_accept_deadline < now,
+        ).all()]
+    finally:
+        db.close()
+
+    attempted_order_ids = set()
+    for order_id in expired_order_ids:
+        db = SessionLocal()
+        try:
+            claimed = db.query(Order).filter(
+                Order.id == order_id,
+                func.lower(Order.status) == "pending",
+                Order.seller_accept_deadline < now,
+            ).update(
+                {Order.status: "Expired", Order.expired_at: now},
+                synchronize_session=False,
+            )
+            if claimed != 1:
+                db.rollback()
+                continue
+            order = db.query(Order).filter(Order.id == order_id).first()
+            buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
+            product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
+            seller = db.query(Student).filter(Student.student_id == order.seller_id).with_for_update().first() if order.seller_id else None
+            if not buyer or not product:
+                raise ValueError("Buyer or product is missing for expired order.")
+
+            _restock_product_for_order(product, order)
+            order.is_funds_released = False
+            if seller:
+                seller.missed_acceptance_count = int(seller.missed_acceptance_count or 0) + 1
+                if seller.missed_acceptance_count >= SELLER_TIMEOUT_SUSPENSION_COUNT:
+                    seller.suspended_until = now + timedelta(days=SELLER_TIMEOUT_SUSPENSION_DAYS)
+                    seller.restriction_reason = "Temporarily suspended after repeated seller order acceptance timeouts."
+                    seller_message = f"Your account is temporarily suspended for {SELLER_TIMEOUT_SUSPENSION_DAYS} days after {seller.missed_acceptance_count} missed order acceptances."
+                elif seller.missed_acceptance_count >= SELLER_TIMEOUT_WARNING_COUNT:
+                    seller_message = "Warning: you missed the acceptance deadline for an order. Repeated missed acceptances may temporarily suspend your account."
+                else:
+                    seller_message = "An order expired because it was not accepted before the deadline."
+                _dispatch_student_notification(db, seller, "Seller Acceptance Timeout", seller_message, "order", order_id=order.id)
+
+            _dispatch_student_notification(
+                db,
+                buyer,
+                "Order Expired",
+                f"Your order for '{order.title}' expired because the seller did not respond. Your wallet refund is being processed.",
+                "order",
+                order_id=order.id,
+            )
+            db.add(AuditLog(
+                action="seller_timeout",
+                entity_type="Order",
+                entity_id=order.id,
+                description=f"Order #{order.id} expired because the seller did not accept it before seller_accept_deadline.",
+                status="SUCCESS",
+                severity="warning",
+            ))
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Unable to expire seller-pending order %s.", order_id)
+            continue
+        finally:
+            db.close()
+        attempted_order_ids.add(order_id)
+        _attempt_seller_timeout_refund(order_id)
+
+    retry_db = SessionLocal()
+    try:
+        retry_order_ids = [order_id for (order_id,) in retry_db.query(Order.id).filter(
+            Order.status.in_(["Expired", "Disputed"]),
+            Order.expired_at.is_not(None),
+            Order.refund_status.in_(["none", "failed"]),
+            Order.refund_attempts < SELLER_TIMEOUT_MAX_REFUND_ATTEMPTS,
+            Order.id.notin_(attempted_order_ids),
+        ).all()]
+    finally:
+        retry_db.close()
+    for order_id in retry_order_ids:
+        _attempt_seller_timeout_refund(order_id)
 
 
 # Read Gmail SMTP credentials from Backend/.env or the process environment.
@@ -1700,8 +2011,12 @@ def _get_held_escrow_transaction(db: Session, order: Order) -> Optional[Transact
     ).with_for_update().first()
 
 
-def _escrow_hold_refund_amount(escrow_hold: Transaction) -> Decimal:
-    refund_amount = Decimal(str(escrow_hold.amount or 0)).quantize(Decimal("0.01"))
+def _escrow_hold_refund_amount(escrow_hold: Transaction, order: Optional[Order] = None) -> Decimal:
+    if order is not None and getattr(order, "platform_fee", None) is not None:
+        subtotal = Decimal(str(_parse_price_to_etb(order.price))) * int(getattr(order, "quantity", 1) or 1)
+        refund_amount = (subtotal + Decimal(str(order.platform_fee or 0))).quantize(Decimal("0.01"))
+    else:
+        refund_amount = Decimal(str(escrow_hold.amount or 0)).quantize(Decimal("0.01"))
     if refund_amount <= 0:
         raise HTTPException(status_code=400, detail="Escrow hold amount is not refundable.")
     return refund_amount
@@ -2305,8 +2620,10 @@ def _normalize_payment_commission_settings(raw_settings: Any) -> Dict[str, Any]:
     configured = raw_settings if isinstance(raw_settings, dict) else {}
     normalized = {**defaults, **configured}
 
-    enabled = bool(normalized.get("commission_enabled", defaults["commission_enabled"]))
+    enabled = _setting_bool(normalized.get("commission_enabled"), defaults["commission_enabled"])
     commission_type = str(normalized.get("commission_type") or defaults["commission_type"]).strip().lower()
+    if commission_type == "fixed":
+        commission_type = "flat"
     rate_value = normalized.get("commission_rate", defaults["commission_rate"])
     min_fee = normalized.get("commission_min_fee", defaults["commission_min_fee"])
     max_fee = normalized.get("commission_max_fee", defaults["commission_max_fee"])
@@ -2325,7 +2642,7 @@ def _normalize_payment_commission_settings(raw_settings: Any) -> Dict[str, Any]:
 
     normalized["commission_enabled"] = enabled
     normalized["commission_type"] = commission_type
-    normalized["commission_rate"] = str(rate_decimal.normalize().rstrip("0").rstrip(".")) if rate_decimal % 1 else str(rate_decimal.quantize(Decimal("0.01")))
+    normalized["commission_rate"] = format(rate_decimal.normalize(), "f")
     normalized["commission_min_fee"] = None if min_decimal is None else str(min_decimal.quantize(Decimal("0.01")))
     normalized["commission_max_fee"] = None if max_decimal is None else str(max_decimal.quantize(Decimal("0.01")))
     return normalized
@@ -2339,23 +2656,17 @@ def _get_commission_settings(db: Optional[Session] = None) -> Dict[str, Any]:
         if payment_record:
             parsed = _parse_setting_value(payment_record.value)
             if isinstance(parsed, dict):
-                stored = parsed.get("commission", {}) or {}
+                stored = parsed.get("commission")
+                if not isinstance(stored, dict):
+                    legacy_keys = set(DEFAULT_SETTINGS_BLOCKS["payment"]["commission"])
+                    stored = parsed if legacy_keys.intersection(parsed) else {}
     configured = {**defaults, **stored}
-    try:
-        return _normalize_payment_commission_settings(configured)
-    except HTTPException:
-        return {**defaults}
+    return _normalize_payment_commission_settings(configured)
 
 
 def _calculate_platform_commission(db: Optional[Session], amount: Decimal) -> Decimal:
     settings = _get_commission_settings(db)
-    if not settings["commission_enabled"]:
-        return Decimal("0.00")
-    commission_type = settings["commission_type"]
-    rate = as_decimal(settings["commission_rate"], field_name="commission_rate")
-    min_fee = None if settings.get("commission_min_fee") is None else as_decimal(settings["commission_min_fee"], field_name="commission_min_fee")
-    max_fee = None if settings.get("commission_max_fee") is None else as_decimal(settings["commission_max_fee"], field_name="commission_max_fee")
-    return calculate_commission(amount, commission_type, rate, min_fee, max_fee)
+    return commission_fee_from_settings(amount, settings)
 
 
 def _get_platform_commission_percent(db: Optional[Session] = None) -> Decimal:
@@ -2404,11 +2715,16 @@ def ensure_database_compatibility(db: Session) -> None:
             "two_factor_pending_secret": "ALTER TABLE admins ADD COLUMN two_factor_pending_secret VARCHAR(255) NULL",
             "backup_codes": "ALTER TABLE admins ADD COLUMN backup_codes TEXT NULL",
             "permissions": "ALTER TABLE admins ADD COLUMN permissions JSON NULL",
+            "avatar_url": "ALTER TABLE admins ADD COLUMN avatar_url VARCHAR(500) NULL",
         }
         for column_name, statement in admin_add_statements.items():
             column = db.execute(text("SHOW COLUMNS FROM admins LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
                 db.execute(text(statement))
+
+        student_avatar_column = db.execute(text("SHOW COLUMNS FROM students LIKE 'avatar_url'"))
+        if student_avatar_column.fetchone() is None:
+            db.execute(text("ALTER TABLE students ADD COLUMN avatar_url VARCHAR(500) NULL"))
 
         db.execute(text("ALTER TABLE admins MODIFY COLUMN two_factor_secret VARCHAR(255) NULL"))
         db.execute(text("ALTER TABLE admins MODIFY COLUMN two_factor_pending_secret VARCHAR(255) NULL"))
@@ -2509,7 +2825,7 @@ def ensure_database_compatibility(db: Session) -> None:
             "product_subcategory": "ALTER TABLE orders ADD COLUMN product_subcategory VARCHAR(100) NULL",
             "product_description": "ALTER TABLE orders ADD COLUMN product_description VARCHAR(500) NULL",
             "product_condition": "ALTER TABLE orders ADD COLUMN product_condition VARCHAR(50) NULL",
-            "product_image": "ALTER TABLE orders ADD COLUMN product_image VARCHAR(255) NULL",
+            "product_image": "ALTER TABLE orders ADD COLUMN product_image TEXT NULL",
             "seller_id": "ALTER TABLE orders ADD COLUMN seller_id VARCHAR(50) NULL",
             "seller_name": "ALTER TABLE orders ADD COLUMN seller_name VARCHAR(100) NULL",
             "seller_business_name": "ALTER TABLE orders ADD COLUMN seller_business_name VARCHAR(150) NULL",
@@ -2521,6 +2837,13 @@ def ensure_database_compatibility(db: Session) -> None:
             column = db.execute(text("SHOW COLUMNS FROM orders LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
                 db.execute(text(statement))
+        db.execute(text("ALTER TABLE orders MODIFY COLUMN product_image TEXT NULL"))
+
+        product_image_column = db.execute(text("SHOW COLUMNS FROM products LIKE 'image'"))
+        if product_image_column.fetchone() is None:
+            db.execute(text("ALTER TABLE products ADD COLUMN image TEXT NULL"))
+        else:
+            db.execute(text("ALTER TABLE products MODIFY COLUMN image TEXT NULL"))
 
         product_stock = db.execute(text("SHOW COLUMNS FROM products LIKE 'stock'"))
         if product_stock.fetchone() is None:
@@ -2554,6 +2877,12 @@ def ensure_database_compatibility(db: Session) -> None:
         report_category = db.execute(text("SHOW COLUMNS FROM reports LIKE 'category'"))
         if report_category.fetchone() is None:
             db.execute(text("ALTER TABLE reports ADD COLUMN category VARCHAR(100) NULL"))
+
+        report_evidence_column = db.execute(text("SHOW COLUMNS FROM reports LIKE 'evidence_image'"))
+        if report_evidence_column.fetchone() is None:
+            db.execute(text("ALTER TABLE reports ADD COLUMN evidence_image TEXT NULL"))
+        else:
+            db.execute(text("ALTER TABLE reports MODIFY COLUMN evidence_image TEXT NULL"))
 
         report_priority = db.execute(text("SHOW COLUMNS FROM reports LIKE 'priority'"))
         if report_priority.fetchone() is None:
@@ -2751,6 +3080,15 @@ async def on_startup():
         max_instances=1,
         coalesce=True,
     )
+    payment_scheduler.add_job(
+        _process_seller_acceptance_deadlines,
+        "interval",
+        minutes=5,
+        id="seller-acceptance-deadlines",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     payment_scheduler.start()
     logging.getLogger("app.payments").info(
         "Started payout reconciliation scheduler job id=pending-payout-reconciliation interval_minutes=10 max_instances=1 coalesce=True timeout_hours=%s.",
@@ -2874,10 +3212,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         admin.failed_login_attempts = 0
         admin.locked_until = None
         _reset_login_attempts(db, identifier)
-        avatar_filename = f"{admin.username}.jpg"
-        avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
-        if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
-            avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+        avatar_url = _get_avatar_url(admin, f"{admin.username}.jpg")
         if not DISABLE_ADMIN_2FA and admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret):
             return {
                 "role": "admin",
@@ -2941,10 +3276,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             _record_failed_login(db, identifier, security)
             raise HTTPException(status_code=403, detail="Student verification is required before login.")
         _reset_login_attempts(db, identifier)
-        avatar_filename = f"{student.student_id}.jpg"
-        avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
-        if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
-            avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+        avatar_url = _get_avatar_url(student, f"{student.student_id}.jpg")
         if student.two_factor_enabled:
             otp = f"{secrets.randbelow(900000) + 100000:06d}"
             db.add(PasswordReset(
@@ -3067,10 +3399,7 @@ def _create_secure_session_for_student(student: Student, response: Response, db:
         path="/",
     )
 
-    avatar_filename = f"{student.student_id}.jpg"
-    avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
-    if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
-        avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+    avatar_url = _get_avatar_url(student, f"{student.student_id}.jpg")
 
     return {
         "role": "student",
@@ -3699,10 +4028,7 @@ def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_
         raise HTTPException(status_code=404, detail="Admin profile not found.")
 
     total_actions = db.query(AuditLog).filter(AuditLog.admin_id == admin.id).count()
-    avatar_filename = f"{admin.username}.jpg"
-    avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
-    if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
-        avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+    avatar_url = _get_avatar_url(admin, f"{admin.username}.jpg")
 
     return {
         "id": admin.id,
@@ -3729,10 +4055,7 @@ def get_current_admin_profile(
     current_token = _extract_admin_token(authorization, session_token)
     admin, _ = _admin_for_session(db, current_token)
     total_actions = db.query(AuditLog).filter(AuditLog.admin_id == admin.id).count()
-    avatar_filename = f"{admin.username}.jpg"
-    avatar_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_filename}"
-    if not os.path.exists(os.path.join(AVATAR_DIR, avatar_filename)):
-        avatar_url = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80"
+    avatar_url = _get_avatar_url(admin, f"{admin.username}.jpg")
 
     return {
         "id": admin.id,
@@ -4232,23 +4555,17 @@ async def upload_admin_avatar(
     if not admin:
         raise HTTPException(status_code=404, detail="Admin not found.")
 
-    os.makedirs(AVATAR_DIR, exist_ok=True)
-    avatar_name = f"{admin.username}.jpg"
-    avatar_path = os.path.join(AVATAR_DIR, avatar_name)
-
     try:
-        contents = await image.read()
-        with open(avatar_path, "wb") as buffer:
-            buffer.write(contents)
-            buffer.flush()
-            os.fsync(buffer.fileno())
+        image_url = save_upload(image, "campace/profiles")
+        admin.avatar_url = image_url
+    except HTTPException:
+        raise
     except Exception:
         logging.getLogger("app.avatar").exception("Failed to save admin avatar file.")
         raise HTTPException(status_code=500, detail="Failed to save avatar file.")
     finally:
         await image.close()
 
-    image_url = f"http://127.0.0.1:8000/static/uploads/avatars/{avatar_name}"
     _add_admin_audit(db, admin, request, "Admin Avatar Updated", "Administrator updated their profile photo.")
     db.commit()
     return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
@@ -4858,22 +5175,18 @@ async def upload_student_avatar(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
 
-    os.makedirs(AVATAR_DIR, exist_ok=True)
-    avatar_path = os.path.join(AVATAR_DIR, f"{student_id}.jpg")
-
     try:
-        contents = await image.read()
-        with open(avatar_path, "wb") as buffer:
-            buffer.write(contents)
-            buffer.flush()
-            os.fsync(buffer.fileno())
+        image_url = save_upload(image, "campace/profiles")
+        student.avatar_url = image_url
+        db.commit()
+    except HTTPException:
+        raise
     except Exception:
         logging.getLogger("app.avatar").exception("Failed to save student avatar file.")
         raise HTTPException(status_code=500, detail="Failed to save avatar file.")
     finally:
         await image.close()
 
-    image_url = f"http://127.0.0.1:8000/static/uploads/avatars/{student_id}.jpg"
     return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
 
 
@@ -5007,13 +5320,8 @@ async def create_student_id_change_request(
         extension = os.path.splitext(evidence.filename or "")[1].lower()
         if extension not in {".jpg", ".jpeg", ".png", ".webp", ".jfif"}:
             raise HTTPException(status_code=400, detail="Evidence must be a JPG, PNG, WEBP, or JFIF image.")
-        evidence_name = f"student-id-{student.id}-{uuid.uuid4().hex}{extension}"
-        evidence_path = os.path.join(ID_CARD_DIR, evidence_name)
         try:
-            os.makedirs(ID_CARD_DIR, exist_ok=True)
-            with open(evidence_path, "wb") as output:
-                shutil.copyfileobj(evidence.file, output)
-            evidence_url = f"/static/uploads/id_cards/{evidence_name}"
+            evidence_url = save_upload(evidence, "campace/ids")
         finally:
             await evidence.close()
 
@@ -5942,24 +6250,8 @@ def create_product(
             if file_ext not in allowed_extensions:
                 raise HTTPException(status_code=400, detail="Invalid image format. Allowed: jpg, jpeg, png, gif, webp, jfif")
 
-            image.file.seek(0, os.SEEK_END)
-            image_size = image.file.tell()
-            image.file.seek(0)
             max_image_size_bytes = _parse_size_bytes(max_image_size)
-            if image_size > max_image_size_bytes:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Image size must not exceed {max_image_size}.",
-                )
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_")
-            unique_filename = timestamp + image.filename
-            file_path = os.path.join(STATIC_DIR, unique_filename)
-            
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(image.file, buffer)
-            
-            image_urls.append(f"http://127.0.0.1:8000/static/uploads/{unique_filename}")
+            image_urls.append(save_upload(image, "campace/products", max_size_bytes=max_image_size_bytes))
 
         image_url = json.dumps(image_urls, ensure_ascii=False) if image_urls else None
         try:
@@ -6155,19 +6447,11 @@ async def upload_student_product_images(
         extension = os.path.splitext(filename)[1].lower()
         if extension not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".jfif"}:
             raise HTTPException(status_code=400, detail="Invalid image format.")
-        image.file.seek(0, os.SEEK_END)
-        image_size = image.file.tell()
-        image.file.seek(0)
-        if image_size > max_image_size:
-            raise HTTPException(status_code=400, detail="Image size exceeds the configured maximum.")
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S_')}{uuid.uuid4().hex}{extension}"
-        file_path = os.path.join(STATIC_DIR, filename)
         try:
-            with open(file_path, "wb") as output_file:
-                shutil.copyfileobj(image.file, output_file)
+            image_url = save_upload(image, "campace/products", max_size_bytes=max_image_size)
         finally:
             await image.close()
-        new_image_urls.append(f"http://127.0.0.1:8000/static/uploads/{filename}")
+        new_image_urls.append(image_url)
 
     product.image = json.dumps(retained_images + new_image_urls, ensure_ascii=False) if retained_images or new_image_urls else None
     db.commit()
@@ -7229,19 +7513,10 @@ def create_report(
             file_ext = os.path.splitext(evidence_image.filename)[1].lower()
             if file_ext not in allowed_extensions:
                 raise HTTPException(status_code=400, detail="Invalid evidence image format.")
-            evidence_image.file.seek(0, os.SEEK_END)
-            evidence_size = evidence_image.file.tell()
-            evidence_image.file.seek(0)
             max_evidence_size = _parse_size_bytes(_get_setting_value(
                 db, "marketplace", "maxImageSize", DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImageSize"]
             ))
-            if evidence_size > max_evidence_size:
-                raise HTTPException(status_code=400, detail="Evidence image exceeds the maximum allowed size.")
-            unique_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{file_ext}"
-            evidence_path = os.path.join(STATIC_DIR, unique_filename)
-            with open(evidence_path, "wb") as buffer:
-                shutil.copyfileobj(evidence_image.file, buffer)
-            evidence_url = f"http://127.0.0.1:8000/static/uploads/{unique_filename}"
+            evidence_url = save_upload(evidence_image, "campace/evidence", max_size_bytes=max_evidence_size)
 
         normalized_issue = issue.strip()
         db_report = Report(
@@ -7985,19 +8260,13 @@ async def upload_chat_attachment(file: UploadFile = File(...)):
     extension = os.path.splitext(file.filename or "")[1].lower()
     if not extension:
         extension = mimetypes.guess_extension(content_type) or ""
-    attachment_name = f"{uuid.uuid4().hex}{extension}"
-    attachment_path = os.path.join(ATTACHMENT_DIR, attachment_name)
     try:
-        with open(attachment_path, "wb") as output_file:
-            shutil.copyfileobj(file.file, output_file)
-    except OSError as exc:
-        logging.error("Failed to save chat attachment: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to save attachment.")
+        attachment_url = save_attachment(file, "campace/chat")
     finally:
         await file.close()
 
     return {
-        "attachment_url": f"http://127.0.0.1:8000/static/uploads/attachments/{attachment_name}",
+        "attachment_url": attachment_url,
         "attachment_type": media_type,
     }
 
@@ -8462,6 +8731,13 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "buyer_confirmed": bool(order.buyer_confirmed),
         "seller_confirmed": bool(order.seller_confirmed),
         "is_funds_released": bool(order.is_funds_released),
+        "paid_at": order.paid_at.isoformat() if order.paid_at else None,
+        "seller_accept_deadline": order.seller_accept_deadline.isoformat() if order.seller_accept_deadline else None,
+        "expired_at": order.expired_at.isoformat() if order.expired_at else None,
+        "expiry_reason": "seller_timeout" if order.expired_at else None,
+        "refund_status": order.refund_status,
+        "refund_reference": order.refund_reference,
+        "refund_attempts": int(order.refund_attempts or 0),
         "payout_id": order.id,
         "net_amount": float(released_payout.amount) if released_payout else None,
         "hidden_by_buyer": bool(getattr(order, "hidden_by_buyer", False)),
@@ -8593,6 +8869,8 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
 
     items = []
     total_quantity = 0
+    cart_subtotal = Decimal("0.00")
+    platform_fee = Decimal("0.00")
     stale_items = []
     for item in cart_items:
         product = db.query(Product).filter(Product.id == item.product_id).first()
@@ -8602,6 +8880,10 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
 
         quantity = int(item.quantity or 1)
         total_quantity += quantity
+        line_subtotal = (Decimal(str(_parse_price_to_etb(product.price))) * quantity).quantize(Decimal("0.01"))
+        line_fee = _calculate_platform_commission(db, line_subtotal)
+        cart_subtotal += line_subtotal
+        platform_fee += line_fee
         items.append({
             "id": item.id,
             "student_id": item.student_id,
@@ -8610,6 +8892,7 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
             "created_at": item.created_at,
             "title": product.title,
             "price": product.price,
+            "platform_fee": float(line_fee),
             "stock": int(getattr(product, "stock", 1) or 0),
             "description": product.description,
             "image": _normalize_product_image(product.image),
@@ -8633,7 +8916,13 @@ def get_student_cart(student_id: str, db: Session = Depends(get_db)):
         "total_items": total_quantity,
     }
 
-    return {"items": items, "meta": meta}
+    return {
+        "items": items,
+        "meta": meta,
+        "subtotal": float(cart_subtotal),
+        "platform_fee": float(platform_fee),
+        "checkout_total": float(cart_subtotal + platform_fee),
+    }
 
 
 @app.post("/api/student/cart")
@@ -8862,6 +9151,7 @@ def checkout_student_cart(
         raise HTTPException(status_code=400, detail="Cart is empty.")
 
     cart_total = Decimal("0.00")
+    cart_platform_fee = Decimal("0.00")
     order_payload = []
 
     locked_products = {}
@@ -8897,31 +9187,39 @@ def checkout_student_cart(
                 detail="This item cannot be purchased because the seller has not configured their payout account yet.",
             )
         unit_price_etb = Decimal(str(_parse_price_to_etb(product.price)))
-        locked_products[product.id] = {
+        line_subtotal = unit_price_etb * Decimal(requested_quantity)
+        line_platform_fee = _calculate_platform_commission(db, line_subtotal)
+        locked_products[cart_item.id] = {
             "product": product,
             "seller": seller,
             "seller_account": seller_account,
             "unit_price": unit_price_etb,
+            "platform_fee": line_platform_fee,
         }
-        cart_total += unit_price_etb * Decimal(int(cart_item.quantity or 1))
+        cart_total += line_subtotal
+        cart_platform_fee += line_platform_fee
 
     wallet = _get_or_create_wallet_for_student(db, student)
     current_wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
-    if current_wallet_balance <= Decimal("0.00") or current_wallet_balance < cart_total:
+    checkout_total = cart_total + cart_platform_fee
+    if current_wallet_balance <= Decimal("0.00") or current_wallet_balance < checkout_total:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance")
 
     for cart_item in cart_items:
-        line = locked_products[cart_item.product_id]
+        line = locked_products[cart_item.id]
         product = line["product"]
         seller = line["seller"]
         seller_account = line["seller_account"]
         unit_price_etb = line["unit_price"]
+        paid_at = datetime.now()
 
         order = Order(
             student_id=data.student_id,
             product_id=product.id,
             title=product.title,
             price=product.price,
+            platform_fee=line["platform_fee"],
+            seller_commission=line["platform_fee"],
             product_category=product.category,
             product_subcategory=product.subcategory,
             product_description=product.description,
@@ -8935,6 +9233,8 @@ def checkout_student_cart(
             buyer_phone=student.phone,
             quantity=int(cart_item.quantity or 1),
             status="Pending",
+            paid_at=paid_at,
+            seller_accept_deadline=paid_at + timedelta(hours=24),
             pickup_code=secrets.randbelow(9000) + 1000,
             pickup_location=_resolve_pickup_location(db, product),
             payment_status="Successful",
@@ -8951,7 +9251,7 @@ def checkout_student_cart(
             student_id=data.student_id,
             tx_id=f"ESCROW-{uuid.uuid4().hex[:10].upper()}",
             transaction_type="Escrow Hold",
-            amount=unit_price_etb * Decimal(int(cart_item.quantity or 1)),
+            amount=(unit_price_etb * Decimal(int(cart_item.quantity or 1))) + line["platform_fee"],
             description=f"Escrow hold for order #{order.id}",
             status="Successful",
         )
@@ -8985,7 +9285,9 @@ def checkout_student_cart(
 
     return {
         "message": "Checkout successful.",
-        "total": float(cart_total),
+        "subtotal": float(cart_total),
+        "platform_fee": float(cart_platform_fee),
+        "total": float(checkout_total),
         "wallet_balance": float(wallet.balance),
         "orders": order_payload,
     }
@@ -9046,20 +9348,23 @@ def _release_escrow_funds(order_id: int, db: Session) -> Decimal:
     if not seller:
         raise HTTPException(status_code=409, detail="Seller not found for order.")
 
-    total_price = Decimal(str(hold.amount or 0)).quantize(Decimal("0.01"))
-    platform_cut = _calculate_platform_commission(db, total_price)
-    seller_final_amount = total_price - platform_cut
+    item_subtotal = (
+        Decimal(str(_parse_price_to_etb(order.price))) * int(getattr(order, "quantity", 1) or 1)
+    ).quantize(Decimal("0.01"))
+    platform_fee = Decimal(str(getattr(order, "platform_fee", 0) or 0)).quantize(Decimal("0.01"))
+    platform_cut = Decimal(str(getattr(order, "seller_commission", 0) or 0)).quantize(Decimal("0.01"))
+    seller_final_amount = item_subtotal - platform_cut
 
     system_wallet = db.query(SystemSetting).filter(
         SystemSetting.key == "system_wallet_balance"
     ).with_for_update().first()
     current_system_balance = Decimal(str(system_wallet.value if system_wallet else "0.00"))
     if system_wallet:
-        system_wallet.value = str((current_system_balance + platform_cut).quantize(Decimal("0.01")))
+        system_wallet.value = str((current_system_balance + platform_fee + platform_cut).quantize(Decimal("0.01")))
     else:
         db.add(SystemSetting(
             key="system_wallet_balance",
-            value=str(platform_cut),
+            value=str(platform_fee + platform_cut),
         ))
 
     apply_transaction(
@@ -9068,7 +9373,7 @@ def _release_escrow_funds(order_id: int, db: Session) -> Decimal:
         tx_id=f"RELEASE-{order.id}",
         transaction_type="Escrow Release",
         amount=seller_final_amount,
-        description=f"Escrow release for order #{order.id}; platform commission {platform_cut} ETB",
+        description=f"Escrow release for order #{order.id}; buyer platform fee {platform_fee} ETB; seller commission {platform_cut} ETB",
     )
     hold.status = "Released"
     order.is_funds_released = True
@@ -9111,7 +9416,7 @@ def refund_escrow_funds(order_id: int, db: Session) -> Decimal:
         buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
         if not buyer:
             raise HTTPException(status_code=409, detail="Buyer not found for order.")
-        amount = _escrow_hold_refund_amount(hold)
+        amount = _escrow_hold_refund_amount(hold, order)
         apply_transaction(db, student_id=buyer.student_id, tx_id=f"REFUND-{order.id}", transaction_type="Refund", amount=amount, description=f"Dispute refund for order #{order.id}")
         hold.status = "Refunded"
         order.is_funds_released = False
@@ -9243,9 +9548,8 @@ def get_student_order_receipt(
     quantity = int(getattr(order, "quantity", 1) or 1)
     unit_price = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
     item_total = (unit_price * quantity).quantize(Decimal("0.01"))
-    commission_settings = _get_commission_settings(db)
     commission_percent = _get_platform_commission_percent(db)
-    platform_commission = _calculate_platform_commission(db, item_total)
+    platform_commission = Decimal(str(getattr(order, "platform_fee", 0) or 0)).quantize(Decimal("0.01"))
 
     # Escrow Hold is the successful checkout debit for this order.
     payment_transaction = (
@@ -9254,7 +9558,7 @@ def get_student_order_receipt(
             Transaction.student_id == order.student_id,
             Transaction.type == "Escrow Hold",
             Transaction.status == "Successful",
-            Transaction.amount == item_total,
+            Transaction.amount == item_total + platform_commission,
             Transaction.description == f"Escrow hold for order #{order.id}",
             Transaction.created_at >= order.created_at,
         )
@@ -9340,7 +9644,7 @@ def cancel_student_order(
         escrow_hold = _get_held_escrow_transaction(db, order)
         if not escrow_hold:
             raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
-        refund_amount = _escrow_hold_refund_amount(escrow_hold)
+        refund_amount = _escrow_hold_refund_amount(escrow_hold, order)
         order.status = "Cancelled"
         escrow_hold.status = "Cancelled"
         _restock_product_for_order(product, order)
@@ -9376,6 +9680,7 @@ def cancel_student_order(
 
 
 DISPUTE_REASONS = {
+    "refund_not_received",
     "Item not received",
     "Wrong item",
     "Item damaged",
@@ -9479,15 +9784,14 @@ def _prepare_dispute_evidence_value(
                 ))
             if file_size > max_evidence_size:
                 raise HTTPException(status_code=400, detail="Evidence image exceeds the maximum allowed size.")
-            current_time = (now or (lambda: datetime.now(timezone.utc)))()
-            unique_filename = f"{current_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{file_ext}"
-            save_path = os.path.join(static_dir, unique_filename)
             if save_file is not None:
+                current_time = (now or (lambda: datetime.now(timezone.utc)))()
+                unique_filename = f"{current_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}{file_ext}"
+                save_path = os.path.join(static_dir, unique_filename)
                 save_file(save_path, file_obj)
+                urls.append(f"http://127.0.0.1:8000/static/uploads/{unique_filename}")
             else:
-                with open(save_path, "wb") as buffer:
-                    shutil.copyfileobj(file_obj, buffer)
-            urls.append(f"http://127.0.0.1:8000/static/uploads/{unique_filename}")
+                urls.append(save_upload(uploaded_file, "campace/evidence", max_size_bytes=max_evidence_size))
         return json.dumps(urls, ensure_ascii=False) if urls else None
 
     if evidence_value is None:
@@ -9600,6 +9904,10 @@ def _serialize_dispute(dispute: Dispute, *, include_parties: bool = False) -> di
                 "quantity": quantity,
                 "escrow_amount": float(unit_price * quantity),
                 "status": dispute.order.status,
+                "expired_at": _format_dispute_timestamp(dispute.order.expired_at),
+                "refund_status": dispute.order.refund_status,
+                "refund_attempts": int(dispute.order.refund_attempts or 0),
+                "refund_reference": dispute.order.refund_reference,
             }
         else:
             payload["order"] = None
@@ -9616,12 +9924,11 @@ async def raise_order_dispute(
     db: Session = Depends(get_db),
 ):
     buyer = _student_from_authorization(authorization, db)
-    order = db.query(Order).filter(
-        Order.id == order_id,
-        Order.student_id == buyer.student_id,
-    ).with_for_update().first()
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found.")
+    if order.student_id.strip().lower() != buyer.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You can only dispute your own orders.")
 
     reason = ""
     description = ""
@@ -9656,8 +9963,24 @@ async def raise_order_dispute(
         raise HTTPException(status_code=400, detail="Dispute description is required.")
     if len(description) > 5000:
         raise HTTPException(status_code=400, detail="Dispute description must be 5000 characters or fewer.")
-    normalized_order_status = str(order.status or "").strip().lower()
-    if normalized_order_status not in {"ready for pickup", "item received"}:
+    active_dispute = db.query(Dispute).filter(
+        Dispute.order_id == order.id,
+        Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
+    ).first()
+    if active_dispute:
+        raise HTTPException(status_code=409, detail="This order already has an active dispute.")
+
+    normalized_order_status = _normalize_order_status(order.status).lower()
+    if reason == "refund_not_received":
+        if normalized_order_status != "expired":
+            raise HTTPException(status_code=409, detail="Only expired orders can be disputed for an unreceived refund.")
+        if str(order.refund_status or "none").lower() == "succeeded":
+            raise HTTPException(status_code=409, detail="The refund has already been completed.")
+        if str(order.refund_status or "none").lower() not in {"failed", "pending", "none"}:
+            raise HTTPException(status_code=409, detail="This order is not eligible for a refund dispute.")
+        if not order.expired_at or order.expired_at >= datetime.now() - timedelta(minutes=15):
+            raise HTTPException(status_code=409, detail="A refund problem can be reported 15 minutes after order expiry.")
+    elif normalized_order_status not in {"ready for pickup", "item received"}:
         raise HTTPException(
             status_code=400,
             detail="Disputes can only be raised when the order is ready for pickup or the item has been received.",
@@ -9669,13 +9992,6 @@ async def raise_order_dispute(
     ).first() if product and product.seller else None
     if not seller:
         raise HTTPException(status_code=409, detail="Seller not found for order.")
-    active_dispute = db.query(Dispute).filter(
-        Dispute.order_id == order.id,
-        Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
-    ).first()
-    if active_dispute:
-        raise HTTPException(status_code=409, detail="This order already has an active dispute.")
-
     dispute_evidence = _prepare_dispute_evidence_value(evidence_value, uploaded_files, db=db)
     dispute = Dispute(
         order_id=order.id,
@@ -9895,14 +10211,16 @@ async def create_support_ticket(
         extension = os.path.splitext(attachment.filename)[1].lower()
         if extension not in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".jfif", ".pdf"}:
             raise HTTPException(status_code=400, detail="Only image or PDF attachments are supported.")
-        attachment_name = f"support_{uuid.uuid4().hex}{extension}"
-        attachment_path = os.path.join(STATIC_DIR, attachment_name)
         try:
-            with open(attachment_path, "wb") as output_file:
-                shutil.copyfileobj(attachment.file, output_file)
+            attachment_url = save_attachment(
+                attachment,
+                "campace/support",
+                max_size_bytes=_parse_size_bytes(_get_setting_value(
+                    db, "marketplace", "maxImageSize", DEFAULT_SETTINGS_BLOCKS["marketplace"]["maxImageSize"]
+                )),
+            )
         finally:
             await attachment.close()
-        attachment_url = f"http://127.0.0.1:8000/static/uploads/{attachment_name}"
 
     ticket = SupportTicket(
         user_id=student.student_id if student else ((student_id or "").strip() or None),
@@ -10149,15 +10467,51 @@ def resolve_dispute(
     dispute = db.query(Dispute).filter(Dispute.id == dispute_id).with_for_update().first()
     if not dispute:
         raise HTTPException(status_code=404, detail="Dispute not found.")
-    if dispute.status not in ACTIVE_DISPUTE_STATUSES:
-        raise HTTPException(status_code=409, detail="Only open disputes can be resolved.")
     order = db.query(Order).filter(Order.id == dispute.order_id).with_for_update().first()
     product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first() if order else None
     if not order or not product:
         raise HTTPException(status_code=404, detail="Dispute order records could not be loaded.")
+    timeout_refund_dispute = dispute.reason == "refund_not_received" and order.expired_at is not None
+    if dispute.status not in ACTIVE_DISPUTE_STATUSES:
+        if (
+            decision == "BUYER"
+            and timeout_refund_dispute
+            and dispute.status == "RESOLVED"
+            and dispute.resolution == "REFUNDED"
+            and order.refund_status == "succeeded"
+        ):
+            return {
+                "success": True,
+                "dispute": _serialize_dispute(dispute, include_parties=True),
+                "order_status": order.status,
+                "amount": 0.0,
+            }
+        raise HTTPException(status_code=409, detail="Only open disputes can be resolved.")
 
     try:
         if decision == "BUYER":
+            if timeout_refund_dispute:
+                db.commit()
+                result = _attempt_seller_timeout_refund(
+                    order.id,
+                    admin_retry=True,
+                    admin_id=admin.id,
+                )
+                if not result["success"]:
+                    raise HTTPException(status_code=502, detail="The timeout refund could not be completed.")
+                db.expire_all()
+                dispute = db.query(Dispute).filter(Dispute.id == dispute_id).first()
+                order = db.query(Order).filter(Order.id == dispute.order_id).first()
+                refund_transaction = db.query(Transaction).filter(
+                    Transaction.tx_id == f"REFUND-SELLER-TIMEOUT-{order.id}",
+                    Transaction.status == "Successful",
+                ).first()
+                return {
+                    "success": True,
+                    "dispute": _serialize_dispute(dispute, include_parties=True),
+                    "order_status": order.status,
+                    "amount": float(refund_transaction.amount) if refund_transaction else 0.0,
+                }
             amount = refund_escrow_funds(order.id, db)
             order.status = "Refunded"
             dispute.resolution = "REFUNDED"
@@ -10217,10 +10571,24 @@ def _seller_order_action(
     order_seller = _seller_for_order(db, order)
     if order_seller.student_id != seller.student_id:
         raise HTTPException(status_code=403, detail="Only the seller for this order can perform this action.")
-    if str(action or "").strip().lower().replace(" ", "_") in {"accept", "ready", "handover", "verify_pickup"}:
+    action_key = str(action or "").strip().lower().replace(" ", "_")
+    if order_seller.suspended_until and order_seller.suspended_until > datetime.now():
+        raise HTTPException(status_code=423, detail=f"Seller account is suspended until {order_seller.suspended_until.isoformat()}.")
+    if action_key in {"accept", "ready", "handover", "verify_pickup"}:
         _require_active_payout_account(db, seller)
 
-    message = apply_seller_order_action(order, action, input_code)
+    if action_key == "accept":
+        accepted = db.query(Order).filter(
+            Order.id == order_id,
+            func.lower(Order.status) == "pending",
+            Order.seller_accept_deadline > datetime.now(),
+        ).update({Order.status: "Processing"}, synchronize_session=False)
+        if accepted != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Order expired or already handled")
+        message = "Order accepted and processing started."
+    else:
+        message = apply_seller_order_action(order, action, input_code)
 
     db.commit()
     db.refresh(order)
@@ -12312,7 +12680,7 @@ def get_admin_verifications(
         status_value = "Rejected" if student.verification_reason else "Pending"
         id_card_path = os.path.join(ID_CARD_DIR, f"{student.student_id}.jpg")
         avatar_path = os.path.join(AVATAR_DIR, f"{student.student_id}.jpg")
-        uploaded_id_card = (
+        uploaded_id_card = student.id_card_url or (
             f"http://127.0.0.1:8000/static/uploads/id_cards/{student.student_id}.jpg"
             if os.path.exists(id_card_path)
             else f"http://127.0.0.1:8000/static/uploads/avatars/{student.student_id}.jpg"
@@ -12457,16 +12825,12 @@ async def upload_student_id(
     if content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="ID photo must be a JPEG, PNG, or WebP image.")
 
-    destination = os.path.join(ID_CARD_DIR, f"{student.student_id}.jpg")
     try:
-        with open(destination, "wb") as output_file:
-            shutil.copyfileobj(id_photo.file, output_file)
-    except OSError:
-        raise HTTPException(status_code=500, detail="Failed to save student ID photo.")
+        id_card_url = save_upload(id_photo, "campace/ids")
     finally:
         await id_photo.close()
 
-    student.id_card_url = f"http://127.0.0.1:8000/static/uploads/id_cards/{student.student_id}.jpg"
+    student.id_card_url = id_card_url
     student.verification_reason = None
     db.commit()
     db.refresh(student)
@@ -13144,7 +13508,12 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
 
 
 @app.get("/api/admin/orders")
-def get_admin_orders(db: Session = Depends(get_db)):
+def get_admin_orders(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, session_token, db)
     try:
         rows = db.query(Order).order_by(Order.created_at.desc()).all()
         results = []
@@ -13175,9 +13544,9 @@ def get_admin_orders(db: Session = Depends(get_db)):
             seller_id = product.seller if product and product.seller else "Unknown"
             buyer_id = order.student_id
             order_status = _normalize_order_status(order.status)
-            payment_status = "Pending"
+            payment_status = _normalize_payment_status(order.payment_status or "Pending")
             payment_rows = db.query(Transaction).filter(Transaction.student_id == buyer_id).order_by(Transaction.created_at.desc()).all()
-            if payment_rows:
+            if payment_status == "Pending" and payment_rows:
                 payment_status = _normalize_payment_status(payment_rows[0].status)
 
             record = {
@@ -13197,6 +13566,12 @@ def get_admin_orders(db: Session = Depends(get_db)):
                 "seller_response": dispute.seller_response if dispute else None,
                 "escrow_status": escrow_hold.status if escrow_hold else ("Released" if order.is_funds_released else "Unavailable"),
                 "seller_payout_status": "Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold"),
+                "refund_status": order.refund_status,
+                "refund_reference": order.refund_reference,
+                "refund_attempts": int(order.refund_attempts or 0),
+                "seller_accept_deadline": order.seller_accept_deadline.isoformat() if order.seller_accept_deadline else None,
+                "expired_at": order.expired_at.isoformat() if order.expired_at else None,
+                "expiry_reason": "Seller did not accept within 24 hours" if order.expired_at else None,
                 "buyer_name": buyer.name if buyer else buyer_id,
                 "seller_name": seller.name if seller else seller_id,
                 "pickup_location": "Main Library",
@@ -13215,6 +13590,35 @@ def get_admin_orders(db: Session = Depends(get_db)):
     except Exception:
         logging.getLogger("app.orders").exception("Unexpected error while loading order records.")
         return JSONResponse(status_code=500, content={"error": "Unexpected error while loading order records", "detail": "An unexpected internal error occurred."})
+
+
+@app.post("/api/admin/orders/{order_id}/retry-refund")
+def retry_seller_timeout_refund(
+    order_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin(authorization, session_token, db)
+    order = db.query(Order).filter(Order.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if order.refund_status == "succeeded":
+        _attempt_seller_timeout_refund(order_id, admin_retry=True, admin_id=admin.id)
+        return {"success": True, "status": "succeeded", "reference": order.refund_reference}
+    active_timeout_dispute = db.query(Dispute.id).filter(
+        Dispute.order_id == order.id,
+        Dispute.reason == "refund_not_received",
+        Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
+    ).first()
+    if order.status not in {"Expired", "Refunded"} and not (
+        order.status == "Disputed" and order.expired_at and active_timeout_dispute
+    ):
+        raise HTTPException(status_code=409, detail="Only expired orders can be refunded.")
+    result = _attempt_seller_timeout_refund(order_id, admin_retry=True, admin_id=admin.id)
+    if not result["success"]:
+        raise HTTPException(status_code=502, detail="Refund attempt failed. The order remains available for another admin retry.")
+    return result
 
 
 @app.post("/api/admin/orders/{order_id}/resolve-dispute")
@@ -13459,8 +13863,17 @@ async def simulate_chapa_webhook(
         or "pending"
     ).strip().lower()
     if status_value not in {"success", "successful", "paid", "completed", "charge.success"}:
-        webhook_logger.warning("Rejected Chapa payment webhook for %s: non-success status=%s.", tx_ref if 'tx_ref' in locals() else None, status_value)
-        raise HTTPException(status_code=400, detail="Payment callback status is not successful.")
+        webhook_logger.info(
+            "Acknowledged signed Chapa callback without settlement status=%s transaction=%s.",
+            payload_dict.get("tx_ref") or payload_dict.get("transaction_id") or callback_data.get("tx_ref"),
+            status_value,
+        )
+        return {
+            "message": "Payment callback received; no settlement was performed.",
+            "status": status_value,
+            "verified": True,
+            "settled": False,
+        }
 
     tx_ref = str(
         payload_dict.get("tx_ref")
@@ -13489,7 +13902,20 @@ async def simulate_chapa_webhook(
     if not transaction:
         raise HTTPException(status_code=404, detail="Pending payment transaction not found for callback.")
     if _normalize_payment_type(transaction.type) != "Wallet Deposit":
-        raise HTTPException(status_code=400, detail="Only wallet deposits can be settled through this payment webhook.")
+        webhook_logger.warning(
+            "Ignored signed Chapa callback for non-wallet-deposit transaction tx_ref=%s type=%s status=%s.",
+            tx_ref,
+            transaction.type,
+            status_value,
+        )
+        return {
+            "message": "Payment callback received; no settlement was performed because this transaction is not a wallet deposit.",
+            "status": status_value,
+            "verified": True,
+            "settled": False,
+            "transaction_id": tx_ref,
+            "transaction_type": transaction.type,
+        }
 
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payment callback amount must be greater than 0.")

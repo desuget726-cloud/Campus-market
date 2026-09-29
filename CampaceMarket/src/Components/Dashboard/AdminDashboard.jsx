@@ -3,6 +3,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import AdminDisputeReview from './AdminDisputeReview';
 import { notifyError, notifySuccess } from '../../utils/notify';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
 
@@ -137,18 +138,20 @@ const parseAuditJson = (value) => {
 };
 
 const getProductImageUrl = (image) => {
-  if (!image) return PRODUCT_PLACEHOLDER;
-  if (typeof image === 'string') {
+  let value = image;
+  if (typeof value === 'string') {
     try {
-      const parsedImage = JSON.parse(image);
-      if (Array.isArray(parsedImage) && typeof parsedImage[0] === 'string' && parsedImage[0].trim()) {
-        return parsedImage[0];
-      }
+      const parsedImage = JSON.parse(value);
+      value = Array.isArray(parsedImage) ? parsedImage.find(Boolean) : value;
     } catch {
-      return image.trim() || PRODUCT_PLACEHOLDER;
+      value = value.trim();
     }
   }
-  return PRODUCT_PLACEHOLDER;
+  if (Array.isArray(value)) value = value.find(Boolean);
+  if (typeof value !== 'string' || !value.trim()) return PRODUCT_PLACEHOLDER;
+  const normalized = value.trim();
+  if (/^(https?:|data:|blob:)/i.test(normalized) || normalized.startsWith('/')) return resolveImageUrl(normalized);
+  return resolveImageUrl(`/static/uploads/${normalized}`);
 };
 
 const formatAuditValue = (value) => {
@@ -275,13 +278,13 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const refreshSecurityData = async () => {
     const sessionToken = token(); if (!sessionToken) return;
     const headers = { Authorization: `Bearer ${sessionToken}` };
-    try { const [sessionData, historyData] = await Promise.all([request('http://127.0.0.1:8000/api/admin/sessions', { headers }), request('http://127.0.0.1:8000/api/admin/login-history', { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { notifyError(error, 'admin-security-data'); }
+    try { const [sessionData, historyData] = await Promise.all([request(`${API_BASE_URL}/api/admin/sessions`, { headers }), request(`${API_BASE_URL}/api/admin/login-history`, { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { notifyError(error, 'admin-security-data'); }
   };
   useEffect(() => {
     const load = async () => {
       setProfileLoading(true);
       try {
-        const data = await request('http://127.0.0.1:8000/api/admin/me', { headers: { Authorization: `Bearer ${token()}` } });
+        const data = await request(`${API_BASE_URL}/api/admin/me`, { headers: { Authorization: `Bearer ${token()}` } });
         setProfile((current) => ({ ...current, ...data, two_factor_enabled: Boolean(data.two_factor_enabled) }));
         setPermissionState((current) => ({ ...current, ...(data.permissions || {}) }));
         setForm((current) => ({
@@ -306,24 +309,24 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
     return () => window.clearInterval(interval);
   }, []);
   const passwordScore = [form.new_password.length >= 8, /[A-Z]/.test(form.new_password), /[a-z]/.test(form.new_password), /\d/.test(form.new_password), /[^A-Za-z0-9]/.test(form.new_password)].filter(Boolean).length;
-  const updateProfile = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request('http://127.0.0.1:8000/api/admin/me', { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); notifySuccess('Profile saved successfully', 'admin-profile-save'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-profile-save'); } finally { setBusy(false); } };
+  const updateProfile = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/me`, { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); notifySuccess('Profile saved successfully', 'admin-profile-save'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-profile-save'); } finally { setBusy(false); } };
   const normalizedRole = String(profile.role || '').trim().toLowerCase().replace(/_/g, ' ');
   const isMainAdmin = normalizedRole === 'admin';
   const canEditPermissions = ['admin', 'super admin', 'superadministrator'].includes(normalizedRole);
   const permissionDefinitions = [['users', 'Users'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['reports', 'Reports'], ['ai', 'AI'], ['analytics', 'Analytics'], ['audit_logs', 'Audit Logs'], ['settings', 'Settings']];
-  const savePermissions = async () => { if (!canEditPermissions || !profile.id || permissionsSaving) return; setPermissionsSaving(true); try { const data = await request(`http://127.0.0.1:8000/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); notifySuccess('Permissions saved successfully', 'admin-permissions-save'); } catch (error) { notifyError(error, 'admin-permissions-save'); } finally { setPermissionsSaving(false); } };
-  const securityAction = async (path) => { if (busy) return; setBusy(true); try { const data = await request(`http://127.0.0.1:8000/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); notifySuccess(data.message || 'Security action completed.', `admin-security-${path}`); refreshSecurityData(); } catch (error) { notifyError(error, `admin-security-${path}`); } finally { setBusy(false); } };
-  const startTwoFactorSetup = async () => { if (busy) return; setBusy(true); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup', { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); notifySuccess('Authenticator setup started', 'admin-2fa-setup'); } catch (error) { notifyError(error, 'admin-2fa-setup'); } finally { setBusy(false); } };
-  const verifyTwoFactorSetup = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request('http://127.0.0.1:8000/api/admin/2fa/setup/verify', { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); const enabled = Boolean(data.enabled); setProfile((current) => ({ ...current, two_factor_enabled: enabled })); onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), two_factor_enabled: enabled })); setSetupData(null); setSetupCode(''); notifySuccess(data.message || 'Authenticator setup completed.', 'admin-2fa-setup-verify'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-setup-verify'); } finally { setBusy(false); } };
-  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { notifyError(new Error('Enter your current password or a valid authenticator/backup code.'), 'admin-2fa-reauth'); return; } if (busy) return; setBusy(true); try { const data = await request(`http://127.0.0.1:8000/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); notifySuccess(data.message || 'Security action completed.', 'admin-2fa-reauth'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-reauth'); } finally { setBusy(false); } };
+  const savePermissions = async () => { if (!canEditPermissions || !profile.id || permissionsSaving) return; setPermissionsSaving(true); try { const data = await request(`${API_BASE_URL}/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); notifySuccess('Permissions saved successfully', 'admin-permissions-save'); } catch (error) { notifyError(error, 'admin-permissions-save'); } finally { setPermissionsSaving(false); } };
+  const securityAction = async (path) => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); notifySuccess(data.message || 'Security action completed.', `admin-security-${path}`); refreshSecurityData(); } catch (error) { notifyError(error, `admin-security-${path}`); } finally { setBusy(false); } };
+  const startTwoFactorSetup = async () => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/setup`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); notifySuccess('Authenticator setup started', 'admin-2fa-setup'); } catch (error) { notifyError(error, 'admin-2fa-setup'); } finally { setBusy(false); } };
+  const verifyTwoFactorSetup = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/setup/verify`, { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); const enabled = Boolean(data.enabled); setProfile((current) => ({ ...current, two_factor_enabled: enabled })); onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), two_factor_enabled: enabled })); setSetupData(null); setSetupCode(''); notifySuccess(data.message || 'Authenticator setup completed.', 'admin-2fa-setup-verify'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-setup-verify'); } finally { setBusy(false); } };
+  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { notifyError(new Error('Enter your current password or a valid authenticator/backup code.'), 'admin-2fa-reauth'); return; } if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); notifySuccess(data.message || 'Security action completed.', 'admin-2fa-reauth'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-reauth'); } finally { setBusy(false); } };
   const copyBackupCodes = async () => { if (!backupCodes.length || !navigator.clipboard) { notifyError(new Error('Clipboard access is unavailable.'), 'admin-backup-codes-copy'); return; } try { await navigator.clipboard.writeText(backupCodes.join('\n')); setBackupCodesCopied(true); notifySuccess('Backup codes copied.', 'admin-backup-codes-copy'); window.setTimeout(() => setBackupCodesCopied(false), 2000); } catch (error) { notifyError(error, 'admin-backup-codes-copy'); } };
   const downloadBackupCodes = () => { if (!backupCodes.length) return; const generatedDate = new Date().toISOString().slice(0, 10); const contents = `DG Market Admin - Backup Codes (Generated: ${generatedDate}). Keep these safe. Each code can only be used once.\n\n${backupCodes.join('\n')}\n`; const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'dg-market-backup-codes.txt'; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); };
-  const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file || busy) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); notifySuccess('Profile photo updated', 'admin-avatar-upload'); } catch (error) { notifyError(error, 'admin-avatar-upload'); } finally { setBusy(false); } };
+  const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file || busy) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch(`${API_BASE_URL}/api/admin/upload-avatar`, { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); notifySuccess('Profile photo updated', 'admin-avatar-upload'); } catch (error) { notifyError(error, 'admin-avatar-upload'); } finally { setBusy(false); } };
   const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions'], ...(isMainAdmin ? [['admin-accounts', 'Admin Accounts']] : [])];
   const field = (label, key, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{label}</span><input type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500" /></label>;
   if (profileLoading) return <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-500 shadow-sm" role="status">Loading your admin profile...</div>;
   return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>
-    {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={profile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER} alt="Admin profile" className="h-20 w-20 rounded-full object-cover" /><label className="btn-primary cursor-pointer rounded-xl px-4 py-2 text-sm font-bold">Upload Photo<input type="file" accept="image/*" onChange={uploadAvatar} className="hidden" /></label></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Save Changes</button></form>}
+    {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={resolveImageUrl(profile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER)} alt="Admin profile" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-20 w-20 rounded-full object-cover" /><label className="btn-primary cursor-pointer rounded-xl px-4 py-2 text-sm font-bold">Upload Photo<input type="file" accept="image/*" onChange={uploadAvatar} className="hidden" /></label></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Save Changes</button></form>}
     {section === 'password' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="grid gap-4 md:grid-cols-2">{field('Current Password', 'current_password', 'password')}{field('New Password', 'new_password', 'password')}</div>{form.new_password && <div className="mt-4"><div className="flex h-2 gap-1">{[0, 1, 2, 3, 4].map((item) => <span key={item} className={`flex-1 rounded-full ${item < passwordScore ? (passwordScore < 3 ? 'bg-rose-500' : passwordScore < 5 ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-200'}`} />)}</div><p className="mt-2 text-xs text-slate-500">{passwordScore}/5 password requirements met</p></div>}{field('Confirm New Password', 'confirm_password', 'password')}<label className="mt-5 flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={form.logout_all_sessions} onChange={(event) => setForm((current) => ({ ...current, logout_all_sessions: event.target.checked }))} />Log out of all active sessions</label><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Update Password</button></form>}
     {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection for this admin</h3><p className="mt-2 text-sm text-slate-500">Current admin status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><p className="mt-2 text-xs font-medium leading-5 text-slate-500">This status reflects the authenticated admin&apos;s configured authenticator, not the system-wide login policy in Settings.</p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={startTwoFactorSetup} className="btn-primary rounded-xl px-4 py-3 text-sm font-bold">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('backup-codes')} title={profile.two_factor_enabled ? 'Generate one-time backup codes' : 'Enable 2FA first to generate backup codes'} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('disable')} title={profile.two_factor_enabled ? 'Disable authenticator protection' : 'Enable 2FA first'} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">Disable 2FA</button></div></div>}
     {setupData && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={verifyTwoFactorSetup} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Set up authenticator</h3><p className="mt-2 text-sm text-slate-600">Scan this QR code with Google Authenticator or Authy, then enter the six-digit code.</p><img src={setupData.qr_code} alt="Authenticator setup QR code" className="mx-auto mt-5 h-52 w-52" /><p className="mt-3 break-all text-center font-mono text-xs text-slate-500">Manual key: {setupData.secret}</p><input autoFocus inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={setupCode} onChange={(event) => setSetupCode(event.target.value.replace(/\D/g, ''))} placeholder="6-digit code" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-lg tracking-[0.3em]" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setSetupData(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy || setupCode.length !== 6} className="btn-primary rounded-xl px-4 py-3 text-sm font-bold">Verify and Enable</button></div></form></div>}
@@ -357,7 +360,7 @@ function AdminAccountsPanel({ user }) {
   const loadAdmins = async () => {
     setLoading(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/sub-admins', { headers: { Authorization: `Bearer ${token()}` } });
+      const response = await fetch(`${API_BASE_URL}/api/admin/sub-admins`, { headers: { Authorization: `Bearer ${token()}` } });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || 'Unable to load admin accounts.');
       setLimitInfo({ current_count: data.current_count, max_allowed: data.max_allowed, can_add: data.can_add });
@@ -375,7 +378,7 @@ function AdminAccountsPanel({ user }) {
     event.preventDefault();
     setSaving(true); setMessage(''); setError('');
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/sub-admins', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/sub-admins`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
         body: JSON.stringify(form),
@@ -395,7 +398,7 @@ function AdminAccountsPanel({ user }) {
 
   const updateStatus = async (adminId, status) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/sub-admins/${adminId}/status`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/sub-admins/${adminId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
         body: JSON.stringify({ status }),
@@ -412,7 +415,7 @@ function AdminAccountsPanel({ user }) {
 
   const deleteAdmin = async (adminId) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/sub-admins/${adminId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+      const response = await fetch(`${API_BASE_URL}/api/admin/sub-admins/${adminId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || 'Unable to delete sub admin.');
       notifySuccess('Sub admin deleted successfully', `admin-sub-admin-delete-${adminId}`);
@@ -498,9 +501,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const getAdminSessionToken = () => {
     try {
       const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-      return session.access_token || session.accessToken || user?.access_token || '';
+      const sessionUser = session?.user || {};
+      return session.access_token || session.accessToken || session.token || sessionUser.access_token || sessionUser.accessToken || sessionUser.token || user?.access_token || user?.accessToken || user?.token || '';
     } catch {
-      return user?.access_token || '';
+      return user?.access_token || user?.accessToken || user?.token || '';
     }
   };
 
@@ -594,6 +598,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [ordersList, setOrdersList] = useState([]);
   const [orderSearch, setOrderSearch] = useState('');
   const [orderFilterStatus, setOrderFilterStatus] = useState('All');
+  const [orderFilterRefund, setOrderFilterRefund] = useState('All');
   const [orderFilterPayment, setOrderFilterPayment] = useState('All');
   const [orderPage, setOrderPage] = useState(1);
   const ORDERS_PER_PAGE = 10;
@@ -604,8 +609,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const refreshOpenDisputeCount = async () => {
     try {
       const token = getAdminSessionToken();
-      const response = await fetch('http://127.0.0.1:8000/api/admin/disputes', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      const isAdminSession = String(user?.role || '').toLowerCase() === 'admin';
+      if (!isAdminSession || !token) return;
+
+      const response = await fetch(`${API_BASE_URL}/api/admin/disputes`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) return;
       const disputes = await response.json();
@@ -617,7 +625,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   useEffect(() => {
     refreshOpenDisputeCount();
-  }, []);
+  }, [user?.role]);
 
   const calculatedOrderMetrics = useMemo(() => {
     const processingStatuses = new Set(['Processing', 'Pending', 'Ready for Pickup', 'Out for Delivery']);
@@ -808,8 +816,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const fetchGatewayStatus = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/payments/gateway-status', {
-        headers: { Authorization: `Bearer ${getAdminSessionToken()}` },
+      const token = getAdminSessionToken();
+      if (!token) {
+        setGatewayStatus((current) => ({ ...current, gateway: 'Disconnected', last_checked: new Date().toISOString() }));
+        return;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/admin/payments/gateway-status`, {
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) throw new Error('Gateway status endpoint unavailable');
       const data = await response.json();
@@ -836,11 +850,17 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   useEffect(() => {
     const fetchAdminProfile = async () => {
+      const sessionToken = getAdminSessionToken();
+      const isAdminSession = String(user?.role || '').toLowerCase() === 'admin';
+      if (!sessionToken || !isAdminSession) {
+        setProfileDataLoading(false);
+        return;
+      }
+
       setProfileDataLoading(true);
       try {
-        const sessionToken = getAdminSessionToken();
-        const response = await fetch('http://127.0.0.1:8000/api/admin/me', {
-          headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+        const response = await fetch(`${API_BASE_URL}/api/admin/me`, {
+          headers: { Authorization: `Bearer ${sessionToken}` },
         });
         if (!response.ok) {
           throw new Error('Admin profile endpoint unavailable');
@@ -890,11 +910,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     };
 
     fetchAdminProfile();
-  }, []);
+  }, [user?.role]);
 
   useEffect(() => {
     const fetchAuditLogs = async () => {
       try {
+        const sessionToken = getAdminSessionToken();
+        if (!sessionToken || String(user?.role || '').toLowerCase() !== 'admin') return;
+
         const params = new URLSearchParams({
           limit: String(auditLogPageSize),
           offset: String((auditLogPage - 1) * auditLogPageSize),
@@ -914,7 +937,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           params.set('end_date', now.toISOString());
         }
 
-        const response = await fetch(`http://127.0.0.1:8000/api/admin/audit-logs?${params.toString()}`);
+        const response = await fetch(`${API_BASE_URL}/api/admin/audit-logs?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${sessionToken}` },
+        });
         if (!response.ok) {
           throw new Error('Audit logs endpoint unavailable');
         }
@@ -956,7 +981,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     const fetchVerificationColleges = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/colleges');
+        const response = await fetch(`${API_BASE_URL}/api/admin/colleges`);
         if (!response.ok) throw new Error('College endpoint unavailable');
         const colleges = await response.json();
         setVerificationColleges(Array.isArray(colleges) ? colleges : []);
@@ -973,8 +998,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     const fetchVerificationDepartments = async () => {
       try {
         const url = verificationFilterCollege !== 'All'
-          ? `http://127.0.0.1:8000/api/admin/departments?college=${encodeURIComponent(verificationFilterCollege)}`
-          : 'http://127.0.0.1:8000/api/admin/departments';
+          ? `${API_BASE_URL}/api/admin/departments?college=${encodeURIComponent(verificationFilterCollege)}`
+          : `${API_BASE_URL}/api/admin/departments`;
         const response = await fetch(url);
         if (!response.ok) throw new Error('Department endpoint unavailable');
         const departments = await response.json();
@@ -997,7 +1022,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       if (verificationFilterDept !== 'All') params.set('department', verificationFilterDept);
 
       const query = params.toString();
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/verifications${query ? `?${query}` : ''}`);
+      const response = await fetch(`${API_BASE_URL}/api/admin/verifications${query ? `?${query}` : ''}`);
       if (!response.ok) throw new Error('Verification endpoint unavailable');
 
       const data = await response.json();
@@ -1036,7 +1061,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setIdChangeRequestsLoading(true);
     try {
       const token = getAdminSessionToken();
-      const response = await fetch('http://127.0.0.1:8000/admin/id-change-requests', {
+      const response = await fetch(`${API_BASE_URL}/admin/id-change-requests`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json().catch(() => ({}));
@@ -1053,7 +1078,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const reviewIdChangeRequest = async (requestId, status) => {
     try {
       const token = getAdminSessionToken();
-      const response = await fetch(`http://127.0.0.1:8000/admin/id-change-requests/${requestId}`, {
+      const response = await fetch(`${API_BASE_URL}/admin/id-change-requests/${requestId}`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1085,7 +1110,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const fetchUsersData = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/users');
+      const response = await fetch(`${API_BASE_URL}/api/admin/users`);
       if (!response.ok) {
         throw new Error('Users endpoint unavailable');
       }
@@ -1134,7 +1159,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const fetchDbCategories = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/categories');
+      const response = await fetch(`${API_BASE_URL}/api/categories`);
       if (!response.ok) throw new Error('Categories endpoint unavailable');
       const data = await response.json();
       setDbCategories(Array.isArray(data) ? data : []);
@@ -1154,7 +1179,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         params.set('subcategory', productSubcategoryFilter);
       }
       const query = params.toString();
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/products${query ? `?${query}` : ''}`);
+      const response = await fetch(`${API_BASE_URL}/api/admin/products${query ? `?${query}` : ''}`);
       if (!response.ok) {
         throw new Error('Catalog products endpoint unavailable');
       }
@@ -1355,7 +1380,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setDashboardMetricsLoading(true);
     setDashboardMetricsError('');
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/analytics');
+      const response = await fetch(`${API_BASE_URL}/api/admin/analytics`);
       if (!response.ok) {
         throw new Error('Admin analytics endpoint unavailable');
       }
@@ -1468,7 +1493,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   useEffect(() => {
     const fetchGatewayStatus = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/payments/gateway-status');
+        const response = await fetch(`${API_BASE_URL}/api/admin/payments/gateway-status`);
         if (!response.ok) throw new Error('Gateway status endpoint unavailable');
         const data = await response.json();
         setGatewayInfo({
@@ -1531,7 +1556,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const fetchAiAnalytics = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/ai-analytics');
+      const response = await fetch(`${API_BASE_URL}/api/admin/ai-analytics`);
       if (!response.ok) throw new Error('AI analytics endpoint unavailable');
 
       const data = await response.json();
@@ -1568,7 +1593,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const loadSystemSettings = async () => {
     setSettingsLoading(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
+      const response = await fetch(`${API_BASE_URL}/api/admin/settings`);
       if (!response.ok) throw new Error('Settings endpoint unavailable');
 
       const responseData = await response.json();
@@ -1640,7 +1665,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const fetchCategories = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/categories/all');
+      const response = await fetch(`${API_BASE_URL}/api/admin/categories/all`);
       if (!response.ok) throw new Error('Categories endpoint unavailable');
 
       const categories = await response.json();
@@ -1673,7 +1698,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   // Fetch colleges from backend
   const fetchCollegesData = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/admin/colleges');
+      const response = await fetch(`${API_BASE_URL}/api/admin/colleges`);
       const colleges = await response.json();
       setDbCollegesList(colleges || []);
     } catch (err) {
@@ -1686,8 +1711,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const fetchDepartmentsData = async (selectedCollege = null) => {
     try {
       const url = selectedCollege
-        ? `http://localhost:8000/api/admin/departments?college=${encodeURIComponent(selectedCollege)}`
-        : 'http://localhost:8000/api/admin/departments';
+        ? `${API_BASE_URL}/api/admin/departments?college=${encodeURIComponent(selectedCollege)}`
+        : `${API_BASE_URL}/api/admin/departments`;
 
       const response = await fetch(url);
       const departments = await response.json();
@@ -1701,7 +1726,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   // Fetch reports from backend
   const fetchReportsData = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/reports');
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports`);
       const reports = await response.json();
       setReportsList(Array.isArray(reports) ? reports.map((report) => ({
         ...report,
@@ -1724,7 +1749,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   // Fetch payments from backend
   const fetchPaymentsData = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/payments?limit=1000');
+      const response = await fetch(`${API_BASE_URL}/api/admin/payments?limit=1000`);
       const payments = await response.json();
       setPaymentsList(Array.isArray(payments) ? payments : []);
     } catch (err) {
@@ -1770,7 +1795,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setChapaConnectionLoading(true);
     setChapaConnectionMessage('');
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/payments/test-connection', { method: 'POST' });
+      const response = await fetch(`${API_BASE_URL}/api/admin/payments/test-connection`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.success) throw new Error(data.detail || data.status || 'Chapa connection is not configured.');
       notifySuccess('Chapa connection verified.', 'admin-chapa-test');
@@ -1811,7 +1836,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   // Fetch orders from backend
   const fetchOrdersData = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/orders');
+      const token = getAdminSessionToken();
+      const response = await fetch(`${API_BASE_URL}/api/admin/orders`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!response.ok) {
         throw new Error('Orders endpoint unavailable');
       }
@@ -1828,11 +1856,37 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           payment_status: order.payment_status || order.pay_status || 'Pending',
           pickup_location: order.pickup_location || 'Main Library',
           dispute_reason: order.dispute_reason || '',
+          refund_status: order.refund_status || 'none',
+          refund_reference: order.refund_reference || '',
+          refund_attempts: Number(order.refund_attempts || 0),
+          expiry_reason: order.expiry_reason || '',
+          expired_at: order.expired_at || null,
           date: order.date || new Date().toISOString()
         })));
       }
     } catch (err) {
       console.error('Failed to fetch orders:', err);
+    }
+  };
+
+  const handleRetryOrderRefund = async (orderId) => {
+    const token = getAdminSessionToken();
+    if (!token) {
+      notifyError(new Error('A valid admin session is required.'), `admin-order-refund-${orderId}`);
+      return;
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/orders/${orderId}/retry-refund`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Refund retry failed.');
+      await fetchOrdersData();
+      setSelectedOrderDetails(null);
+      notifySuccess('Refund completed.', `admin-order-refund-${orderId}`);
+    } catch (error) {
+      notifyError(error, `admin-order-refund-${orderId}`);
     }
   };
 
@@ -1843,7 +1897,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setPaymentVerificationLoading(true);
     setPaymentVerificationMessage('');
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/payment/verify/${encodeURIComponent(txRef)}`);
+      const response = await fetch(`${API_BASE_URL}/api/payment/verify/${encodeURIComponent(txRef)}`);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.detail || 'Verification failed.');
       setPaymentVerificationMessage(`Gateway verification returned ${data.status}.`);
@@ -1867,7 +1921,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     const previousPaymentStatus = order.payment_status;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/orders/${orderId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/orders/${orderId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1928,7 +1982,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setAddStudentLoading(true);
     setAddStudentError('');
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/users', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(addStudentForm),
@@ -1956,7 +2010,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
     const nextStatus = student.is_verified ? 'Rejected' : 'Verified';
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/verifications/${student.id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/verifications/${student.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus, reason: '' }),
@@ -1984,7 +2038,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!target) return;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/users/${userId}/status`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus, reason })
@@ -2018,7 +2072,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }, ...prev]);
 
       try {
-        await fetch('http://127.0.0.1:8000/api/student/notifications', {
+        await fetch(`${API_BASE_URL}/api/student/notifications`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2063,7 +2117,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!user?.id || !window.confirm(`Delete ${user.name}? This action cannot be undone.`)) return;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/users/${user.id}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE_URL}/api/admin/users/${user.id}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || 'Unable to delete student.');
       setStudentUsers((previousUsers) => previousUsers.filter((student) => student.id !== user.id));
@@ -2079,7 +2133,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const handleBulkApproveUsers = async () => {
     if (!selectedUserIds.length) return;
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/users/bulk-approve', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users/bulk-approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(selectedUserIds),
@@ -2100,7 +2154,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     const reason = window.prompt('Enter a rejection reason for the selected users:')?.trim();
     if (!reason) return;
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/users/bulk-reject', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users/bulk-reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_ids: selectedUserIds, reason }),
@@ -2123,7 +2177,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!editingUser?.id) return;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/users/${editingUser.id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/users/${editingUser.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2155,7 +2209,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!target) return;
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/verifications/${id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/verifications/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2193,7 +2247,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       }, ...prev]);
 
       try {
-        await fetch('http://127.0.0.1:8000/api/student/notifications', {
+        await fetch(`${API_BASE_URL}/api/student/notifications`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2225,7 +2279,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!selectedVerificationIds.length) return;
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/verifications/bulk-approve', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/verifications/bulk-approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(selectedVerificationIds),
@@ -2249,7 +2303,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!reason) return;
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/verifications/bulk-reject', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/verifications/bulk-reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_ids: selectedVerificationIds, reason }),
@@ -2275,7 +2329,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const handleProductApproval = async (productId) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/products/${productId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/products/${productId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Approved' }),
@@ -2307,7 +2361,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const handleDeleteProduct = async (product) => {
     if (!window.confirm(`Permanently delete "${product.title}"? This action cannot be undone.`)) return;
     try {
-      const response = await fetch(`http://localhost:8000/api/admin/products/${product.id}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE_URL}/api/admin/products/${product.id}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || 'Unable to delete product.');
       setProductsList((products) => products.filter((item) => item.id !== product.id));
@@ -2327,7 +2381,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       const targetProducts = bulkRejectMode
         ? productsList.filter((product) => selectedProductIds.includes(product.id))
         : [pendingRejectProduct];
-      const responses = await Promise.all(targetProducts.map((product) => fetch(`http://127.0.0.1:8000/api/admin/products/${product.id}`, {
+      const responses = await Promise.all(targetProducts.map((product) => fetch(`${API_BASE_URL}/api/admin/products/${product.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Flagged', reason: rejectReason }),
@@ -2356,7 +2410,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const handleBulkApproveProducts = async () => {
     if (!selectedProductIds.length) return;
     try {
-      const responses = await Promise.all(selectedProductIds.map((productId) => fetch(`http://127.0.0.1:8000/api/admin/products/${productId}`, {
+      const responses = await Promise.all(selectedProductIds.map((productId) => fetch(`${API_BASE_URL}/api/admin/products/${productId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Approved' }),
@@ -2387,7 +2441,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!newCatName.trim()) return;
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/categories', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/categories`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2432,7 +2486,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/subcategories', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/subcategories`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2481,7 +2535,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/categories/${id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/categories/${id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -2519,7 +2573,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     }
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/subcategories/${subId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/subcategories/${subId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -2568,7 +2622,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       const timestamp = new Date().toLocaleString();
 
       // Call backend API with corrected endpoint and payload
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/reports/${id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Closed' })
@@ -2615,7 +2669,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setReportActionLoading(true);
 
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/reports/${id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2675,7 +2729,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (!selectedReport) return;
     setConversationLoading(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/admin/reports/${selectedReport.id}/conversation-logs`);
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${selectedReport.id}/conversation-logs`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || 'Unable to load conversation logs.');
       setConversationLogs(payload);
@@ -2705,7 +2759,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const fetchBroadcastHistory = async () => {
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/notifications/broadcasts');
+      const response = await fetch(`${API_BASE_URL}/api/admin/notifications/broadcasts`);
       if (!response.ok) throw new Error('Broadcast history endpoint unavailable');
 
       const data = await response.json();
@@ -2723,7 +2777,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
     const fetchVerificationDeptsList = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/departments');
+        const response = await fetch(`${API_BASE_URL}/api/admin/departments`);
         if (!response.ok) throw new Error('Department endpoint unavailable');
         const departments = await response.json();
         setVerificationDeptsList(Array.isArray(departments) ? departments : []);
@@ -2787,7 +2841,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     };
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/notifications/broadcast', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/notifications/broadcast`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -2839,7 +2893,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
     setSettingsLoading(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/settings', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -2882,7 +2936,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setProfileLoading(true);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/me', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/me`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2954,11 +3008,11 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     formData.append('image', file);
     console.log('[AdminAvatar] Starting upload:', {
       username,
-      endpoint: 'http://127.0.0.1:8000/api/admin/upload-avatar',
+      endpoint: `${API_BASE_URL}/api/admin/upload-avatar`,
     });
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/admin/upload-avatar', {
+      const response = await fetch(`${API_BASE_URL}/api/admin/upload-avatar`, {
         method: 'POST',
         body: formData,
       });
@@ -3063,7 +3117,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <div className="flex items-center gap-4 border-b border-slate-200 pb-5">
                   <div className="group relative h-16 w-16 shrink-0 overflow-hidden rounded-full border-4 border-emerald-200 shadow-md">
                     <img
-                      src={adminProfile.avatarUrl}
+                      src={resolveImageUrl(adminProfile.avatarUrl)}
                       alt="Admin avatar"
                       className="h-full w-full object-cover"
                       onError={(e) => {
@@ -3947,7 +4001,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <p className="mt-1 text-sm font-semibold text-slate-500">Review real university IDs submitted by Google OAuth users before changing their account identity.</p>
             </div>
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              {idChangeRequestsLoading ? <p className="py-10 text-center text-sm font-semibold text-slate-500">Loading requests...</p> : idChangeRequests.length === 0 ? <p className="py-10 text-center text-sm font-semibold text-slate-500">No pending ID verification requests.</p> : <div className="overflow-x-auto"><table className="min-w-full text-left text-sm text-slate-700"><thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Student</th><th className="px-3 py-3">Current ID</th><th className="px-3 py-3">Requested ID</th><th className="px-3 py-3">Evidence</th><th className="px-3 py-3">Submitted</th><th className="px-3 py-3">Review</th></tr></thead><tbody>{idChangeRequests.map((request) => <tr key={request.id} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-bold text-slate-900">{request.student_name || 'Unknown student'}</td><td className="px-3 py-4 font-mono text-xs">{request.student_id}</td><td className="px-3 py-4 font-mono font-bold">{request.requested_student_id}</td><td className="px-3 py-4">{request.evidence_url ? <a href={`http://127.0.0.1:8000${request.evidence_url}`} target="_blank" rel="noreferrer" className="text-emerald-700 underline">View photo</a> : <span className="text-slate-400">Not provided</span>}</td><td className="px-3 py-4 text-xs">{request.created_at ? new Date(request.created_at).toLocaleString() : '-'}</td><td className="min-w-[260px] px-3 py-4"><textarea value={idChangeRequestNotes[request.id] || ''} onChange={(event) => setIdChangeRequestNotes((notes) => ({ ...notes, [request.id]: event.target.value }))} placeholder="Optional admin note" rows={2} className="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-emerald-500" /><div className="flex gap-2"><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'approved')} className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white">Approve</button><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'rejected')} className="rounded-full bg-rose-500 px-3 py-1.5 text-xs font-bold text-white">Reject</button></div></td></tr>)}</tbody></table></div>}
+              {idChangeRequestsLoading ? <p className="py-10 text-center text-sm font-semibold text-slate-500">Loading requests...</p> : idChangeRequests.length === 0 ? <p className="py-10 text-center text-sm font-semibold text-slate-500">No pending ID verification requests.</p> : <div className="overflow-x-auto"><table className="min-w-full text-left text-sm text-slate-700"><thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Student</th><th className="px-3 py-3">Current ID</th><th className="px-3 py-3">Requested ID</th><th className="px-3 py-3">Evidence</th><th className="px-3 py-3">Submitted</th><th className="px-3 py-3">Review</th></tr></thead><tbody>{idChangeRequests.map((request) => <tr key={request.id} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-bold text-slate-900">{request.student_name || 'Unknown student'}</td><td className="px-3 py-4 font-mono text-xs">{request.student_id}</td><td className="px-3 py-4 font-mono font-bold">{request.requested_student_id}</td><td className="px-3 py-4">{request.evidence_url ? <a href={resolveImageUrl(request.evidence_url)} target="_blank" rel="noreferrer" className="text-emerald-700 underline">View photo</a> : <span className="text-slate-400">Not provided</span>}</td><td className="px-3 py-4 text-xs">{request.created_at ? new Date(request.created_at).toLocaleString() : '-'}</td><td className="min-w-[260px] px-3 py-4"><textarea value={idChangeRequestNotes[request.id] || ''} onChange={(event) => setIdChangeRequestNotes((notes) => ({ ...notes, [request.id]: event.target.value }))} placeholder="Optional admin note" rows={2} className="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-emerald-500" /><div className="flex gap-2"><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'approved')} className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white">Approve</button><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'rejected')} className="rounded-full bg-rose-500 px-3 py-1.5 text-xs font-bold text-white">Reject</button></div></td></tr>)}</tbody></table></div>}
             </div>
           </div>
         );
@@ -4127,8 +4181,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         </div>
                         <div className="overflow-hidden rounded-2xl border bg-slate-50 p-2 flex items-center justify-center h-[26rem] shadow-xs">
                           <img
-                            src={selectedIDPhoto}
+                            src={resolveImageUrl(selectedIDPhoto)}
                             alt="Student ID Card"
+                            onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
                             className="max-h-full max-w-full rounded-xl object-contain border border-slate-200 transition-transform duration-200"
                             style={{ transform: `scale(${verificationZoom}) rotate(${verificationRotation}deg)` }}
                           />
@@ -4796,9 +4851,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             (order.product_title || order.item || '').toLowerCase().includes(query);
 
           const matchesStatus = orderFilterStatus === 'All' || order.order_status === orderFilterStatus;
+          const matchesRefund = orderFilterRefund === 'All' || (
+            orderFilterRefund === 'Expired / Refund failed' &&
+            (['Expired', 'Refunded'].includes(order.order_status) || order.refund_status === 'failed')
+          );
           const matchesPayment = orderFilterPayment === 'All' || order.payment_status === orderFilterPayment;
 
-          return matchesSearch && matchesStatus && matchesPayment;
+          return matchesSearch && matchesStatus && matchesRefund && matchesPayment;
         });
         const totalOrderPages = Math.max(1, Math.ceil(filteredOrders.length / ORDERS_PER_PAGE));
         const displayedOrders = filteredOrders.slice((orderPage - 1) * ORDERS_PER_PAGE, orderPage * ORDERS_PER_PAGE);
@@ -4918,6 +4977,14 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <option value="Failed">Failed</option>
                   <option value="Refunded">Refunded</option>
                 </select>
+                <select
+                  value={orderFilterRefund}
+                  onChange={(e) => setOrderFilterRefund(e.target.value)}
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                >
+                  <option value="All">Expiry / Refund: All</option>
+                  <option value="Expired / Refund failed">Expired / Refund failed</option>
+                </select>
               </div>
 
               <div className="mt-6 overflow-x-auto">
@@ -4959,13 +5026,24 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           </span>
                         </td>
                         <td className="px-4 py-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedOrderDetails(order)}
-                            className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 transition"
-                          >
-                            View
-                          </button>
+                          <div className="flex justify-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedOrderDetails(order)}
+                              className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 transition"
+                            >
+                              View
+                            </button>
+                            {order.refund_status === 'failed' && (
+                              <button
+                                type="button"
+                                onClick={() => handleRetryOrderRefund(order.id)}
+                                className="rounded-full bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-700"
+                              >
+                                Retry refund
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -5036,6 +5114,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Fulfillment Status</p>
                       <p className="mt-2 text-base font-black text-slate-900">{selectedOrderDetails.order_status}</p>
                     </div>
+                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Refund Status</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{selectedOrderDetails.refund_status || 'none'}</p>
+                      {selectedOrderDetails.refund_reference && <p className="mt-1 break-all text-xs text-slate-500">{selectedOrderDetails.refund_reference}</p>}
+                    </div>
+                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Expiry Reason</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{selectedOrderDetails.expiry_reason || 'Not expired'}</p>
+                      {selectedOrderDetails.expired_at && <p className="mt-1 text-xs text-slate-500">{new Date(selectedOrderDetails.expired_at).toLocaleString()}</p>}
+                    </div>
                   </div>
 
                   {selectedOrderDetails.dispute_status && <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-5">
@@ -5088,6 +5176,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   {['OPEN', 'UNDER_REVIEW'].includes(String(selectedOrderDetails.dispute_status || '').toUpperCase()) && <p className="mt-3 text-sm font-semibold text-rose-700">Resolve the active dispute using Refund Buyer or Release to Seller before completing this order.</p>}
 
                   <div className="mt-6 flex justify-end gap-3">
+                    {selectedOrderDetails.refund_status === 'failed' && (
+                      <button
+                        type="button"
+                        onClick={() => handleRetryOrderRefund(selectedOrderDetails.id)}
+                        className="rounded-full bg-amber-600 px-5 py-3 text-sm font-bold text-white hover:bg-amber-700"
+                      >
+                        Retry refund
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setSelectedOrderDetails(null)}
@@ -5662,7 +5759,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/70 p-4" onClick={() => setEvidenceImage(null)}>
                 <div className="relative max-h-[90vh] max-w-3xl rounded-2xl bg-white p-3 shadow-2xl" onClick={(event) => event.stopPropagation()}>
                   <button type="button" onClick={() => setEvidenceImage(null)} className="absolute right-3 top-3 rounded-full bg-slate-900/75 px-3 py-1 text-sm font-bold text-white" aria-label="Close evidence photo">✕</button>
-                  <img src={evidenceImage} alt="Report evidence" className="max-h-[82vh] max-w-full rounded-xl object-contain" onError={() => { setEvidenceImage(null); setReportToast('The evidence photo could not be loaded.'); window.setTimeout(() => setReportToast(''), 3000); }} />
+                  <img src={resolveImageUrl(evidenceImage)} alt="Report evidence" className="max-h-[82vh] max-w-full rounded-xl object-contain" onError={() => { setEvidenceImage(null); setReportToast('The evidence photo could not be loaded.'); window.setTimeout(() => setReportToast(''), 3000); }} />
                 </div>
               </div>
             )}
@@ -7185,12 +7282,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50 pt-[88px] text-slate-900 lg:pt-[80px]">
-      <div className="flex min-h-0 flex-1 flex-col gap-3 px-2 py-2 lg:h-[calc(100vh-80px)] lg:flex-row lg:overflow-hidden lg:px-4 lg:py-0">
+    <div className="admin-dashboard-shell flex min-h-screen flex-col bg-slate-50 pt-[88px] text-slate-900 lg:min-h-0 lg:overflow-hidden lg:pt-0">
+      <div className="flex flex-1 flex-col gap-3 px-2 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:overflow-hidden lg:px-4 lg:py-0">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
-        <aside className="relative hidden lg:flex lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
+        <aside className="relative hidden lg:flex lg:h-full lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
-          <div className="relative z-10 mb-8 flex min-h-0 items-start gap-3 overflow-hidden">
+          <div className="relative z-10 mb-8 flex shrink-0 items-start gap-3 overflow-hidden">
             {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
             <img src={logs} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
             <div className="min-w-0 flex-1">
@@ -7216,7 +7313,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </button>
           </div>
 
-          <nav className="flex max-h-[calc(100vh-180px)] flex-col overflow-y-auto pr-1 scrollbar-thin scrollbar-track-slate-900/20 scrollbar-thumb-slate-600/60">
+          <nav className="admin-sidebar-menu flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain pb-4 pr-1">
             {adminTabs.map((tab) => {
               const isActive = activeTab === tab.id;
               return (
@@ -7294,7 +7391,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         {/* Main Panel Content Area */}
         {/* Start content directly below the global navbar; the former empty hero card is removed. */}
-        <main className="min-w-0 min-h-0 flex-1 overflow-y-auto pt-4 lg:pt-2 lg:pr-2">
+        <main className="admin-dashboard-content min-w-0 flex-1 overflow-visible pb-8 pt-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:overscroll-y-contain lg:pt-2 lg:pr-2">
 
           <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:hidden">
             <button
@@ -7346,8 +7443,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <div className="space-y-6 rounded-[28px] border border-slate-700 bg-slate-900/80 p-5 shadow-inner">
                 <div className="flex items-center gap-4 border-b border-slate-700 pb-5">
                   <img
-                    src={adminProfile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER}
+                    src={resolveImageUrl(adminProfile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER)}
                     alt="Admin avatar"
+                    onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
                     className="h-20 w-20 rounded-full border-4 border-sky-400 object-cover shadow-lg shadow-sky-500/20"
                   />
                   <div>

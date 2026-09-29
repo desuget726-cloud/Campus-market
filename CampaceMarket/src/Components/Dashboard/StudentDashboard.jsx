@@ -7,6 +7,7 @@ import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '../../config';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
@@ -19,6 +20,17 @@ const disputeReasons = [
   'Seller did not show up',
   'Other',
 ];
+
+const isDisputeEligibleOrder = (order) => {
+  const normalizedStatus = String(order?.status || '').trim().toLowerCase().replace(/[_\s]+/g, ' ');
+  return ['ready for pickup', 'item received', 'out for delivery', 'delivery', 'pickup'].includes(normalizedStatus);
+};
+const isTimeoutRefundDisputeEligible = (order) => (
+  String(order?.status || '').trim().toLowerCase() === 'expired'
+  && String(order?.refund_status || '').toLowerCase() !== 'succeeded'
+  && order?.expired_at
+  && Date.now() - new Date(order.expired_at).getTime() > 15 * 60 * 1000
+);
 
 const universityStructure = {
   "College of Computing and Informatics (CCI)": [
@@ -65,8 +77,8 @@ const universityStructure = {
 
 const getStudentAvatar = (studentId) => (
   studentId
-    ? `http://127.0.0.1:8000/static/uploads/avatars/${encodeURIComponent(studentId)}.jpg`
-    : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80'
+    ? resolveImageUrl(`/static/uploads/avatars/${encodeURIComponent(studentId)}.jpg`)
+    : IMAGE_PLACEHOLDER
 );
 
 const getRecommendationImage = (rawImage) => {
@@ -82,7 +94,7 @@ const getRecommendationImage = (rawImage) => {
       return null;
     }
   }
-  return imageValue;
+  return resolveImageUrl(imageValue);
 };
 
 const getProductImages = (rawImage) => {
@@ -113,7 +125,7 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 };
 
 
-function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, onOpenPrivacy, onOpenTerms }) {
+function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
   const { t } = useLanguage();
   const studentToast = (key) => t(`studentToast.${key}`);
   const getStudentSessionToken = () => {
@@ -141,6 +153,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const verifiedStudent = isVerifiedStudent(user);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [clockNow, setClockNow] = useState(Date.now());
   const [activeTab, setActiveTab] = useState(initialTab); // የጎን መቆጣጠሪያ ታብ
   const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
   const [settingsTab, setSettingsTab] = useState('account');
@@ -247,7 +260,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const walletBalanceRef = useRef(walletBalance);
-  const [loading, setLoading] = useState(false);
   const [isMarkingRead, setIsMarkingRead] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
@@ -278,6 +290,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   // የገዢው ዳሽቦርድ መረጃዎችን ከዳታቤዝ ለመጥራት የተዘጋጁ ስቴቶች (Buyer States)
   const [wishlist, setWishlist] = useState([]);
   const [cart, setCart] = useState([]);
+  const [cartPlatformFee, setCartPlatformFee] = useState(0);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [wishlistBadgeCount, setWishlistBadgeCount] = useState(0);
   const [cartBadgeCount, setCartBadgeCount] = useState(0);
@@ -290,6 +303,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [orderDetailsError, setOrderDetailsError] = useState('');
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => setClockNow(Date.now()), 60000);
+    return () => window.clearInterval(intervalId);
+  }, []);
   const [paymentInfo, setPaymentInfo] = useState({ balance: 0.00, recentTx: 'No transactions yet' });
   const payoutStatusTrackerRef = useRef({
     studentId: '',
@@ -314,7 +332,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const withdrawSubmitInFlightRef = useRef(false);
-  const [highlights, setHighlights] = useState({ aiPicks: 0, latestListings: 0, cartValue: 0.00, pendingMessages: 0 });
   const [recommendedProducts, setRecommendedProducts] = useState([]);
   const [recentCampusActivity, setRecentCampusActivity] = useState([]);
 
@@ -368,7 +385,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   // Dynamic categories from backend
   const [categories, setCategories] = useState([]);
   const [dbCategories, setDbCategories] = useState([]);
-  const [selectedCategoryObj, setSelectedCategoryObj] = useState(null);
   const [searchResults, setSearchResults] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
@@ -512,7 +528,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
 
       return 'Failed to complete action.';
-    } catch (err) {
+    } catch {
       return 'Failed to complete action.';
     }
   };
@@ -526,7 +542,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const wishlistCount = wishlistBadgeCount || wishlist.length;
   const orderCount = orders.length;
   const currentWalletBalance = Number(walletBalance ?? paymentInfo?.balance ?? 0);
-  const platformFee = cartTotal * 0.035;
+  const platformFee = cartPlatformFee;
   const checkoutTotal = cartTotal + platformFee;
   const walletHasSufficientFunds = currentWalletBalance > 0 && currentWalletBalance >= checkoutTotal;
   const withdrawalEntryBlocked = currentWalletBalance <= 0 || Boolean(activeWithdrawal);
@@ -608,15 +624,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     try {
       const [wishRes, cartRes, orderRes, hiddenOrderRes, payRes] = await Promise.all([
-        fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${studentId}`),
-        fetch(`http://127.0.0.1:8000/api/student/cart?student_id=${studentId}`),
-        fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}`, {
+        fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${studentId}`),
+        fetch(`${API_BASE_URL}/api/student/cart?student_id=${studentId}`),
+        fetch(`${API_BASE_URL}/api/student/orders?student_id=${encodeURIComponent(studentId)}`, {
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
-        fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=true`, {
+        fetch(`${API_BASE_URL}/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=true`, {
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
-        fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${studentId}`, { cache: 'no-store' }),
+        fetch(`${API_BASE_URL}/api/student/payments?student_id=${studentId}`, { cache: 'no-store' }),
       ]);
 
       if (wishRes.ok) {
@@ -689,7 +705,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setOrderDetailsLoading(true);
     setOrderDetailsError('');
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/detail/${encodeURIComponent(orderId)}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/detail/${encodeURIComponent(orderId)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json().catch(() => ({}));
@@ -708,7 +724,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setOrdersLoading(true);
     setOrdersError('');
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=${hidden ? 'true' : 'false'}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=${hidden ? 'true' : 'false'}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json().catch(() => ({}));
@@ -728,7 +744,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const token = getStudentSessionToken();
     const isHidden = showHiddenOrders;
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${encodeURIComponent(order.id)}/${isHidden ? 'unhide' : 'hide'}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/${encodeURIComponent(order.id)}/${isHidden ? 'unhide' : 'hide'}`, {
         method: 'PATCH',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
@@ -753,7 +769,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const token = getStudentSessionToken();
     setPaymentReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${encodeURIComponent(orderId)}/receipt`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/${encodeURIComponent(orderId)}/receipt`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json().catch(() => ({}));
@@ -856,7 +872,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const handleDisputeNotification = async ({ order_id: orderId }) => {
     const token = getStudentSessionToken();
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/detail/${encodeURIComponent(orderId)}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/detail/${encodeURIComponent(orderId)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json().catch(() => ({}));
@@ -880,7 +896,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!Number.isInteger(numericOrderId) || numericOrderId <= 0) return;
     const token = getStudentSessionToken();
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/detail/${encodeURIComponent(numericOrderId)}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/detail/${encodeURIComponent(numericOrderId)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const data = await response.json().catch(() => ({}));
@@ -912,7 +928,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const refreshWalletLedger = async () => {
       if (!user?.studentId) return;
-      const response = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`, { cache: 'no-store' });
+      const response = await fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`, { cache: 'no-store' });
       if (!response.ok) return;
       const data = await response.json().catch(() => ({}));
       const nextBalance = Number(data?.balance ?? data?.walletBalance ?? data?.wallet_balance ?? 0);
@@ -937,7 +953,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setPaymentVerificationState('confirming');
       while (isMounted && Date.now() - startedAt <= 60000 && status === 'Pending') {
         try {
-          const response = await fetch('http://127.0.0.1:8000/api/payment/verify/' + transactionReference);
+          const response = await fetch(`${API_BASE_URL}/api/payment/verify/` + transactionReference);
           const data = await response.json().catch(() => ({}));
           status = String(data?.status || '').trim().toLowerCase() === 'successful'
             ? 'Successful'
@@ -1055,7 +1071,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       if (subcategory) params.set('subcategory', subcategory);
       if (limit) params.set('limit', String(limit));
       if (department) params.set('department', department);
-      const url = `http://127.0.0.1:8000/api/products${params.toString() ? `?${params.toString()}` : ''}`;
+      const url = `${API_BASE_URL}/api/products${params.toString() ? `?${params.toString()}` : ''}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error('Failed to load products');
       const productData = await res.json();
@@ -1084,7 +1100,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setSellerOrdersLoading(true);
     setSellerOrdersError('');
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/seller/dashboard-data?student_id=${encodeURIComponent(user.studentId)}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/seller/dashboard-data?student_id=${encodeURIComponent(user.studentId)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!response.ok) {
@@ -1184,11 +1200,30 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const studentId = user?.studentId || user?.student_id || user?.username || user?.email || '';
 
   useEffect(() => {
+    if (!studentId || cart.length === 0) {
+      setCartPlatformFee(0);
+      return undefined;
+    }
+
+    let cancelled = false;
+    fetch(`${API_BASE_URL}/api/student/cart?student_id=${encodeURIComponent(studentId)}`)
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setCartPlatformFee(Number(data.platform_fee) || 0);
+      })
+      .catch((error) => console.error('Error fetching cart fee preview:', error));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId, cart]);
+
+  useEffect(() => {
     if (!studentId) return;
 
     const fetchFreshProfile = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8000/api/student/profile?student_id=${encodeURIComponent(studentId)}`);
+        const response = await fetch(`${API_BASE_URL}/api/student/profile?student_id=${encodeURIComponent(studentId)}`);
         if (!response.ok) return;
 
         const data = await response.json();
@@ -1213,12 +1248,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
 
     fetchFreshProfile();
-  }, [studentId]);
+  }, [studentId, onUserUpdate]);
 
   useEffect(() => {
     const fetchModalDropdownData = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/categories');
+        const response = await fetch(`${API_BASE_URL}/api/categories`);
         if (!response.ok) return;
 
         const catData = await response.json();
@@ -1235,7 +1270,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     const fetchMarketplaceSettings = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
+        const response = await fetch(`${API_BASE_URL}/api/admin/settings`);
         if (!response.ok) return;
 
         const settings = await response.json();
@@ -1258,7 +1293,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const fetchNotificationsData = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8000/api/student/notifications?student_id=${studentId}`);
+        const response = await fetch(`${API_BASE_URL}/api/student/notifications?student_id=${studentId}`);
         if (!response.ok) return;
 
         const notifData = await response.json();
@@ -1285,7 +1320,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleDeleteNotification = async (id) => {
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/notifications/${id}?student_id=${encodeURIComponent(studentId)}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/notifications/${id}?student_id=${encodeURIComponent(studentId)}`, {
         method: 'DELETE',
       });
       if (!response.ok) {
@@ -1310,21 +1345,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     if (!studentId) return;
 
-    const fetchUserHighlights = async () => {
-      try {
-        const response = await fetch(`http://127.0.0.1:8000/api/student/highlights?student_id=${studentId}`);
-        if (!response.ok) return;
-
-        const highlightData = await response.json();
-        setHighlights(highlightData);
-      } catch (err) {
-        console.error('Error fetching highlights:', err);
-      }
-    };
-
     const fetchRecommendations = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8000/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`);
+        const response = await fetch(`${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`);
         if (!response.ok) return;
 
         const recommendationData = await response.json();
@@ -1336,7 +1359,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const fetchRecentActivity = async () => {
       try {
-        const response = await fetch(`http://127.0.0.1:8000/api/student/recent-activity?student_id=${encodeURIComponent(studentId)}`);
+        const response = await fetch(`${API_BASE_URL}/api/student/recent-activity?student_id=${encodeURIComponent(studentId)}`);
         if (!response.ok) return;
 
         const activityData = await response.json();
@@ -1356,7 +1379,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setAvatarUrl('');
     }
 
-    fetchUserHighlights();
     fetchRecommendations();
     fetchRecentActivity();
   }, [studentId, user?.avatarUrl, user?.department]);
@@ -1415,8 +1437,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const fetchUnreadCounts = async () => {
       try {
         const [notificationResponse, messageResponse] = await Promise.all([
-          fetch(`http://127.0.0.1:8000/api/student/notifications/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
-          fetch(`http://127.0.0.1:8000/api/student/messages/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
+          fetch(`${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
+          fetch(`${API_BASE_URL}/api/student/messages/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
         ]);
         if (!notificationResponse.ok && !messageResponse.ok) return;
         const notificationData = notificationResponse.ok ? await notificationResponse.json() : {};
@@ -1435,7 +1457,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const fetchWalletBalance = async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/student/payments?student_id=${user.studentId}`, { cache: 'no-store' });
+        const res = await fetch(`${API_BASE_URL}/api/student/payments?student_id=${user.studentId}`, { cache: 'no-store' });
         if (!res.ok) return;
         const data = await res.json();
         const nextBalance = Number(data.balance ?? data.walletBalance ?? data.wallet_balance ?? 0);
@@ -1535,7 +1557,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       formData.append('category', supportCategory);
       formData.append('issue', supportIssue.trim());
       if (supportEvidenceImage) formData.append('evidence_image', supportEvidenceImage);
-      const res = await fetch('http://127.0.0.1:8000/api/student/report', {
+      const res = await fetch(`${API_BASE_URL}/api/student/report`, {
         method: 'POST',
         body: formData
       });
@@ -1573,7 +1595,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     formData.append('image', avatarFile);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/upload-avatar', {
+      const res = await fetch(`${API_BASE_URL}/api/student/upload-avatar`, {
         method: 'POST',
         body: formData,
       });
@@ -1654,7 +1676,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         department: profileForm.department,
       };
 
-      const res = await fetch('http://127.0.0.1:8000/students/me', {
+      const res = await fetch(`${API_BASE_URL}/students/me`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1720,7 +1742,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/wishlist', {
+      const res = await fetch(`${API_BASE_URL}/api/student/wishlist`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1795,7 +1817,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/cart', {
+      const res = await fetch(`${API_BASE_URL}/api/student/cart`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1828,7 +1850,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleRemoveFromWishlist = async (itemId) => {
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/student/wishlist/${itemId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/student/wishlist/${itemId}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -1845,7 +1867,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleRemoveFromCart = async (itemId) => {
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/student/cart/${itemId}`, {
+      const res = await fetch(`${API_BASE_URL}/api/student/cart/${itemId}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -1866,7 +1888,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     try {
       const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
       const token = session.access_token || session.user?.access_token || '';
-      const response = await fetch(`http://127.0.0.1:8000/api/student/cart/${itemId}/quantity`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/cart/${itemId}/quantity`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ quantity: nextQuantity }),
@@ -1895,7 +1917,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     setIsSubmittingReview(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/review', {
+      const res = await fetch(`${API_BASE_URL}/api/student/review`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1933,6 +1955,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const description = disputeDescription.trim();
     if (!targetOrderId || !reason || !description || isSubmittingDispute) return;
 
+    const currentOrder = orders.find((order) => Number(order.id) === targetOrderId);
+    if (!isDisputeEligibleOrder(currentOrder) && !isTimeoutRefundDisputeEligible(currentOrder)) {
+      const message = 'Disputes can only be raised once an order is ready for pickup or the item has been received.';
+      setDisputeFeedback(message);
+      notifyInfo(message);
+      return;
+    }
+
     setIsSubmittingDispute(true);
     setDisputeFeedback('');
     try {
@@ -1944,7 +1974,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         formData.append('evidence_images', file);
       });
 
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${targetOrderId}/dispute`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/${targetOrderId}/dispute`, {
         method: 'POST',
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -1986,7 +2016,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const token = user?.access_token || user?.accessToken || '';
     setReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/orders/${orderId}/confirm-received`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/orders/${orderId}/confirm-received`, {
         method: 'POST',
         headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       });
@@ -2073,7 +2103,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         payload.email = user.email;
       }
 
-      const res = await fetch('http://127.0.0.1:8000/api/payment/initialize', {
+      const res = await fetch(`${API_BASE_URL}/api/payment/initialize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -2159,7 +2189,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       };
 
       const token = getStudentSessionToken();
-      const res = await fetch('http://127.0.0.1:8000/api/student/wallet/withdraw', {
+      const res = await fetch(`${API_BASE_URL}/api/student/wallet/withdraw`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2184,7 +2214,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       // Confirm the committed ledger row and balance from the read endpoint;
       // do not close the form or report success from an optimistic response.
       const confirmationResponse = await fetch(
-        `http://127.0.0.1:8000/api/student/payments?student_id=${encodeURIComponent(studentId)}`,
+        `${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}`,
         { cache: 'no-store' },
       );
       const confirmationData = await confirmationResponse.json().catch(() => ({}));
@@ -2232,7 +2262,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!token) return;
     setWithdrawalStatusLoading(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/student/wallet/withdrawals/refresh', {
+      const response = await fetch(`${API_BASE_URL}/api/student/wallet/withdrawals/refresh`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -2268,7 +2298,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const handleDepositStatusCheck = async (transaction) => {
     setPayoutStatusCheckId(transaction.id || transaction.hash);
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/payment/verify/${encodeURIComponent(transaction.hash)}`);
+      const response = await fetch(`${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transaction.hash)}`);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.detail || 'Unable to check deposit status.');
       await fetchBuyerDashboardData();
@@ -2299,7 +2329,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     setPayoutAccountLoading(true);
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/student/seller/payout-account', {
+      const response = await fetch(`${API_BASE_URL}/api/student/seller/payout-account`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json().catch(() => ({}));
@@ -2359,7 +2389,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/cart', {
+      const res = await fetch(`${API_BASE_URL}/api/student/cart`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2375,7 +2405,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : cartItemCount + 1);
         setWishlistBadgeCount(Number.isFinite(nextWishlistCount) ? nextWishlistCount : wishlistCount);
 
-        const deleteRes = await fetch(`http://127.0.0.1:8000/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' });
+        const deleteRes = await fetch(`${API_BASE_URL}/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' });
         if (deleteRes.ok) {
           setWishlist((prev) => prev.filter((item) => item.id !== wishlistItemId));
           notifySuccess(studentToast('cartAdded'), `student-move-to-cart-${wishlistItemId}`);
@@ -2408,7 +2438,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     });
     setEditingProduct(null);
     setExistingProductImages([]);
-    setSelectedCategoryObj(null);
   };
 
   const findSellerProduct = (productOrId) => {
@@ -2490,7 +2519,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const updateSellerProduct = async (productOrId, updates, imageChanges = null) => {
     const product = findSellerProduct(productOrId);
     if (!product?.id) throw new Error('The selected product could not be found.');
-    const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
+    const response = await fetch(`${API_BASE_URL}/api/student/products/${product.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getStudentSessionToken()}` },
       body: JSON.stringify({ student_id: user?.studentId || '', ...updates })
@@ -2504,7 +2533,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const imageFormData = new FormData();
       imageFormData.append('existing_images', JSON.stringify(imageChanges.existingImages || []));
       (imageChanges.newImages || []).forEach((image) => imageFormData.append('images', image));
-      const imageResponse = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}/images`, {
+      const imageResponse = await fetch(`${API_BASE_URL}/api/student/products/${product.id}/images`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
         body: imageFormData,
@@ -2543,7 +2572,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const product = findSellerProduct(productOrId);
     if (!product?.id) throw new Error('The selected product could not be found.');
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/student/products/${product.id}`, {
+      const response = await fetch(`${API_BASE_URL}/api/student/products/${product.id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
       });
@@ -2563,7 +2592,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }));
       return result;
     } catch (error) {
-      throw new Error(error.message || 'Could not delete product.');
+      throw new Error(error instanceof Error ? error.message : 'Could not delete product.', { cause: error });
     }
   };
 
@@ -2574,7 +2603,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       const status = String(product.status || '').toLowerCase();
       return await updateSellerProduct(product.id, { status: status === 'paused' || status === 'sold' ? 'Approved' : 'Paused' });
     } catch (error) {
-      throw new Error(error.message || 'Could not update product status.');
+      throw new Error(error instanceof Error ? error.message : 'Could not update product status.', { cause: error });
     }
   };
 
@@ -2584,7 +2613,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     try {
       return await updateSellerProduct(product.id, { status: 'Sold' });
     } catch (error) {
-      throw new Error(error.message || 'Could not mark product as sold.');
+      throw new Error(error instanceof Error ? error.message : 'Could not mark product as sold.', { cause: error });
     }
   };
 
@@ -2673,7 +2702,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         formData.append('images', image);
       });
 
-      const response = await fetch('http://127.0.0.1:8000/api/products', {
+      const response = await fetch(`${API_BASE_URL}/api/products`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
         body: formData
@@ -2780,7 +2809,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       };
       const sessionToken = getStudentSessionToken();
 
-      const res = await fetch('http://127.0.0.1:8000/api/ai/advisor', {
+      const res = await fetch(`${API_BASE_URL}/api/ai/advisor`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2814,7 +2843,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       console.error('AI advisor error:', err);
       setChatHistory((prev) => [...prev, {
         role: 'assistant',
-        text: '⚠️ Connection error. Please try again in a moment. Ensure the backend server is running at http://127.0.0.1:8000'
+        text: `⚠️ Connection error. Please try again in a moment. Ensure the backend server is running at ${API_BASE_URL}`
       }]);
       notifyError(err, 'student-ai-advisor');
     } finally {
@@ -2829,18 +2858,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     aiAbortControllerRef.current?.abort();
   };
 
-  const handleClearChat = () => {
-    aiAbortControllerRef.current?.abort();
-    setChatHistory([]);
-    setAiInput('');
-    setIsTyping(false);
-  };
-
   const handleCheckout = async () => {
     if (!verifiedStudent || isCheckingOut) return;
     setIsCheckingOut(true);
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/student/cart/checkout', {
+      const res = await fetch(`${API_BASE_URL}/api/student/cart/checkout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2888,7 +2910,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const safeNotifications = Array.isArray(notifications) ? notifications : [];
-  const notificationUnreadCount = safeNotifications.filter((notif) => !notif.read).length;
   const [productDetails, setProductDetails] = useState({});
   const productFetchesRef = useRef(new Set());
 
@@ -2898,7 +2919,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     const fetchConversations = async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/student/messages/conversations?student_id=${user.studentId}`);
+        const res = await fetch(`${API_BASE_URL}/api/student/messages/conversations?student_id=${user.studentId}`);
         if (res.ok) {
           const data = await res.json();
           if (data.conversations && Array.isArray(data.conversations)) {
@@ -2935,7 +2956,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const fetchChatHistory = async () => {
       setActiveChatMessages([]);
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/student/messages/chat-history?sender_id=${user.studentId}&receiver_id=${selectedConversation.studentId}`);
+        const res = await fetch(`${API_BASE_URL}/api/student/messages/chat-history?sender_id=${user.studentId}&receiver_id=${selectedConversation.studentId}`);
         if (res.ok) {
           const data = await res.json();
           const messages = Array.isArray(data) ? data : data.messages;
@@ -2972,7 +2993,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     try {
       const response = await fetch(
-        `http://127.0.0.1:8000/api/student/messages/${messageId}?student_id=${encodeURIComponent(user.studentId)}`,
+        `${API_BASE_URL}/api/student/messages/${messageId}?student_id=${encodeURIComponent(user.studentId)}`,
         { method: 'DELETE' }
       );
       if (!response.ok) {
@@ -3017,7 +3038,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       params.append('product_ids', String(productId));
     });
 
-    fetch(`http://127.0.0.1:8000/api/products?${params}`)
+    fetch(`${API_BASE_URL}/api/products?${params}`)
       .then((response) => {
         if (!response.ok) throw new Error(`Failed to fetch chat products: ${response.status}`);
         return response.json();
@@ -3053,7 +3074,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!user?.studentId || typeof window === 'undefined') return undefined;
 
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${protocol}://127.0.0.1:8000/api/student/chat/ws/${user.studentId}`);
+    const socket = new WebSocket(`${WS_BASE_URL}/api/student/chat/ws/${user.studentId}`);
     socketRef.current = socket;
 
     socket.onopen = () => {
@@ -3162,7 +3183,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
       delete window.__campusSocket;
     };
-  }, [user?.studentId]);
+  }, [user?.studentId, activeConversationId]);
 
   const sendWsMessage = (payload) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN) return false;
@@ -3215,7 +3236,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const uploadChatAttachment = async (file) => {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch('http://127.0.0.1:8000/api/student/chat/upload-attachment', {
+    const response = await fetch(`${API_BASE_URL}/api/student/chat/upload-attachment`, {
       method: 'POST',
       body: formData,
     });
@@ -3308,7 +3329,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const handleRecommendationClick = async (productId) => {
     if (!productId || !user?.studentId) return;
     try {
-      await fetch('http://127.0.0.1:8000/api/ai/log-click', {
+      await fetch(`${API_BASE_URL}/api/ai/log-click`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_id: user.studentId, product_id: productId }),
@@ -3362,7 +3383,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       formData.append('category', 'Fraud Report');
       formData.append('seller_id', partnerId);
       formData.append('issue', `Report against ${partnerId}: ${reason}`);
-      const res = await fetch('http://127.0.0.1:8000/api/student/report', {
+      const res = await fetch(`${API_BASE_URL}/api/student/report`, {
         method: 'POST',
         body: formData
       });
@@ -3431,7 +3452,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     setIsMarkingRead(true);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/student/notifications/mark-all-read?student_id=${encodeURIComponent(user.studentId)}`, {
+      const res = await fetch(`${API_BASE_URL}/api/student/notifications/mark-all-read?student_id=${encodeURIComponent(user.studentId)}`, {
         method: 'POST',
       });
 
@@ -3454,16 +3475,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   return (
-    <div className="min-h-0 w-full bg-slate-100 pt-10 text-slate-900">
-      <div className="flex min-h-0 w-full flex-col gap-3 md:h-[calc(100vh-160px)] md:overflow-hidden md:flex-row md:items-start md:gap-3 md:pt-1 md:pb-2">
+    <div className="min-h-0 w-full bg-slate-100 pt-10 text-slate-900 md:pt-0">
+      <div className="flex min-h-0 w-full flex-col gap-3 md:h-[calc(100dvh-5rem)] md:overflow-hidden md:flex-row md:items-stretch md:gap-3">
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside id="student-mobile-navigation" data-open={isSidebarOpen} style={{ transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }} className={`student-mobile-sidebar
-          fixed top-28 bottom-0 left-0 z-40 flex w-72 flex-col overflow-y-auto bg-[#0a0e23] p-4 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          md:static md:relative md:top-28 md:h-full md:w-72 md:overflow-hidden md:rounded-[32px] md:p-6 md:shadow-none
+          fixed top-20 bottom-0 left-0 z-40 flex h-[calc(100vh-5rem)] w-72 flex-col overflow-y-auto overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
+          md:sticky md:top-20 md:h-[calc(100dvh-5rem)] md:w-72 md:shrink-0 md:rounded-[32px] md:p-6 md:shadow-none
           ${isSidebarCollapsed ? 'md:w-24 md:p-3' : 'md:w-72 md:p-6'}
         `}>
-          <div className={`mb-8 flex items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
+          <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
               <div className="flex items-center gap-2">
                 <p className={`text-[10px] uppercase tracking-[0.24em] text-slate-400 font-bold border-b-2 border-white/80 w-fit pb-1 ${isSidebarCollapsed ? 'hidden' : 'block'}`}>STUDENT DASHBOARD</p>
@@ -3506,7 +3527,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
           </div>
 
-          <nav className={`flex flex-1 flex-col space-y-2 ${isSidebarCollapsed ? 'items-center' : ''}`}>
+          <nav className={`student-sidebar-menu flex min-h-0 flex-1 flex-col space-y-2 overflow-y-auto overflow-x-hidden pb-4 ${isSidebarCollapsed ? 'items-center' : ''}`}>
             {[
               { key: 'home', label: 'Home' },
               { key: 'buyer', label: 'Buyer Hub' },
@@ -3547,7 +3568,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             })}
           </nav>
 
-          <div className="mt-auto flex flex-col gap-4 pt-5 transition-all duration-300">
+          <div className="mt-auto flex shrink-0 flex-col gap-4 pt-5 transition-all duration-300">
             <div className={`rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm ${isSidebarCollapsed ? 'p-3' : ''}`}>
               {!isSidebarCollapsed ? (
                 <>
@@ -3573,8 +3594,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               <div className={`mt-4 rounded-2xl border border-slate-700/80 bg-slate-900/60 p-3 shadow-inner shadow-slate-950/20 ${isSidebarCollapsed ? 'px-2 py-3' : ''}`}>
                 <div className={`flex items-center ${isSidebarCollapsed ? 'flex-col gap-2 text-center' : 'gap-3'}`}>
                   <img
-                    src={avatarUrl || 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=500&q=80'}
+                    src={resolveImageUrl(avatarUrl)}
                     alt="Student avatar"
+                    onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
                     className={`rounded-full object-cover ring-2 ring-slate-700 ${isSidebarCollapsed ? 'h-10 w-10' : 'h-11 w-11'}`}
                   />
                   {!isSidebarCollapsed && (
@@ -3601,7 +3623,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className="min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 md:h-full md:overflow-y-scroll md:pr-2 md:pt-1">
+        <main className="min-h-0 min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 md:h-full md:overflow-y-auto md:overscroll-y-contain md:pr-2 md:pt-1">
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
@@ -3714,7 +3736,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
                               <div className="mb-4 h-32 w-full overflow-hidden rounded-[18px] bg-slate-200">
                                 <img
-                                  src={displayImage}
+                                  src={resolveImageUrl(displayImage)}
                                   alt={item.title || 'Recommended marketplace product'}
                                   onError={(event) => {
                                     event.currentTarget.onerror = null;
@@ -3816,6 +3838,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     }
                   }}
                   onRaiseDispute={(order) => {
+                    if (!isDisputeEligibleOrder(order)) {
+                      const message = 'Disputes can only be raised once an order is ready for pickup or the item has been received.';
+                      setDisputeFeedback(message);
+                      notifyInfo(message);
+                      return;
+                    }
+
                     setDisputeOrderId(order.id);
                     setDisputeReason('');
                     setDisputeDescription('');
@@ -3843,9 +3872,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     </div>
                     <button type="button" onClick={() => { setDisputeOrderId(null); setDisputeEvidenceFiles([]); }} className="rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
                   </div>
+                  <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
+                    {disputeReason === 'refund_not_received'
+                      ? 'Report a seller-timeout refund that has not reached your wallet.'
+                      : 'Disputes are only available once the order is marked as Ready for Pickup or the item has been received.'}
+                  </div>
                   <label className="mt-5 block text-sm font-semibold text-slate-700" htmlFor="dispute-reason">Reason</label>
                   <select id="dispute-reason" required value={disputeReason} onChange={(event) => setDisputeReason(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white">
                     <option value="">Select a reason</option>
+                    <option value="refund_not_received">Refund not received</option>
                     {disputeReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}
                   </select>
                   <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="dispute-description">Description/details</label>
@@ -3988,7 +4023,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             const isOutOfStock = Number.isFinite(Number(item.stock)) && Number(item.stock) <= 0;
                             const purchaseBlocked = sellerPayoutBlocked || isOwnProduct || isOutOfStock;
                             const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
-                            const backendOrigin = 'http://127.0.0.1:8000';
+                            const backendOrigin = `${API_BASE_URL}`;
                             let displayImage = fallbackImage;
                             const imageValue = typeof item.image === 'string' ? item.image.trim() : '';
                             let imageSource = imageValue;
@@ -4018,7 +4053,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <div key={item.id} onClick={() => handleViewProductFromChat(item.id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.id)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4">
                                 <div className="flex min-w-0 flex-col gap-4">
                                   <img
-                                    src={displayImage}
+                                    src={resolveImageUrl(displayImage)}
                                     alt={item.title}
                                     onError={(e) => {
                                       e.currentTarget.onerror = null;
@@ -4104,12 +4139,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
                                 <div className="flex items-center gap-4">
                                   <img
-                                    src={item.image || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80'}
+                                    src={resolveImageUrl(item.image)}
                                     alt={item.title}
                                     className="h-16 w-16 rounded-full object-cover ring-2 ring-white shadow-sm"
                                     onError={(e) => {
                                       e.currentTarget.onerror = null;
-                                      e.currentTarget.src = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
+                                      e.currentTarget.src = IMAGE_PLACEHOLDER;
                                     }}
                                   />
                                   <div className="min-w-0">
@@ -4189,7 +4224,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             const quantity = Number(item.quantity || 1);
                             const lineTotal = normalizePrice(item.price) * quantity;
                             const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
-                            const backendOrigin = 'http://127.0.0.1:8000';
+                            const backendOrigin = `${API_BASE_URL}`;
                             let displayImage = fallbackImage;
                             const imageValue = typeof item.image === 'string' ? item.image.trim() : '';
                             let imageSource = imageValue;
@@ -4216,7 +4251,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             return (
                               <div key={item.id} onClick={() => handleViewProductFromChat(item.product_id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.product_id)} role="button" tabIndex={0} className="grid cursor-pointer gap-4 rounded-[28px] border border-slate-200 bg-slate-50 p-4 shadow-sm sm:grid-cols-[auto_1fr_auto] sm:items-center">
                                 <img
-                                  src={displayImage}
+                                  src={resolveImageUrl(displayImage)}
                                   alt={item.title}
                                   className="h-20 w-20 rounded-full object-cover ring-2 ring-white shadow-sm"
                                   onError={(e) => {
@@ -4362,6 +4397,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           const sellerId = order.seller_id || order.sellerId || order.seller;
                           const sellerName = order.seller_name || order.sellerName || order.seller || 'Campus Seller';
                           const pickupLocation = order.pickup_location || order.pickupLocation || 'Student Center';
+                          const deadlineTimestamp = order.seller_accept_deadline ? new Date(order.seller_accept_deadline).getTime() : 0;
+                          const isWaitingForSeller = orderStatus === 'Pending' && deadlineTimestamp > clockNow;
+                          const hasSellerTimeout = Boolean(order.expired_at || order.expiry_reason === 'seller_timeout');
+                          const hoursUntilExpiry = deadlineTimestamp > clockNow
+                            ? Math.max(1, Math.ceil((deadlineTimestamp - clockNow) / 3600000))
+                            : 0;
                           const timelineSteps = ['Order Placed', 'Payment Successful', 'Processing', 'Ready for Pickup', 'Item Received', 'Buyer Confirmed + Seller Confirmed', 'Completed'];
                           let currentStep = paymentStatus === 'Successful' ? 1 : 0;
                           if (['Processing', 'Ready for Pickup', 'Completed'].includes(orderStatus)) currentStep = Math.max(currentStep, 2);
@@ -4374,7 +4415,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <div key={order.id} className="rounded-[28px] border border-slate-200 bg-slate-50 p-5 shadow-sm">
                               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
-                                  {order.image && <img src={order.image} alt="" className="mb-3 h-16 w-16 rounded-xl object-cover" />}
+                                  {order.image && <img src={resolveImageUrl(order.image)} alt="" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="mb-3 h-16 w-16 rounded-xl object-cover" />}
                                   <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Order #{order.id}</p>
                                   <h4 className="mt-2 text-xl font-bold text-slate-900">{order.title || order.product_title || 'Campus Purchase'}</h4>
                                 </div>
@@ -4385,6 +4426,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <button type="button" onClick={() => handleOrderVisibility(order)} className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100">{showHiddenOrders ? 'Unhide' : 'Hide'}</button>
                                 </div>
                               </div>
+
+                              {isWaitingForSeller && (
+                                <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-800">
+                                  Waiting for seller (expires in {hoursUntilExpiry} h)
+                                </p>
+                              )}
+                              {hasSellerTimeout && (
+                                <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800">
+                                  Cancelled - seller did not respond. Refund: {order.refund_status || 'pending'}
+                                </p>
+                              )}
 
                               <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                                 <div className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -4463,18 +4515,19 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 </div>
                               )}
 
-                              {['Pending', 'Processing', 'Ready for Pickup'].includes(orderStatus) && (
+                              {(isDisputeEligibleOrder(order) || isTimeoutRefundDisputeEligible(order)) && (
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    setSelectedOrder(order);
                                     setDisputeOrderId(order.id);
-                                    setDisputeReason('');
+                                    setDisputeReason(isTimeoutRefundDisputeEligible(order) ? 'refund_not_received' : '');
                                     setDisputeDescription('');
                                     setDisputeFeedback('');
                                   }}
                                   className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
                                 >
-                                  Raise Dispute
+                                  {isTimeoutRefundDisputeEligible(order) ? 'Report refund problem' : 'Raise Dispute'}
                                 </button>
                               )}
 
@@ -4791,306 +4844,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               />
             )}
 
-            {false && activeTab === 'seller' && (() => {
-              const sellerFallbackStats = {
-                totalListings: 8,
-                receivedOrders: 12,
-                totalRevenue: 8450,
-                pendingOrders: 3,
-              };
-
-              const sellerStats = {
-                totalListings: myListings.length || sellerData?.totalListings || sellerFallbackStats.totalListings,
-                receivedOrders: sellerData?.receivedOrders || sellerFallbackStats.receivedOrders,
-                totalRevenue: sellerData?.totalRevenue || sellerFallbackStats.totalRevenue,
-                pendingOrders: sellerData?.pendingOrders || sellerFallbackStats.pendingOrders,
-              };
-
-              const listingRows = Array.isArray(sellerData?.activeListings) && sellerData.activeListings.length
-                ? sellerData.activeListings
-                : myListings.length
-                  ? myListings
-                  : [];
-
-              const incomingOrders = Array.isArray(sellerData?.incomingOrders) && sellerData.incomingOrders.length
-                ? sellerData.incomingOrders
-                : [
-                  { id: 'ORD-2048', customerId: 'STU-1048', product: 'Dell XPS 13', price: 18500, status: 'Accepted' },
-                  { id: 'ORD-2050', customerId: 'STU-2047', product: 'Biology Lab Manual', price: 950, status: 'Preparing' },
-                  { id: 'ORD-2052', customerId: 'STU-3122', product: 'Campus Backpack', price: 1350, status: 'Pending' },
-                ];
-
-              const topProducts = [...listingRows]
-                .map((item, index) => ({
-                  ...item,
-                  views: Number(item.views ?? item.views_count ?? (index + 1) * 220 + 120),
-                  likes: Number(item.likes ?? item.likes_count ?? (index + 1) * 35),
-                  orders: Number(item.orders ?? item.order_count ?? (index + 1) * 3),
-                }))
-                .sort((a, b) => (b.views + b.orders * 18) - (a.views + a.orders * 18))
-                .slice(0, 3);
-
-              const handleSellerOrderAction = (orderId, nextStatus) => {
-                const targetId = String(orderId);
-                setSellerData((prev) => ({
-                  ...prev,
-                  incomingOrders: Array.isArray(prev.incomingOrders)
-                    ? prev.incomingOrders.map((order) =>
-                      String(order.id ?? order.order_id ?? order.orderId) === targetId
-                        ? { ...order, status: nextStatus }
-                        : order,
-                    )
-                    : [],
-                }));
-              };
-
-              const sellerKpis = [
-                { label: 'My Listings', value: sellerStats.totalListings, icon: '▣' },
-                { label: 'Received Orders', value: sellerStats.receivedOrders, icon: '▤' },
-                { label: 'Total Revenue', value: `${Number(sellerStats.totalRevenue).toLocaleString('en-US')} ETB`, icon: '◈' },
-                { label: 'Pending Orders', value: sellerStats.pendingOrders, icon: '◔' },
-              ];
-
-              return (
-                <div className="space-y-8">
-                  <div className="grid gap-6 xl:grid-cols-4">
-                    {sellerKpis.map((card) => (
-                      <div key={card.label} className="group rounded-[24px] border border-sky-100 bg-sky-50/50 p-6 transition hover:shadow-lg hover:shadow-sky-200/40">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">{card.label}</p>
-                            <p className="mt-4 text-3xl font-bold text-slate-950">{card.value}</p>
-                          </div>
-                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-200 bg-white text-sky-600 text-xl">
-                            {card.icon}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="grid gap-6 xl:grid-cols-[1.45fr_0.95fr]">
-                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <h3 className="text-xl font-bold text-slate-950">My Listings</h3>
-                          <p className="text-sm text-slate-500">Keep your stock current and ready for campus buyers.</p>
-                        </div>
-                        {!verifiedStudent && (
-                          <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-                            Please verify your profile by uploading your ID in Settings to list products.
-                          </p>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setShowProductModal(true)}
-                          disabled={!verifiedStudent}
-                          className="btn-primary inline-flex items-center rounded-full px-4 py-2.5 text-sm font-semibold transition"
-                        >
-                          + Add Product
-                        </button>
-                      </div>
-
-                      {listingRows.length === 0 ? (
-                        <div className="mt-6 rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
-                          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-sky-100 text-3xl">📦</div>
-                          <p className="mt-4 text-lg font-semibold text-slate-900">No active listings yet</p>
-                          <p className="mt-2 text-sm text-slate-500">Add your first item so buyers can discover it on campus.</p>
-                          <button
-                            type="button"
-                            onClick={() => setShowProductModal(true)}
-                            disabled={!verifiedStudent}
-                            className="btn-primary mt-5 inline-flex items-center rounded-full px-5 py-3 text-sm font-semibold transition"
-                          >
-                            + Add Product
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="mt-6 space-y-4">
-                          {listingRows.map((item) => (
-                            <div key={item.id ?? item.product_id ?? item.title} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
-                              <div className="flex items-center gap-4">
-                                <div className="h-[60px] w-[60px] overflow-hidden rounded-[18px] bg-slate-100">
-                                  <img
-                                    src={item.image || 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=300&q=80'}
-                                    alt={item.title || 'Listing'}
-                                    onError={(e) => {
-                                      e.currentTarget.onerror = null;
-                                      e.currentTarget.src = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=300&q=80';
-                                    }}
-                                    className="h-full w-full object-cover"
-                                  />
-                                </div>
-
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                    <div>
-                                      <p className="truncate text-base font-bold text-slate-900">{item.title || item.name || 'Untitled listing'}</p>
-                                      <p className="text-xs text-slate-500">{item.category || 'General'} · {item.subcategory || 'Campus item'}</p>
-                                    </div>
-                                    <p className="text-sm font-bold text-emerald-600">{Number(item.price ?? 0).toLocaleString('en-US')} ETB</p>
-                                  </div>
-
-                                  <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                                    <span>Views: {item.views ?? item.view_count ?? 148}</span>
-                                    <span>Likes: {item.likes ?? item.like_count ?? 24}</span>
-                                    <span>Orders: {item.orders ?? item.order_count ?? 3}</span>
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="mt-4 flex flex-wrap gap-2">
-                                <button type="button" className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition">Edit</button>
-                                <button type="button" className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-semibold text-sky-700 hover:bg-sky-100 transition">View</button>
-                                <button type="button" className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition">Remove</button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <h3 className="text-xl font-bold text-slate-950">Incoming Orders</h3>
-                          <p className="text-sm text-slate-500">Customer orders waiting for action.</p>
-                        </div>
-                        <span className="rounded-full bg-slate-100 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600">Queue</span>
-                      </div>
-
-                      {incomingOrders.length === 0 ? (
-                        <div className="mt-6 rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
-                          <p className="text-lg font-semibold text-slate-900">No incoming orders yet</p>
-                          <p className="mt-2 text-sm text-slate-500">Your customer orders will appear here once they start purchasing.</p>
-                        </div>
-                      ) : (
-                        <div className="mt-6 overflow-x-auto">
-                          <table className="min-w-full border-separate border-spacing-y-2 text-left">
-                            <thead>
-                              <tr className="text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                                <th className="pb-2 pr-4">Order ID</th>
-                                <th className="pb-2 pr-4">Customer ID</th>
-                                <th className="pb-2 pr-4">Product</th>
-                                <th className="pb-2 pr-4">Price</th>
-                                <th className="pb-2 pr-4">Status</th>
-                                <th className="pb-2 pr-4">Action</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {incomingOrders.map((order) => {
-                                const orderKey = order.id ?? order.order_id ?? order.orderId;
-                                const nextStatuses = ['Accept', 'Reject', 'Mark as Preparing', 'Mark as Ready for Pickup', 'Mark as Delivered'];
-
-                                return (
-                                  <tr key={orderKey} className="rounded-2xl border border-slate-200 bg-slate-50">
-                                    <td className="py-3 pr-4 text-sm font-semibold text-slate-900">{orderKey}</td>
-                                    <td className="py-3 pr-4 text-sm text-slate-700">{order.customerId ?? order.customer_id ?? 'STU-0000'}</td>
-                                    <td className="py-3 pr-4 text-sm text-slate-700">{order.product ?? order.productName ?? order.title ?? 'Campus item'}</td>
-                                    <td className="py-3 pr-4 text-sm font-semibold text-slate-900">{Number(order.price ?? 0).toLocaleString('en-US')} ETB</td>
-                                    <td className="py-3 pr-4">
-                                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${order.status === 'Pending' ? 'bg-amber-100 text-amber-700' : order.status === 'Accepted' || order.status === 'Preparing' || order.status === 'Ready for Pickup' || order.status === 'Delivered' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                                        {order.status || 'Pending'}
-                                      </span>
-                                    </td>
-                                    <td className="py-3 pr-4">
-                                      <div className="flex flex-wrap gap-2">
-                                        {nextStatuses.map((status) => (
-                                          <button
-                                            key={`${orderKey}-${status}`}
-                                            type="button"
-                                            onClick={() => handleSellerOrderAction(orderKey, status)}
-                                            className="rounded-full border border-slate-200 bg-white px-2 py-1.5 text-[10px] font-semibold text-slate-700 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 transition"
-                                          >
-                                            {status}
-                                          </button>
-                                        ))}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-6 xl:grid-cols-2">
-                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                      <h3 className="text-xl font-bold text-slate-950">Sales Overview</h3>
-                      <div className="mt-5 space-y-4">
-                        <div className="rounded-[20px] bg-slate-50 p-4">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Earnings</p>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                            <div>
-                              <p className="text-xs text-slate-500">Today</p>
-                              <p className="mt-1 text-lg font-bold text-slate-900">450 ETB</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-slate-500">This Week</p>
-                              <p className="mt-1 text-lg font-bold text-slate-900">2,450 ETB</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-slate-500">This Month</p>
-                              <p className="mt-1 text-lg font-bold text-slate-900">8,450 ETB</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-[20px] bg-slate-50 p-4">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Order Status</p>
-                          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                            <div>
-                              <p className="text-xs text-slate-500">Total</p>
-                              <p className="mt-1 text-lg font-bold text-slate-900">{sellerStats.receivedOrders}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-slate-500">Completed</p>
-                              <p className="mt-1 text-lg font-bold text-emerald-600">{Math.max(0, sellerStats.receivedOrders - 3)}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-slate-500">Pending</p>
-                              <p className="mt-1 text-lg font-bold text-amber-600">{sellerStats.pendingOrders}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-slate-500">Cancelled</p>
-                              <p className="mt-1 text-lg font-bold text-rose-600">2</p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                      <h3 className="text-xl font-bold text-slate-950">Top Performing Products</h3>
-                      <div className="mt-5 space-y-4">
-                        {topProducts.length === 0 ? (
-                          <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-                            No metrics available yet.
-                          </div>
-                        ) : (
-                          topProducts.map((item, index) => (
-                            <div key={item.id ?? `${item.title}-${index}`} className="flex items-center gap-4 rounded-[20px] border border-slate-200 bg-gradient-to-br from-white to-emerald-50 p-3">
-                              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sm font-bold text-sky-700">
-                                #{index + 1}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm font-bold text-slate-900">{item.title}</p>
-                                <p className="text-xs text-slate-500">{item.views ?? 0} views · {item.orders ?? 0} sales</p>
-                              </div>
-                              <span className="text-sm font-bold text-emerald-600">{Number(item.price ?? 0).toLocaleString('en-US')} ETB</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
             {showAiAdvisorFab && (
               <div className="fixed bottom-6 right-6 z-50">
                 {isAiAdvisorOpen && (
@@ -5265,6 +5018,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 <img
                                   src={getStudentAvatar(conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, ''))}
                                   alt={conversation.name}
+                                  onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
                                   className="h-12 w-12 rounded-full object-cover ring-2 ring-white"
                                 />
                                 <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${participantOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
@@ -5298,6 +5052,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <img
                             src={getStudentAvatar(activeConversation?.studentId || activeConversation?.student_id || String(activeConversation?.id || '').replace(/^conv-/, ''))}
                             alt={activeConversation?.name || 'Student'}
+                            onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
                             className="h-11 w-11 rounded-full object-cover"
                           />
                           <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${activeConversation?.status === 'online' ? 'animate-pulse bg-emerald-500' : 'bg-slate-300'}`} />
@@ -5356,7 +5111,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <div key={message.id} className="group">
                             <div className={`mb-4 flex items-end gap-2 ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
                               {!isOwnMessage && (
-                                <img src={getStudentAvatar(message.sender_id || activeConversation?.studentId)} alt={activeConversation?.name || 'Student'} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                                <img src={getStudentAvatar(message.sender_id || activeConversation?.studentId)} alt={activeConversation?.name || 'Student'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-8 w-8 shrink-0 rounded-full object-cover" />
                               )}
                               <div className={`max-w-[78%] rounded-[22px] px-4 py-3 shadow-sm ${isOwnMessage ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800'}`}>
                                 {parentMessage && (
@@ -5366,7 +5121,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   </div>
                                 )}
                                 {message.attachment_type === 'image' && message.attachment_url && (
-                                  <img src={message.attachment_url} alt="Chat attachment" className="mb-2 max-h-64 max-w-full rounded-2xl object-cover" />
+                                  <img src={resolveImageUrl(message.attachment_url)} alt="Chat attachment" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="mb-2 max-h-64 max-w-full rounded-2xl object-cover" />
                                 )}
                                 {message.attachment_type === 'audio' && message.attachment_url && (
                                   <audio src={message.attachment_url} controls className="mb-2 max-w-full" />
@@ -5394,14 +5149,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 )}
                               </div>
                               {isOwnMessage && (
-                                <img src={getStudentAvatar(user?.studentId)} alt={user?.name || 'You'} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                                <img src={getStudentAvatar(user?.studentId)} alt={user?.name || 'You'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-8 w-8 shrink-0 rounded-full object-cover" />
                               )}
                             </div>
 
                             {product && (
                               <div className={`mb-4 flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
                                 <div className="w-full max-w-xs rounded-[24px] border border-slate-200 bg-white p-3 text-slate-900 shadow-sm">
-                                  {product.image && <img src={product.image} alt={product.title} className="h-28 w-full rounded-2xl object-cover" />}
+                                  {product.image && <img src={resolveImageUrl(product.image)} alt={product.title} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-28 w-full rounded-2xl object-cover" />}
                                   <p className="mt-2 text-sm font-semibold">{product.title}</p>
                                   <p className="mt-1 text-xs text-slate-500">{product.category || 'Campus marketplace item'}</p>
                                   <div className="mt-2 flex items-center justify-between gap-3">
@@ -5430,7 +5185,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       {activeConversation?.product && (
                         <div className="order-first mb-5 rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
                           <div className="flex items-center gap-3">
-                            <img src={activeConversation.product.image} alt={activeConversation.product.title} className="h-16 w-16 rounded-2xl object-cover" />
+                            <img src={resolveImageUrl(activeConversation.product.image)} alt={activeConversation.product.title} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-16 w-16 rounded-2xl object-cover" />
                             <div className="min-w-0 flex-1">
                               <p className="truncate text-sm font-bold text-slate-900">{activeConversation.product.title}</p>
                               <p className="mt-1 text-xs text-slate-500">{activeConversation.product.category || productDetails[activeConversation.product.id]?.category || 'Campus marketplace item'}</p>
@@ -5522,7 +5277,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-6 shadow-2xl">
                   <div className="flex items-start justify-between border-b border-slate-200 pb-4">
                     <div className="flex min-w-0 items-center gap-3">
-                      <img src={getStudentAvatar(activeConversation.studentId)} alt={activeConversation.name} className="h-14 w-14 shrink-0 rounded-full object-cover" />
+                      <img src={getStudentAvatar(activeConversation.studentId)} alt={activeConversation.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-14 w-14 shrink-0 rounded-full object-cover" />
                       <div className="min-w-0">
                         <p className="text-xs font-bold uppercase tracking-[0.18em] text-sky-600">Verified student</p>
                         <h3 id="profile-details-title" className="mt-1 truncate text-xl font-bold text-slate-900">{activeConversation.name}</h3>
@@ -5596,7 +5351,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           }}
                           className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 p-3 text-left transition hover:border-sky-200 hover:bg-sky-50"
                         >
-                          <img src={getStudentAvatar(studentId)} alt={conversation.name} className="h-11 w-11 rounded-full object-cover" />
+                          <img src={getStudentAvatar(studentId)} alt={conversation.name} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-11 w-11 rounded-full object-cover" />
                           <span className="min-w-0 flex-1">
                             <span className="block truncate text-sm font-bold text-slate-900">{conversation.name}</span>
                             <span className="mt-1 block text-xs text-emerald-600">✓ Verified campus student</span>
@@ -5630,98 +5385,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 onDispute={handleDisputeNotification}
                 onDeleteNotification={handleDeleteNotification}
               />
-            )}
-
-            {false && activeTab === 'notifications' && (
-              <div className="mx-auto max-w-5xl px-4 py-6">
-                <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <p className="text-sm uppercase tracking-[0.3em] text-slate-400">Notification Center</p>
-                      <h3 className="mt-3 text-2xl font-bold text-slate-950">Campus Alerts</h3>
-                      <p className="mt-2 max-w-2xl text-sm text-slate-500">
-                        Stay on top of buyer messages, order updates, and admin announcements in one polished feed.
-                      </p>
-                    </div>
-
-                    <div className="flex flex-col gap-3 sm:items-end">
-                      <div className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700">
-                        <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                        <span>{safeNotifications.length} total</span>
-                        <span className="text-slate-400">•</span>
-                        <span>{unreadCount} unread</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleMarkAllNotificationsRead}
-                        disabled={safeNotifications.length === 0 || isMarkingRead}
-                        className="btn-primary inline-flex items-center justify-center rounded-full px-4 py-3 text-sm font-semibold shadow-sm transition"
-                      >
-                        {isMarkingRead ? 'Marking…' : 'Mark all as read'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {safeNotifications.length === 0 ? (
-                    <div className="mt-8 rounded-[28px] border border-dashed border-slate-200 bg-slate-50 p-10 text-center">
-                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-sky-100 text-3xl">🔔</div>
-                      <p className="mt-5 text-lg font-semibold text-slate-900">Nothing new here yet</p>
-                      <p className="mt-2 text-sm text-slate-500">
-                        When buyers message you or orders arrive, your notifications will appear here.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="mt-6 space-y-4">
-                      {Array.isArray(notifications) && notifications.map((notif) => {
-                        const typeIcon = (() => {
-                          switch (notif.type) {
-                            case 'order':
-                              return '🛒';
-                            case 'message':
-                              return '✉️';
-                            case 'admin':
-                              return '⚙️';
-                            case 'system':
-                              return 'ℹ️';
-                            default:
-                              return '🔔';
-                          }
-                        })();
-
-                        return (
-                          <article key={notif.id} className="overflow-hidden rounded-[28px] border border-slate-200 bg-slate-50 p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-                            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                              <div className="flex items-center gap-4">
-                                <div className="inline-flex h-12 w-12 items-center justify-center rounded-3xl bg-sky-100 text-2xl">
-                                  {typeIcon}
-                                </div>
-                                <div>
-                                  <p className="text-sm font-semibold text-slate-900">{notif.title || 'Campus update'}</p>
-                                  <p className="mt-1 text-sm text-slate-600">{notif.message}</p>
-                                </div>
-                              </div>
-
-                              <div className="flex flex-col items-start gap-2 sm:items-end">
-                                <span className={`inline-flex rounded-full px-3 py-1 text-[11px] font-semibold ${notif.read ? 'bg-slate-200 text-slate-600' : 'bg-emerald-100 text-emerald-700'}`}>
-                                  {notif.read ? 'Read' : 'New'}
-                                </span>
-                                <span className="text-xs text-slate-500">
-                                  {new Date(notif.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
-                                </span>
-                              </div>
-                            </div>
-                            <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                              <span className="capitalize">{notif.type || 'update'}</span>
-                              <span className="inline-flex h-1.5 w-1.5 rounded-full bg-slate-300" />
-                              <span>{notif.category || 'Campus feed'}</span>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
             )}
 
             {activeTab === 'settings' && (
@@ -5978,7 +5641,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <div className="mt-3 grid grid-cols-3 gap-2">
                       {existingProductImages.map((image, index) => (
                         <div key={`${image}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200">
-                          <img src={image} alt={`Existing product image ${index + 1}`} className="h-20 w-full object-cover" />
+                          <img src={resolveImageUrl(image)} alt={`Existing product image ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-20 w-full object-cover" />
                           <button
                             type="button"
                             onClick={() => setExistingProductImages((previous) => previous.filter((_, imageIndex) => imageIndex !== index))}

@@ -1,6 +1,7 @@
 ﻿import { useState, useEffect, useRef } from 'react';
 import ProductDetails from './ProductDetails';
 import { apiUrl } from '../../api/config';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import logs from '../../assets/logs.png';
 import c2 from '../../assets/c2.jpg';
 import laptop_586 from '../../assets/laptop_586.webp';
@@ -35,16 +36,15 @@ const formatEtb = (value) => {
 };
 
 const getPrimaryImage = (product) => {
-  const fallback = '';
   const image = product?.image;
-  if (Array.isArray(image)) return image[0] || fallback;
-  if (typeof image !== 'string') return fallback;
+  if (Array.isArray(image)) return resolveImageUrl(image[0]);
+  if (typeof image !== 'string') return IMAGE_PLACEHOLDER;
 
   try {
     const parsedImage = JSON.parse(image);
-    return Array.isArray(parsedImage) ? (parsedImage[0] || fallback) : image;
+    return resolveImageUrl(Array.isArray(parsedImage) ? parsedImage[0] : image);
   } catch {
-    return image;
+    return resolveImageUrl(image);
   }
 };
 
@@ -199,7 +199,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
 
       try {
         const response = await fetch(
-          `http://127.0.0.1:8000/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`
+          `${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`
         );
         if (!response.ok) throw new Error('Failed to load AI recommendations');
 
@@ -463,7 +463,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                   <div ref={aiScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {aiRecommendations.map((product, index) => (
                       <article key={product.id ?? `${product.title}-${index}`} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="w-[calc(50%-0.5rem)] shrink-0 snap-start cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md lg:w-[calc(25%_-_0.75rem)]">
-                        <img src={getPrimaryImage(product) || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=700&q=80'} alt={product.title || 'Recommended product'} className="h-32 w-full object-cover" />
+                        <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title || 'Recommended product'} className="h-32 w-full object-cover" />
                         <div className="p-4">
                           <p className="truncate text-xs font-bold text-emerald-600">{product.category || 'Marketplace pick'}</p>
                           <h4 className="mt-1 truncate font-black text-slate-950">{product.title || 'Recommended product'}</h4>
@@ -492,7 +492,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                   {searchResults.map((product, idx) => (
                     <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="cursor-pointer overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col justify-between">
                       <div>
-                        <img src={getPrimaryImage(product) || 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=700&q=80'} alt={product.title} className="h-44 w-full object-cover" />
+                        <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="h-44 w-full object-cover" />
                         <div className="p-4">
                           <div className="flex justify-between items-start gap-1">
                             <p className="text-xs font-semibold text-emerald-600">{product.category}</p>

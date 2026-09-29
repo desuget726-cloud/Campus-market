@@ -3,6 +3,7 @@ from typing import Generator
 from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("MYSQL_URL")
@@ -33,13 +34,19 @@ if not DATABASE_URL:
 
 
 # Create SQLAlchemy engine and session factory
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=20,
-    max_overflow=10,
-    pool_timeout=30,
-)
+if DATABASE_URL.startswith("sqlite"):
+    sqlite_options = {"connect_args": {"check_same_thread": False}}
+    if DATABASE_URL in {"sqlite://", "sqlite:///:memory:"}:
+        sqlite_options["poolclass"] = StaticPool
+    engine = create_engine(DATABASE_URL, **sqlite_options)
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=20,
+        max_overflow=10,
+        pool_timeout=30,
+    )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -156,6 +163,16 @@ def init_db() -> None:
             "is_funds_released": "BOOLEAN NOT NULL DEFAULT FALSE",
             "hidden_by_buyer": "BOOLEAN NOT NULL DEFAULT FALSE",
             "dispute_reason": "TEXT NULL",
+            "platform_fee": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
+            "seller_commission": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
+            "paid_at": "DATETIME NULL",
+            "seller_accept_deadline": "DATETIME NULL",
+            "expired_at": "DATETIME NULL",
+            "refund_status": "VARCHAR(20) NOT NULL DEFAULT 'none'",
+            "refund_reference": "VARCHAR(100) NULL",
+            "refund_attempts": "INT NOT NULL DEFAULT 0",
+            "seller_reminder_12h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "seller_reminder_22h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
         }
         for column_name, column_definition in missing_order_columns.items():
             if column_name not in order_columns:
@@ -163,6 +180,21 @@ def init_db() -> None:
                     connection.execute(text(
                         f"ALTER TABLE orders ADD COLUMN `{column_name}` {column_definition}"
                     ))
+        if "seller_accept_deadline" in missing_order_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE orders SET paid_at = COALESCE(paid_at, created_at), "
+                    "seller_accept_deadline = DATE_ADD(COALESCE(paid_at, created_at), INTERVAL 24 HOUR) "
+                    "WHERE status = 'Pending' AND payment_status = 'Successful' "
+                    "AND seller_accept_deadline IS NULL"
+                ))
+        order_indexes = {index["name"] for index in inspect(engine).get_indexes("orders")}
+        if "ix_orders_status_seller_accept_deadline" not in order_indexes:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "CREATE INDEX ix_orders_status_seller_accept_deadline "
+                    "ON orders (status, seller_accept_deadline)"
+                ))
     if "students" in inspector.get_table_names():
         student_columns = {column["name"] for column in inspector.get_columns("students")}
         missing_student_columns = {
@@ -175,6 +207,8 @@ def init_db() -> None:
             "notif_pay_email": "BOOLEAN NOT NULL DEFAULT FALSE",
             "notif_browser_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
             "preferred_pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
+            "missed_acceptance_count": "INT NOT NULL DEFAULT 0",
+            "suspended_until": "DATETIME NULL",
         }
         for column_name, column_definition in missing_student_columns.items():
             if column_name not in student_columns:

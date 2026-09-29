@@ -19,6 +19,90 @@
   background-color: var(--brand-primary);
 }
 
+.student-mobile-sidebar {
+  height: calc(100vh - 5rem);
+  height: calc(100dvh - 5rem);
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  scrollbar-width: thin;
+}
+
+.student-sidebar-menu {
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  scrollbar-width: thin;
+}
+
+.student-mobile-sidebar::-webkit-scrollbar,
+.student-sidebar-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.student-mobile-sidebar::-webkit-scrollbar-track,
+.student-sidebar-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.student-mobile-sidebar::-webkit-scrollbar-thumb,
+.student-sidebar-menu::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.45);
+}
+
+.student-mobile-sidebar::-webkit-scrollbar-thumb:hover,
+.student-sidebar-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.65);
+}
+
+.admin-sidebar-menu {
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  scrollbar-width: thin;
+}
+
+.admin-dashboard-content {
+  scrollbar-color: rgba(100, 116, 139, 0.4) transparent;
+  scrollbar-width: thin;
+}
+
+.admin-sidebar-menu::-webkit-scrollbar,
+.admin-dashboard-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.admin-sidebar-menu::-webkit-scrollbar-track,
+.admin-dashboard-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-sidebar-menu::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.45);
+}
+
+.admin-sidebar-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.65);
+}
+
+.admin-dashboard-content::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(100, 116, 139, 0.4);
+}
+
+.admin-dashboard-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.6);
+}
+
+@media (min-width: 1024px) {
+  .admin-dashboard-shell {
+    height: calc(100vh - 80px);
+    height: calc(100dvh - 80px);
+  }
+
+  .admin-sidebar-menu {
+    overscroll-behavior: contain;
+  }
+}
+
 @media (min-width: 768px) {
   .student-mobile-sidebar {
     transform: none !important;

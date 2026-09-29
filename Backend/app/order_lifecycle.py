@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
+
+
+def seller_acceptance_is_open(deadline: Optional[datetime], now: datetime) -> bool:
+    return deadline is None or deadline > now
+
+
+def claim_seller_timeout_refund(order, max_attempts: int = 3, *, admin_retry: bool = False) -> bool:
+    refund_status = str(getattr(order, "refund_status", "none") or "none").lower()
+    if refund_status == "succeeded" or (refund_status == "pending" and not admin_retry):
+        return False
+    if int(getattr(order, "refund_attempts", 0) or 0) >= max_attempts and not admin_retry:
+        return False
+    order.refund_status = "pending"
+    order.refund_attempts = int(getattr(order, "refund_attempts", 0) or 0) + 1
+    return True
 
 
 def apply_seller_order_action(order, action: str, input_code: Optional[int] = None) -> str:
@@ -11,6 +27,8 @@ def apply_seller_order_action(order, action: str, input_code: Optional[int] = No
     if normalized_action == "accept":
         if order_status != "pending":
             raise HTTPException(status_code=409, detail="Only pending orders can be accepted.")
+        if not seller_acceptance_is_open(getattr(order, "seller_accept_deadline", None), datetime.now()):
+            raise HTTPException(status_code=409, detail="Order expired or already handled")
         order.status = "Processing"
         return "Order accepted and processing started."
     if normalized_action == "ready":

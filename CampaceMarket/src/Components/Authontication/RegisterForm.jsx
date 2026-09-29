@@ -2,6 +2,7 @@ import { useState } from 'react';
 import AuthInfoModal from './AuthInfoModal';
 import logo1 from '../../assets/logo1.jpg';
 import { useLanguage } from '../../context/LanguageContext';
+import { API_BASE_URL } from '../../config';
 
 const universityStructure = {
   "College of Computing and Informatics (CCI)": [
@@ -99,7 +100,7 @@ function RegisterForm({ onRegisterSuccess, onCancel, onToggleLogin }) {
     setError('');
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/register', {
+      const response = await fetch(`${API_BASE_URL}/api/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

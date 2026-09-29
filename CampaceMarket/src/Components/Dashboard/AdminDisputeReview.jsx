@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { API_BASE } from '../../api/config';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { notifyError, notifySuccess } from '../../utils/notify';
 
 const ACTIVE_STATUSES = ['OPEN', 'UNDER_REVIEW'];
@@ -18,9 +18,7 @@ const formatMoney = (value) => `${Number(value || 0).toLocaleString('en-US')} ET
 const isUrgent = (value) => value && (Date.now() - new Date(value).getTime()) > 3 * 24 * 60 * 60 * 1000;
 
 const evidenceUrl = (value) => {
-  if (!value) return '';
-  if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('data:')) return value;
-  return `${API_BASE}${value.startsWith('/') ? value : `/${value}`}`;
+  return resolveImageUrl(value);
 };
 
 const normalizeEvidenceList = (value) => {
@@ -124,7 +122,7 @@ function EvidenceImage({ src, label }) {
     <div className="grid gap-3 sm:grid-cols-2">
       {items.map((image, index) => (
         <a key={`${image}-${index}`} href={evidenceUrl(image)} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
-          <img src={evidenceUrl(image)} alt={`${label} ${index + 1}`} className="max-h-64 w-full object-contain" />
+          <img src={evidenceUrl(image)} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={`${label} ${index + 1}`} className="max-h-64 w-full object-contain" />
         </a>
       ))}
     </div>
@@ -146,10 +144,11 @@ export default function AdminDisputeReview({ user, onCountChange }) {
   const [error, setError] = useState('');
   const [pendingDecision, setPendingDecision] = useState(null);
   const [resolving, setResolving] = useState(false);
+  const [retryingRefund, setRetryingRefund] = useState(false);
 
   const request = useCallback(async (path, options = {}) => {
     const token = getSessionToken(user);
-    const response = await fetch(`${API_BASE}${path}`, {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(options.headers || {}) },
     });
@@ -233,6 +232,20 @@ export default function AdminDisputeReview({ user, onCountChange }) {
     }
   };
 
+  const retryRefund = async () => {
+    if (!selectedDispute?.order_id || retryingRefund) return;
+    setRetryingRefund(true);
+    try {
+      await request(`/api/admin/orders/${selectedDispute.order_id}/retry-refund`, { method: 'POST' });
+      await loadDisputes();
+      notifySuccess('Refund retry completed.', 'admin-dispute-refund-retry');
+    } catch (retryError) {
+      notifyError(retryError, 'admin-dispute-refund-retry');
+    } finally {
+      setRetryingRefund(false);
+    }
+  };
+
   return (
     <div className="space-y-5 text-slate-900">
       <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -304,7 +317,23 @@ export default function AdminDisputeReview({ user, onCountChange }) {
             )) : <p className="text-sm leading-6 text-slate-700">No dispute conversation recorded yet.</p>;
           })()}
         </div>
-        <div className="mt-5 grid gap-4 rounded-2xl border border-slate-200 p-5 sm:grid-cols-3"><div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Order</p><p className="mt-1 font-black">#{selectedDispute.order?.id || selectedDispute.order_id}</p></div><div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Price</p><p className="mt-1 font-black">{selectedDispute.order?.price || 'Unknown'}</p></div><div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Escrow amount</p><p className="mt-1 font-black">{formatMoney(selectedDispute.order?.escrow_amount)}</p></div></div>
+        <div className="mt-5 grid gap-4 rounded-2xl border border-slate-200 p-5 sm:grid-cols-3">
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Order</p><p className="mt-1 font-black">#{selectedDispute.order?.id || selectedDispute.order_id}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Price</p><p className="mt-1 font-black">{selectedDispute.order?.price || 'Unknown'}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Escrow amount</p><p className="mt-1 font-black">{formatMoney(selectedDispute.order?.escrow_amount)}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Order status</p><p className="mt-1 font-black">{selectedDispute.order?.status || 'Unknown'}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Expired at</p><p className="mt-1 font-black">{formatDate(selectedDispute.order?.expired_at)}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Refund status</p><p className="mt-1 font-black">{selectedDispute.order?.refund_status || 'none'}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Refund attempts</p><p className="mt-1 font-black">{selectedDispute.order?.refund_attempts ?? 0}</p></div>
+          <div className="sm:col-span-2"><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Refund reference</p><p className="mt-1 break-all font-black">{selectedDispute.order?.refund_reference || 'None'}</p></div>
+        </div>
+        {selectedDispute.reason === 'refund_not_received' && selectedDispute.order?.refund_status !== 'succeeded' && (
+          <div className="mt-5 flex justify-end">
+            <button type="button" onClick={retryRefund} disabled={retryingRefund} className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-black text-amber-900 hover:bg-amber-100 disabled:opacity-50">
+              {retryingRefund ? 'Retrying refund...' : 'Retry refund'}
+            </button>
+          </div>
+        )}
         <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" onClick={() => setPendingDecision('BUYER')} className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700">Refund Buyer</button><button type="button" onClick={() => setPendingDecision('SELLER')} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-black text-white hover:bg-emerald-700">Release to Seller</button></div>
       </div>}
 

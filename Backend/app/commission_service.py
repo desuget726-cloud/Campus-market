@@ -33,8 +33,8 @@ def validate_commission_settings(
     commission_max_fee: Optional[Decimal] = None,
 ) -> None:
     normalized_type = str(commission_type or "").strip().lower()
-    if normalized_type not in {"percentage", "flat"}:
-        raise ValueError('commission_type must be "percentage" or "flat".')
+    if normalized_type not in {"percentage", "flat", "fixed"}:
+        raise ValueError('commission_type must be "percentage" or "flat/fixed".')
     if not isinstance(commission_rate, Decimal):
         raise ValueError("commission_rate must be Decimal.")
     if not commission_rate.is_finite():
@@ -70,8 +70,10 @@ def calculate_commission(
     validate_commission_settings(type, rate, min_fee, max_fee)
     if not amount.is_finite() or amount < 0:
         raise ValueError("amount must be a finite, non-negative Decimal.")
+    if rate == 0:
+        return Decimal("0.00")
 
-    fee = amount * rate / Decimal("100") if type == "percentage" else rate
+    fee = amount * rate / Decimal("100") if str(type).strip().lower() == "percentage" else rate
     fee = fee.quantize(CENT, rounding=ROUND_HALF_UP)
     if min_fee is not None:
         fee = max(fee, min_fee.quantize(CENT, rounding=ROUND_HALF_UP))
@@ -80,16 +82,33 @@ def calculate_commission(
     return min(fee, amount).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
+def commission_fee_from_settings(amount: Decimal, settings: dict) -> Decimal:
+    """Calculate a fee from normalized, persisted commission settings."""
+    if not settings.get("commission_enabled", False):
+        return Decimal("0.00")
+
+    rate = as_decimal(settings.get("commission_rate", "0"), field_name="commission_rate")
+    if rate == 0:
+        return Decimal("0.00")
+
+    min_value = settings.get("commission_min_fee")
+    max_value = settings.get("commission_max_fee")
+    min_fee = None if min_value is None else as_decimal(min_value, field_name="commission_min_fee")
+    max_fee = None if max_value is None else as_decimal(max_value, field_name="commission_max_fee")
+    commission_type = str(settings.get("commission_type") or "percentage").strip().lower()
+    if commission_type == "fixed":
+        commission_type = "flat"
+    return calculate_commission(amount, commission_type, rate, min_fee, max_fee)
+
+
 def commission_for_order(order) -> Decimal:
     """Return the commission snapshot; legacy orders retain their historical 1% fee."""
     status = str(getattr(order, "status", "") or "").strip().lower()
     if status in {"cancelled", "canceled", "refunded", "returned"}:
         return Decimal("0.00")
-    snapshot_amount = getattr(order, "commission_amount", None)
+    snapshot_amount = getattr(order, "seller_commission", None)
+    if snapshot_amount is None:
+        snapshot_amount = getattr(order, "commission_amount", None)
     if snapshot_amount is not None:
-        return as_decimal(snapshot_amount, field_name="commission_amount").quantize(CENT, rounding=ROUND_HALF_UP)
-
-    sale_amount = as_decimal(getattr(order, "price", "0"), field_name="amount")
-    quantity = int(getattr(order, "quantity", 1) or 1)
-    sale_amount = (sale_amount * quantity).quantize(CENT, rounding=ROUND_HALF_UP)
-    return calculate_commission(sale_amount, "percentage", Decimal("1.0"), None, None)
+        return as_decimal(snapshot_amount, field_name="seller_commission").quantize(CENT, rounding=ROUND_HALF_UP)
+    return Decimal("0.00")

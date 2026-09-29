@@ -22,4 +22,16 @@ Google sign-in is handled by the FastAPI backend using Authorization Code flow w
 5. Set `studentVerification.allowedEmailDomain` to the institution's domain. New Google accounts are rejected unless their verified email matches that domain.
 6. Start the backend before opening the frontend. Missing OAuth variables produce a startup error listing the missing names.
 
+## Cloudinary file uploads
+
+The backend uploads product images, profile photos, student-ID evidence, and chat attachments through Cloudinary. Add these names to `Backend/.env` on the backend service (values kept in the hosting environment, never committed):
+
+```env
+CLOUDINARY_CLOUD_NAME=your-cloud-name
+CLOUDINARY_API_KEY=your-api-key
+CLOUDINARY_API_SECRET=your-api-secret
+```
+
+If these are unset, the app falls back to the local `static/uploads` behavior for local development. In production, Cloudinary protects uploads from Render's ephemeral filesystem by storing files in a durable external CDN/storage layer.
+
 For production, use HTTPS URLs in Google Cloud Console and the environment variables. Never commit `Backend/.env` or expose the client secret.

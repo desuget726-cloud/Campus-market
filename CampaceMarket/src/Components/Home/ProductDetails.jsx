@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 
@@ -48,7 +49,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
       try {
         const viewerId = currentUser?.studentId || currentUser?.student_id;
         const query = viewerId ? `?viewer_id=${encodeURIComponent(viewerId)}` : '';
-        const response = await fetch(`http://127.0.0.1:8000/api/products/${product.id}${query}`);
+        const response = await fetch(`${API_BASE_URL}/api/products/${product.id}${query}`);
         if (!response.ok) {
           throw new Error('Failed to fetch product details');
         }
@@ -71,7 +72,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
     }
 
     let active = true;
-    fetch(`http://127.0.0.1:8000/api/student/wishlist?student_id=${encodeURIComponent(studentId)}`)
+    fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${encodeURIComponent(studentId)}`)
       .then((response) => response.ok ? response.json() : [])
       .then((items) => {
         const match = (Array.isArray(items) ? items : []).find((wishlistItem) => String(wishlistItem.product_id) === String(product.id));
@@ -98,7 +99,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
 
     const fetchModerationSettings = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/settings/moderation');
+        const response = await fetch(`${API_BASE_URL}/api/settings/moderation`);
         if (!response.ok) throw new Error('Failed to fetch moderation settings');
         const data = await response.json();
         if (active) setAllowStudentReports(data.allowStudentReports === true);
@@ -119,7 +120,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
 
     const fetchChatSettings = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/settings/chat');
+        const response = await fetch(`${API_BASE_URL}/api/settings/chat`);
         if (!response.ok) throw new Error('Failed to fetch chat settings');
         const data = await response.json();
         if (active && typeof data.enabled === 'boolean') {
@@ -166,7 +167,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
     setChatStatus('');
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/student/messages/send', {
+      const response = await fetch(`${API_BASE_URL}/api/student/messages/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -202,7 +203,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
 
   const handleAddToCartFromSearch = async (productId, quantity = 1) => {
     const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-    const response = await fetch('http://127.0.0.1:8000/api/student/cart', {
+    const response = await fetch(`${API_BASE_URL}/api/student/cart`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -252,8 +253,8 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
 
     try {
       const response = isWishlisted
-        ? await fetch(`http://127.0.0.1:8000/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' })
-        : await fetch('http://127.0.0.1:8000/api/student/wishlist', {
+        ? await fetch(`${API_BASE_URL}/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' })
+        : await fetch(`${API_BASE_URL}/api/student/wishlist`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ student_id: studentId, product_id: Number(product.id) }),
@@ -316,7 +317,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
       formData.append('issue', `${reportReasons.join(', ')}: ${reportText.trim()}`);
       if (reportEvidenceFile) formData.append('evidence_image', reportEvidenceFile);
 
-      const response = await fetch('http://127.0.0.1:8000/api/student/report', {
+      const response = await fetch(`${API_BASE_URL}/api/student/report`, {
         method: 'POST',
         body: formData,
       });
@@ -418,13 +419,13 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
 
           {/* የምርቱ ትልቅ ፎቶ */}
           <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="relative"><button type="button" onClick={handleToggleWishlist} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-2xl shadow-md ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500`}>{isWishlisted ? '♥' : '♡'}</button><button type="button" onClick={() => setIsZoomed(true)} className="block w-full cursor-zoom-in" aria-label="Zoom product image"><img src={activeImage} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-[420px] w-full rounded-[20px] object-cover" /></button></div>
+            <div className="relative"><button type="button" onClick={handleToggleWishlist} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full bg-white/90 text-2xl shadow-md ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500`}>{isWishlisted ? '♥' : '♡'}</button><button type="button" onClick={() => setIsZoomed(true)} className="block w-full cursor-zoom-in" aria-label="Zoom product image"><img src={resolveImageUrl(activeImage)} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-[420px] w-full rounded-[20px] object-cover" /></button></div>
             <div className="mt-4 flex items-center gap-3">
               <button type="button" onClick={() => setSelectedImageIndex((index) => (index - 1 + visibleImages.length) % visibleImages.length)} aria-label="Previous product image" className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold">←</button>
               <div className="flex min-w-0 flex-1 gap-3 overflow-x-auto pb-1">
                 {visibleImages.map((image, index) => (
                   <button key={`${image}-${index}`} type="button" onClick={() => setSelectedImageIndex(index)} className={`h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition ${selectedImageIndex === index ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-slate-200 hover:border-slate-400'}`} aria-label={`Show product image ${index + 1}`}>
-                    <img src={image.url} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-full w-full object-cover" />
+                    <img src={resolveImageUrl(image.url)} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-full w-full object-cover" />
                     {image.note && <span title={image.note} className="absolute bottom-1 right-1 rounded-full bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-bold text-white">i</span>}
                   </button>
                 ))}
@@ -500,7 +501,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
               <div ref={similarProductsScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {similarProducts.map((similar) => (
                   <article key={similar.id} className="flex w-48 shrink-0 snap-start flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-md">
-                    <img src={similar.image || fallbackImage} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="h-32 w-full object-cover" />
+                    <img src={resolveImageUrl(similar.image || fallbackImage)} alt={similar.title || 'Similar product'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-32 w-full object-cover" />
                     <div className="flex flex-1 flex-col p-4">
                       <span className="w-fit rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">{similar.category || 'Marketplace item'}</span>
                       <h5 className="mt-2 truncate font-black text-slate-900" title={similar.title}>{similar.title || 'Campus item'}</h5>
@@ -689,7 +690,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
         </div>
 
       </div>
-      {isZoomed && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-label="Product image preview" onClick={() => setIsZoomed(false)}><div className="relative max-h-[90vh] max-w-5xl" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => setIsZoomed(false)} className="absolute right-3 top-3 z-10 rounded-full bg-white px-3 py-1 text-lg font-black text-slate-700 shadow" aria-label="Close image preview">×</button><img src={activeImage} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="max-h-[88vh] max-w-full rounded-2xl object-contain" /></div></div>}
+      {isZoomed && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-label="Product image preview" onClick={() => setIsZoomed(false)}><div className="relative max-h-[90vh] max-w-5xl" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => setIsZoomed(false)} className="absolute right-3 top-3 z-10 rounded-full bg-white px-3 py-1 text-lg font-black text-slate-700 shadow" aria-label="Close image preview">×</button><img src={resolveImageUrl(activeImage)} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="max-h-[88vh] max-w-full rounded-2xl object-contain" /></div></div>}
     </div>
   );
 }

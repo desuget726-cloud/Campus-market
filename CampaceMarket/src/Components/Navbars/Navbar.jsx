@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import logs from '../../assets/logs.png';
+import logo3 from '../../assets/logo3.jpg';
 import { useLanguage } from '../../context/LanguageContext';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
 function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -17,7 +18,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const displayEmail = displayUser?.email || 'Email unavailable';
   const displayRole = String(displayUser?.role || effectiveRole).toUpperCase();
   const avatarSrc = displayUser?.avatarUrl || (isAdmin
-    ? (displayUser?.username ? `http://127.0.0.1:8000/static/uploads/avatars/${displayUser.username}.jpg` : '')
+    ? (displayUser?.username ? `${API_BASE_URL}/static/uploads/avatars/${displayUser.username}.jpg` : '')
     : (displayUser?.studentId ? `/static/uploads/avatars/${displayUser.studentId}.jpg` : ''));
 
   useEffect(() => {
@@ -31,10 +32,11 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     const fetchAdminProfile = async () => {
       try {
         const savedSession = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-        const token = user?.access_token || user?.accessToken || savedSession.access_token || savedSession.accessToken;
+        const sessionUser = savedSession?.user || savedSession || {};
+        const token = user?.access_token || user?.accessToken || sessionUser?.access_token || sessionUser?.accessToken || savedSession?.access_token || savedSession?.accessToken;
         if (!token) return;
 
-        const response = await fetch('http://127.0.0.1:8000/api/admin/me', {
+        const response = await fetch(`${API_BASE_URL}/api/admin/me`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!response.ok) return;
@@ -48,7 +50,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
     fetchAdminProfile();
     return () => { cancelled = true; };
-  }, [isAdmin, user?.accessToken, user?.access_token]);
+  }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
 
   return (
     <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-20 text-white border-b border-blue-900">
@@ -56,7 +58,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Logo */}
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
-          <img src={logs} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
+          <img src={logo3} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
           <div className="flex items-center gap-1 text-2xl font-black text-white">
 
             <span className="text-white">UniXchange</span>
@@ -139,7 +141,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
                       </svg>
                     ) : avatarSrc ? (
-                      <img src={avatarSrc} alt={displayName} className="h-full w-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.parentElement.innerHTML = `<svg xmlns='http://www.w3.org/2000/svg' class='h-5 w-5 text-emerald-600' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2'><path stroke-linecap='round' stroke-linejoin='round' d='M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z' /></svg>`; }} />
+                      <img src={resolveImageUrl(avatarSrc)} alt={displayName} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
                     ) : (
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />

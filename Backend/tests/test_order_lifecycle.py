@@ -1,16 +1,21 @@
 import io
+import os
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy.sql import visitors
 
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+
 from app.order_lifecycle import (
     apply_buyer_receipt_confirmation,
     apply_seller_order_action,
+    claim_seller_timeout_refund,
     payout_release_allowed,
+    seller_acceptance_is_open,
 )
 from app.main import (
     _build_seller_listing_analytics,
@@ -37,6 +42,51 @@ def make_order():
 
 
 class OrderLifecycleTests(unittest.TestCase):
+    def test_seller_acceptance_is_open_before_deadline(self):
+        now = datetime(2026, 9, 29, 12, 0)
+        self.assertTrue(seller_acceptance_is_open(now + timedelta(seconds=1), now))
+
+    def test_seller_acceptance_is_closed_at_or_after_deadline(self):
+        now = datetime(2026, 9, 29, 12, 0)
+        self.assertFalse(seller_acceptance_is_open(now, now))
+        self.assertFalse(seller_acceptance_is_open(now - timedelta(seconds=1), now))
+
+    def test_seller_can_accept_before_deadline(self):
+        order = make_order()
+        order.seller_accept_deadline = datetime.now() + timedelta(hours=1)
+
+        apply_seller_order_action(order, "accept")
+
+        self.assertEqual(order.status, "Processing")
+
+    def test_seller_cannot_accept_after_deadline(self):
+        order = make_order()
+        order.seller_accept_deadline = datetime.now() - timedelta(seconds=1)
+
+        with self.assertRaises(HTTPException) as error:
+            apply_seller_order_action(order, "accept")
+
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(error.exception.detail, "Order expired or already handled")
+
+    def test_repeated_timeout_job_claim_does_not_double_refund(self):
+        order = SimpleNamespace(refund_status="none", refund_attempts=0)
+
+        self.assertTrue(claim_seller_timeout_refund(order))
+        self.assertFalse(claim_seller_timeout_refund(order))
+        self.assertEqual(order.refund_attempts, 1)
+
+    def test_failed_timeout_refund_can_retry_until_three_attempts(self):
+        order = SimpleNamespace(refund_status="none", refund_attempts=0)
+
+        for expected_attempt in range(1, 4):
+            self.assertTrue(claim_seller_timeout_refund(order))
+            self.assertEqual(order.refund_attempts, expected_attempt)
+            order.refund_status = "failed"
+
+        self.assertFalse(claim_seller_timeout_refund(order))
+        self.assertEqual(order.refund_attempts, 3)
+
     def test_direct_student_id_profile_edit_is_rejected(self):
         student = SimpleNamespace(student_id="OAUTH-875D73CE2C")
         original_auth = main_module._student_from_authorization
@@ -262,11 +312,16 @@ class OrderLifecycleTests(unittest.TestCase):
                         return self
 
                     def first(self):
-                        return FakeSystemSetting('{"commission_enabled": true, "commission_type": "percentage", "commission_rate": "2.5"}')
+                        return FakeSystemSetting('{"commission": {"commission_enabled": true, "commission_type": "percentage", "commission_rate": "2.5"}}')
 
                 return Query()
 
-        self.assertEqual(main_module._get_platform_commission_percent(FakeDatabase()), Decimal("2.5"))
+        saved_settings = FakeDatabase()
+        self.assertEqual(main_module._get_platform_commission_percent(saved_settings), Decimal("2.5"))
+        self.assertEqual(
+            main_module._calculate_platform_commission(saved_settings, Decimal("100.00")),
+            Decimal("2.50"),
+        )
 
     def test_same_title_products_keep_separate_leaderboard_stats(self):
         listings = [

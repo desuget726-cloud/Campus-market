@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
+import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
-const API_BASE_URL = 'http://127.0.0.1:8000';
-const PLACEHOLDER_IMAGE = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 200%22%3E%3Crect width=%22320%22 height=%22200%22 fill=%22%23e2e8f0%22/%3E%3Cpath d=%22M92 145l42-48 32 35 25-27 49 40H92z%22 fill=%22%2394a3b8%22/%3E%3Ccircle cx=%22125%22 cy=%2275%22 r=%2216%22 fill=%22%2394a3b8%22/%3E%3Ctext x=%22160%22 y=%22178%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2214%22 fill=%22%23475569%22%3ENo image available%3C/text%3E%3C/svg%3E';
+const PLACEHOLDER_IMAGE = IMAGE_PLACEHOLDER;
 
 const getListingImage = (rawImage) => {
   let image = rawImage;
@@ -21,10 +21,10 @@ const getListingImage = (rawImage) => {
 
   if (typeof image !== 'string' || !image.trim()) return PLACEHOLDER_IMAGE;
   const normalizedImage = image.trim();
-  if (/^(https?:|data:)/i.test(normalizedImage)) return normalizedImage;
-  if (normalizedImage.startsWith('/static/')) return `${API_BASE_URL}${normalizedImage}`;
-  if (normalizedImage.startsWith('static/')) return `${API_BASE_URL}/${normalizedImage}`;
-  return `${API_BASE_URL}/static/uploads/${normalizedImage.replace(/^\/+/, '')}`;
+  if (/^(https?:|data:)/i.test(normalizedImage)) return resolveImageUrl(normalizedImage);
+  if (normalizedImage.startsWith('/static/')) return resolveImageUrl(normalizedImage);
+  if (normalizedImage.startsWith('static/')) return resolveImageUrl(normalizedImage);
+  return resolveImageUrl(`/static/uploads/${normalizedImage.replace(/^\/+/, '')}`);
 };
 
 const formatDate = (value) => {

@@ -16,6 +16,7 @@ import AuthInfoModal from './Components/Authontication/AuthInfoModal';
 import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
 import { LanguageProvider } from './context/LanguageContext';
 import { Toaster } from 'react-hot-toast';
+import { API_BASE_URL } from './config';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
@@ -27,18 +28,31 @@ function AppContent() {
     try {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const existingSession = saved ? JSON.parse(saved) : {};
+      const sessionUser = nextUser || existingSession.user || null;
+      const accessToken = sessionUser?.access_token || sessionUser?.accessToken || sessionUser?.token || existingSession.access_token || existingSession.accessToken || existingSession.token || '';
 
       const session = {
         ...existingSession,
-        user: nextUser || existingSession.user || null,
-        userRole: nextRole || existingSession.userRole || null,
+        user: sessionUser,
+        userRole: nextRole || existingSession.userRole || sessionUser?.role || null,
+        access_token: accessToken,
+        accessToken,
         currentView: nextCurrentView,
         dashboardTab: nextDashboardTab,
         studentTab: nextStudentTab,
       };
 
       if (session.user) {
-        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+        const normalizedUser = {
+          ...session.user,
+          access_token: accessToken,
+          accessToken,
+          token: accessToken || session.user.token || '',
+        };
+        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+          ...session,
+          user: normalizedUser,
+        }));
       } else {
         window.localStorage.removeItem(SESSION_STORAGE_KEY);
       }
@@ -101,9 +115,38 @@ function AppContent() {
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
   const [showFooterTerms, setShowFooterTerms] = useState(false);
+  const [isRestoringStudentSession, setIsRestoringStudentSession] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      const session = saved ? JSON.parse(saved) : null;
+      const storedUser = session?.user;
+      return Boolean(storedUser && (session?.userRole || storedUser.role) === 'student');
+    } catch {
+      return false;
+    }
+  });
 
   const activeRole = userRole || user?.role || null;
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
+
+  const handleLogout = () => {
+    fetch(`${API_BASE_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    }).catch(() => { });
+
+    setUser(null);
+    setUserRole(null);
+    setUnreadCount(0);
+    setCurrentView('home');
+    setDashboardTab('home');
+    setStudentTab('home');
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -124,12 +167,17 @@ function AppContent() {
       };
     }
 
-    fetch('http://127.0.0.1:8000/api/auth/session', {
+    fetch(`${API_BASE_URL}/api/auth/session`, {
       credentials: 'include',
       headers: storedUser.access_token ? { Authorization: `Bearer ${storedUser.access_token}` } : {},
     })
       .then(async (response) => {
-        if (!response.ok || cancelled) return;
+        if (cancelled) return;
+        if (response.status === 401) {
+          handleLogout();
+          return;
+        }
+        if (!response.ok) return;
 
         const data = await response.json();
         if (!data?.user || data.role !== 'student' || cancelled) return;
@@ -142,7 +190,10 @@ function AppContent() {
         setUserRole('student');
         setCurrentView((view) => view === 'login' || view === 'home' ? 'student-dashboard' : view);
       })
-      .catch(() => { });
+      .catch(() => { })
+      .finally(() => {
+        if (!cancelled) setIsRestoringStudentSession(false);
+      });
 
     return () => {
       cancelled = true;
@@ -159,7 +210,7 @@ function AppContent() {
 
     const loadSessionTimeout = async () => {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/admin/settings');
+        const response = await fetch(`${API_BASE_URL}/api/admin/settings`);
         if (!response.ok) return;
         const data = await response.json();
         const configuredTimeout = Number(data?.security?.sessionTimeout);
@@ -208,7 +259,7 @@ function AppContent() {
     const fetchUnreadCount = async () => {
       try {
         const response = await fetch(
-          `http://127.0.0.1:8000/api/student/notifications/unread-count?student_id=${encodeURIComponent(
+          `${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(
             user.studentId,
           )}`,
         );
@@ -258,30 +309,12 @@ function AppContent() {
     persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab);
   };
 
-  const handleLogout = () => {
-    fetch('http://127.0.0.1:8000/api/auth/logout', {
-      method: 'POST',
-      credentials: 'include',
-    }).catch(() => { });
-
-    setUser(null);
-    setUserRole(null);
-    setUnreadCount(0);
-    setCurrentView('home');
-    setDashboardTab('home');
-    setStudentTab('home');
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
-    }
-  };
-
   useEffect(() => {
     if (!user || !activeRole || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
 
     let timeoutId;
     const expireSession = () => {
-      fetch('http://127.0.0.1:8000/api/auth/logout', {
+      fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: 'POST',
         credentials: 'include',
       }).catch(() => { });
@@ -391,7 +424,7 @@ function AppContent() {
     setStudentTab('notifications');
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/student/notifications/mark-read', {
+      const response = await fetch(`${API_BASE_URL}/api/student/notifications/mark-read`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_id: user.studentId }),
@@ -409,7 +442,7 @@ function AppContent() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50 text-slate-800">
+    <div className={`flex min-h-screen flex-col bg-slate-50 text-slate-800 ${currentView === 'admin-dashboard' ? 'lg:h-screen lg:overflow-hidden' : ''}`}>
       <Toaster
         position="top-right"
         containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
@@ -464,8 +497,8 @@ function AppContent() {
         }}
       />
 
-      <div className="flex min-h-0 flex-1 flex-col pt-20 lg:flex-row">
-        <main className={`${isDashboardView ? 'w-full flex-1 min-h-0' : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 lg:pb-8`}>
+      <div className={`flex flex-1 flex-col pt-20 lg:flex-row ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
+        <main className={`${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
@@ -529,7 +562,7 @@ function AppContent() {
               onTabChange={(tab) => setAdminTab(tab)}
             />
           )}
-          {activeRole === 'student' && currentView === 'student-dashboard' && (
+          {!isRestoringStudentSession && activeRole === 'student' && currentView === 'student-dashboard' && (
             <StudentDashboard
               onLogout={handleLogout}
               user={user}
