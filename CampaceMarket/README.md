@@ -8,15 +8,15 @@ Google sign-in is handled by the FastAPI backend using Authorization Code flow w
 2. Create an OAuth client under **APIs & Services > Credentials > Create Credentials > OAuth client ID**.
 3. Choose **Web application** and add this authorized redirect URI for local development:
 
-   `http://127.0.0.1:8000/auth/google/callback`
+   `http://localhost:8000/auth/google/callback`
 
 4. Copy `Backend/.env.example` to `Backend/.env` and set:
 
    ```env
    GOOGLE_CLIENT_ID=your-google-client-id
    GOOGLE_CLIENT_SECRET=your-google-client-secret
-   GOOGLE_REDIRECT_URI=http://127.0.0.1:8000/auth/google/callback
-   FRONTEND_LOGIN_URL=http://localhost:5173/login
+   GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback
+   FRONTEND_URL=http://localhost:5173
    ```
 
 5. Set `studentVerification.allowedEmailDomain` to the institution's domain. New Google accounts are rejected unless their verified email matches that domain.

@@ -49,7 +49,7 @@ import secrets
 from decimal import Decimal, InvalidOperation
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -73,7 +73,7 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, AdminBackupCode, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_payout_adapter
@@ -90,6 +90,9 @@ from .storage import save_attachment, save_upload
 
 
 app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
+
+GOOGLE_REDIRECT_URI_DEFAULT = "http://localhost:8000/auth/google/callback"
+GOOGLE_OAUTH_STATE_TTL = timedelta(minutes=10)
 
 SELLER_TIMEOUT_WARNING_COUNT = 1
 SELLER_TIMEOUT_SUSPENSION_COUNT = 3
@@ -2955,6 +2958,9 @@ async def on_startup():
             "GOOGLE_REDIRECT_URI",
         )
     }
+    google_config["GOOGLE_REDIRECT_URI"] = (
+        google_config["GOOGLE_REDIRECT_URI"] or GOOGLE_REDIRECT_URI_DEFAULT
+    )
 
     def mask_google_value(variable_name: str, value: str) -> str:
         if not value:
@@ -2999,9 +3005,10 @@ async def on_startup():
         startup_logger.warning(
             "Google OAuth is disabled. Missing environment variables: %s. Add these to %s: "
             "GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... "
-            "GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback",
+            "GOOGLE_REDIRECT_URI=%s",
             ", ".join(missing_google_variables),
             ENV_FILE_PATH,
+            GOOGLE_REDIRECT_URI_DEFAULT,
         )
     missing_gateway_variables = [
         variable_name for variable_name in ("CHAPA_SECRET_KEY", "CHAPA_WEBHOOK_SECRET")
@@ -3362,7 +3369,10 @@ def _google_oauth_settings() -> tuple[str, str, str]:
     client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
     # Google client secrets cannot contain whitespace copied from a formatted value.
     client_secret = re.sub(r"\s+", "", os.getenv("GOOGLE_CLIENT_SECRET", ""))
-    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+    redirect_uri = (
+        os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+        or GOOGLE_REDIRECT_URI_DEFAULT
+    )
     missing = [
         name for name, value in (
             ("GOOGLE_CLIENT_ID", client_id),
@@ -3379,7 +3389,57 @@ def _google_oauth_settings() -> tuple[str, str, str]:
 
 
 def _oauth_frontend_url() -> str:
-    return os.getenv("FRONTEND_URL", os.getenv("FRONTEND_LOGIN_URL", "http://localhost:5173/login")).strip().rstrip("#")
+    return (os.getenv("FRONTEND_URL") or "http://localhost:5173").strip().rstrip("#")
+
+
+def _google_state_error_redirect() -> RedirectResponse:
+    frontend_url = urlsplit(_oauth_frontend_url())
+    login_path = frontend_url.path.rstrip("/")
+    if not login_path.endswith("/login"):
+        login_path = f"{login_path}/login"
+    return RedirectResponse(
+        url=urlunsplit((
+            frontend_url.scheme,
+            frontend_url.netloc,
+            login_path,
+            urlencode({"error": "google_state"}),
+            "",
+        )),
+        status_code=303,
+    )
+
+
+def _consume_google_oauth_state(db: Session, state: Optional[str]) -> Optional[str]:
+    auth_logger = logging.getLogger("app.auth")
+    state_record = (
+        db.query(GoogleOAuthState).filter(GoogleOAuthState.state == state).first()
+        if state else None
+    )
+    if not state_record:
+        auth_logger.warning("Google OAuth state rejected: reason=unknown")
+        return None
+
+    now = datetime.now(timezone.utc)
+    created_at = _as_utc_datetime(state_record.created_at)
+    if created_at is None or created_at < now - GOOGLE_OAUTH_STATE_TTL:
+        auth_logger.warning("Google OAuth state rejected: reason=expired")
+        return None
+    if state_record.used:
+        auth_logger.warning("Google OAuth state rejected: reason=reused")
+        return None
+
+    verifier = state_record.verifier
+    claimed_rows = db.query(GoogleOAuthState).filter(
+        GoogleOAuthState.id == state_record.id,
+        GoogleOAuthState.used.is_(False),
+        GoogleOAuthState.created_at >= (now - GOOGLE_OAUTH_STATE_TTL).replace(tzinfo=None),
+    ).update({"used": True}, synchronize_session=False)
+    if claimed_rows != 1:
+        db.rollback()
+        auth_logger.warning("Google OAuth state rejected: reason=reused")
+        return None
+    db.commit()
+    return verifier
 
 
 def _oauth_cookie_secure() -> bool:
@@ -3467,7 +3527,7 @@ def _get_or_create_oauth_student(email: str, name: Optional[str], db: Session) -
 
 
 @app.get("/auth/google/login")
-def google_login():
+def google_login(db: Session = Depends(get_db)):
     try:
         client_id, _, redirect_uri = _google_oauth_settings()
     except RuntimeError as error:
@@ -3477,6 +3537,12 @@ def google_login():
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode("ascii")).digest()
     ).rstrip(b"=").decode("ascii")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.query(GoogleOAuthState).filter(
+        GoogleOAuthState.created_at < now - timedelta(hours=1)
+    ).delete(synchronize_session=False)
+    db.add(GoogleOAuthState(state=state, verifier=verifier, created_at=now))
+    db.commit()
     authorization_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode({
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -3488,35 +3554,15 @@ def google_login():
         "access_type": "online",
         "prompt": "select_account",
     })
-    response = RedirectResponse(url=authorization_url, status_code=307)
-    response.set_cookie(
-        "google_oauth_state",
-        state,
-        max_age=600,
-        httponly=True,
-        secure=_oauth_cookie_secure(),
-        samesite="lax",
-        path="/",
-    )
-    response.set_cookie(
-        "google_oauth_verifier",
-        verifier,
-        max_age=600,
-        httponly=True,
-        secure=_oauth_cookie_secure(),
-        samesite="lax",
-        path="/",
-    )
-    return response
+    return RedirectResponse(url=authorization_url, status_code=307)
 
 
 @app.get("/auth/google/callback")
-async def google_callback(code: str, state: str, request: Request, db: Session = Depends(get_db)):
+async def google_callback(code: str, state: Optional[str] = None, db: Session = Depends(get_db)):
     client_id, client_secret, redirect_uri = _google_oauth_settings()
-    expected_state = request.cookies.get("google_oauth_state", "")
-    verifier = request.cookies.get("google_oauth_verifier", "")
-    if not expected_state or not secrets.compare_digest(state, expected_state) or not verifier:
-        raise HTTPException(status_code=400, detail="Invalid or expired Google OAuth state.")
+    verifier = _consume_google_oauth_state(db, state)
+    if verifier is None:
+        return _google_state_error_redirect()
 
     token_data = await _exchange_oauth_code(
         "https://oauth2.googleapis.com/token",
@@ -3551,8 +3597,6 @@ async def google_callback(code: str, state: str, request: Request, db: Session =
     student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
     response = RedirectResponse(url=_oauth_frontend_url(), status_code=303)
     _create_secure_session_for_student(student, response, db)
-    response.delete_cookie("google_oauth_state", path="/")
-    response.delete_cookie("google_oauth_verifier", path="/")
     return response
 
 

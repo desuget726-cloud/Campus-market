@@ -1,5 +1,6 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -395,6 +396,21 @@ class AdminBackupCode(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     admin = relationship("Admin", back_populates="backup_code_records")
+
+
+class GoogleOAuthState(Base):
+    __tablename__ = "google_oauth_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    state = Column(String(128), unique=True, nullable=False, index=True)
+    verifier = Column(String(128), nullable=False)
+    used = Column(Boolean, default=False, nullable=False, index=True)
+    created_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+        nullable=False,
+        index=True,
+    )
 
 
 class StudentIdChangeRequest(Base):
