@@ -13213,7 +13213,10 @@ def get_admin_payments_endpoint(
     db: Session = Depends(get_db),
 ):
     try:
-        query = db.query(Transaction)
+        query = db.query(
+            Transaction,
+            Wallet.student_id.label("wallet_owner_id"),
+        ).outerjoin(Wallet, Transaction.wallet_id == Wallet.id)
 
         if search and search.strip():
             term = f"%{search.strip()}%"
@@ -13239,35 +13242,67 @@ def get_admin_payments_endpoint(
 
         transactions = query.order_by(Transaction.created_at.desc()).limit(limit).all()
 
+        def get_order_id(transaction):
+            description_match = re.search(
+                r"\border(?:\s+id)?\s*#?\s*(\d+)\b",
+                transaction.description or "",
+                re.IGNORECASE,
+            )
+            reference_match = re.fullmatch(
+                r"(?:REFUND|RELEASE|ORDER)[-_](\d+)",
+                transaction.tx_id or "",
+                re.IGNORECASE,
+            )
+            match = description_match or reference_match
+            return int(match.group(1)) if match else None
+
+        order_ids = {
+            order_id
+            for transaction, _ in transactions
+            if (order_id := get_order_id(transaction)) is not None
+        }
+        orders_by_id = {}
+        if order_ids:
+            order_rows = (
+                db.query(Order, Product.seller)
+                .outerjoin(Product, Product.id == Order.product_id)
+                .filter(Order.id.in_(order_ids))
+                .all()
+            )
+            orders_by_id = {
+                order.id: {
+                    "id": order.id,
+                    "seller_id": order.seller_id or product_seller or "-",
+                }
+                for order, product_seller in order_rows
+            }
+
         results = []
-        for tx in transactions:
+        for tx, wallet_owner_id in transactions:
             payment_type_value = _normalize_payment_type(tx.type or tx.description or "Product Purchase")
             payment_status = _normalize_payment_status(tx.status or "Pending")
-            related_order = None
-            if payment_type_value == "Product Purchase":
-                related_order = (
-                    db.query(Order)
-                    .filter(Order.student_id == tx.student_id)
-                    .order_by(Order.created_at.desc())
-                    .first()
-                )
-            related_product = (
-                db.query(Product).filter(Product.id == related_order.product_id).first()
-                if related_order else None
+            payment_source = f"{tx.type or ''} {tx.description or ''}".lower()
+            is_chapa_deposit = payment_type_value == "Wallet Deposit" and "chapa" in payment_source
+            is_wallet_withdrawal = (
+                payment_type_value in {"Seller Payout", "Wallet Withdrawal"}
+                or str(tx.tx_id or "").upper().startswith("PAYOUT-")
             )
+            parsed_order_id = None if is_chapa_deposit or is_wallet_withdrawal else get_order_id(tx)
+            related_order = orders_by_id.get(parsed_order_id)
             payment_method = (
                 "Chapa" if payment_type_value == "Wallet Deposit"
                 else "Wallet" if payment_type_value == "Product Purchase"
                 else "SantimPay" if payment_type_value == "Seller Payout"
                 else "Wallet"
             )
-            payment_source = f"{tx.type or ''} {tx.description or ''}".lower()
             seller_display = (
                 "System (Chapa)"
-                if payment_type_value == "Wallet Deposit" and "chapa" in payment_source
-                else "Self"
-                if payment_type_value == "Wallet Deposit"
-                else related_product.seller if related_product and related_product.seller else "Unknown"
+                if is_chapa_deposit
+                else (wallet_owner_id or tx.student_id or "-")
+                if is_wallet_withdrawal
+                else related_order["seller_id"]
+                if related_order
+                else "-"
             )
 
             results.append({
@@ -13275,7 +13310,7 @@ def get_admin_payments_endpoint(
                 "transaction_id": tx.tx_id,
                 "buyer_id": tx.student_id,
                 "seller_id": seller_display,
-                "order_id": related_order.id if related_order else tx.tx_id,
+                "order_id": related_order["id"] if related_order else "-",
                 "amount": float(tx.amount or 0),
                 "payment_type": payment_type_value,
                 "payment_method": payment_method,

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import logo3 from '../../assets/logo3.jpg';
+import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public' }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public', isHomeView = false }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [profileUser, setProfileUser] = useState(user);
@@ -54,11 +54,11 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
   return (
     <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-20 text-white border-b border-blue-900">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+      <div className={`${isHomeView ? 'w-full px-4 sm:px-6 lg:px-10' : 'mx-auto max-w-7xl px-4 sm:px-6 lg:px-8'} h-20 flex items-center justify-between`}>
 
         {/* Logo */}
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
-          <img src={logo3} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
+          <img src={logs} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
           <div className="flex items-center gap-1 text-2xl font-black text-white">
 
             <span className="text-white">UniXchange</span>

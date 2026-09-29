@@ -2472,50 +2472,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setShowProductModal(true);
   };
 
-  const handleAiApplyRecommendation = (product, discountPercentage = 3) => {
-    if (!product) return;
-    const currentPrice = Number(String(product.price || 0).replace(/[^0-9.]/g, '')) || 0;
-    const discountedPrice = (currentPrice * (1 - discountPercentage / 100)).toFixed(2);
-    setEditingProduct(product);
-    setExistingProductImages(getProductImages(product.image));
-    setProductForm({
-      name: product.title || product.name || '',
-      title: product.title || product.name || '',
-      category: product.category || '',
-      subcategory: product.subcategory || '',
-      price: discountedPrice,
-      quantity: String(product.stock ?? product.quantity ?? 1),
-      condition: product.condition || 'New',
-      pickupLocation: product.pickup_location || product.pickupLocation || '',
-      pickupHours: product.pickup_hours || '08:00-17:00',
-      negotiable: product.negotiable === true,
-      imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
-      description: product.description || '',
-      image: []
-    });
-    setProductError('');
-    setProductSuccessMsg('');
-    setShowProductModal(true);
-  };
-
-  const handleApplyPriceDropDirectly = async (product, percentage = 3) => {
-    if (!product?.id) return;
-    const currentPrice = Number(String(product.price || 0).replace(/[^0-9.]/g, '')) || 0;
-    const discountedPrice = (currentPrice * (1 - percentage / 100)).toFixed(2);
-    try {
-      await updateSellerProduct(product, { price: discountedPrice });
-      setProductSuccessMsg(`${percentage}% price drop applied successfully.`);
-      notifySuccess(studentToast('productUpdated'), `student-product-price-drop-${product.id}`);
-    } catch (error) {
-      setProductError(error.message);
-      notifyError(error, `student-product-price-drop-${product.id}`);
-    }
-  };
-
-  const handleAdjustPriceClick = (product) => {
-    handleAiApplyRecommendation(product, 3);
-  };
-
   const updateSellerProduct = async (productOrId, updates, imageChanges = null) => {
     const product = findSellerProduct(productOrId);
     if (!product?.id) throw new Error('The selected product could not be found.');
@@ -3073,7 +3029,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     if (!user?.studentId || typeof window === 'undefined') return undefined;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${WS_BASE_URL}/api/student/chat/ws/${user.studentId}`);
     socketRef.current = socket;
 
@@ -4806,7 +4761,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 onRefreshWallet={fetchBuyerDashboardData}
                 setSellerDashboardData={setSellerDashboardData}
                 myListings={myListings}
-                setMyListings={setMyListings}
                 setSellerData={setSellerData}
                 onPayoutAccountUpdated={async () => {
                   const account = await refreshPayoutAccount();
@@ -4833,8 +4787,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 onEditProduct={handleEditProduct}
                 onTogglePause={handleTogglePause}
                 onMarkAsSold={handleMarkAsSold}
-                onApplyPriceDrop={handleApplyPriceDropDirectly}
-                onAdjustPrice={handleAdjustPriceClick}
                 onPaymentHistory={() => {
                   setActiveTab('buyer');
                   setBuyerTab('payments');

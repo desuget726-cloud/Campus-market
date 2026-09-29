@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 
 :root {
-  --brand-primary: #0080CC;
+  --brand-primary: #06a1fa;
   --brand-primary-light: #3399D6;
   --brand-primary-hover: #006BA8;
   font-family: Inter, 'Segoe UI', sans-serif;
@@ -131,6 +131,7 @@ html {
 
 body {
   margin: 0;
+  width: 100%;
   min-width: 320px;
   background: linear-gradient(135deg, #f8fbff 0%, #eef8ff 100%);
 }
@@ -140,6 +141,7 @@ body {
 }
 
 #root {
+  width: 100%;
   min-height: 100vh;
 }
 

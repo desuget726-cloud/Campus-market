@@ -341,6 +341,7 @@ function AppContent() {
   }, [activeRole, currentView, sessionTimeoutMinutes, user]);
 
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
+  const isHomeView = currentView === 'home';
 
   const handleNavigate = (view, params = {}) => {
     if (view === 'login' || view === 'register' || view === 'signup') {
@@ -481,6 +482,7 @@ function AppContent() {
       <PaymentSuccessToast />
       <Navbar
         variant={isDashboardView ? 'dashboard' : 'public'}
+        isHomeView={isHomeView}
         onNavigate={handleNavigate}
         user={user}
         userRole={userRole}
@@ -498,7 +500,7 @@ function AppContent() {
       />
 
       <div className={`flex flex-1 flex-col pt-20 lg:flex-row ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
-        <main className={`${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
+        <main className={isHomeView ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8' : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm

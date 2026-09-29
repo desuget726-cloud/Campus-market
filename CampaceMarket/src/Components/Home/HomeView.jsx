@@ -35,6 +35,18 @@ const formatEtb = (value) => {
   return `${String(value).replace(/\$/g, '').replace(/\s*ETB\s*/gi, '').trim()} ETB`;
 };
 
+const CompactEtbPrice = ({ value, className }) => {
+  const formattedPrice = formatEtb(value);
+  const hasEtbSuffix = formattedPrice.endsWith(' ETB');
+
+  return (
+    <p className={className}>
+      {hasEtbSuffix ? formattedPrice.slice(0, -4) : formattedPrice}
+      {hasEtbSuffix && <span className="hidden sm:inline"> ETB</span>}
+    </p>
+  );
+};
+
 const getPrimaryImage = (product) => {
   const image = product?.image;
   if (Array.isArray(image)) return resolveImageUrl(image[0]);
@@ -56,6 +68,7 @@ const getCategoryAdCount = (value) => {
 };
 
 function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, onNavigateToMessages }) {
+  const contentContainerClass = 'mx-auto w-full max-w-[1920px] px-4 sm:px-6 lg:px-10 2xl:px-16';
   const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -221,8 +234,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
     const container = aiScrollRef.current;
     if (!container) return;
 
+    const visibleCards = window.innerWidth >= 1024 ? 4 : window.innerWidth >= 640 ? 3 : 4;
     container.scrollBy({
-      left: direction * (container.clientWidth / (window.innerWidth >= 1024 ? 4 : 2)),
+      left: direction * (container.clientWidth / visibleCards),
       behavior: 'smooth',
     });
   };
@@ -259,27 +273,31 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   };
 
   return (
-    <div className="space-y-6">
+    <div className="w-full">
       {loading ? (
-        <div className="rounded-[28px] bg-white border border-slate-200 p-12 text-center text-slate-600 shadow-md haight=500">
-          <p className="text-lg font-semibold text-slate-900">Loading marketplace data…</p>
-          <p className="mt-2 text-sm">Please wait while categories and products are loaded.</p>
+        <div className={contentContainerClass}>
+          <div className="rounded-[28px] bg-white border border-slate-200 p-12 text-center text-slate-600 shadow-md haight=500">
+            <p className="text-lg font-semibold text-slate-900">Loading marketplace data…</p>
+            <p className="mt-2 text-sm">Please wait while categories and products are loaded.</p>
+          </div>
         </div>
       ) : selectedProduct ? (
-        <ProductDetails
-          product={selectedProduct}
-          currentUser={user}
-          onNavigate={onNavigate}
-          onNavigateToMessages={onNavigateToMessages}
-          onBack={() => setSelectedProduct(null)}
-          onStartChat={() => {
-            console.log('Start chat with seller', selectedProduct);
-          }}
-        />
+        <div className="w-full">
+          <ProductDetails
+            product={selectedProduct}
+            currentUser={user}
+            onNavigate={onNavigate}
+            onNavigateToMessages={onNavigateToMessages}
+            onBack={() => setSelectedProduct(null)}
+            onStartChat={() => {
+              console.log('Start chat with seller', selectedProduct);
+            }}
+          />
+        </div>
       ) : (
-        <div className="space-y-6 pt-1">
-          {loadError && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{loadError}</div>}
-          <section className="group w-screen relative left-1/2 right-1/2 -ml-[50vw] -mr-[50vw] rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
+        <div className="w-full space-y-6 pt-1">
+          {loadError && <div className={contentContainerClass}><div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{loadError}</div></div>}
+          <section className="group relative w-full rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
             {bannerImages.map((src, index) => (
               <img
                 key={index}
@@ -325,201 +343,209 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
             </div>
           </section>
 
-          <div className="mx-auto w-full max-w-3xl">
-            <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3 p-2 rounded-full bg-white border border-slate-200 shadow-md max-w-3xl mx-auto w-full">
-              <input
-                type="text"
-                placeholder="Search books, laptops, lab coats, calculators..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 bg-slate-50 border border-slate-100 rounded-full px-6 py-3.5 text-slate-900 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 transition"
+          <div className={`${contentContainerClass} space-y-6`}>
+            <div className="mx-auto w-full max-w-3xl">
+              <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3 p-2 rounded-full bg-white border border-slate-200 shadow-md max-w-3xl mx-auto w-full">
+                <input
+                  type="text"
+                  placeholder="Search books, laptops, lab coats, calculators..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="flex-1 bg-slate-50 border border-slate-100 rounded-full px-6 py-3.5 text-slate-900 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 transition"
+                />
+                <button
+                  type="submit"
+                  className="btn-primary rounded-full px-8 py-3.5 font-semibold transition shadow-md whitespace-nowrap"
+                >
+                  Search Materials
+                </button>
+              </form>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsDirectoryOpen(true)}
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 md:hidden"
+            >
+              <span aria-hidden="true">☰</span> Browse Directory
+            </button>
+
+            {isDirectoryOpen && (
+              <div
+                onClick={() => setIsDirectoryOpen(false)}
+                className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-sm md:hidden"
               />
-              <button
-                type="submit"
-                className="btn-primary rounded-full px-8 py-3.5 font-semibold transition shadow-md whitespace-nowrap"
-              >
-                Search Materials
-              </button>
-            </form>
-          </div>
+            )}
 
-          <button
-            type="button"
-            onClick={() => setIsDirectoryOpen(true)}
-            className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 md:hidden"
-          >
-            <span aria-hidden="true">☰</span> Browse Directory
-          </button>
-
-          {isDirectoryOpen && (
-            <div
-              onClick={() => setIsDirectoryOpen(false)}
-              className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-sm md:hidden"
-            />
-          )}
-
-          <div className="grid gap-8 md:grid-cols-[280px_1fr]">
-            <aside className={`fixed inset-y-0 left-0 z-50 w-80 -translate-x-full overflow-y-auto bg-white p-3 shadow-2xl transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:translate-x-0 md:overflow-visible md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
-              <div className="rounded-[24px] border border-slate-200 bg-white shadow-sm min-h-[500px]">
-                <div className="flex items-center justify-between border-b pb-2 md:block">
-                  <h3 className="m-4 text-md font-bold text-slate-900">Directory</h3>
-                  <button type="button" onClick={() => setIsDirectoryOpen(false)} className="mr-4 rounded-full p-2 text-slate-500 hover:bg-slate-100 md:hidden" aria-label="Close directory">✕</button>
-                </div>
-                <ul className="divide-y divide-slate-100">
-                  {visibleCategories.map((cat) => (
-                    <li
-                      key={cat.id}
-                      onMouseEnter={() => setHoveredCategoryId(cat.id)}
-                      className={`group relative ${getCategoryAdCount(cat.adsCount) === 0 ? 'opacity-60' : ''}`}
-                    >
-                      <button
-                        onClick={() => handleCategoryClick(cat.name)}
-                        className="w-full flex items-center justify-between rounded-2xl px-4 py-3.5 text-left text-sm font-semibold text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 first:rounded-t-[24px] last:rounded-b-[24px]"
+            <div className="grid gap-8 md:grid-cols-[280px_1fr]">
+              <aside className={`fixed inset-y-0 left-0 z-50 w-80 -translate-x-full overflow-y-auto bg-white p-3 shadow-2xl transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:translate-x-0 md:overflow-visible md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
+                <div className="rounded-[24px] border border-slate-200 bg-white shadow-sm min-h-[500px]">
+                  <div className="flex items-center justify-between border-b pb-2 md:block">
+                    <h3 className="m-4 text-md font-bold text-slate-900">Directory</h3>
+                    <button type="button" onClick={() => setIsDirectoryOpen(false)} className="mr-4 rounded-full p-2 text-slate-500 hover:bg-slate-100 md:hidden" aria-label="Close directory">✕</button>
+                  </div>
+                  <ul className="grid grid-cols-4 gap-2 md:block md:gap-0 md:divide-y md:divide-slate-100">
+                    {visibleCategories.map((cat) => (
+                      <li
+                        key={cat.id}
+                        onMouseEnter={() => setHoveredCategoryId(cat.id)}
+                        className={`group relative min-w-0 ${getCategoryAdCount(cat.adsCount) === 0 ? 'opacity-60' : ''}`}
                       >
-                        <span className="flex items-center gap-3">
-                          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-xl border border-slate-100 group-hover:bg-emerald-50 transition">
-                            {cat.icon}
-                          </span>
-                          <span className="flex flex-col min-w-0">
-                            <span className="font-semibold text-slate-800 truncate group-hover:text-emerald-600">{cat.name}</span>
-                            <span className="text-[11px] text-slate-400 mt-0.5">{getCategoryAdCount(cat.adsCount) === 0 ? 'Coming Soon' : cat.adsCount}</span>
-                          </span>
-                        </span>
-                        <span className="text-slate-400 group-hover:translate-x-1 transition-transform">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        </span>
-                      </button>
-
-                      {hoveredCategoryId === cat.id && (
-                        <div
-                          className="absolute left-full top-0 ml-2 w-80 rounded-[24px] border border-slate-200 bg-white p-5 shadow-2xl transition duration-150 animate-fade-in z-40"
-                          onMouseEnter={() => setHoveredCategoryId(cat.id)}
+                        <button
+                          onClick={() => handleCategoryClick(cat.name)}
+                          className="flex w-full min-w-0 flex-col items-center justify-start gap-1 rounded-xl px-1 py-2 text-center text-[11px] leading-tight text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 md:flex-row md:items-center md:justify-between md:gap-3 md:rounded-2xl md:px-4 md:py-3.5 md:text-left md:text-sm first:md:rounded-t-[24px] last:md:rounded-b-[24px]"
                         >
-                          <h4 className="mb-3 text-sm font-bold text-slate-900 border-b pb-1.5 flex items-center gap-2">
-                            <span>{cat.icon}</span> {cat.name}
-                          </h4>
-                          <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto pr-1">
-                            {cat.items?.map((subItem) => (
-                              <button
-                                key={subItem.name}
-                                onClick={() => handleSubCategoryClick(subItem.name, cat.name)}
-                                className="w-full flex items-center justify-between py-2.5 text-left hover:bg-slate-50 hover:text-emerald-600 transition group/sub"
-                              >
-                                <span className="flex items-center gap-2.5">
-                                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-md border border-slate-100 group-hover/sub:bg-emerald-50 transition">
-                                    {subItem.icon}
+                          <span className="flex w-full min-w-0 flex-col items-center gap-1 md:w-auto md:flex-row md:gap-3">
+                            <span className="flex aspect-square w-full shrink-0 items-center justify-center rounded-xl border border-slate-100 bg-slate-50 text-xl transition group-hover:bg-emerald-50 md:aspect-auto md:h-11 md:w-11">
+                              {cat.icon}
+                            </span>
+                            <span className="flex w-full min-w-0 flex-col md:w-auto">
+                              <span className="line-clamp-2 break-words text-[11px] leading-tight font-semibold text-slate-800 group-hover:text-emerald-600 md:truncate md:text-sm md:leading-normal">{cat.name}</span>
+                              <span className="mt-0.5 hidden text-[11px] text-slate-400 sm:block">{getCategoryAdCount(cat.adsCount) === 0 ? 'Coming Soon' : cat.adsCount}</span>
+                            </span>
+                          </span>
+                          <span className="hidden text-slate-400 transition-transform group-hover:translate-x-1 md:block">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </span>
+                        </button>
+
+                        {hoveredCategoryId === cat.id && (
+                          <div
+                            className="absolute left-full top-0 ml-2 w-80 rounded-[24px] border border-slate-200 bg-white p-5 shadow-2xl transition duration-150 animate-fade-in z-40"
+                            onMouseEnter={() => setHoveredCategoryId(cat.id)}
+                          >
+                            <h4 className="mb-3 text-sm font-bold text-slate-900 border-b pb-1.5 flex items-center gap-2">
+                              <span>{cat.icon}</span> {cat.name}
+                            </h4>
+                            <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto pr-1">
+                              {cat.items?.map((subItem) => (
+                                <button
+                                  key={subItem.name}
+                                  onClick={() => handleSubCategoryClick(subItem.name, cat.name)}
+                                  className="w-full flex items-center justify-between py-2.5 text-left hover:bg-slate-50 hover:text-emerald-600 transition group/sub"
+                                >
+                                  <span className="flex items-center gap-2.5">
+                                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-md border border-slate-100 group-hover/sub:bg-emerald-50 transition">
+                                      {subItem.icon}
+                                    </span>
+                                    <span className="flex flex-col min-w-0">
+                                      <span className="text-xs font-semibold text-slate-700 truncate group-hover/sub:text-emerald-600">{subItem.name}</span>
+                                      <span className="text-[10px] text-slate-400 mt-0.5">{subItem.adsCount}</span>
+                                    </span>
                                   </span>
-                                  <span className="flex flex-col min-w-0">
-                                    <span className="text-xs font-semibold text-slate-700 truncate group-hover/sub:text-emerald-600">{subItem.name}</span>
-                                    <span className="text-[10px] text-slate-400 mt-0.5">{subItem.adsCount}</span>
+                                  <span className="text-slate-300 group-hover/sub:translate-x-0.5 transition-transform">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                    </svg>
                                   </span>
-                                </span>
-                                <span className="text-slate-300 group-hover/sub:translate-x-0.5 transition-transform">
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                  </svg>
-                                </span>
-                              </button>
-                            ))}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="border-t border-slate-100 px-4 py-4">
+                    <button
+                      type="button"
+                      onClick={() => setShowAllCategories((prev) => !prev)}
+                      className="btn-primary w-full rounded-full px-4 py-2 text-sm font-semibold transition"
+                    >
+                      {showAllCategories ? (
+                        <span className="flex items-center justify-center gap-2">Show Less <span></span></span>
+                      ) : (
+                        <span className="flex items-center justify-center gap-2">Show More <span></span></span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </aside>
+
+              <div className="min-w-0 space-y-8">
+                {user?.studentId && aiRecommendations.length > 0 && (
+                  <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Personalized for you</p>
+                        <h3 className="mt-1 text-2xl font-black text-slate-950">AI Recommendations</h3>
+                        <p className="mt-1 text-sm text-slate-500">Relevant products selected from your campus marketplace activity.</p>
+                      </div>
+                      <div className="flex shrink-0 gap-2">
+                        <button type="button" onClick={() => scrollAiRecommendations(-1)} aria-label="Previous AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&lt;</button>
+                        <button type="button" onClick={() => scrollAiRecommendations(1)} aria-label="Next AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&gt;</button>
+                      </div>
+                    </div>
+
+                    <div ref={aiScrollRef} className="mt-5 flex snap-x items-stretch gap-2 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
+                      {aiRecommendations.map((product, index) => (
+                        <article key={product.id ?? `${product.title}-${index}`} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 w-[calc(25%_-_0.375rem)] shrink-0 snap-start cursor-pointer flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md sm:w-[calc(33.333%_-_0.667rem)] lg:w-[calc(25%_-_0.75rem)]">
+                          <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title || 'Recommended product'} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
+                          <div className="flex min-w-0 flex-1 flex-col p-2 sm:p-3">
+                            <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
+                              <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category || 'Marketplace pick'}</span>
+                              {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
+                            </div>
+                            <h4 className="mt-1 line-clamp-2 text-[10px] leading-tight text-slate-950 sm:line-clamp-1 sm:text-sm sm:leading-normal sm:font-black">{product.title || 'Recommended product'}</h4>
+                            <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
+                            <div className="mt-auto flex min-w-0 flex-col gap-2 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                              <CompactEtbPrice value={product.price} className="min-w-0 text-[10px] font-bold text-slate-700 sm:text-base" />
+                              <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-bold transition-colors sm:inline-flex sm:w-auto">View Details</button>
+                            </div>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-xl font-bold text-slate-900">{searchedTitle}</h3>
+                  <span className="text-sm text-slate-500">{searchResults.length} items found</span>
+                </div>
+
+                {searchResults.length === 0 ? (
+                  <div className="rounded-[24px] border border-slate-200 bg-white p-12 text-center text-slate-500">
+                    <span className="text-4xl">🔍</span>
+                    <p className="mt-3 text-lg font-semibold">No products found matching that query.</p>
+                    <p className="text-sm text-slate-400 mt-1">Try selecting another subcategory from the sidebar.</p>
+                  </div>
+                ) : (
+                  <div className="grid min-w-0 grid-cols-4 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                    {searchResults.map((product, idx) => (
+                      <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
+                        <div>
+                          <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
+                          <div className="flex min-w-0 flex-col p-2 sm:p-4">
+                            <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
+                              <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category}</span>
+                              {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
+                            </div>
+                            <h4 className="mt-1 line-clamp-2 text-[10px] leading-tight text-slate-900 sm:line-clamp-1 sm:text-sm sm:leading-normal sm:font-semibold">{product.title}</h4>
+                            <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
                           </div>
                         </div>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-                <div className="border-t border-slate-100 px-4 py-4">
-                  <button
-                    type="button"
-                    onClick={() => setShowAllCategories((prev) => !prev)}
-                    className="btn-primary w-full rounded-full px-4 py-2 text-sm font-semibold transition"
-                  >
-                    {showAllCategories ? (
-                      <span className="flex items-center justify-center gap-2">Show Less <span></span></span>
-                    ) : (
-                      <span className="flex items-center justify-center gap-2">Show More <span></span></span>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </aside>
-
-            <div className="min-w-0 space-y-8">
-              {user?.studentId && aiRecommendations.length > 0 && (
-                <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-600">Personalized for you</p>
-                      <h3 className="mt-1 text-2xl font-black text-slate-950">AI Recommendations</h3>
-                      <p className="mt-1 text-sm text-slate-500">Relevant products selected from your campus marketplace activity.</p>
-                    </div>
-                    <div className="flex shrink-0 gap-2">
-                      <button type="button" onClick={() => scrollAiRecommendations(-1)} aria-label="Previous AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&lt;</button>
-                      <button type="button" onClick={() => scrollAiRecommendations(1)} aria-label="Next AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&gt;</button>
-                    </div>
-                  </div>
-
-                  <div ref={aiScrollRef} className="mt-5 flex snap-x gap-4 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                    {aiRecommendations.map((product, index) => (
-                      <article key={product.id ?? `${product.title}-${index}`} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="w-[calc(50%-0.5rem)] shrink-0 snap-start cursor-pointer overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md lg:w-[calc(25%_-_0.75rem)]">
-                        <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title || 'Recommended product'} className="h-32 w-full object-cover" />
-                        <div className="p-4">
-                          <p className="truncate text-xs font-bold text-emerald-600">{product.category || 'Marketplace pick'}</p>
-                          <h4 className="mt-1 truncate font-black text-slate-950">{product.title || 'Recommended product'}</h4>
-                          <p className="mt-2 text-sm font-bold text-slate-700">{formatEtb(product.price)}</p>
-                          <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="btn-primary mt-3 w-full rounded-full px-3 py-2 text-xs font-bold transition-colors cursor-pointer">View Details</button>
+                        <div className="mt-auto min-w-0 p-3 pt-0 sm:p-4 sm:pt-0">
+                          <div className="flex min-w-0 flex-col gap-2 border-t border-slate-50 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                            <CompactEtbPrice value={product.price} className="min-w-0 text-[10px] font-bold text-slate-900 sm:text-base" />
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openProduct(product);
+                              }}
+                              className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold transition-colors sm:inline-flex sm:w-auto"
+                            >
+                              View Details
+                            </button>
+                          </div>
                         </div>
                       </article>
                     ))}
                   </div>
-                </section>
-              )}
-
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-xl font-bold text-slate-900">{searchedTitle}</h3>
-                <span className="text-sm text-slate-500">{searchResults.length} items found</span>
+                )}
               </div>
-
-              {searchResults.length === 0 ? (
-                <div className="rounded-[24px] border border-slate-200 bg-white p-12 text-center text-slate-500">
-                  <span className="text-4xl">🔍</span>
-                  <p className="mt-3 text-lg font-semibold">No products found matching that query.</p>
-                  <p className="text-sm text-slate-400 mt-1">Try selecting another subcategory from the sidebar.</p>
-                </div>
-              ) : (
-                <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
-                  {searchResults.map((product, idx) => (
-                    <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="cursor-pointer overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm hover:shadow-md transition flex flex-col justify-between">
-                      <div>
-                        <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="h-44 w-full object-cover" />
-                        <div className="p-4">
-                          <div className="flex justify-between items-start gap-1">
-                            <p className="text-xs font-semibold text-emerald-600">{product.category}</p>
-                            <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium">{product.subcategory}</span>
-                          </div>
-                          <h4 className="mt-1 text-md font-semibold text-slate-900 truncate">{product.title}</h4>
-                          <p className="mt-1.5 text-xs text-slate-500 line-clamp-2">{product.description}</p>
-                        </div>
-                      </div>
-                      <div className="p-4 pt-0">
-                        <div className="flex items-center justify-between border-t border-slate-50 pt-3">
-                          <span className="text-lg font-bold text-slate-900">{formatEtb(product.price)}</span>
-                          <button
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openProduct(product);
-                            }}
-                            className="btn-primary rounded-full px-4 py-1.5 text-xs font-semibold transition-colors cursor-pointer"
-                          >
-                            View Details
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         </div>

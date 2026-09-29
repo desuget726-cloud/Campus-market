@@ -39,16 +39,10 @@ const normalizeSellerInsight = (listing) => {
   const orders = normalizeInsightMetric(
     listing?.completed_orders ?? listing?.order_count ?? listing?.orders,
   );
-  const conversionRate = views > 0
-    ? (orders / views) * 100
-    : 0;
   return {
     ...listing,
     views,
     orderCount: orders,
-    conversionRate: normalizeInsightMetric(
-      listing?.conversion_rate ?? conversionRate,
-    ),
     revenue: normalizeInsightMetric(
       listing?.completed_revenue ?? listing?.revenue,
     ),
@@ -66,10 +60,9 @@ function SellerOperationsCenter({
   onRefreshOrders,
   onRefreshWallet,
   myListings,
-  setMyListings,
   setSellerData,
   setSellerDashboardData,
-  onAddProduct: onCreateProduct,
+  onAddProduct,
   onNavigate: onTabNavigate,
   onViewProduct,
   onPaymentHistory,
@@ -77,13 +70,10 @@ function SellerOperationsCenter({
   onDeleteProduct,
   onTogglePause,
   onMarkAsSold,
-  onApplyPriceDrop,
-  onAdjustPrice,
   openOrderId,
   onOpenOrderHandled,
 }) {
   const [chartRange, setChartRange] = useState("3 Months");
-  const [chartMetric, setChartMetric] = useState("Revenue");
   const [salesAnalytics, setSalesAnalytics] = useState({
     points: [],
     total: 0,
@@ -92,7 +82,6 @@ function SellerOperationsCenter({
     comparisons: {},
   });
   const [salesAnalyticsLoading, setSalesAnalyticsLoading] = useState(false);
-  const [salesAnalyticsError, setSalesAnalyticsError] = useState("");
   const [pickupCodes, setPickupCodes] = useState({});
   const [completionState, setCompletionState] = useState({});
   const [disputeResponseState, setDisputeResponseState] = useState({});
@@ -363,26 +352,11 @@ function SellerOperationsCenter({
         (left.views + left.orderCount * 30),
     )
     .slice(0, 3);
-  const lowConversionProduct =
-    normalizedInsights.find(
-      (listing) =>
-        listing.views > 0 && listing.conversionRate < 2,
-    ) || topProducts[0];
   const analyticsStats = salesAnalytics.stats || {};
-  const analyticsComparisons = salesAnalytics.comparisons || {};
-  const totalViews = Number(analyticsStats.total_views ?? 0);
-  const totalOrders = Number(analyticsStats.total_orders ?? 0);
   const productsSold = Number(analyticsStats.products_sold ?? 0);
   const totalInventoryCount = Number(
     dashboardStats.total_listings ?? visibleListings.length + productsSold,
   );
-  const totalRevenue = Number(analyticsStats.total_revenue ?? 0);
-  const conversionRate = Number(analyticsStats.conversion_rate ?? 0);
-  const averageOrderValue = Number(analyticsStats.average_order_value ?? 0);
-  const comparisonLabel = (key) => {
-    const value = Number(analyticsComparisons[key] ?? 0);
-    return `${value >= 0 ? "+" : ""}${value.toFixed(1)}% vs previous`;
-  };
   const advisor = sellerDashboardData?.advisor;
   const chartMax = Math.max(
     ...salesAnalytics.points.map((point) => Number(point.total) || 0),
@@ -394,13 +368,6 @@ function SellerOperationsCenter({
         `${35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)},${190 - ((Number(point.total) || 0) / chartMax) * 135}`,
     )
     .join(" ");
-  const onAddProduct = (event) => {
-    if (event?.currentTarget?.textContent?.trim() === "Adjust Price") {
-      onAdjustPrice?.(lowConversionProduct);
-      return;
-    }
-    onCreateProduct?.(event);
-  };
   const onNavigate = (target, payload) => {
     if (target === "product-details" && payload?.productId) {
       onViewProduct?.(payload.productId);
@@ -455,7 +422,6 @@ function SellerOperationsCenter({
 
     const fetchSalesAnalytics = async () => {
       setSalesAnalyticsLoading(true);
-      setSalesAnalyticsError("");
       setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
       try {
         const sessionToken = getSessionToken();
@@ -472,12 +438,9 @@ function SellerOperationsCenter({
         if (!response.ok)
           throw new Error(result.detail || "Unable to load sales analytics.");
         if (!cancelled) setSalesAnalytics(result);
-      } catch (error) {
+      } catch {
         if (!cancelled) {
           setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
-          setSalesAnalyticsError(
-            error.message || "Unable to load sales analytics.",
-          );
         }
       } finally {
         if (!cancelled) setSalesAnalyticsLoading(false);
@@ -582,7 +545,7 @@ function SellerOperationsCenter({
         ? `${advisor.product_title} received ${advisor.views.toLocaleString()} views and ${advisor.completed_orders} completed order${advisor.completed_orders === 1 ? "" : "s"} (${Number(advisor.conversion_rate).toFixed(2)}% conversion). Consider updating its images or price.`
         : "Your listings do not have enough view or completed-order activity for a conversion recommendation yet.";
     }
-  }, [advisor, salesAnalytics, salesAnalyticsLoading, totalRevenue]);
+  }, [advisor, salesAnalytics, salesAnalyticsLoading]);
 
   const fetchSellerOrderDetails = async (orderId) => {
     setSelectedOrderLoading(true);
@@ -614,7 +577,6 @@ function SellerOperationsCenter({
 
   const performSellerAction = async (order, action, providedCode = "") => {
     const orderId = order.id ?? order.order_id ?? order.orderId;
-    const state = completionState[orderId] || {};
     const inputCode = String(providedCode || pickupCodes[orderId] || "").trim();
     if (action === "handover" && !/^\d{4}$/.test(inputCode)) {
       setCompletionState((previous) => ({
@@ -1828,212 +1790,6 @@ function SellerOperationsCenter({
           </button>
         </section>
       </div>
-      <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
-        <section
-          id="seller-analytics"
-          className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-                Sales Analytics
-              </p>
-              <h3 className="mt-1 text-xl font-black text-slate-950">
-                Operational Performance
-              </h3>
-            </div>
-            <div className="flex flex-wrap gap-1 rounded-full bg-slate-100 p-1">
-              {["7 Days", "30 Days", "3 Months"].map((range) => (
-                <button
-                  key={range}
-                  type="button"
-                  onClick={() => setChartRange(range)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === range ? "bg-slate-900 text-white" : "text-slate-500"}`}
-                >
-                  {range}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {[
-              [
-                "Total Revenue",
-                formatSellerEtb(totalRevenue),
-                comparisonLabel("total_revenue"),
-              ],
-              ["Total Orders", totalOrders, comparisonLabel("total_orders")],
-              ["Products Sold", productsSold, comparisonLabel("products_sold")],
-              [
-                "Conversion Rate",
-                `${conversionRate.toFixed(2)}%`,
-                comparisonLabel("conversion_rate"),
-              ],
-              [
-                "Average Order Value",
-                formatSellerEtb(averageOrderValue),
-                comparisonLabel("average_order_value"),
-              ],
-              [
-                "Total Views",
-                totalViews.toLocaleString(),
-                comparisonLabel("total_views"),
-              ],
-            ].map(([label, value, comparison]) => (
-              <div
-                key={label}
-                className="rounded-2xl border border-slate-200 bg-slate-50 p-3"
-              >
-                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
-                  {label}
-                </p>
-                <p className="mt-2 text-lg font-black text-slate-950">
-                  {value}
-                </p>
-                <span className="mt-1 inline-flex rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700">
-                  {comparison}
-                </span>
-              </div>
-            ))}
-          </div>
-          <div className="mt-5 flex flex-wrap gap-2">
-            {["Revenue", "Orders", "Views", "Conversion Rate"].map((metric) => (
-              <button
-                key={metric}
-                type="button"
-                onClick={() => setChartMetric(metric)}
-                className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartMetric === metric ? "btn-primary" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
-              >
-                {metric}
-              </button>
-            ))}
-          </div>
-          <svg
-            viewBox="0 0 640 230"
-            className="mt-4 h-56 w-full"
-            role="img"
-            aria-label={`${chartMetric} trend for ${chartRange}`}
-          >
-            <path
-              d="M35 190 H610 M35 145 H610 M35 100 H610 M35 55 H610"
-              stroke="#e2e8f0"
-              strokeDasharray="5 8"
-            />
-            <polyline
-              points={chartPoints}
-              fill="none"
-              stroke="#10b981"
-              strokeWidth="5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <polyline
-              points={`${chartPoints} 610,205 35,205`}
-              fill="#10b981"
-              fillOpacity="0.1"
-              stroke="none"
-            />
-            <text x="35" y="225" fill="#64748b" fontSize="12">
-              Start
-            </text>
-            <text x="570" y="225" fill="#64748b" fontSize="12">
-              Now
-            </text>
-          </svg>
-          <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-            <span>{chartMetric} trend</span>
-            <span className="rounded-full bg-sky-100 px-2.5 py-1 font-semibold text-sky-700">
-              Compare with previous period: +12.4%
-            </span>
-          </div>
-        </section>
-        <section className="rounded-[28px] bg-slate-950 p-6 text-white shadow-xl">
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">
-            AI Action Center
-          </p>
-          <h3 className="mt-2 text-xl font-black">
-            Decisions for your next sale
-          </h3>
-          <div className="mt-5 space-y-3">
-            <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-3">
-              <p className="text-sm font-bold text-rose-200">
-                🔴 Low Conversion Alert
-              </p>
-              <p className="mt-1 text-xs leading-5 text-slate-300">
-                {lowConversionProduct
-                  ? `${lowConversionProduct.title} gets ${lowConversionProduct.views.toLocaleString()} views but only ${lowConversionProduct.orderCount} orders (${lowConversionProduct.conversionRate.toFixed(2)}% conversion).`
-                  : "Add listings to receive conversion recommendations."}
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={!lowConversionProduct}
-                  onClick={() =>
-                    lowConversionProduct &&
-                    onApplyPriceDrop(lowConversionProduct)
-                  }
-                  className="rounded-full bg-rose-500 px-3 py-2 text-xs font-bold text-white hover:bg-rose-600 disabled:opacity-50"
-                >
-                  Apply 3% Price Drop
-                </button>
-                <button
-                  type="button"
-                  disabled={!lowConversionProduct}
-                  onClick={() =>
-                    lowConversionProduct &&
-                    onNavigate("product-details", {
-                      productId: lowConversionProduct.id,
-                    })
-                  }
-                  className="rounded-full border border-slate-600 px-3 py-2 text-xs font-bold text-white hover:bg-white/10 disabled:opacity-50"
-                >
-                  View Product
-                </button>
-              </div>
-            </div>
-            <div className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-3">
-              <p className="text-sm font-bold text-amber-200">
-                🟡 Pricing Opportunity
-              </p>
-              <p className="mt-1 text-xs text-slate-300">
-                Your mouse is 8% more expensive than similar products on campus.
-              </p>
-              <button
-                type="button"
-                onClick={onAddProduct}
-                className="mt-3 rounded-full bg-amber-400 px-3 py-2 text-xs font-bold text-slate-950 hover:bg-amber-300"
-              >
-                Adjust Price
-              </button>
-            </div>
-            <div className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 p-3">
-              <p className="text-sm font-bold text-emerald-200">
-                🟢 High Demand
-              </p>
-              <p className="mt-1 text-xs text-slate-300">
-                Students in the IT department are frequently viewing laptop
-                accessories.
-              </p>
-              <button
-                type="button"
-                onClick={onAddProduct}
-                className="btn-primary mt-3 rounded-full px-3 py-2 text-xs font-bold"
-              >
-                Add Product
-              </button>
-            </div>
-            <div className="rounded-2xl border border-sky-400/30 bg-sky-500/10 p-3">
-              <p className="text-sm font-bold text-sky-200">
-                🔵 Best Time to Sell
-              </p>
-              <p className="mt-1 text-xs text-slate-300">
-                Most views happen between 6 PM–9 PM.
-              </p>
-            </div>
-          </div>
-        </section>
-      </div>
-
       <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex items-center justify-between">
           <div>

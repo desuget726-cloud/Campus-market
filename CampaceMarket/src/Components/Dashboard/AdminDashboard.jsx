@@ -46,17 +46,6 @@ const generateSvgAreaPath = (values, maxValue, width = 100, height = 100, paddin
   return `${linePath} L ${width},${baseline} L 0,${baseline} Z`;
 };
 
-const generateRecommendationChartPath = (values, maxValue, width = 600, height = 190, padding = 20) => {
-  if (!Array.isArray(values) || values.length === 0) return '';
-  const safeMax = Math.max(Number(maxValue) || 0, 1);
-  const step = values.length > 1 ? (width - padding * 2) / (values.length - 1) : 0;
-  return values.map((value, index) => {
-    const x = values.length > 1 ? padding + index * step : width / 2;
-    const y = height - padding - ((Number(value) || 0) / safeMax) * (height - padding * 2);
-    return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)},${y.toFixed(2)}`;
-  }).join(' ');
-};
-
 const getDynamicMonths = () => Array.from({ length: 6 }, (_, index) => {
   const targetDate = new Date();
   targetDate.setDate(1);
@@ -242,7 +231,6 @@ const adminTabs = [
   { id: 'disputes', label: 'Dispute Review', icon: 'M4 5h16v12H8l-4 4V5z' },
   { id: 'payments', label: 'Payments', icon: 'M6 7h12v10H6z M9 12h6 M12 16v2' },
   { id: 'reports', label: 'Reports', icon: 'M6 5h12v14H6z M9 9h6 M9 13h4' },
-  { id: 'ai-recommendations', label: 'AI Recommendations', icon: 'M12 4a8 8 0 00-8 8c0 4.418 3.582 8 8 8s8-3.582 8-8a8 8 0 00-8-8z M12 8v4 M12 16h.01' },
   { id: 'analytics', label: 'Analytics', icon: 'M5 19h14M9 15v-4M15 15V9' },
   { id: 'notifications', label: 'Notifications', icon: 'M18 13v-3a6 6 0 10-12 0v3l-2 2v1h16v-1l-2-2z M13.73 21a2 2 0 01-3.46 0' },
   { id: 'audit-logs', label: 'Audit Logs', icon: 'M6 4h12v4H6z M6 12h12v4H6z M10 20h4' },
@@ -459,7 +447,7 @@ function AdminAccountsPanel({ user }) {
 }
 
 function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
-  const [activeTab, setActiveTab] = useState(initialTab);
+  const [activeTab, setActiveTab] = useState(initialTab === 'ai-recommendations' ? 'dashboard' : initialTab);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -1357,25 +1345,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   });
   const [dashboardMetricsLoading, setDashboardMetricsLoading] = useState(true);
   const [dashboardMetricsError, setDashboardMetricsError] = useState('');
-  const [aiMetrics, setAiMetrics] = useState({
-    requests: 0,
-    clicks: 0,
-    ctr: 0,
-    purchase_conversions: 0,
-    purchase_conversion: 0,
-    weeklyRequests: [],
-    weeklyClicks: [],
-    topRecommendedProducts: [],
-    db_records: 0,
-    user_profiles: 0,
-    products_indexed: 0,
-    precision: 0,
-    recall: 0,
-    top_products: [],
-    category_performance: [],
-    alerts: [],
-  });
-
   const fetchDashboardOverview = async () => {
     setDashboardMetricsLoading(true);
     setDashboardMetricsError('');
@@ -1543,7 +1512,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   );
 
   useEffect(() => {
-    setActiveTab(initialTab);
+    const nextTab = initialTab === 'ai-recommendations' ? 'dashboard' : initialTab;
+    setActiveTab(nextTab);
   }, [initialTab]);
 
   useEffect(() => {
@@ -1552,32 +1522,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   useEffect(() => {
     if (activeTab === 'analytics') fetchDashboardOverview();
-  }, [activeTab]);
-
-  const fetchAiAnalytics = async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/ai-analytics`);
-      if (!response.ok) throw new Error('AI analytics endpoint unavailable');
-
-      const data = await response.json();
-      setAiMetrics((previous) => ({
-        ...previous,
-        ...data,
-        weeklyRequests: Array.isArray(data.weeklyRequests) ? data.weeklyRequests : [],
-        weeklyClicks: Array.isArray(data.weeklyClicks) ? data.weeklyClicks : [],
-        topRecommendedProducts: Array.isArray(data.topRecommendedProducts) ? data.topRecommendedProducts : [],
-        top_products: Array.isArray(data.top_products) ? data.top_products : [],
-        category_performance: Array.isArray(data.category_performance) ? data.category_performance : [],
-        alerts: Array.isArray(data.alerts) ? data.alerts : [],
-      }));
-    } catch (error) {
-      console.error('Failed to fetch AI analytics:', error);
-      setAiMetrics((previous) => ({ ...previous, top_products: [], category_performance: [] }));
-    }
-  };
-
-  useEffect(() => {
-    if (activeTab === 'ai-recommendations') fetchAiAnalytics();
   }, [activeTab]);
 
   useEffect(() => {
@@ -4892,13 +4836,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-slate-950/95 p-6 text-white shadow-sm">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-2xl font-black">Order Operations Dashboard</h2>
-                  <p className="mt-1 text-sm text-slate-300">Track student orders, fulfillment progress, payment confirmation, and pickup logistics across the marketplace.</p>
+                  <h2 className="text-2xl font-black text-slate-900">Order Operations Dashboard</h2>
+                  <p className="mt-1 text-sm text-slate-600">Track student orders, fulfillment progress, payment confirmation, and pickup logistics across the marketplace.</p>
                 </div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-sm font-bold text-emerald-200">
+                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-700">
                   <span>💰</span>
                   <span>{calculatedOrderMetrics.totalSales}</span>
                 </div>
@@ -5236,9 +5180,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-slate-950/95 p-6 text-white shadow-sm">
-              <h2 className="text-2xl font-black">Payment Operations Dashboard</h2>
-              <p className="mt-1 text-sm text-slate-300">Monitor digital payments, payout flows, wallet loads, refunds, and operational risk across the marketplace.</p>
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
+              <h2 className="text-2xl font-black text-slate-900">Payment Operations Dashboard</h2>
+              <p className="mt-1 text-sm text-slate-600">Monitor digital payments, payout flows, wallet loads, refunds, and operational risk across the marketplace.</p>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-4">
@@ -5500,13 +5444,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-slate-950/95 p-6 text-white shadow-sm">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <h2 className="text-2xl font-black">Reports & Complaints Dashboard</h2>
-                  <p className="mt-1 text-sm text-slate-300">Monitor marketplace disputes, fraud, content violations, and moderation outcomes for final-year project defense.</p>
+                  <h2 className="text-2xl font-black text-slate-900">Reports & Complaints Dashboard</h2>
+                  <p className="mt-1 text-sm text-slate-600">Monitor marketplace disputes, fraud, content violations, and moderation outcomes.</p>
                 </div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-200">
+                <div className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">
                   <span>🚨</span>
                   <span>High Priority: {calculatedReportMetrics.highPriority}</span>
                 </div>
@@ -5786,231 +5730,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       }
-      case 'ai-recommendations':
-        {
-          const weeklyRequests = aiMetrics.weeklyRequests;
-          const weeklyClicks = aiMetrics.weeklyClicks;
-          const recommendationChartMax = Math.max(...weeklyRequests, ...weeklyClicks, 1);
-          const weeklyRequestsPath = generateRecommendationChartPath(weeklyRequests, recommendationChartMax);
-          const weeklyClicksPath = generateRecommendationChartPath(weeklyClicks, recommendationChartMax);
-          const weeklyLabels = weeklyRequests.map((_, index) => `Day ${index + 1}`);
-          return (
-            <div className="space-y-6 animate-fade-in text-slate-900">
-              <div className="rounded-[32px] border border-slate-200 bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 p-6 text-white shadow-xl">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <p className="text-[11px] font-bold uppercase tracking-[0.26em] text-indigo-200">AI Recommendation Dashboard</p>
-                    <h2 className="mt-2 text-3xl font-black">MAU Market </h2>
-                  </div>
-                  <div className="inline-flex items-center gap-2 self-start rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
-                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                    Live Model • Active
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                {[
-                  { label: 'Product Impressions', value: aiMetrics.requests.toLocaleString(), accent: 'bg-slate-100 border-slate-200 text-slate-950', small: 'text-slate-500' },
-                  { label: 'Clicks', value: aiMetrics.clicks.toLocaleString(), accent: 'bg-sky-50 border-sky-100 text-slate-950', small: 'text-sky-600' },
-                  { label: 'CTR', value: `${aiMetrics.ctr}%`, accent: 'bg-emerald-50 border-emerald-100 text-emerald-600', small: 'text-emerald-600' },
-                  { label: 'Precision Conversion', value: `${Number(aiMetrics.precision ?? 0).toFixed(2)}%`, accent: 'bg-violet-50 border-violet-100 text-violet-700', small: 'text-violet-600' }
-                ].map((item) => (
-                  <div key={item.label} className={`rounded-[24px] border p-5 shadow-sm ${item.accent}`}>
-                    <p className={`text-[10px] font-bold uppercase tracking-[0.2em] ${item.small}`}>{item.label}</p>
-                    <p className="mt-4 text-3xl font-black">{item.value}</p>
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid gap-6 xl:grid-cols-[1.5fr_0.9fr]">
-                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="mb-4 flex items-center justify-between">
-                    <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Weekly Performance</p>
-                      <h3 className="mt-1 text-xl font-black text-slate-950">Product Impressions vs Clicks</h3>
-                    </div>
-                    <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-indigo-500" /> Product Impressions</span>
-                      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-sky-400" /> Clicks</span>
-                    </div>
-                  </div>
-
-                  <svg viewBox="0 0 640 250" className="h-64 w-full">
-                    <defs>
-                      <linearGradient id="requestsFill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.2" />
-                        <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.02" />
-                      </linearGradient>
-                      <linearGradient id="clicksFill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.18" />
-                        <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.02" />
-                      </linearGradient>
-                    </defs>
-
-                    {[0, 1, 2, 3, 4].map((line) => (
-                      <line key={line} x1="20" x2="620" y1={30 + line * 46} y2={30 + line * 46} stroke="#e2e8f0" strokeDasharray="4 8" />
-                    ))}
-
-                    <path d={weeklyRequestsPath} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-                    <path d={weeklyClicksPath} fill="none" stroke="#38bdf8" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-
-                    {weeklyLabels.map((label, index) => (
-                      <g key={label}>
-                        <text x={20 + index * (600 / Math.max(weeklyLabels.length - 1, 1))} y="235" fill="#64748b" fontSize="12" textAnchor="middle">{label}</text>
-                      </g>
-                    ))}
-                  </svg>
-                </div>
-
-                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">AI Recommendation Model</p>
-                  <h3 className="mt-2 text-xl font-black text-slate-950">Configuration</h3>
-
-                  <div className="mt-5 space-y-3">
-                    {[
-                      ['Algorithm', 'Content-Based Filtering'],
-                      ['Text Vectorization', 'TF-IDF'],
-                      ['Similarity Metric', 'Cosine Similarity'],
-                      ['Output Limit', '10 Recommended Products'],
-                      ['Features Analyzed', 'Titles, Category, Description, User Behavior']
-                    ].map(([key, value]) => (
-                      <div key={key} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{key}</div>
-                        <div className="mt-1 text-sm font-semibold text-slate-800">{value}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <p className="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm leading-6 text-slate-700">
-                    The system analyzes product titles, descriptions, categories, and user interactions to recommend products that are similar to the student's interests and browsing behavior.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid gap-6 xl:grid-cols-[1.35fr_1fr]">
-                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="mb-4 flex items-center justify-between">
-                    <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Top Recommendations</p>
-                      <h3 className="mt-1 text-xl font-black text-slate-950">Top Recommended Products</h3>
-                    </div>
-                    <button type="button" className="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-700">
-                      Updated 2h ago
-                    </button>
-                  </div>
-
-                  <div className="overflow-hidden rounded-2xl border border-slate-200">
-                    <table className="min-w-full text-left text-sm">
-                      <thead className="bg-slate-100 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
-                        <tr>
-                          <th className="px-4 py-3">Product</th>
-                          <th className="px-4 py-3">Views</th>
-                          <th className="px-4 py-3">Clicks</th>
-                          <th className="px-4 py-3">Conversion</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {aiMetrics.topRecommendedProducts.map((product) => (
-                          <tr key={product.id} className="border-t border-slate-200 bg-white">
-                            <td className="px-4 py-3 font-semibold text-slate-800">{product.title || product.product}</td>
-                            <td className="px-4 py-3 text-slate-600">{Number(product.views || 0).toLocaleString()}</td>
-                            <td className="px-4 py-3 text-slate-600">{Number(product.clicks || 0).toLocaleString()}</td>
-                            <td className="px-4 py-3 font-bold text-emerald-600">{(Number(product.views) ? ((Number(product.clicks || 0) / Number(product.views)) * 100).toFixed(2) : '0.00')}%</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Category Insights</p>
-                  <h3 className="mt-2 text-xl font-black text-slate-950">Category Recommendation Performance</h3>
-
-                  <div className="mt-5 space-y-5">
-                    {aiMetrics.category_performance.map((category, index) => {
-                      const colors = ['bg-indigo-500', 'bg-emerald-500', 'bg-sky-500', 'bg-violet-500', 'bg-amber-500'];
-                      const value = Number(category.value || 0);
-                      return (<div key={category.label}>
-                        <div className="mb-1 flex items-center justify-between text-sm font-semibold text-slate-700">
-                          <span>{category.label}</span>
-                          <span>{value}%</span>
-                        </div>
-                        <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
-                          <div className={`h-full rounded-full ${colors[index % colors.length]}`} style={{ width: `${value}%` }} />
-                        </div>
-                      </div>);
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid gap-6 xl:grid-cols-[1.1fr_1fr]">
-                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Model Health</p>
-                      <h3 className="mt-1 text-xl font-black text-slate-950">Status & Performance Accuracies</h3>
-                    </div>
-                    <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
-                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Active
-                    </div>
-                  </div>
-
-                  <div className="mt-5 grid gap-4 md:grid-cols-3">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">DB Records</p>
-                      <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.db_records.toLocaleString()}</p>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">User Profiles</p>
-                      <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.user_profiles.toLocaleString()}</p>
-                    </div>
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Products Indexed</p>
-                      <p className="mt-2 text-2xl font-black text-slate-900">{aiMetrics.products_indexed.toLocaleString()}</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Precision@5</div>
-                      <div className="mt-2 text-3xl font-black text-emerald-700">{aiMetrics.precision}%</div>
-                    </div>
-                    <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
-                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Recall@5</div>
-                      <div className="mt-2 text-3xl font-black text-sky-700">{aiMetrics.recall}%</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Diagnostics</p>
-                  <h3 className="mt-2 text-xl font-black text-slate-950">Alerts</h3>
-
-                  <div className="mt-5 space-y-3">
-                    {aiMetrics.alerts.map((alert) => (
-                      <div key={alert.title} className={`rounded-2xl border p-4 ${alert.type === 'success' ? 'border-emerald-200 bg-emerald-50' : alert.type === 'warning' ? 'border-amber-200 bg-amber-50' : 'border-sky-200 bg-sky-50'}`}>
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <span className={`inline-block h-2.5 w-2.5 rounded-full ${alert.type === 'success' ? 'bg-emerald-500' : alert.type === 'warning' ? 'bg-amber-500' : 'bg-sky-500'}`} />
-                            <span className="text-sm font-bold text-slate-800">{alert.title}</span>
-                          </div>
-                          <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.2em] ${alert.type === 'success' ? 'bg-emerald-100 text-emerald-700' : alert.type === 'warning' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
-                            {alert.status}
-                          </span>
-                        </div>
-                        <p className="mt-2 text-sm leading-6 text-slate-700">{alert.description}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        }
       case 'analytics': {
         const analyticsRegistrations = Array.isArray(metrics.registrations) ? metrics.registrations : userGrowthTrend;
         const analyticsRevenue = Array.isArray(metrics.monthlyRevenue) ? metrics.monthlyRevenue : revenueTrend;
@@ -6024,13 +5743,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         const analyticsMonths = metrics.monthsLabels?.length ? metrics.monthsLabels : trendMonths;
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-gradient-to-r from-[#0f172a] via-[#111c3a] to-[#172554] p-6 text-white shadow-xl">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-300">Marketplace Analytics</p>
-                  <h2 className="mt-2 text-3xl font-black">Academic Performance Dashboard</h2>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-600">Marketplace Analytics</p>
+                  <h2 className="mt-2 text-3xl font-black text-slate-900">Academic Performance Dashboard</h2>
                 </div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
+                <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
                   <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
                   Live Metrics
                 </div>
@@ -7287,20 +7006,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className="relative hidden lg:flex lg:h-full lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
-          <div className="relative z-10 mb-8 flex shrink-0 items-start gap-3 overflow-hidden">
+          <div className="relative z-10 flex shrink-0 items-start gap-3 overflow-hidden">
             {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
             <img src={logs} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
-            <div className="min-w-0 flex-1">
-              <div className="relative z-10 max-w-full overflow-hidden rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
-                Admin Console
-              </div>
-              <div className="mt-5">
-                <h1 className="text-2xl font-bold text-white">Campace Admin</h1>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
-                  Control users, products, orders and campus operations from one view.
-                </p>
-              </div>
-            </div>
             <button
               type="button"
               onClick={() => setIsSidebarOpen(false)}
@@ -7345,13 +7053,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         <aside id="admin-mobile-navigation" className={`fixed left-0 top-20 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           {/* The mobile header uses the same relative/clipped containment as desktop. */}
-          <div className="relative z-10 mb-8 flex min-h-0 items-start gap-3 overflow-hidden">
+          <div className="relative z-10 flex min-h-0 items-start gap-3 overflow-hidden">
             <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
-            <div className="min-w-0 flex-1">
-              <div className="relative z-10 max-w-full overflow-hidden rounded-3xl bg-slate-900/40 px-4 py-3 text-sm uppercase tracking-[0.24em] text-slate-400">
-                Admin Console
-              </div>
-            </div>
             <button
               type="button"
               onClick={() => setIsSidebarOpen(false)}
