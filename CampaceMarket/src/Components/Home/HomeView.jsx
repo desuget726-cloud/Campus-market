@@ -182,6 +182,10 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   }, [user?.department, user?.college, user?.departmentName]);
 
   useEffect(() => {
+    if (!loading) window.dispatchEvent(new Event('campace:content-rendered'));
+  }, [categories, loading, searchResults]);
+
+  useEffect(() => {
     if (!initialProductId) return;
 
     const productFromResults = searchResults.find((item) => String(item.id) === String(initialProductId));

@@ -188,6 +188,29 @@ class CommissionCheckoutTests(unittest.TestCase):
         self.db.expire_all()
         return response.json(), self.db.query(Order).order_by(Order.id.desc()).first()
 
+    def test_receipt_accepts_released_escrow_hold_for_successful_order(self):
+        _, order = self._checkout()
+        hold = self.db.query(Transaction).filter(
+            Transaction.type == "Escrow Hold",
+            Transaction.description == f"Escrow hold for order #{order.id}",
+        ).one()
+        hold.amount = Decimal("1261.50")
+        hold.status = "Released"
+        hold.created_at = order.created_at - timedelta(days=1)
+        self.db.commit()
+
+        response = self.client.get(
+            f"/api/student/orders/{order.id}/receipt",
+            headers={"Authorization": f"Bearer {self._student_token()}"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["total_paid"], 1261.5)
+        self.assertEqual(
+            response.json()["platform_commission_label"],
+            "Platform commission (1%, deducted from seller payout)",
+        )
+
     def test_cart_preview_matches_server_checkout_and_client_fee_is_ignored(self):
         preview = self.client.get(f"/api/student/cart?student_id={self.buyer.student_id}").json()
         self.assertEqual(preview["platform_fee"], 12.5)

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
 import SellerOperationsCenter from './SellerOperationsCenter';
@@ -403,6 +404,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [receiptState, setReceiptState] = useState({});
   const [paymentReceiptState, setPaymentReceiptState] = useState({});
   const [printingReceiptOrderId, setPrintingReceiptOrderId] = useState(null);
+  const printWindowRef = useRef(null);
+  const printStartedRef = useRef(false);
   const [revealedPickupCodes, setRevealedPickupCodes] = useState({});
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
@@ -785,73 +788,178 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     if (!printingReceiptOrderId || !paymentReceiptState[printingReceiptOrderId]?.data) return undefined;
 
-    const printTimer = window.setTimeout(() => {
-      window.print();
+    const printWindow = printWindowRef.current;
+    const receiptElement = document.getElementById('printable-receipt');
+    if (!printWindow || printWindow.closed || !receiptElement) {
+      printWindow?.close();
+      printWindowRef.current = null;
+      printStartedRef.current = false;
       setPrintingReceiptOrderId(null);
-    }, 0);
+      return undefined;
+    }
+    if (printStartedRef.current) return undefined;
+    printStartedRef.current = true;
 
-    return () => window.clearTimeout(printTimer);
+    const printStyles = `
+      <style>
+        @page { size: A4; margin: 10mm; }
+        html, body { height: auto !important; min-height: 0 !important; overflow: visible !important; margin: 0 !important; padding: 0 !important; background: #fff !important; }
+        #printable-receipt { display: block !important; visibility: visible !important; position: static !important; width: 100% !important; max-width: none !important; margin: 0 !important; box-shadow: none !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; break-inside: avoid; break-after: avoid; page-break-inside: avoid; }
+      </style>`;
+    printWindow.onafterprint = () => {
+      printWindow.close();
+      printWindowRef.current = null;
+      printStartedRef.current = false;
+      setPrintingReceiptOrderId(null);
+    };
+    const popupDocument = printWindow.document;
+    popupDocument.open();
+    popupDocument.write('<!doctype html><html><head><meta charset="utf-8"><title>UniXchange Payment Receipt</title></head><body></body></html>');
+    popupDocument.close();
+
+    const baseElement = popupDocument.createElement('base');
+    baseElement.href = `${window.location.origin}/`;
+    popupDocument.head.prepend(baseElement);
+
+    const stylesheetLoads = [];
+    Array.from(document.head.querySelectorAll('link[rel~="stylesheet" i], style')).forEach((sourceStyle) => {
+      const copiedStyle = sourceStyle.cloneNode(sourceStyle.tagName === 'STYLE');
+      if (sourceStyle.tagName === 'LINK') {
+        copiedStyle.href = sourceStyle.href;
+        stylesheetLoads.push(new Promise((resolve) => {
+          copiedStyle.addEventListener('load', resolve, { once: true });
+          copiedStyle.addEventListener('error', resolve, { once: true });
+        }));
+      }
+      popupDocument.head.appendChild(copiedStyle);
+    });
+
+    popupDocument.body.innerHTML = receiptElement.outerHTML;
+    popupDocument.head.insertAdjacentHTML('beforeend', printStyles);
+
+    Promise.all(stylesheetLoads)
+      .then(() => popupDocument.fonts?.ready)
+      .then(() => {
+        if (printWindow.closed) return;
+        printWindow.focus();
+        printWindow.print();
+      });
+
+    return undefined;
   }, [printingReceiptOrderId, paymentReceiptState]);
 
   const buildReceiptPdf = (receipt) => {
-    const pdf = new jsPDF();
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const money = (value) => `${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
     const date = receipt.payment_date || receipt.order_date;
     const dateText = date ? new Date(date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Date unavailable';
-    let y = 24;
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(20);
-    pdf.text('CAMPUS MARKET', 20, y);
-    y += 10;
-    pdf.setFontSize(15);
-    pdf.text('PAYMENT RECEIPT', 20, y);
-    y += 10;
-    pdf.setFontSize(11);
-    pdf.setTextColor(22, 128, 80);
-    pdf.text(`✓ PAYMENT ${String(receipt.payment_status || '').toUpperCase()}`, 20, y);
-    pdf.setTextColor(0, 0, 0);
-    pdf.setDrawColor(210, 214, 220);
-    pdf.line(20, y + 6, 190, y + 6);
-    y += 20;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(11);
     const rows = [
-      ['Receipt Number', receipt.receipt_number],
-      ['Order Number', `#${receipt.order_number}`],
-      ['Paid On', dateText],
+      ['Receipt #', receipt.receipt_number],
+      ['Order #', `#${receipt.order_number}`],
+      ['Paid on', dateText],
       ['Product', receipt.product_name],
       ['Quantity', String(receipt.quantity)],
-      ['Unit Price', money(receipt.unit_price)],
-      ['Item Total', money(receipt.item_total)],
-      [receipt.platform_commission_label || 'Platform commission (deducted from seller payout)', money(receipt.fees)],
-      ['Total Paid', money(receipt.total_paid)],
-      ['Payment Method', receipt.payment_method],
-      ['Transaction Reference', receipt.transaction_reference],
+      ['Unit price', money(receipt.unit_price)],
+      ['Item total', money(receipt.item_total)],
+      [receipt.platform_commission_label || 'Platform commission', money(receipt.fees)],
+      ['Total paid', money(receipt.total_paid)],
+      ['Payment method', receipt.payment_method],
+      ['Reference', receipt.transaction_reference],
       ['Buyer', receipt.buyer_name],
       ['Seller', receipt.seller_name],
-      ['Order Status', String(receipt.order_status || '').toUpperCase()],
+      ['Order status', String(receipt.order_status || '').toUpperCase()],
       ['Escrow', String(receipt.escrow_status || '').toUpperCase()],
     ];
-    rows.forEach(([label, value]) => {
-      pdf.setFont('helvetica', 'bold');
-      pdf.text(`${label}:`, 20, y);
-      pdf.setFont('helvetica', 'normal');
-      pdf.text(String(value || 'Unavailable'), 75, y);
-      y += 8;
-    });
-    if (receipt.dispute_status) {
-      pdf.setFont('helvetica', 'bold');
-      pdf.text(`Dispute: ${receipt.dispute_status}`, 20, y + 4);
-      y += 12;
-    }
+    if (receipt.dispute_status) rows.push(['Dispute', receipt.dispute_status]);
     if (receipt.refund_amount !== null && receipt.refund_amount !== undefined) {
-      pdf.setFont('helvetica', 'bold');
-      pdf.text(`Refund recorded: ${money(receipt.refund_amount)} (${receipt.refund_reference})`, 20, y + 4);
-      y += 12;
+      rows.push(['Refund', `${money(receipt.refund_amount)}${receipt.refund_reference ? ` (${receipt.refund_reference})` : ''}`]);
     }
+    const tableRows = [];
+    for (let index = 0; index < rows.length; index += 2) {
+      const first = rows[index];
+      const second = rows[index + 1] || ['', ''];
+      tableRows.push([
+        first[0], String(first[1] || 'Unavailable'),
+        second[0], String(second[1] || ''),
+      ]);
+    }
+
+    pdf.setFillColor(22, 34, 79);
+    pdf.roundedRect(10, 10, 190, 34, 2, 2, 'F');
+    pdf.setFillColor(110, 231, 183);
+    pdf.roundedRect(17, 18, 14, 14, 2, 2, 'F');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(22, 34, 79);
+    pdf.text('UX', 24, 26.5, { align: 'center' });
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFontSize(19);
+    pdf.text('UniXchange', 37, 24);
+    pdf.setFontSize(8);
+    pdf.setTextColor(203, 213, 225);
+    pdf.text('PAYMENT RECEIPT', 37, 32);
+    pdf.setFillColor(209, 250, 229);
+    pdf.roundedRect(148, 19, 44, 10, 2, 2, 'F');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(6, 95, 70);
+    pdf.text('PAYMENT SUCCESSFUL', 170, 25.5, { align: 'center' });
+
+    autoTable(pdf, {
+      startY: 51,
+      margin: { left: 10, right: 10 },
+      theme: 'grid',
+      body: tableRows,
+      styles: {
+        font: 'helvetica',
+        fontSize: 8,
+        cellPadding: 2.5,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.2,
+        overflow: 'linebreak',
+        valign: 'middle',
+      },
+      columnStyles: {
+        0: { cellWidth: 29, fontStyle: 'bold', textColor: [100, 116, 139] },
+        1: { cellWidth: 66, textColor: [15, 23, 42] },
+        2: { cellWidth: 29, fontStyle: 'bold', textColor: [100, 116, 139] },
+        3: { cellWidth: 66, textColor: [15, 23, 42] },
+      },
+      alternateRowStyles: { fillColor: [248, 250, 252] },
+      didParseCell: ({ cell, row }) => {
+        const isTotalRow = row.raw[0] === 'Total paid' || row.raw[2] === 'Total paid';
+        if (isTotalRow) {
+          cell.styles.fillColor = [209, 250, 229];
+          cell.styles.textColor = [6, 95, 70];
+          cell.styles.fontStyle = 'bold';
+        }
+      },
+    });
+
+    let y = pdf.lastAutoTable.finalY + 8;
+    const escrowMessage = String(receipt.escrow_message || 'Keep this receipt for your records.');
+    const messageLines = pdf.splitTextToSize(escrowMessage, 176);
+    const noteHeight = Math.max(18, messageLines.length * 4 + 8);
+    if (y + noteHeight + 20 > 287) {
+      pdf.addPage();
+      y = 18;
+    }
+    pdf.setFillColor(248, 250, 252);
+    pdf.roundedRect(10, y, 190, noteHeight, 2, 2, 'F');
     pdf.setFont('helvetica', 'normal');
-    pdf.text(String(receipt.escrow_message || ''), 20, y + 4);
-    pdf.text('PAYMENT CONFIRMED', 20, y + 16);
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(71, 85, 105);
+    pdf.text(messageLines, 17, y + 7);
+    y += noteHeight + 8;
+    pdf.setDrawColor(203, 213, 225);
+    pdf.line(10, y, 200, y);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(22, 34, 79);
+    pdf.text('Thank you for using UniXchange', 105, y + 6, { align: 'center' });
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(100, 116, 139);
+    pdf.text('Questions or support: support@campuse.edu.et', 105, y + 11, { align: 'center' });
     return pdf;
   };
 
@@ -861,11 +969,25 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleDownloadPaymentReceipt = async (orderId) => {
     const receipt = paymentReceiptState[orderId]?.data || await fetchPaymentReceipt(orderId);
-    buildReceiptPdf(receipt).save(`CampusMarket-Order-${receipt.order_number}-Receipt.pdf`);
+    buildReceiptPdf(receipt).save(`UniXchange-Order-${receipt.order_number}-Receipt.pdf`);
   };
 
   const handlePrintPaymentReceipt = async (orderId) => {
-    if (!paymentReceiptState[orderId]?.data) await fetchPaymentReceipt(orderId);
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) {
+      setOrdersError('Allow pop-ups to print the receipt.');
+      return;
+    }
+    printWindowRef.current = printWindow;
+    printStartedRef.current = false;
+    try {
+      if (!paymentReceiptState[orderId]?.data) await fetchPaymentReceipt(orderId);
+    } catch {
+      printWindow.close();
+      printWindowRef.current = null;
+      printStartedRef.current = false;
+      return;
+    }
     setPrintingReceiptOrderId(orderId);
   };
 

@@ -40,9 +40,9 @@ function PrintableReceipt({ receipt }) {
     <article id="printable-receipt" className="printable-receipt">
       <header className="printable-receipt__header">
         <div className="printable-receipt__brand">
-          <span className="printable-receipt__logo" aria-hidden="true">CM</span>
+          <span className="printable-receipt__logo" aria-hidden="true">UX</span>
           <div>
-            <h1>Campus Market</h1>
+            <h1>UniXchange</h1>
             <p>PAYMENT RECEIPT</p>
           </div>
         </div>
@@ -74,7 +74,7 @@ function PrintableReceipt({ receipt }) {
       <div className="printable-receipt__divider" />
 
       <footer className="printable-receipt__footer">
-        <strong>Thank you for using Campus Market</strong>
+        <strong>Thank you for using UniXchange</strong>
         <span>Questions or support: support@campuse.edu.et</span>
         <span>Keep this receipt for your records.</span>
       </footer>
@@ -230,7 +230,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
   if (bothConfirmed) currentIndex = Math.max(currentIndex, status === 'Completed' ? 6 : 5);
   const quantity = Number(order.quantity || 1);
   const itemTotal = Number(order.item_total ?? Number(order.price || 0) * quantity);
-  const totalPaid = Number(order.total_paid ?? itemTotal);
+  const totalPaid = Number(paymentReceipt?.total_paid ?? itemTotal + Number(order.fees || 0));
   const isBuyer = role === 'buyer';
   const hasSellerTimeout = Boolean(order.expired_at || order.expiry_reason === 'seller_timeout');
   const refundStatus = String(order.refund_status || 'none');

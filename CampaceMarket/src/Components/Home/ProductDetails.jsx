@@ -224,7 +224,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
   const handleAddToCart = async () => {
     const studentId = String(currentUser?.studentId || '').trim();
     if (!studentId) {
-      window.alert('እባክዎ መጀመሪያ ይግቡ! (Please log in first to add items to your cart.)');
+      window.alert('Please log in first to add items to your cart.');
       return;
     }
     if (isOwnProduct) {
@@ -501,7 +501,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
           <section className="order-2 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm lg:order-none">
             <span className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Price</span>
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
-            {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable / ድርድር አለው</div>}
+            {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable</div>}
             <div className="mt-5 flex items-center justify-center gap-4">
               <button type="button" onClick={() => setSelectedQuantity((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
               <span className="min-w-8 text-center text-lg font-black text-slate-900">{selectedQuantity}</span>
@@ -612,17 +612,17 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
 
           <section className="order-6 min-w-0 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm lg:order-none">
             <h4 className="text-sm font-bold text-amber-900 flex items-center gap-2">
-              <span>🛡️</span> Safety Tips / የጥንቃቄ ምክሮች
+              <span>🛡️</span> Safety Tips
             </h4>
             <ul className="mt-4 space-y-3 text-sm text-amber-800 list-disc pl-5 leading-7">
               <li>
-                Do not pay in advance. <span className="font-semibold">ማንኛውንም ዓይነት ቅድመ ክፍያ አይክፈሉ።</span>
+                Do not pay in advance.
               </li>
               <li>
-                Meet in busy public areas only. <span className="font-semibold">ሁልጊዜም በሚለበው ሕዝብ ቦታ ተገናኙ።</span>
+                Meet in busy public areas only.
               </li>
               <li>
-                Check the item carefully before paying. <span className="font-semibold">እቃውን በጥንቃቄ አስመልከቱ።</span>
+                Check the item carefully before paying.
               </li>
             </ul>
           </section>

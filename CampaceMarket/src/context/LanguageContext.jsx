@@ -1,4 +1,28 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+
+const LANGUAGE_STORAGE_KEY = 'campaceLanguage';
+const GOOGLE_TRANSLATE_SCRIPT_ID = 'google-translate-script';
+
+function getSavedLanguage() {
+    try {
+        return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === 'am' ? 'am' : 'en';
+    } catch {
+        return 'en';
+    }
+}
+
+function applyGoogleLanguage(language, attempts = 30) {
+    const dropdown = document.querySelector('.goog-te-combo');
+    if (dropdown) {
+        dropdown.value = language;
+        dropdown.dispatchEvent(new Event('change'));
+        return;
+    }
+
+    if (attempts > 0) {
+        window.setTimeout(() => applyGoogleLanguage(language, attempts - 1), 200);
+    }
+}
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const translations = {
@@ -6,7 +30,6 @@ export const translations = {
         navbar: {
             language: 'Language',
             english: 'English',
-            amharic: 'አማርኛ',
             login: 'Login',
             signup: 'Signup'
         },
@@ -96,99 +119,6 @@ export const translations = {
             aiResponseReady: 'AI response received.',
             attachmentUploaded: 'Attachment sent successfully.'
         }
-    },
-    am: {
-        navbar: {
-            language: 'ቋንቋ',
-            english: 'English',
-            amharic: 'አማርኛ',
-            login: 'ግባ',
-            signup: 'ተመዝገብ'
-        },
-        auth: {
-            campusPortal: 'የካምፓስ ፖርታል',
-            secureLoginDescription: 'ይህ ለትምህርታዊ እቃዎች የተዘጋጀ ደህንነቱ የተጠበቀ የካምፓስ ገበያ ነው። ከተረጋገጡ ተማሪዎች ጋር በደህና ይግዙ፣ ይሽጡ እና ይለዋወጡ።',
-            secureRegisterDescription: 'ለትምህርታዊ እቃዎች የተዘጋጀ ደህንነቱ የተጠበቀ የካምፓስ ገበያ። ከተረጋገጡ ተማሪዎች ጋር በደህና ይግዙ፣ ይሽጡ እና ይለዋወጡ።',
-            welcomeBack: 'እንኳን ደህና መጡ',
-            loginDescription: 'ወደ የካምፓስ ገበያ መለያዎ ይግቡ።',
-            createAccount: 'መለያዎን ይፍጠሩ',
-            registerDescription: 'ለካምፓስ ገበያ ይመዝገቡ።',
-            studentId: 'የተማሪ መለያ',
-            password: 'የይለፍ ቃል',
-            fullName: 'ሙሉ ስም',
-            campusEmail: 'የካምፓስ ኢሜይል',
-            phoneNumber: 'ስልክ ቁጥር',
-            college: 'ኮሌጅ',
-            department: 'ዲፓርትመንት',
-            confirmPassword: 'የይለፍ ቃል ያረጋግጡ',
-            enterStudentId: 'የተማሪ መለያዎን ያስገቡ',
-            enterPassword: 'የይለፍ ቃልዎን ያስገቡ',
-            selectCollege: 'ኮሌጅ ይምረጡ',
-            selectDepartment: 'ዲፓርትመንት ይምረጡ',
-            show: 'አሳይ',
-            hide: 'ደብቅ',
-            login: 'ግባ',
-            signup: 'ተመዝገብ',
-            cancel: 'ሰርዝ',
-            forgotPassword: 'የይለፍ ቃል ረሱ?',
-            createAccountLink: 'መለያ ይፍጠሩ',
-            alreadyHaveAccount: 'መለያ አለዎት? ይግቡ',
-            verifyCode: 'ኮድ ያረጋግጡ',
-            otpDescription: 'ወደ የአስተዳዳሪው ኢሜይል የተላከውን 6 አሃዝ ኮድ ያስገቡ።',
-            securedByChapa: 'በChapa ውህደት የተጠበቀ',
-            verifiedStudents: 'ለተረጋገጡ ተማሪዎች ብቻ',
-            terms: 'የአገልግሎት ውሎች',
-            privacy: 'የግላዊነት መመሪያ',
-            needHelp: 'እርዳታ ይፈልጋሉ?',
-            loginSuccessful: 'በተሳካ ሁኔታ ገብተዋል!',
-            couldNotConnect: 'ከአገልጋዩ ጋር መገናኘት አልተቻለም።',
-            loginFailed: 'መግባት አልተሳካም።',
-            fillBoth: 'እባክዎ መለያ እና የይለፍ ቃል ይሙሉ።',
-            enterCode: 'እባክዎ 6 አሃዝ የአስተዳዳሪ ማረጋገጫ ኮድ ያስገቡ።',
-            invalidCode: 'የማረጋገጫ ኮዱ ልክ አይደለም።',
-            couldNotVerify: 'የአስተዳዳሪ መግቢያን ማረጋገጥ አልተቻለም።',
-            validEmail: 'እባክዎ ትክክለኛ ኢሜይል ያስገቡ።',
-            validPhone: 'እባክዎ ትክክለኛ ስልክ ቁጥር ያስገቡ።',
-            enterName: 'እባክዎ ሙሉ ስምዎን ያስገቡ።',
-            enterId: 'እባክዎ የተማሪ መለያዎን ያስገቡ።',
-            selectYourCollege: 'እባክዎ ኮሌጅዎን ይምረጡ።',
-            selectYourDepartment: 'እባክዎ ዲፓርትመንትዎን ይምረጡ።',
-            passwordLength: 'የይለፍ ቃል ቢያንስ 6 ቁምፊዎች መሆን አለበት።',
-            passwordsMismatch: 'የይለፍ ቃሎቹ አይመሳሰሉም።',
-            creatingAccount: 'መለያ በመፍጠር ላይ…',
-            registrationSuccess: 'ምዝገባው ተሳክቷል። አሁን መግባት ይችላሉ።',
-            registrationFailed: 'ምዝገባው አልተሳካም።',
-            couldNotCreate: 'መለያ መፍጠር አልተቻለም።'
-        },
-        studentToast: {
-            profileSaved: 'መገለጫው በተሳካ ሁኔታ ተቀምጧል።',
-            avatarUploaded: 'የመገለጫ ፎቶ ተሳክቶ ተዘምኗል።',
-            supportSubmitted: 'የድጋፍ ጥያቄው በተሳካ ሁኔታ ተልኳል።',
-            wishlistAdded: 'ወደ ተወዳጆች ተጨምሯል።',
-            cartAdded: 'ወደ ጋሪ ተጨምሯል።',
-            wishlistRemoved: 'ከተወዳጆች ተወግዷል።',
-            cartRemoved: 'ከጋሪ ተወግዷል።',
-            cartUpdated: 'ጋሪው በተሳካ ሁኔታ ተዘምኗል።',
-            reviewSubmitted: 'ግምገማው በተሳካ ሁኔታ ተልኳል።',
-            disputeSubmitted: 'ክርክሩ በተሳካ ሁኔታ ቀርቧል።',
-            receiptConfirmed: 'መረከብዎ በተሳካ ሁኔታ ተረጋግጧል።',
-            orderHidden: 'ትዕዛዙ በተሳካ ሁኔታ ተዘምኗል።',
-            paymentVerified: 'ክፍያው ተረጋግጦ የኪስ ቦርሳው ተዘምኗል።',
-            paymentPending: 'ክፍያው አሁንም ማረጋገጫ እየጠበቀ ነው።',
-            paymentFailed: 'የክፍያ ማረጋገጫው አልተሳካም።',
-            withdrawalSubmitted: 'የማውጣት ጥያቄው ተልኳል።',
-            orderPayoutReleased: 'ትዕዛዝ #{orderId} ተጠናቋል። {netAmount} ብር ወደ የኪስ ቦርሳዎ ተጨምሯል።',
-            payoutAccountSaved: 'የክፍያ መለያው በተሳካ ሁኔታ ተዋቅሯል።',
-            productUpdated: 'ምርቱ በተሳካ ሁኔታ ተዘምኗል።',
-            productDeleted: 'ምርቱ ተሰርዟል።',
-            productListed: 'ምርቱ ተዘርዝሯል።',
-            messageDeleted: 'መልዕክቱ ተሰርዟል።',
-            reportSubmitted: 'ሪፖርቱ በተሳካ ሁኔታ ተልኳል።',
-            notificationsRead: 'ማሳወቂያዎቹ እንደተነበቡ ተሰይመዋል።',
-            checkoutCompleted: 'ትዕዛዙ በተሳካ ሁኔታ ተፈጽሟል።',
-            aiResponseReady: 'የAI ምላሽ ደርሷል።',
-            attachmentUploaded: 'የተያያዘው ፋይል በተሳካ ሁኔታ ተልኳል።'
-        }
     }
 };
 
@@ -200,18 +130,60 @@ function getTranslation(dictionary, key) {
 
 export function LanguageProvider({ children }) {
     const [language, setLanguage] = useState(() => (
-        typeof window !== 'undefined' ? window.localStorage.getItem('campaceLanguage') || 'en' : 'en'
+        typeof window !== 'undefined' ? getSavedLanguage() : 'en'
     ));
+    const languageRef = useRef(language);
+
+    useEffect(() => {
+        const initializeGoogleTranslate = () => {
+            if (!window.google?.translate?.TranslateElement) return;
+
+            if (!document.querySelector('#google_translate_element .goog-te-combo')) {
+                new window.google.translate.TranslateElement({
+                    pageLanguage: 'en',
+                    includedLanguages: 'en,am',
+                    autoDisplay: false,
+                }, 'google_translate_element');
+            }
+
+            applyGoogleLanguage(languageRef.current);
+        };
+
+        window.googleTranslateElementInit = initializeGoogleTranslate;
+        const script = document.getElementById(GOOGLE_TRANSLATE_SCRIPT_ID);
+        if (window.google?.translate?.TranslateElement) {
+            initializeGoogleTranslate();
+        } else if (!script) {
+            const translateScript = document.createElement('script');
+            translateScript.id = GOOGLE_TRANSLATE_SCRIPT_ID;
+            translateScript.src = 'https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';
+            translateScript.async = true;
+            document.body.appendChild(translateScript);
+        }
+
+        const handleRenderedContent = () => {
+            if (languageRef.current === 'am') applyGoogleLanguage('am');
+        };
+        window.addEventListener('campace:content-rendered', handleRenderedContent);
+        return () => window.removeEventListener('campace:content-rendered', handleRenderedContent);
+    }, []);
 
     const changeLanguage = useCallback((nextLanguage) => {
-        setLanguage(nextLanguage);
-        window.localStorage.setItem('campaceLanguage', nextLanguage);
+        const selectedLanguage = nextLanguage === 'am' ? 'am' : 'en';
+        languageRef.current = selectedLanguage;
+        setLanguage(selectedLanguage);
+        try {
+            window.localStorage.setItem(LANGUAGE_STORAGE_KEY, selectedLanguage);
+        } catch {
+            // Translation still works for this page view if storage is unavailable.
+        }
+        applyGoogleLanguage(selectedLanguage);
     }, []);
 
     const value = useMemo(() => ({
         language,
         setLanguage: changeLanguage,
-        t: (key) => getTranslation(translations[language], key) || getTranslation(translations.en, key) || key
+        t: (key) => getTranslation(translations.en, key) || key
     }), [changeLanguage, language]);
 
     return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;

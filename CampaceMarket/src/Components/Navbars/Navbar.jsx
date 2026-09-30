@@ -1,12 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Check, ChevronDown } from 'lucide-react';
 import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
 function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public', isHomeView = false }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [profileUser, setProfileUser] = useState(user);
+  const languageMenuRef = useRef(null);
   const { t, language, setLanguage } = useLanguage();
   const isDashboardLayout = variant === 'dashboard';
   const effectiveRole = String(userRole || user?.role || 'student').toLowerCase();
@@ -24,6 +27,24 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   useEffect(() => {
     setProfileUser(user);
   }, [user]);
+
+  useEffect(() => {
+    if (!isLanguageMenuOpen) return undefined;
+
+    const closeOnOutsidePointer = (event) => {
+      if (!languageMenuRef.current?.contains(event.target)) setIsLanguageMenuOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setIsLanguageMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isLanguageMenuOpen]);
 
   useEffect(() => {
     if (!isAdmin) return undefined;
@@ -54,14 +75,14 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
   return (
     <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-20 text-white border-b border-blue-900">
-      <div className={`${isHomeView ? 'w-full px-4 sm:px-6 lg:px-10' : 'mx-auto max-w-7xl px-4 sm:px-6 lg:px-8'} h-20 flex items-center justify-between`}>
+      <div className={`${isHomeView ? 'w-full px-4 sm:px-6 lg:px-10' : 'mx-auto max-w-7xl px-4 sm:px-6 lg:px-8'} h-20 min-w-0 flex items-center justify-between gap-2`}>
 
         {/* Logo */}
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
-          <img src={logs} alt="Campace Logo" className="h-20 w-20 rounded-full object-cover" />
-          <div className="flex items-center gap-1 text-2xl font-black text-white">
+        <div className="flex min-w-0 shrink items-center gap-1.5 cursor-pointer sm:gap-3" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
+          <img src={logs} alt="UniXchange logo" className="notranslate h-10 w-10 shrink-0 rounded-full object-cover sm:h-20 sm:w-20" />
+          <div className="flex min-w-0 items-center gap-1 text-lg font-black text-white sm:text-2xl">
 
-            <span className="text-white">UniXchange</span>
+            <span className="notranslate whitespace-nowrap text-white">UniXchange</span>
           </div>
           {!isDashboardLayout && (
             <button
@@ -72,9 +93,9 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 event.stopPropagation();
                 setIsMobileMenuOpen(true);
               }}
-              className="block rounded-lg p-2 text-white transition hover:bg-white/10 md:hidden"
+              className="block shrink-0 rounded-lg p-1.5 text-white transition hover:bg-white/10 sm:p-2 md:hidden"
             >
-              <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <svg className="h-6 w-6 sm:h-7 sm:w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                 <path d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
@@ -83,7 +104,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Navigation Links */}
         {!isDashboardLayout && (
-          <nav className="hidden md:flex items-center gap-6">
+          <nav className="hidden min-w-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
             <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Home</button>
             <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">About</button>
             <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Services</button>
@@ -102,11 +123,43 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         )}
 
         {/* Right side: Login/Register OR Profile Dropdown */}
-        <div className="flex items-center gap-4 relative">
-          <div className={`${isDashboardLayout ? 'flex' : 'hidden md:flex'} items-center gap-1 text-sm font-semibold`} aria-label={t('navbar.language')}>
-            <button type="button" onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white' : 'text-blue-200'}>{t('navbar.english')}</button>
-            <span className="text-blue-200" aria-hidden="true">|</span>
-            <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-white/90'}>{t('navbar.amharic')}</button>
+        <div className="relative flex shrink-0 items-center gap-2 sm:gap-4">
+          <div className="notranslate relative shrink-0" ref={languageMenuRef}>
+            <button
+              type="button"
+              aria-label={t('navbar.language')}
+              aria-haspopup="menu"
+              aria-expanded={isLanguageMenuOpen}
+              aria-controls="navbar-language-menu"
+              onClick={() => setIsLanguageMenuOpen((isOpen) => !isOpen)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/30 bg-white/10 px-2.5 text-xs font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:h-10 sm:gap-2 sm:px-3 sm:text-sm"
+            >
+              <span>{language === 'am' ? 'አማርኛ' : 'English'}</span>
+              <ChevronDown className={`h-4 w-4 transition-transform ${isLanguageMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+            </button>
+            {isLanguageMenuOpen && (
+              <div id="navbar-language-menu" role="menu" aria-label={t('navbar.language')} className="absolute right-0 top-full z-[60] mt-2 w-40 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm text-slate-800 shadow-xl">
+                {[
+                  ['en', 'English'],
+                  ['am', 'አማርኛ'],
+                ].map(([code, label]) => (
+                  <button
+                    key={code}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={language === code}
+                    onClick={() => {
+                      setLanguage(code);
+                      setIsLanguageMenuOpen(false);
+                    }}
+                    className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 ${language === code ? 'bg-blue-50 font-semibold text-blue-700' : 'text-slate-700'}`}
+                  >
+                    <span>{label}</span>
+                    {language === code && <Check className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {user ? (
             // Logged In Dropdown View

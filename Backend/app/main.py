@@ -9592,19 +9592,22 @@ def get_student_order_receipt(
     quantity = int(getattr(order, "quantity", 1) or 1)
     unit_price = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
     item_total = (unit_price * quantity).quantize(Decimal("0.01"))
-    commission_percent = _get_platform_commission_percent(db)
     platform_commission = Decimal(str(getattr(order, "platform_fee", 0) or 0)).quantize(Decimal("0.01"))
+    commission_percent = (
+        (platform_commission * Decimal("100") / item_total).normalize()
+        if item_total
+        else Decimal("0")
+    )
 
-    # Escrow Hold is the successful checkout debit for this order.
+    # The order-specific description identifies the successful buyer debit,
+    # even when legacy order amounts or timestamps no longer match its fields.
     payment_transaction = (
         db.query(Transaction)
         .filter(
             Transaction.student_id == order.student_id,
             Transaction.type == "Escrow Hold",
-            Transaction.status == "Successful",
-            Transaction.amount == item_total + platform_commission,
+            Transaction.status.in_(["Held", "Successful", "Released", "Refunded"]),
             Transaction.description == f"Escrow hold for order #{order.id}",
-            Transaction.created_at >= order.created_at,
         )
         .order_by(Transaction.created_at.asc())
         .first()

@@ -77,10 +77,10 @@ const Footer = ({ onNavigate }) => {
 
       <div className="mx-auto mt-10 flex max-w-7xl flex-col gap-4 border-t border-blue-400/40 pt-5 text-xs text-blue-100 sm:flex-row sm:items-center sm:justify-between">
         <p>© 2026 DG Market. All rights reserved.</p>
-        <div className="flex items-center gap-2 font-semibold" aria-label="Language switcher">
-          <button type="button" onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white' : 'text-blue-200 hover:text-white'}>English</button>
+        <div className="notranslate flex items-center gap-2 font-semibold" aria-label="Language switcher">
+          <button type="button" aria-pressed={language === 'en'} onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white underline underline-offset-4' : 'text-blue-200 hover:text-white'}>English</button>
           <span aria-hidden="true">|</span>
-          <button type="button" onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white' : 'text-blue-200 hover:text-white'}>አማርኛ</button>
+          <button type="button" aria-pressed={language === 'am'} onClick={() => setLanguage('am')} className={language === 'am' ? 'text-white underline underline-offset-4' : 'text-blue-200 hover:text-white'}>አማርኛ</button>
         </div>
       </div>
     </footer>

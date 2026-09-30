@@ -3242,7 +3242,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             ) : (
               // No data gets a short message rather than an empty reserved container.
               <div className="rounded-[24px] border border-dashed border-slate-300 bg-white px-6 py-5 text-sm font-semibold text-slate-500" role="status">
-                {dashboardMetricsError ? 'No data available' : 'ውሂብ የለም'}
+                {dashboardMetricsError ? 'No data available' : 'No data to display'}
               </div>
             )}
 
