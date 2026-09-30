@@ -125,6 +125,8 @@ class PayoutTransaction(Base):
     status = Column(String(30), default="pending", nullable=False, index=True)
     provider_reference = Column(String(150), nullable=True, index=True)
     internal_reference = Column(String(100), unique=True, nullable=False, index=True)
+    idempotency_key = Column(String(100), unique=True, nullable=True, index=True)
+    is_test_mode = Column(Boolean, default=False, nullable=False)
     failure_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False)
     updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), onupdate=func.now(), nullable=False)
@@ -141,6 +143,7 @@ class Wallet(Base):
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), unique=True, nullable=False, index=True)
     balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    held_balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 

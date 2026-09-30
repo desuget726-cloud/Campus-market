@@ -8,8 +8,20 @@ Set these backend variables in Render. Values marked `replace-with-your-value` m
 
 ```text
 CORS_ORIGINS=https://campus-market-gamma-eight.vercel.app
+# Existing wallet deposits still use this legacy Chapa credential.
 CHAPA_SECRET_KEY=replace-with-your-value
 CHAPA_WEBHOOK_SECRET=replace-with-your-value
+# Wallet withdrawals use only the key and webhook secret for the selected mode.
+CHAPA_MODE=test
+CHAPA_TEST_SECRET_KEY=replace-with-chapa-test-secret
+CHAPA_TEST_WEBHOOK_SECRET=replace-with-chapa-test-webhook-secret
+CHAPA_LIVE_SECRET_KEY=replace-with-chapa-live-secret
+CHAPA_LIVE_WEBHOOK_SECRET=replace-with-chapa-live-webhook-secret
+PAYOUT_MIN_AMOUNT_ETB=100.00
+PAYOUT_DAILY_LIMIT_ETB=10000.00
+PAYOUT_MAX_REQUESTS_PER_HOUR=3
+PAYOUT_ADMIN_APPROVAL_THRESHOLD_ETB=5000.00
+PAYOUT_TIMEOUT_HOURS=24
 OPENAI_API_KEY=replace-with-your-value
 SESSION_SECRET=replace-with-a-long-random-value
 CHAPA_PUBLIC_KEY=replace-with-your-value
@@ -48,6 +60,8 @@ In the Vercel project settings, set `VITE_API_URL` to the actual Render service'
 On Render, set `CORS_ORIGINS=https://campus-market-gamma-eight.vercel.app` (no trailing slash). The backend also allows this production origin if `CORS_ORIGINS` is omitted, and normalizes a trailing slash if one is supplied.
 
 Do not put database credentials or backend secrets in any `VITE_` variable.
+
+Large withdrawals at or above `PAYOUT_ADMIN_APPROVAL_THRESHOLD_ETB` remain held and do not call Chapa until an administrator approves them. Admins can list them with `GET /api/admin/payouts/pending-approval` and approve selected IDs with `POST /api/admin/payouts/reconcile` using `{"payout_ids":[1],"action":"approve"}`. For production payouts, set `CHAPA_MODE=live` and configure the live transfer and webhook secrets; never reuse test credentials as live credentials.
 
 ## GitHub safety
 

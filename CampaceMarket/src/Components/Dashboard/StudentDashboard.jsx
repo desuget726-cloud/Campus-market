@@ -334,6 +334,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const withdrawSubmitInFlightRef = useRef(false);
+  const withdrawIdempotencyKeyRef = useRef(null);
   const [recommendedProducts, setRecommendedProducts] = useState([]);
   const [recentCampusActivity, setRecentCampusActivity] = useState([]);
 
@@ -546,6 +547,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const wishlistCount = wishlistBadgeCount || wishlist.length;
   const orderCount = orders.length;
   const currentWalletBalance = Number(walletBalance ?? paymentInfo?.balance ?? 0);
+  const heldWalletBalance = Number(paymentInfo?.heldBalance || 0);
   const platformFee = cartPlatformFee;
   const checkoutTotal = cartTotal + platformFee;
   const walletHasSufficientFunds = currentWalletBalance > 0 && currentWalletBalance >= checkoutTotal;
@@ -681,6 +683,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
         setPaymentInfo({
           balance: normalizedBalance,
+          heldBalance: Number(payData?.held_balance || 0),
           recentTx: payData?.recentTx || payData?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : 'No transactions yet'),
           transactions: normalizedTransactions,
         });
@@ -1076,6 +1079,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setPaymentInfo((previousPaymentInfo) => ({
         ...previousPaymentInfo,
         balance: Number.isFinite(nextBalance) ? nextBalance : previousPaymentInfo.balance,
+        heldBalance: Number(data?.held_balance ?? previousPaymentInfo.heldBalance ?? 0),
         recentTx: data?.recentTx || data?.recent_tx || previousPaymentInfo.recentTx,
         transactions: normalizedTransactions,
       }));
@@ -1607,6 +1611,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           }
           setPaymentInfo((prev) => ({
             balance: normalizedBalance,
+            heldBalance: Number(data?.held_balance ?? prev?.heldBalance ?? 0),
             recentTx: data?.recentTx || data?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : prev?.recentTx || 'No transactions yet'),
             transactions: normalizedTransactions.length ? normalizedTransactions : prev?.transactions || [],
           }));
@@ -2318,6 +2323,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     withdrawSubmitInFlightRef.current = true;
     setWithdrawLoading(true);
     try {
+      const idempotencyKey = withdrawIdempotencyKeyRef.current
+        || window.crypto?.randomUUID?.()
+        || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      withdrawIdempotencyKeyRef.current = idempotencyKey;
       const payload = {
         amount,
         payout_account_id: payoutAccount.id,
@@ -2328,6 +2337,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify(payload)
@@ -2366,11 +2376,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         throw new Error('The withdrawal could not be verified in the wallet ledger. Please refresh before trying again.');
       }
 
+      withdrawIdempotencyKeyRef.current = null;
       walletBalanceRef.current = confirmedBalance;
       setWalletBalance(confirmedBalance);
       setPaymentInfo((previousPaymentInfo) => ({
         ...previousPaymentInfo,
         balance: confirmedBalance,
+        heldBalance: Number(confirmationData?.held_balance || 0),
         recentTx: data.message || 'Withdrawal request recorded.',
         transactions: confirmationData.transactions,
       }));
@@ -2409,9 +2421,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
       if (!response.ok) throw new Error(data?.detail || 'Unable to refresh payout status.');
       setActiveWithdrawal(data?.active_payout || null);
-      setWithdrawError(data?.active_payout
-        ? 'You have a payout currently processing. You can request a new withdrawal once it completes.'
-        : '');
+      setWithdrawError(data?.active_payout?.status === 'pending_approval'
+        ? 'Your withdrawal is held while an administrator approves it. You can request another withdrawal after it is resolved.'
+        : data?.active_payout
+          ? 'You have a payout currently processing. You can request a new withdrawal once it completes.'
+          : '');
     } catch (error) {
       console.error('Payout status refresh failed:', error);
       setWithdrawError(error.message || 'Unable to refresh payout status.');
@@ -4719,6 +4733,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <div className="rounded-2xl bg-sky-50/40 border border-sky-100 p-4">
                             <p className="text-xs text-sky-600 font-semibold uppercase">Wallet Balance</p>
                             <p className="mt-2 text-3xl font-black text-slate-900">{formatETB(currentWalletBalance)}</p>
+                            {heldWalletBalance > 0 && (
+                              <p className="mt-1 text-xs font-medium text-amber-700">
+                                {formatETB(heldWalletBalance)} held for pending withdrawals
+                              </p>
+                            )}
                             {transactionLedger[0] && (() => {
                               const latestTransaction = transactionLedger[0];
                               const { sign, colorClass } = getTransactionDirection(latestTransaction);
@@ -4782,7 +4801,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                                     <div className="flex items-start justify-between gap-3">
                                       <div>
-                                        <p className="text-sm font-semibold text-slate-900">{getTransactionLabel(tx)}</p>
+                                        <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                                          {getTransactionLabel(tx)}
+                                          {tx.test_mode && <span className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-extrabold tracking-normal text-amber-800">TEST</span>}
+                                        </p>
                                         <p className="mt-1 text-xs text-slate-500">{tx.date || tx.created_at?.slice(0, 10) || 'Date unavailable'}</p>
                                       </div>
                                       <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase ${getTransactionStatusClass(status)}`}>
@@ -5571,7 +5593,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 </div>
               ) : activeWithdrawal ? (
                 <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
-                  <p>You have a payout currently processing. You can request a new withdrawal once it completes.</p>
+                  <p>{activeWithdrawal.status === 'pending_approval'
+                    ? 'Your withdrawal is held while an administrator approves it. You can request another withdrawal after it is resolved.'
+                    : 'You have a payout currently processing. You can request a new withdrawal once it completes.'}</p>
                   <button type="button" onClick={refreshWithdrawalStatus} disabled={withdrawalStatusLoading} className="font-semibold text-amber-900 underline underline-offset-2 disabled:opacity-60">
                     {withdrawalStatusLoading ? 'Refreshing status...' : 'Refresh payout status'}
                   </button>

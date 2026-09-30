@@ -76,7 +76,7 @@ from .models import (
     AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
-from .payout_service import PayoutProviderError, get_payout_adapter
+from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_webhook_secret, get_payout_adapter
 from .order_lifecycle import (
     apply_buyer_receipt_confirmation,
     apply_seller_order_action,
@@ -833,96 +833,127 @@ def _resolve_pending_payout(
     provider_reference: Optional[str] = None,
     failure_reason: Optional[str] = None,
 ) -> Optional[str]:
-    """Apply one provider result while locking every balance-affecting row."""
+    """Apply one payout state transition and its wallet ledger effects exactly once."""
     db.rollback()
+    initial_payout = db.query(PayoutTransaction).filter(PayoutTransaction.id == payout_id).first()
+    if not initial_payout:
+        return None
+    student_id = initial_payout.student_id
+    db.rollback()
+
+    notification = None
+    normalized_status = "failed" if status in {"cancelled", "canceled", "failed"} else status
+    if normalized_status not in {"pending", "processing", "completed", "failed"}:
+        raise ValueError(f"Unsupported payout status: {status}")
+
     with db.begin():
+        student = db.query(Student).filter(
+            Student.student_id == student_id,
+        ).with_for_update().first()
+        wallet = db.query(Wallet).filter(
+            Wallet.student_id == student_id,
+        ).with_for_update().first()
         payout = db.query(PayoutTransaction).filter(
             PayoutTransaction.id == payout_id,
-            PayoutTransaction.status.in_(["pending", "processing"]),
         ).with_for_update().first()
         if not payout:
             return None
+        previous_status = str(payout.status or "pending").lower()
+        if previous_status in {"completed", "failed", "cancelled", "canceled"}:
+            return previous_status
+        if not student or not wallet:
+            raise ValueError(f"Wallet records are missing for payout {payout.internal_reference}.")
 
         transaction = db.query(Transaction).filter(
             Transaction.tx_id == payout.internal_reference,
         ).with_for_update().first()
-        student = db.query(Student).filter(
-            Student.student_id == payout.student_id,
-        ).with_for_update().first()
-        wallet = db.query(Wallet).filter(
-            Wallet.student_id == payout.student_id,
-        ).with_for_update().first()
-        if not student or not wallet:
-            raise ValueError(f"Wallet records are missing for payout {payout.internal_reference}.")
+        amount = abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
+        held_balance = Decimal(str(wallet.held_balance or 0)).quantize(Decimal("0.01"))
+        if normalized_status in {"completed", "failed"}:
+            if held_balance < amount:
+                raise ValueError(f"Held wallet balance is insufficient for payout {payout.internal_reference}.")
+            wallet.held_balance = held_balance - amount
+            if normalized_status == "completed":
+                payout.status = "completed"
+                if transaction:
+                    transaction.type = "Wallet Withdrawal"
+                    transaction.amount = -amount
+                    transaction.status = "Successful"
+                    transaction.description = "Withdrawal successful; confirmed by Chapa."
+                notification = (
+                    "Withdraw successful",
+                    f"Your withdraw of {amount} ETB was confirmed and completed successfully.",
+                )
+            else:
+                reason = failure_reason or "Chapa reported that the transfer failed."
+                payout.status = "failed"
+                payout.failure_reason = reason
+                wallet.balance = (Decimal(str(wallet.balance or 0)) + amount).quantize(Decimal("0.01"))
+                reversal_reference = f"REVERSAL-{payout.internal_reference}"
+                reversal = db.query(Transaction).filter(
+                    Transaction.tx_id == reversal_reference,
+                ).with_for_update().first()
+                if reversal is None:
+                    db.add(Transaction(
+                        student_id=student_id,
+                        wallet_id=wallet.id,
+                        tx_id=reversal_reference,
+                        type="Refund",
+                        amount=amount,
+                        description=f"Reversal - Withdraw #{payout.id}",
+                        status="Successful",
+                    ))
+                if transaction:
+                    transaction.type = "Wallet Withdrawal"
+                    transaction.amount = -amount
+                    transaction.status = "Failed"
+                    transaction.description = f"Withdrawal failed; reversal issued. {reason}"[:255]
+                notification = (
+                    "Withdraw failed - reversed",
+                    f"Your withdraw request of {amount} ETB failed. The funds were returned to your available wallet balance.",
+                )
+                if "timeout" in reason.lower() or "did not confirm" in reason.lower():
+                    db.add(AuditLog(
+                        admin_id=None,
+                        action="Stale Payout Alert",
+                        entity_type="PayoutTransaction",
+                        entity_id=payout.id,
+                        description=f"Payout {payout.internal_reference} failed after provider confirmation timed out; {amount} ETB was reversed.",
+                        status="WARNING",
+                        severity="high",
+                        ip_address="127.0.0.1",
+                    ))
+        else:
+            payout.status = normalized_status
+            if transaction:
+                transaction.status = "Processing" if normalized_status == "processing" else "Pending"
+                transaction.description = "Payout is processing with Chapa." if normalized_status == "processing" else "Payout is pending confirmation from Chapa."
 
-        payout.status = status
         if provider_reference:
             payout.provider_reference = provider_reference
-
-        if status == "completed":
-            student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
-            if transaction:
-                # A payout must remain a debit in the ledger. Older callback
-                # handling could reclassify this row as Wallet Deposit, making
-                # it appear as a credit and cancel the request-time debit.
-                transaction.type = "Wallet Withdrawal"
-                transaction.amount = -abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
-                transaction.status = "Successful"
-                transaction.description = "Payout completed by the provider."
-            _dispatch_student_notification(
-                db,
-                student,
-                "Withdraw completed",
-                f"Your withdraw of {Decimal(str(payout.amount or 0)).quantize(Decimal('0.01'))} ETB was completed successfully.",
-                "payout",
-            )
-            audit_action = "Wallet Payout Completed"
-            audit_description = f"Payout {payout.internal_reference} completed for student {student.student_id}."
-        else:
-            reason = failure_reason or "Provider reported payout failure."
-            payout.failure_reason = reason
-            refund_amount = abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
-            refund_tx_id = f"REFUND-{payout.internal_reference}"
-            apply_transaction(db, student_id=payout.student_id, tx_id=refund_tx_id, transaction_type="Refund", amount=refund_amount, description=f"Refund for failed payout {payout.internal_reference}.")
-            if transaction:
-                transaction.type = "Wallet Withdrawal"
-                transaction.amount = -refund_amount
-                transaction.status = "Failed"
-                transaction.description = f"Payout provider status: {status}; amount refunded."
-            _dispatch_student_notification(
-                db,
-                student,
-                "Withdraw failed – refunded",
-                f"Your withdraw request of {refund_amount} ETB failed. The amount was refunded to your wallet.",
-                "payout",
-            )
-            if "timeout" in reason.lower() or "did not confirm" in reason.lower():
-                db.add(AuditLog(
-                    admin_id=None,
-                    action="Stale Payout Alert",
-                    entity_type="PayoutTransaction",
-                    entity_id=payout.id,
-                    description=(
-                        f"Payout {payout.internal_reference} exceeded its processing confirmation window. "
-                        f"The payout was failed and {refund_amount} ETB was refunded to student {student.student_id}."
-                    ),
-                    status="WARNING",
-                    severity="high",
-                    ip_address="127.0.0.1",
-                ))
-            audit_action = "Wallet Payout Refunded"
-            audit_description = f"Payout {payout.internal_reference} failed for student {student.student_id}; refunded {refund_amount} ETB. Reason: {reason}"
-
+        student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
+        if notification:
+            _add_student_notification(db, student, notification[0], notification[1], "payout")
         db.add(AuditLog(
             admin_id=None,
-            action=audit_action,
+            action="Wallet Payout State Updated",
             entity_type="PayoutTransaction",
             entity_id=payout.id,
-            description=audit_description,
+            description=f"Payout {payout.internal_reference} transitioned from {previous_status} to {payout.status}.",
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
-        return payout.status
+        final_status = payout.status
+        notification_email = (student, notification) if notification else None
+
+    if notification_email:
+        _send_student_notification_email(
+            notification_email[0],
+            notification_email[1][0],
+            notification_email[1][1],
+            "payout",
+        )
+    return final_status
 
 
 async def _reconcile_pending_payouts(
@@ -2899,11 +2930,25 @@ def ensure_database_compatibility(db: Session) -> None:
         for table_name, column_name, statement in [
             ("seller_payment_accounts", "chapa_sub_account_id", "ALTER TABLE seller_payment_accounts MODIFY COLUMN chapa_sub_account_id VARCHAR(100) NULL"),
             ("payout_transactions", "wallet_id", "ALTER TABLE payout_transactions ADD COLUMN wallet_id INT NULL"),
+            ("payout_transactions", "idempotency_key", "ALTER TABLE payout_transactions ADD COLUMN idempotency_key VARCHAR(100) NULL"),
+            ("payout_transactions", "is_test_mode", "ALTER TABLE payout_transactions ADD COLUMN is_test_mode BOOLEAN NOT NULL DEFAULT FALSE"),
             ("transactions", "wallet_id", "ALTER TABLE transactions ADD COLUMN wallet_id INT NULL"),
         ]:
             column = db.execute(text(f"SHOW COLUMNS FROM {table_name} LIKE :column_name"), {"column_name": column_name})
             if column_name == "chapa_sub_account_id" or column.fetchone() is None:
                 db.execute(text(statement))
+        held_balance_column = db.execute(text("SHOW COLUMNS FROM wallets LIKE 'held_balance'"))
+        if held_balance_column.fetchone() is None:
+            db.execute(text("ALTER TABLE wallets ADD COLUMN held_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00"))
+        idempotency_index = db.execute(text("SHOW INDEX FROM payout_transactions WHERE Column_name = 'idempotency_key'"))
+        if idempotency_index.fetchone() is None:
+            db.execute(text("CREATE UNIQUE INDEX uq_payout_transactions_idempotency_key ON payout_transactions (idempotency_key)"))
+        db.execute(text(
+            "UPDATE wallets w SET held_balance = COALESCE(("
+            "SELECT SUM(p.amount) FROM payout_transactions p "
+            "WHERE p.wallet_id = w.id AND p.status IN ('pending_approval', 'pending', 'processing')"
+            "), 0.00)"
+        ))
         db.execute(text(
             "ALTER TABLE wallets MODIFY COLUMN updated_at DATETIME NOT NULL "
             "DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
@@ -11042,6 +11087,15 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
     if recent_tx_record:
         recent_tx = recent_tx_record.description or f"{recent_tx_record.type} — {recent_tx_record.tx_id}"
 
+    withdrawal_references = [
+        tx.tx_id for tx in transactions[:20]
+        if _normalize_payment_type(tx.type) == "Wallet Withdrawal"
+    ]
+    test_mode_by_reference = dict(db.query(
+        PayoutTransaction.internal_reference,
+        PayoutTransaction.is_test_mode,
+    ).filter(PayoutTransaction.internal_reference.in_(withdrawal_references)).all()) if withdrawal_references else {}
+
     ledger = []
     for tx in transactions[:20]:
         amount = abs(Decimal(str(tx.amount or 0)).quantize(Decimal("0.01")))
@@ -11057,10 +11111,13 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
             "status": tx.status,
             "date": tx.created_at.strftime("%Y-%m-%d") if tx.created_at else None,
             "hash": tx.tx_id,
+            "test_mode": bool(test_mode_by_reference.get(tx.tx_id, False)),
         })
 
     return {
         "balance": float((wallet.balance if wallet else student.wallet_balance) or 0),
+        "available_balance": float((wallet.balance if wallet else student.wallet_balance) or 0),
+        "held_balance": float(wallet.held_balance or 0) if wallet else 0.0,
         "recentTx": recent_tx,
         "transactions": ledger,
     }
@@ -11322,13 +11379,180 @@ async def initialize_payment(request: DepositRequest, db: Session = Depends(get_
     }
 
 
+def _payout_config_decimal(name: str, default: str) -> Decimal:
+    try:
+        value = Decimal(os.getenv(name, default).strip()).quantize(Decimal("0.01"))
+        return value if value > 0 else Decimal(default).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError, AttributeError):
+        return Decimal(default).quantize(Decimal("0.01"))
+
+
+def _withdrawal_response(db: Session, payout_id: int, message: Optional[str] = None) -> dict:
+    payout = db.query(PayoutTransaction).filter(PayoutTransaction.id == payout_id).first()
+    if not payout:
+        raise HTTPException(status_code=404, detail="Withdrawal request not found.")
+    transaction = db.query(Transaction).filter(Transaction.tx_id == payout.internal_reference).first()
+    wallet = db.query(Wallet).filter(Wallet.student_id == payout.student_id).first()
+    return {
+        "success": True,
+        "persisted": True,
+        "duplicate": False,
+        "message": message or (transaction.description if transaction else "Withdrawal request recorded."),
+        "status": transaction.status if transaction else "Pending",
+        "payout_status": payout.status,
+        "transaction_id": payout.internal_reference,
+        "payout_id": payout.id,
+        "wallet_balance": float(wallet.balance if wallet else 0),
+        "available_balance": float(wallet.balance if wallet else 0),
+        "held_balance": float(wallet.held_balance if wallet else 0),
+        "amount": float(payout.amount),
+        "test_mode": bool(payout.is_test_mode),
+    }
+
+
+def _submit_chapa_withdrawal(db: Session, payout_id: int):
+    payout = db.query(PayoutTransaction).filter(PayoutTransaction.id == payout_id).first()
+    if not payout:
+        raise HTTPException(status_code=404, detail="Withdrawal request not found.")
+    if payout.status not in {"pending", "processing"}:
+        return _withdrawal_response(db, payout_id)
+
+    provider = db.query(PayoutProvider).filter(PayoutProvider.id == payout.provider_id).first()
+    account = db.query(SellerPaymentAccount).filter(
+        SellerPaymentAccount.id == payout.payout_account_id,
+    ).first()
+    adapter = get_payout_adapter(provider.code) if provider else None
+    if adapter is None or account is None:
+        _resolve_pending_payout(
+            db,
+            payout_id,
+            "failed",
+            failure_reason="The configured Chapa transfer service is unavailable.",
+        )
+        return _withdrawal_response(db, payout_id)
+
+    db.rollback()
+    with db.begin():
+        student = db.query(Student).filter(
+            Student.student_id == payout.student_id,
+        ).with_for_update().first()
+        wallet = db.query(Wallet).filter(
+            Wallet.student_id == payout.student_id,
+        ).with_for_update().first()
+        locked_payout = db.query(PayoutTransaction).filter(
+            PayoutTransaction.id == payout_id,
+        ).with_for_update().first()
+        transaction = db.query(Transaction).filter(
+            Transaction.tx_id == payout.internal_reference,
+        ).with_for_update().first()
+        if not student or not wallet or not locked_payout:
+            raise HTTPException(status_code=404, detail="Withdrawal wallet records not found.")
+        if locked_payout.status not in {"pending", "processing"}:
+            return _withdrawal_response(db, payout_id)
+        locked_payout.status = "processing"
+        if transaction:
+            transaction.status = "Processing"
+            transaction.description = "Payout is processing with Chapa."
+    db.refresh(payout)
+
+    amount = Decimal(str(payout.amount)).quantize(Decimal("0.01"))
+    account_number = str(
+        account.phone_number if account.payout_type in {"mobile_wallet", "wallet"} else account.account_number or ""
+    ).strip()
+    try:
+        result = adapter.create_transfer(
+            account_name=account.account_name,
+            account_number=account_number,
+            provider_code=provider.code,
+            amount=f"{amount:.2f}",
+            currency=payout.currency or "ETB",
+            reference=payout.internal_reference,
+        )
+        if result.provider_reference:
+            payout.provider_reference = result.provider_reference
+            db.commit()
+
+        if result.status in {"completed", "processing", "pending"}:
+            result = adapter.get_transfer_status(
+                result.provider_reference or payout.internal_reference,
+            )
+    except PayoutProviderError as error:
+        verification_result = None
+        if error.retryable:
+            try:
+                verification_result = adapter.get_transfer_status(
+                    error.provider_reference or payout.internal_reference,
+                )
+            except PayoutProviderError:
+                verification_result = None
+        if verification_result and verification_result.status == "completed" and verification_result.provider_reference:
+            target_status = "completed"
+            provider_reference = verification_result.provider_reference
+            failure_reason = None
+        elif verification_result and verification_result.status in {"failed", "cancelled"}:
+            target_status = "failed"
+            provider_reference = verification_result.provider_reference
+            failure_reason = verification_result.message or str(error)
+        elif error.retryable:
+            target_status = "pending"
+            provider_reference = error.provider_reference
+            failure_reason = str(error)
+        else:
+            target_status = "failed"
+            provider_reference = error.provider_reference
+            failure_reason = str(error)
+        _resolve_pending_payout(
+            db,
+            payout_id,
+            target_status,
+            provider_reference=provider_reference,
+            failure_reason=failure_reason,
+        )
+        return _withdrawal_response(db, payout_id)
+    except Exception:
+        db.rollback()
+        logging.getLogger("app.payouts").exception(
+            "Unexpected Chapa transfer result for payout_id=%s; funds remain held.", payout_id,
+        )
+        _resolve_pending_payout(db, payout_id, "pending")
+        return _withdrawal_response(db, payout_id, "Payout status is not confirmed yet; the funds remain held.")
+
+    if result.status == "completed" and result.provider_reference:
+        _resolve_pending_payout(
+            db,
+            payout_id,
+            "completed",
+            provider_reference=result.provider_reference,
+        )
+    elif result.status in {"failed", "cancelled"}:
+        _resolve_pending_payout(
+            db,
+            payout_id,
+            "failed",
+            provider_reference=result.provider_reference,
+            failure_reason=result.message,
+        )
+    else:
+        pending_state = "processing" if result.status == "processing" else "pending"
+        _resolve_pending_payout(
+            db,
+            payout_id,
+            pending_state,
+            provider_reference=result.provider_reference,
+        )
+    return _withdrawal_response(db, payout_id)
+
+
 @app.post("/api/student/wallet/withdraw")
 async def withdraw_student_wallet(
     request: WalletWithdrawalRequest,
     authorization: Optional[str] = Header(None),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
     student = _student_from_authorization(authorization, db)
+    if not student.is_verified:
+        raise HTTPException(status_code=403, detail="Only verified student accounts can withdraw wallet funds.")
     payout_account = _require_active_payout_account(db, student)
     if request.payout_account_id and (not payout_account or payout_account.id != request.payout_account_id):
         raise HTTPException(status_code=400, detail="The selected payout account does not belong to this seller.")
@@ -11341,6 +11565,15 @@ async def withdraw_student_wallet(
     ).with_for_update().first()
     if not locked_student:
         raise HTTPException(status_code=404, detail="Student wallet owner not found.")
+    wallet = _get_or_create_wallet_for_student(db, locked_student)
+
+    normalized_name = " ".join(str(payout_account.account_name or "").split()).casefold()
+    verified_student_name = " ".join(str(locked_student.name or "").split()).casefold()
+    if not normalized_name or normalized_name != verified_student_name:
+        raise HTTPException(
+            status_code=400,
+            detail="The payout account name must match the verified student's name.",
+        )
 
     try:
         amount = Decimal(str(request.amount))
@@ -11349,8 +11582,23 @@ async def withdraw_student_wallet(
         amount = amount.quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
         raise HTTPException(status_code=400, detail="Withdrawal amount must be a valid ETB amount.")
-    if amount < Decimal("100.00"):
-        raise HTTPException(status_code=400, detail="Withdrawal amount must be at least 100 ETB.")
+    minimum_amount = _payout_config_decimal("PAYOUT_MIN_AMOUNT_ETB", "100.00")
+    if amount <= 0 or amount < minimum_amount:
+        raise HTTPException(status_code=400, detail=f"Withdrawal amount must be positive and at least {minimum_amount:.2f} ETB.")
+
+    try:
+        mode = get_chapa_mode()
+    except PayoutProviderError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    request_key = str(idempotency_key or "").strip()[:100] or uuid.uuid4().hex
+    existing_idempotent_payout = db.query(PayoutTransaction).filter(
+        PayoutTransaction.idempotency_key == request_key,
+    ).with_for_update().first()
+    if existing_idempotent_payout:
+        if existing_idempotent_payout.student_id != student.student_id:
+            raise HTTPException(status_code=409, detail="This idempotency key belongs to another wallet.")
+        return _withdrawal_response(db, existing_idempotent_payout.id)
 
     # Idempotency: a client retry of the same amount returns its existing
     # in-flight payout instead of creating another transfer. The Student row
@@ -11362,7 +11610,7 @@ async def withdraw_student_wallet(
     duplicate_cutoff = datetime.now() - timedelta(seconds=duplicate_window_seconds)
     duplicate_payout = db.query(PayoutTransaction).filter(
         PayoutTransaction.student_id == student.student_id,
-        PayoutTransaction.status.in_(("pending", "processing")),
+        PayoutTransaction.status.in_(("pending_approval", "pending", "processing")),
         PayoutTransaction.amount == amount,
         PayoutTransaction.created_at >= duplicate_cutoff,
     ).order_by(PayoutTransaction.created_at.asc()).with_for_update().first()
@@ -11389,7 +11637,7 @@ async def withdraw_student_wallet(
 
     active_payout = db.query(PayoutTransaction).filter(
         PayoutTransaction.student_id == student.student_id,
-        PayoutTransaction.status.in_(("pending", "processing")),
+        PayoutTransaction.status.in_(("pending_approval", "pending", "processing")),
     ).order_by(PayoutTransaction.created_at.desc()).with_for_update().first()
     if active_payout:
         active_transaction = db.query(Transaction).filter(
@@ -11419,33 +11667,57 @@ async def withdraw_student_wallet(
     if adapter is None:
         raise HTTPException(status_code=503, detail="This payout provider has no configured official payout integration.")
 
-    account_number = str(payout_account.phone_number if payout_account.payout_type == "mobile_wallet" else payout_account.account_number or "").strip()
+    account_number = str(
+        payout_account.phone_number
+        if payout_account.payout_type in {"mobile_wallet", "wallet"}
+        else payout_account.account_number or ""
+    ).strip()
     if not account_number:
         raise HTTPException(status_code=400, detail="The saved payout account is missing destination details.")
 
-    wallet = _get_or_create_wallet_for_student(db, locked_student)
-    db.flush()
+    now = datetime.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    hour_start = now - timedelta(hours=1)
+    daily_limit = _payout_config_decimal("PAYOUT_DAILY_LIMIT_ETB", "10000.00")
+    daily_total = Decimal(str(db.query(func.coalesce(func.sum(PayoutTransaction.amount), 0)).filter(
+        PayoutTransaction.student_id == student.student_id,
+        PayoutTransaction.created_at >= day_start,
+    ).scalar() or 0)).quantize(Decimal("0.01"))
+    if daily_total + amount > daily_limit:
+        remaining = max(Decimal("0.00"), daily_limit - daily_total)
+        raise HTTPException(status_code=429, detail=f"Daily withdrawal limit reached. You can request up to {remaining:.2f} ETB more today.")
+    try:
+        hourly_limit = max(1, int(os.getenv("PAYOUT_MAX_REQUESTS_PER_HOUR", "3")))
+    except (TypeError, ValueError):
+        hourly_limit = 3
+    hourly_request_count = db.query(func.count(PayoutTransaction.id)).filter(
+        PayoutTransaction.student_id == student.student_id,
+        PayoutTransaction.created_at >= hour_start,
+    ).scalar() or 0
+    if hourly_request_count >= hourly_limit:
+        raise HTTPException(status_code=429, detail="Too many withdrawal requests. Please try again later.")
+
     wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
-    current_balance = wallet_balance
-    if current_balance < amount:
+    if wallet_balance < amount:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance for withdrawal.")
 
-    # Chapa limits transfer references to 36 characters; PAYOUT- plus 28
-    # hexadecimal UUID characters is 35 characters and remains collision-safe.
-    tx_ref = f"PAYOUT-{uuid.uuid4().hex[:28].upper()}"
     try:
-        # Apply a guarded SQL debit and create both ledger records in the same
-        # database transaction. The conditional prevents a stale balance from
-        # ever allowing an overdraft; any failure rolls all three writes back.
-        debit_result = db.execute(
+        approval_threshold = Decimal(os.getenv("PAYOUT_ADMIN_APPROVAL_THRESHOLD_ETB", "5000.00").strip())
+        requires_admin_approval = approval_threshold > 0 and amount >= approval_threshold
+    except (InvalidOperation, ValueError, AttributeError):
+        requires_admin_approval = amount >= Decimal("5000.00")
+    tx_ref = f"PAYOUT-{uuid.uuid4().hex[:28].upper()}"
+    payout = None
+    try:
+        hold_result = db.execute(
             text(
-                "UPDATE wallets "
-                "SET balance = balance - :amount, updated_at = CURRENT_TIMESTAMP "
+                "UPDATE wallets SET balance = balance - :amount, "
+                "held_balance = held_balance + :amount, updated_at = CURRENT_TIMESTAMP "
                 "WHERE student_id = :student_id AND balance >= :amount"
             ),
-            {"amount": amount, "student_id": student.student_id},
+            {"amount": str(amount), "student_id": student.student_id},
         )
-        if debit_result.rowcount != 1:
+        if hold_result.rowcount != 1:
             db.rollback()
             raise HTTPException(status_code=400, detail="Insufficient wallet balance for withdrawal.")
 
@@ -11457,11 +11729,10 @@ async def withdraw_student_wallet(
             tx_id=tx_ref,
             type="Wallet Withdrawal",
             amount=-amount,
-            description="Pending Withdrawal",
+            description="Withdrawal pending admin approval." if requires_admin_approval else "Withdrawal hold pending Chapa confirmation.",
             status="Pending",
         )
         db.add(withdrawal)
-
         payout = PayoutTransaction(
             student_id=student.student_id,
             wallet_id=wallet.id,
@@ -11469,20 +11740,19 @@ async def withdraw_student_wallet(
             provider_id=provider.id,
             amount=amount,
             currency="ETB",
-            status="processing",
+            status="pending_approval" if requires_admin_approval else "pending",
             internal_reference=tx_ref,
+            idempotency_key=request_key,
+            is_test_mode=(mode == "test"),
         )
         db.add(payout)
-        _dispatch_student_notification(
+        _add_student_notification(
             db,
             locked_student,
             "Withdraw request submitted",
-            f"Your withdraw request of {amount} ETB was submitted and is awaiting payout confirmation.",
+            f"Your withdraw request of {amount} ETB was submitted and is awaiting {'admin approval' if requires_admin_approval else 'payout confirmation'}.",
             "payout",
         )
-
-        # Persist the wallet debit, negative ledger row, notification, and
-        # payout row atomically before contacting Chapa.
         db.flush()
         db.commit()
     except HTTPException:
@@ -11491,152 +11761,23 @@ async def withdraw_student_wallet(
     except Exception:
         db.rollback()
         logging.getLogger("app.payouts").exception(
-            "Unable to atomically debit wallet and record withdrawal %s.", tx_ref,
+            "Unable to atomically hold wallet funds and record withdrawal %s.", tx_ref,
         )
         raise HTTPException(status_code=500, detail="Unable to record withdrawal safely.")
 
-    db.refresh(wallet)
-    db.refresh(locked_student)
-    db.refresh(withdrawal)
-
-    admin = db.query(Admin).order_by(Admin.id.asc()).first()
-
-    def refund_with_failure(message: str, status_code: int = 400):
-        refund_amount = abs(amount)
-        apply_transaction(
-            db,
-            student_id=student.student_id,
-            tx_id=f"REFUND-{withdrawal.tx_id}",
-            transaction_type="Refund",
-            amount=refund_amount,
-            description=f"Refund for failed payout {withdrawal.tx_id}.",
-        )
-        withdrawal.status = "Failed"
-        withdrawal.description = message
-        payout.status = "failed"
-        payout.failure_reason = message
-        _dispatch_student_notification(
-            db,
-            locked_student,
-            "Withdraw failed – refunded",
-            f"Your withdraw request of {refund_amount} ETB failed. The amount was refunded to your wallet.",
-            "payout",
-        )
-        db.add(AuditLog(
-            admin_id=admin.id if admin else None,
-            action="Wallet Withdrawal Failed",
-            entity_type="Transaction",
-            entity_id=withdrawal.id,
-            description=f"Withdrawal {withdrawal.tx_id} failed for student {student.student_id}: {message}",
-            status="FAILED",
-            ip_address="127.0.0.1",
-        ))
-        db.commit()
-        raise HTTPException(status_code=status_code, detail=message)
-
-    try:
-        result = adapter.create_transfer(
-            account_name=payout_account.account_name,
-            account_number=account_number,
-            provider_code=provider.code,
-            amount=f"{amount:.2f}",
-            currency="ETB",
-            reference=tx_ref,
-        )
-    except PayoutProviderError as error:
-        payout.provider_reference = error.provider_reference
-        payout.failure_reason = str(error)
-        if error.retryable:
-            payout.status = "pending"
-            withdrawal.status = "Pending"
-            withdrawal.description = str(error)
-            db.commit()
-            db.refresh(withdrawal)
-            db.refresh(payout)
-            db.refresh(wallet)
-            db.refresh(locked_student)
-            return JSONResponse(status_code=202, content={
-                "success": True,
-                "persisted": True,
-                "message": withdrawal.description,
-                "status": withdrawal.status,
-                "transaction_id": withdrawal.tx_id,
-                "payout_id": payout.id,
-                "wallet_balance": float(wallet.balance),
-                "amount": float(amount),
-            })
-        refund_with_failure(str(error), 502)
-    except Exception as error:
-        # The provider may have accepted a transfer before a transport or
-        # adapter error occurred. Keep the debit reserved and leave the payout
-        # pending rather than risk issuing a duplicate transfer or refund.
-        logging.getLogger("app.payouts").exception(
-            "Unexpected payout submission error for %s; leaving it pending.", tx_ref,
-        )
-        payout.status = "pending"
-        payout.failure_reason = str(error)
-        withdrawal.status = "Pending"
-        withdrawal.description = "Payout status could not be confirmed; the request remains pending."
-        db.commit()
-        db.refresh(withdrawal)
-        db.refresh(payout)
-        db.refresh(wallet)
-        db.refresh(locked_student)
-        return JSONResponse(status_code=202, content={
-            "success": True,
-            "persisted": True,
-            "message": withdrawal.description,
-            "status": withdrawal.status,
-            "transaction_id": withdrawal.tx_id,
-            "payout_id": payout.id,
-            "wallet_balance": float(wallet.balance),
-            "amount": float(amount),
-        })
-
-    payout.status = result.status
-    payout.provider_reference = result.provider_reference
-    if result.status == "failed":
-        refund_with_failure(result.message or "The payout provider reported a failed transfer.", 502)
-    withdrawal.status = "Successful" if result.status == "completed" else "Pending" if result.status == "pending" else "Processing"
-    withdrawal.description = result.message or (
-        "Payout completed by the provider."
-        if result.status == "completed"
-        else "Payout accepted and awaiting provider confirmation."
+    _send_student_notification_email(
+        locked_student,
+        "Withdraw request submitted",
+        f"Your withdraw request of {amount} ETB was submitted and is awaiting {'admin approval' if requires_admin_approval else 'payout confirmation'}.",
+        "payout",
     )
-    if result.status == "completed":
-        withdrawal.status = "Successful"
-        _dispatch_student_notification(
+    if requires_admin_approval:
+        return _withdrawal_response(
             db,
-            locked_student,
-            "Withdraw completed",
-            f"Your withdraw of {amount} ETB was completed successfully.",
-            "payout",
+            payout.id,
+            "Withdrawal request is pending admin approval. The funds are held and no payout has been sent yet.",
         )
-    db.add(AuditLog(
-        admin_id=admin.id if admin else None,
-        action="Wallet Payout Submitted",
-        entity_type="Transaction",
-        entity_id=withdrawal.id,
-        description=f"Payout {withdrawal.tx_id} submitted for student {student.student_id}: {amount} ETB.",
-        status="SUCCESS",
-        ip_address="127.0.0.1",
-    ))
-    db.commit()
-    db.refresh(withdrawal)
-    db.refresh(payout)
-    db.refresh(wallet)
-    db.refresh(locked_student)
-
-    return {
-        "success": True,
-        "persisted": True,
-        "message": withdrawal.description,
-        "status": withdrawal.status,
-        "transaction_id": withdrawal.tx_id,
-        "payout_id": payout.id,
-        "wallet_balance": float(wallet.balance),
-        "amount": float(amount),
-    }
+    return _submit_chapa_withdrawal(db, payout.id)
 
 
 @app.get("/api/student/wallet/withdrawals")
@@ -11657,6 +11798,7 @@ def get_student_wallet_withdrawals(
                 "amount": float(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01"))),
                 "provider_reference": payout.provider_reference,
                 "failure_reason": payout.failure_reason,
+                "test_mode": bool(payout.is_test_mode),
                 "created_at": payout.created_at.isoformat() if payout.created_at else None,
             }
             for payout in payouts
@@ -11695,7 +11837,7 @@ async def refresh_student_wallet_withdrawals(
             "status": payout.status,
             "amount": float(payout.amount or 0),
             "internal_reference": payout.internal_reference,
-        } for payout in refreshed if payout.status in {"pending", "processing"}
+        } for payout in refreshed if payout.status in {"pending_approval", "pending", "processing"}
     ), None),
     }
 
@@ -11706,7 +11848,10 @@ async def handle_payout_provider_webhook(
     db: Session = Depends(get_db),
 ):
     raw_body = await request.body()
-    secret = os.getenv("CHAPA_WEBHOOK_SECRET", "").strip()
+    try:
+        secret = get_chapa_webhook_secret()
+    except PayoutProviderError:
+        secret = ""
     signature = request.headers.get("x-chapa-signature", "").strip()
     if not secret or not signature:
         raise HTTPException(status_code=401, detail="Invalid payout webhook signature.")
@@ -11748,99 +11893,19 @@ async def handle_payout_provider_webhook(
     provider_reference = str(payload.get("provider_reference") or payload.get("transfer_id") or data.get("transfer_id") or "") or None
     failure_reason = str(payload.get("message") or data.get("message") or "Provider reported payout failure.")
 
-    db.rollback()
     try:
-        with db.begin():
-            payout = db.query(PayoutTransaction).filter(
-                (PayoutTransaction.internal_reference == reference)
-                | (PayoutTransaction.provider_reference == reference)
-            ).with_for_update().first()
-            if not payout:
-                raise HTTPException(status_code=404, detail="Payout transaction not found.")
-
-            previous_status = str(payout.status or "pending").lower()
-            terminal_statuses = {"completed", "failed", "cancelled"}
-            if previous_status in terminal_statuses:
-                next_status = previous_status
-            payout.status = next_status
-            payout.provider_reference = provider_reference or payout.provider_reference
-            if next_status in {"failed", "cancelled"}:
-                payout.failure_reason = failure_reason
-
-            transaction = db.query(Transaction).filter(
-                Transaction.tx_id == payout.internal_reference,
-            ).with_for_update().first()
-            student = db.query(Student).filter(
-                Student.student_id == payout.student_id,
-            ).with_for_update().first()
-            wallet = db.query(Wallet).filter(
-                Wallet.student_id == payout.student_id,
-            ).with_for_update().first()
-            if not student or not wallet:
-                raise HTTPException(status_code=404, detail="Wallet records for payout transaction not found.")
-
-            if next_status in {"failed", "cancelled"} and previous_status not in {"failed", "cancelled"}:
-                refund_amount = abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
-                refund_tx_id = f"REFUND-{payout.internal_reference}"
-                apply_transaction(db, student_id=payout.student_id, tx_id=refund_tx_id, transaction_type="Refund", amount=refund_amount, description=f"Refund for failed payout {payout.internal_reference}.")
-                _dispatch_student_notification(
-                    db,
-                    student,
-                    "Withdraw failed – refunded",
-                    f"Your withdraw request of {refund_amount} ETB failed. The amount was refunded to your wallet.",
-                    "payout",
-                )
-                db.add(AuditLog(
-                    admin_id=None,
-                    action="Wallet Withdrawal Refunded",
-                    entity_type="PayoutTransaction",
-                    entity_id=payout.id,
-                    description=(
-                        f"Refunded failed payout {payout.internal_reference} for {refund_amount} ETB "
-                        f"to student {student.student_id}."
-                    ),
-                    status="SUCCESS",
-                    ip_address="127.0.0.1",
-                ))
-            else:
-                student.wallet_balance = Decimal(str(wallet.balance or 0)).quantize(Decimal("0.01"))
-                if next_status == "completed" and previous_status != "completed":
-                    _dispatch_student_notification(
-                        db,
-                        student,
-                        "Withdraw completed",
-                        f"Your withdraw of {Decimal(str(payout.amount or 0)).quantize(Decimal('0.01'))} ETB was completed successfully.",
-                        "payout",
-                    )
-
-            if transaction:
-                transaction.type = "Wallet Withdrawal"
-                transaction.amount = -abs(Decimal(str(payout.amount or 0)).quantize(Decimal("0.01")))
-                transaction.status = "Successful" if next_status == "completed" else "Failed" if next_status in {"failed", "cancelled"} else "Pending"
-                transaction.description = f"Payout provider status: {next_status}."
-            if previous_status != next_status:
-                db.add(AuditLog(
-                    admin_id=None,
-                    action="Wallet Payout Webhook Applied",
-                    entity_type="PayoutTransaction",
-                    entity_id=payout.id,
-                    description=(
-                        f"Signed payout webhook changed {payout.internal_reference} from "
-                        f"{previous_status} to {next_status}."
-                    ),
-                    status="SUCCESS",
-                    severity="informational",
-                    ip_address="127.0.0.1",
-                ))
-    except HTTPException:
-        db.rollback()
-        raise
-    except SQLAlchemyError:
+        resolved_status = _resolve_pending_payout(
+            db,
+            payout.id,
+            next_status,
+            provider_reference=provider_reference or reference,
+            failure_reason=failure_reason,
+        )
+    except (SQLAlchemyError, ValueError):
         db.rollback()
         logging.getLogger("app.payments").exception("Unable to apply payout provider webhook safely.")
         raise HTTPException(status_code=500, detail="Unable to apply payout provider webhook safely.")
-
-    return {"success": True, "status": next_status, "reference": payout.internal_reference}
+    return {"success": True, "status": resolved_status, "reference": payout.internal_reference}
 
 
 @app.post("/api/admin/payouts/reconcile")
@@ -11853,13 +11918,54 @@ async def reconcile_selected_payouts(
     if not payload.payout_ids or len(payload.payout_ids) > 100:
         raise HTTPException(status_code=400, detail="Provide between 1 and 100 payout IDs.")
     action = str(payload.action or "recheck").strip().lower()
+    if action == "approve":
+        approved = []
+        for payout_id in list(dict.fromkeys(payload.payout_ids)):
+            payout = db.query(PayoutTransaction).filter(
+                PayoutTransaction.id == payout_id,
+                PayoutTransaction.status == "pending_approval",
+            ).with_for_update().first()
+            if not payout:
+                continue
+            payout.status = "pending"
+            transaction = db.query(Transaction).filter(
+                Transaction.tx_id == payout.internal_reference,
+            ).with_for_update().first()
+            if transaction:
+                transaction.status = "Pending"
+                transaction.description = "Withdrawal approved; awaiting Chapa confirmation."
+            db.commit()
+            approved.append(_submit_chapa_withdrawal(db, payout_id))
+        return {"success": True, "action": action, "approved": approved}
     if action not in {"recheck", "force_fail"}:
-        raise HTTPException(status_code=400, detail="Action must be recheck or force_fail.")
+        raise HTTPException(status_code=400, detail="Action must be approve, recheck, or force_fail.")
     summary = await _reconcile_pending_payouts(
         payout_ids=list(dict.fromkeys(payload.payout_ids)),
         force_fail=action == "force_fail",
     )
     return {"success": True, "action": action, "summary": summary}
+
+
+@app.get("/api/admin/payouts/pending-approval")
+def get_pending_payout_approvals(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, None, db)
+    payouts = db.query(PayoutTransaction).filter(
+        PayoutTransaction.status == "pending_approval",
+    ).order_by(PayoutTransaction.created_at.asc()).all()
+    return {
+        "success": True,
+        "payouts": [{
+            "id": payout.id,
+            "student_id": payout.student_id,
+            "amount": float(payout.amount),
+            "status": payout.status,
+            "test_mode": bool(payout.is_test_mode),
+            "created_at": payout.created_at.isoformat() if payout.created_at else None,
+        } for payout in payouts],
+    }
 
 
 @app.get("/api/admin/users/{id}/audit-balance")
@@ -11994,6 +12100,10 @@ def reconcile_student_wallets(db: Session = Depends(get_db)):
                     successful_credits
                     - successful_debits
                 ).quantize(Decimal("0.01"))
+                held_balance = Decimal(str(db.query(func.coalesce(func.sum(PayoutTransaction.amount), 0)).filter(
+                    PayoutTransaction.student_id == student.student_id,
+                    PayoutTransaction.status.in_(("pending_approval", "pending", "processing")),
+                ).scalar() or 0)).quantize(Decimal("0.01"))
 
                 wallet = (
                     db.query(Wallet)
@@ -12005,16 +12115,19 @@ def reconcile_student_wallets(db: Session = Depends(get_db)):
                     wallet = Wallet(
                         student_id=student.student_id,
                         balance=calculated_balance,
+                        held_balance=held_balance,
                     )
                     db.add(wallet)
                     db.flush()
                 else:
                     wallet.balance = calculated_balance
+                    wallet.held_balance = held_balance
 
                 student.wallet_balance = calculated_balance
                 reconciled_wallets.append({
                     "student_id": student.student_id,
                     "balance": float(calculated_balance),
+                    "held_balance": float(held_balance),
                 })
 
         return {

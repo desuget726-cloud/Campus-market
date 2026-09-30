@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -22,6 +21,33 @@ class PayoutProviderError(Exception):
         self.retryable = retryable
         self.provider_reference = provider_reference
         self.status_code = status_code
+
+
+def get_chapa_mode() -> str:
+    mode = os.getenv("CHAPA_MODE", "test").strip().lower()
+    if mode not in {"test", "live"}:
+        raise PayoutProviderError("CHAPA_MODE must be set to test or live.")
+    return mode
+
+
+def _chapa_secret_key() -> str:
+    mode = get_chapa_mode()
+    if mode == "live":
+        return os.getenv("CHAPA_LIVE_SECRET_KEY", "").strip()
+    return (
+        os.getenv("CHAPA_TEST_SECRET_KEY", "").strip()
+        or os.getenv("CHAPA_SECRET_KEY", "").strip()
+    )
+
+
+def get_chapa_webhook_secret() -> str:
+    mode = get_chapa_mode()
+    if mode == "live":
+        return os.getenv("CHAPA_LIVE_WEBHOOK_SECRET", "").strip()
+    return (
+        os.getenv("CHAPA_TEST_WEBHOOK_SECRET", "").strip()
+        or os.getenv("CHAPA_WEBHOOK_SECRET", "").strip()
+    )
 
 
 @dataclass
@@ -74,11 +100,12 @@ class ChapaPayoutAdapter(PayoutAdapter):
     """Official Chapa transfer adapter. No other provider is treated as integrated."""
 
     def create_transfer(self, *, account_name: str, account_number: str, provider_code: str, amount: str, currency: str, reference: str) -> PayoutResult:
-        secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
+        secret = _chapa_secret_key()
         if not secret:
             raise PayoutProviderError("The configured payout gateway is unavailable.")
 
         logger = logging.getLogger("app.payouts")
+        mode = get_chapa_mode()
         payload = {
             "account_name": account_name,
             "account_number": account_number,
@@ -87,16 +114,12 @@ class ChapaPayoutAdapter(PayoutAdapter):
             "currency": currency,
             "reference": reference,
         }
-        logged_payload = {
-            **payload,
-            "account_number": f"***{account_number[-4:]}",
-        }
         logger.warning(
-            "Chapa transfer request internal_reference=%s tx_ref=%s business_name=%s payload=%s",
+            "Chapa transfer request internal_reference=%s mode=%s amount=%s currency=%s",
             reference,
-            reference,
-            account_name,
-            json.dumps(logged_payload, ensure_ascii=True),
+            mode,
+            amount,
+            currency,
         )
         try:
             response = httpx.post(
@@ -114,22 +137,16 @@ class ChapaPayoutAdapter(PayoutAdapter):
             response_payload: Any = response.json() if response.content else {}
         except ValueError as exc:
             logger.warning(
-                "Chapa transfer response for %s: HTTP %s, invalid JSON body=%s",
+                "Chapa transfer response for %s: HTTP %s, invalid JSON",
                 reference,
                 response.status_code,
-                response.text,
             )
             raise PayoutProviderError(
                 f"The payout provider returned an invalid response (HTTP {response.status_code}).",
                 retryable=False,
             ) from exc
 
-        logger.warning(
-            "Chapa transfer response for %s: HTTP %s, JSON=%s",
-            reference,
-            response.status_code,
-            json.dumps(response_payload, ensure_ascii=True, default=str),
-        )
+        logger.info("Chapa transfer response reference=%s mode=%s http_status=%s", reference, mode, response.status_code)
 
         if response.is_error:
             message = response_payload.get("message") if isinstance(response_payload, dict) else None
@@ -145,18 +162,22 @@ class ChapaPayoutAdapter(PayoutAdapter):
         status = str(response_payload.get("status") or data.get("status") or "pending").strip().lower() if isinstance(response_payload, dict) else "pending"
         if status in {"success", "successful", "paid", "completed"}:
             if not provider_reference:
-                raise PayoutProviderError("The payout provider did not return a transfer reference.")
+                raise PayoutProviderError(
+                    "The payout provider did not return a transfer reference; status verification is required.",
+                    retryable=True,
+                )
             return PayoutResult("processing", str(provider_reference), "Payout accepted by the provider and awaiting confirmation.")
         if status in {"failed", "cancelled", "canceled"}:
-            if not provider_reference:
-                raise PayoutProviderError("The payout provider did not return a transfer reference.")
-            return PayoutResult("failed", str(provider_reference), "The payout provider reported a failed transfer.")
+            return PayoutResult("failed", str(provider_reference) if provider_reference else None, "The payout provider reported a failed transfer.")
         if not provider_reference:
-            raise PayoutProviderError("The payout provider did not return a transfer reference.")
+            raise PayoutProviderError(
+                "The payout provider did not return a transfer reference; status verification is required.",
+                retryable=True,
+            )
         return PayoutResult("pending", str(provider_reference) if provider_reference else None, "Payout accepted and awaiting provider confirmation.")
 
     def get_transfer_status(self, reference: str) -> PayoutResult:
-        secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
+        secret = _chapa_secret_key()
         if not secret:
             raise PayoutProviderError("The configured payout gateway is unavailable.")
         try:
@@ -180,13 +201,17 @@ class ChapaPayoutAdapter(PayoutAdapter):
         if status in {"success", "successful", "paid", "completed"}:
             # Some Chapa status responses omit the reference even though the
             # request succeeded; the verified reference is the one we queried.
-            return PayoutResult("completed", str(provider_reference or reference), "Payout completed by the provider.")
+            return PayoutResult("completed", str(provider_reference or reference), "Chapa confirmed this payout as successful.")
         if status in {"failed", "cancelled", "canceled"}:
             return PayoutResult("cancelled" if status in {"cancelled", "canceled"} else "failed", str(provider_reference) if provider_reference else None, "The payout provider reported a failed transfer.")
         return PayoutResult("processing", str(provider_reference) if provider_reference else None, "Payout remains pending with the provider.")
 
 
 def get_payout_adapter(provider_code: str) -> Optional[PayoutAdapter]:
-    if provider_code.isdigit() and os.getenv("CHAPA_SECRET_KEY", "").strip():
+    try:
+        secret = _chapa_secret_key()
+    except PayoutProviderError:
+        return None
+    if provider_code.isdigit() and secret:
         return ChapaPayoutAdapter()
     return None
