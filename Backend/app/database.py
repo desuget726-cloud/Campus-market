@@ -173,6 +173,8 @@ def init_db() -> None:
             "refund_attempts": "INT NOT NULL DEFAULT 0",
             "seller_reminder_12h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
             "seller_reminder_22h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "rejection_reason": "VARCHAR(30) NULL",
+            "rejection_note": "TEXT NULL",
         }
         for column_name, column_definition in missing_order_columns.items():
             if column_name not in order_columns:
@@ -180,14 +182,17 @@ def init_db() -> None:
                     connection.execute(text(
                         f"ALTER TABLE orders ADD COLUMN `{column_name}` {column_definition}"
                     ))
-        if "seller_accept_deadline" in missing_order_columns:
-            with engine.begin() as connection:
-                connection.execute(text(
-                    "UPDATE orders SET paid_at = COALESCE(paid_at, created_at), "
-                    "seller_accept_deadline = DATE_ADD(COALESCE(paid_at, created_at), INTERVAL 24 HOUR) "
-                    "WHERE status = 'Pending' AND payment_status = 'Successful' "
-                    "AND seller_accept_deadline IS NULL"
-                ))
+        deadline_expression = (
+            "DATE_ADD(COALESCE(paid_at, created_at), INTERVAL 48 HOUR)"
+            if engine.dialect.name == "mysql"
+            else "DATETIME(COALESCE(paid_at, created_at), '+48 hours')"
+        )
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE orders SET paid_at = COALESCE(paid_at, created_at), "
+                f"seller_accept_deadline = {deadline_expression} "
+                "WHERE LOWER(status) = 'pending' AND LOWER(payment_status) = 'successful'"
+            ))
         order_indexes = {index["name"] for index in inspect(engine).get_indexes("orders")}
         if "ix_orders_status_seller_accept_deadline" not in order_indexes:
             with engine.begin() as connection:

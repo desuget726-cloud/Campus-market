@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import AdminDisputeReview from './AdminDisputeReview';
@@ -62,6 +62,59 @@ const UNIVERSITY_STRUCTURE = {
 };
 
 const ADMIN_AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='64' fill='%230f766e'/%3E%3Ccircle cx='64' cy='48' r='22' fill='white'/%3E%3Cpath d='M25 108c4-24 19-36 39-36s35 12 39 36' fill='white'/%3E%3C/svg%3E";
+
+const SETTINGS_TOGGLE_PATHS = {
+  'Require Approval': 'productSettings.requireApproval',
+  'Allow Editing': 'productSettings.allowEditing',
+  'Auto Hide Sold': 'productSettings.autoHideSold',
+  'Enable AI': 'aiSettings.enableAI',
+  'Enable Online Payment': 'paymentSettings.enableOnlinePayment',
+  'Refunds Enabled': 'paymentSettings.refundsEnabled',
+  'Enable platform commission': 'paymentSettings.commission.commission_enabled',
+  'Email Notifications': 'notificationSettings.emailNotifs',
+  'Order Notifications': 'notificationSettings.orderNotifs',
+  'Message Notifications': 'notificationSettings.messageNotifs',
+  'Approval Notifications': 'notificationSettings.approvalNotifs',
+  'Payment Notifications': 'notificationSettings.paymentNotifs',
+  'Announcement Notifications': 'notificationSettings.announcementNotifs',
+  'Require Student Verification': 'securitySettings.requireStudentVerification',
+  'Require 2FA for all admins': 'securitySettings.admin2FA',
+  'Audit Logging': 'securitySettings.auditLogging',
+  'Require University Email': 'studentVerificationSettings.requireUniversityEmail',
+  'Auto Approve Students': 'studentVerificationSettings.autoApproveStudents',
+  'Auto Hide Reported': 'moderationSettings.autoHideReported',
+  'Require Admin Approval': 'moderationSettings.requireAdminApproval',
+  'Allow Student Reports': 'moderationSettings.allowStudentReports',
+  'Enable Chat': 'chatSettings.enabled',
+  'Allow Attachments': 'chatSettings.allowAttachments',
+  'Maintenance Mode': 'maintenanceSettings.maintenanceMode',
+};
+
+const isValidEmailDomain = (value) => /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(
+  String(value || '').trim().replace(/^@+/, '').toLowerCase(),
+);
+
+function SettingsToggle({ label, checked, onChange, description = '', disabled = false }) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
+      <span>
+        {label && <span className="block">{label}</span>}
+        {description && <span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{description}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-label={label || 'Audit Logging'}
+        aria-checked={Boolean(checked)}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-emerald-500' : 'bg-slate-300'}`}
+      >
+        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+      </button>
+    </div>
+  );
+}
 const PRODUCT_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='16' fill='%23f1f5f9'/%3E%3Cpath d='M24 35l24-12 24 12v28L48 75 24 63V35z' fill='%2394a3b8'/%3E%3Cpath d='M24 35l24 12 24-12M48 47v28' fill='none' stroke='%23e2e8f0' stroke-width='4'/%3E%3C/svg%3E";
 
 const getComplaintType = (issue = '') => {
@@ -1314,6 +1367,50 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     maintenanceMessage: 'The marketplace is temporarily unavailable for maintenance.'
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const savedSettingsRef = useRef(null);
+  const updateSetting = (key, value) => {
+    const [section, ...fieldPath] = key.split('.');
+    const updateSection = {
+      generalSettings: setGeneralSettings,
+      productSettings: setProductSettings,
+      aiSettings: setAiSettings,
+      paymentSettings: setPaymentSettings,
+      notificationSettings: setNotificationSettings,
+      securitySettings: setSecuritySettings,
+      studentVerificationSettings: setStudentVerificationSettings,
+      moderationSettings: setModerationSettings,
+      chatSettings: setChatSettings,
+      maintenanceSettings: setMaintenanceSettings,
+    }[section];
+    if (!updateSection || fieldPath.length === 0) return;
+
+    updateSection((previous) => {
+      const next = { ...previous };
+      let previousBranch = previous;
+      let nextBranch = next;
+      for (const field of fieldPath.slice(0, -1)) {
+        nextBranch[field] = { ...(previousBranch[field] || {}) };
+        previousBranch = previousBranch[field] || {};
+        nextBranch = nextBranch[field];
+      }
+      nextBranch[fieldPath.at(-1)] = value;
+      return next;
+    });
+  };
+  const restoreSavedSettings = () => {
+    const saved = savedSettingsRef.current;
+    if (!saved) return;
+    setGeneralSettings(saved.general);
+    setProductSettings(saved.marketplace);
+    setAiSettings(saved.ai);
+    setPaymentSettings(saved.payment);
+    setNotificationSettings(saved.notifications);
+    setSecuritySettings(saved.security);
+    setStudentVerificationSettings(saved.studentVerification);
+    setModerationSettings(saved.moderation);
+    setChatSettings(saved.chat);
+    setMaintenanceSettings(saved.maintenance);
+  };
 
   // KPI calculations
   const [metrics, setMetrics] = useState({
@@ -1544,36 +1641,43 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       const data = responseData.settings || responseData;
       const marketplaceSettings = data.marketplace || {};
       const studentVerification = data.studentVerification || {};
+      const normalizedStudentVerification = {
+        allowedEmailDomain: studentVerification.allowedEmailDomain ?? studentVerification.allowed_email_domain ?? 'university.edu.et',
+        requireUniversityEmail: studentVerification.requireUniversityEmail ?? studentVerification.require_university_email ?? true,
+        autoApproveStudents: studentVerification.autoApproveStudents ?? studentVerification.auto_approve_students ?? false,
+      };
+      const loadedSettings = {
+        general: { ...generalSettings, ...(data.general || {}) },
+        marketplace: { ...productSettings, ...marketplaceSettings },
+        ai: { ...aiSettings, ...(data.ai || {}) },
+        payment: {
+          ...paymentSettings,
+          ...(data.payment || {}),
+          security: { ...paymentSettings.security, ...(data.payment?.security || {}) },
+          commission: { ...paymentSettings.commission, ...(data.payment?.commission || {}) },
+          paymentProvider: 'Chapa',
+          currency: 'ETB',
+          paymentVerification: 'Automatic',
+        },
+        notifications: { ...notificationSettings, ...(data.notifications || {}) },
+        security: { ...securitySettings, ...(data.security || {}) },
+        studentVerification: normalizedStudentVerification,
+        moderation: { ...moderationSettings, ...(data.moderation || {}) },
+        chat: { ...chatSettings, ...(data.chat || {}) },
+        maintenance: { ...maintenanceSettings, ...(data.maintenance || {}) },
+      };
+      savedSettingsRef.current = loadedSettings;
 
-      setGeneralSettings((prev) => ({ ...prev, ...(data.general || {}) }));
-      setProductSettings((prev) => ({
-        ...prev,
-        maxImageSize: marketplaceSettings.maxImageSize ?? prev.maxImageSize,
-        maxImagesPerProduct: marketplaceSettings.maxImagesPerProduct ?? prev.maxImagesPerProduct,
-        requireApproval: marketplaceSettings.requireApproval ?? prev.requireApproval,
-        allowEditing: marketplaceSettings.allowEditing ?? prev.allowEditing,
-        autoHideSold: marketplaceSettings.autoHideSold ?? prev.autoHideSold,
-      }));
-      setModerationSettings((prev) => ({
-        ...prev,
-        ...(data.moderation || {}),
-      }));
-      setAiSettings((prev) => ({ ...prev, ...(data.ai || {}) }));
-      setPaymentSettings((prev) => ({
-        ...prev,
-        ...(data.payment || {}),
-        paymentProvider: 'Chapa',
-        currency: 'ETB',
-        paymentVerification: 'Automatic',
-      }));
-      setNotificationSettings((prev) => ({ ...prev, ...(data.notifications || {}) }));
-      setSecuritySettings((prev) => ({
-        ...prev,
-        ...(data.security || {}),
-      }));
-      setStudentVerificationSettings((prev) => ({ ...prev, ...studentVerification }));
-      setChatSettings((prev) => ({ ...prev, ...(data.chat || {}) }));
-      setMaintenanceSettings((prev) => ({ ...prev, ...(data.maintenance || {}) }));
+      setGeneralSettings(loadedSettings.general);
+      setProductSettings(loadedSettings.marketplace);
+      setModerationSettings(loadedSettings.moderation);
+      setAiSettings(loadedSettings.ai);
+      setPaymentSettings(loadedSettings.payment);
+      setNotificationSettings(loadedSettings.notifications);
+      setSecuritySettings(loadedSettings.security);
+      setStudentVerificationSettings(normalizedStudentVerification);
+      setChatSettings(loadedSettings.chat);
+      setMaintenanceSettings(loadedSettings.maintenance);
     } catch (error) {
       console.error('Failed to fetch system settings:', error);
       notifyError(error, 'admin-settings-load');
@@ -2817,6 +2921,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
   const handleSaveSystemSettings = async () => {
     if (settingsLoading) return;
+    const allowedEmailDomain = String(studentVerificationSettings.allowedEmailDomain || '').trim().replace(/^@+/, '').toLowerCase();
+    const validEmailDomain = isValidEmailDomain(allowedEmailDomain);
+    if (studentVerificationSettings.requireUniversityEmail && !validEmailDomain) {
+      notifyError(new Error('Allowed Email Domain must be a valid domain when Require University Email is on.'), 'admin-settings-domain');
+      restoreSavedSettings();
+      return;
+    }
     const payload = {
       general: generalSettings,
       marketplace: productSettings,
@@ -2829,7 +2940,10 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       },
       notifications: notificationSettings,
       security: securitySettings,
-      studentVerification: studentVerificationSettings,
+      studentVerification: {
+        ...studentVerificationSettings,
+        allowedEmailDomain,
+      },
       moderation: moderationSettings,
       chat: chatSettings,
       maintenance: maintenanceSettings,
@@ -2848,11 +2962,18 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         throw new Error(data.detail || 'Failed to save settings');
       }
 
-      await fetchDashboardOverview();
+      savedSettingsRef.current = data.settings || payload;
+      setStudentVerificationSettings(payload.studentVerification);
+      try {
+        await fetchDashboardOverview();
+      } catch (refreshError) {
+        console.error('Settings saved, but dashboard refresh failed:', refreshError);
+      }
       notifySuccess('System configurations saved successfully.', 'admin-settings-save');
     } catch (error) {
       console.error('Failed to save settings:', error);
       notifyError(error, 'admin-settings-save');
+      restoreSavedSettings();
     } finally {
       setSettingsLoading(false);
     }
@@ -6625,21 +6746,23 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'settings':
-        var toggleCard = (label, checked, onChange, description = '') => (
-          <label className="flex items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700">
-            <span>
-              <span className="block">{label}</span>
-              {description && <span className="mt-1 block text-xs font-medium leading-5 text-slate-500">{description}</span>}
-            </span>
-            <button
-              type="button"
-              onClick={onChange}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${checked ? 'bg-emerald-500' : 'bg-slate-300'}`}
-            >
-              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
-            </button>
-          </label>
-        );
+        var toggleCard = (label, checked, description = '') => {
+          const settingKey = SETTINGS_TOGGLE_PATHS[label];
+          return <SettingsToggle
+            label={label}
+            checked={checked}
+            description={description}
+            disabled={settingsLoading}
+            onChange={(value) => {
+              if (label === 'Auto Approve Students' && value && !window.confirm('Enable automatic approval for new student registrations?')) return;
+              if (label === 'Require University Email' && value && !isValidEmailDomain(studentVerificationSettings.allowedEmailDomain)) {
+                notifyError(new Error('Enter a valid Allowed Email Domain before enabling this setting.'), 'admin-settings-domain');
+                return;
+              }
+              updateSetting(settingKey, value);
+            }}
+          />;
+        };
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -6701,9 +6824,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <input type="number" value={productSettings.maxImagesPerProduct} onChange={(e) => setProductSettings({ ...productSettings, maxImagesPerProduct: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
                     </div>
                   </div>
-                  {toggleCard('Require Approval', productSettings.requireApproval, () => setProductSettings({ ...productSettings, requireApproval: !productSettings.requireApproval }))}
-                  {toggleCard('Allow Editing', productSettings.allowEditing, () => setProductSettings({ ...productSettings, allowEditing: !productSettings.allowEditing }))}
-                  {toggleCard('Auto Hide Sold', productSettings.autoHideSold, () => setProductSettings({ ...productSettings, autoHideSold: !productSettings.autoHideSold }), 'When enabled, sold or out-of-stock products are hidden from public listings. Save system settings to apply.')}
+                  {toggleCard('Require Approval', productSettings.requireApproval)}
+                  {toggleCard('Allow Editing', productSettings.allowEditing)}
+                  {toggleCard('Auto Hide Sold', productSettings.autoHideSold, 'When enabled, sold or out-of-stock products are hidden from public listings. Save system settings to apply.')}
                 </div>
               </div>
 
@@ -6728,7 +6851,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <input type="number" step="0.01" value={aiSettings.minSimilarityScore} onChange={(e) => setAiSettings({ ...aiSettings, minSimilarityScore: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
                     </div>
                   </div>
-                  {toggleCard('Enable AI', aiSettings.enableAI, () => setAiSettings({ ...aiSettings, enableAI: !aiSettings.enableAI }))}
+                  {toggleCard('Enable AI', aiSettings.enableAI)}
                 </div>
               </div>
 
@@ -6755,8 +6878,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                       <option>Automatic</option>
                     </select>
                   </div>
-                  {toggleCard('Enable Online Payment', paymentSettings.enableOnlinePayment, () => setPaymentSettings({ ...paymentSettings, enableOnlinePayment: !paymentSettings.enableOnlinePayment }))}
-                  {toggleCard('Refunds Enabled', paymentSettings.refundsEnabled, () => setPaymentSettings({ ...paymentSettings, refundsEnabled: !paymentSettings.refundsEnabled }))}
+                  {toggleCard('Enable Online Payment', paymentSettings.enableOnlinePayment)}
+                  {toggleCard('Refunds Enabled', paymentSettings.refundsEnabled)}
                   {paymentSettings.refundsEnabled && (
                     <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
                       <h4 className="text-sm font-black text-slate-900">Refund Policy</h4>
@@ -6788,18 +6911,12 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-4">
                     <h4 className="text-sm font-black text-slate-900">Commission</h4>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(paymentSettings.commission?.commission_enabled)}
-                          onChange={(e) => setPaymentSettings({
-                            ...paymentSettings,
-                            commission: { ...paymentSettings.commission, commission_enabled: e.target.checked },
-                          })}
-                          className="h-4 w-4 rounded border-slate-300 text-emerald-600"
-                        />
-                        Enable platform commission
-                      </label>
+                      <SettingsToggle
+                        label="Enable platform commission"
+                        checked={Boolean(paymentSettings.commission?.commission_enabled)}
+                        disabled={settingsLoading}
+                        onChange={(value) => updateSetting('paymentSettings.commission.commission_enabled', value)}
+                      />
                       <div>
                         <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Type</label>
                         <select
@@ -6868,10 +6985,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                         ['adminApprovalForRefunds', 'Admin approval for refunds'],
                         ['auditLogging', 'Payment changes recorded in Audit Logs'],
                       ].map(([key, label]) => (
-                        <label key={key} className="flex items-start gap-2 text-xs font-semibold text-slate-700">
-                          <input type="checkbox" checked={Boolean(paymentSettings.security?.[key])} onChange={(e) => setPaymentSettings({ ...paymentSettings, security: { ...paymentSettings.security, [key]: e.target.checked } })} className="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600" />
-                          <span>{label}</span>
-                        </label>
+                        <SettingsToggle
+                          key={key}
+                          label={label}
+                          checked={Boolean(paymentSettings.security?.[key])}
+                          disabled={settingsLoading}
+                          onChange={(value) => updateSetting(`paymentSettings.security.${key}`, value)}
+                        />
                       ))}
                     </div>
                   </div>
@@ -6881,23 +7001,22 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                 <h3 className="text-lg font-black text-slate-950">Notifications</h3>
                 <div className="mt-4 space-y-3">
-                  {toggleCard('Email Notifications', notificationSettings.emailNotifs, () => setNotificationSettings({ ...notificationSettings, emailNotifs: !notificationSettings.emailNotifs }))}
-                  {toggleCard('Order Notifications', notificationSettings.orderNotifs, () => setNotificationSettings({ ...notificationSettings, orderNotifs: !notificationSettings.orderNotifs }))}
-                  {toggleCard('Message Notifications', notificationSettings.messageNotifs, () => setNotificationSettings({ ...notificationSettings, messageNotifs: !notificationSettings.messageNotifs }))}
-                  {toggleCard('Approval Notifications', notificationSettings.approvalNotifs, () => setNotificationSettings({ ...notificationSettings, approvalNotifs: !notificationSettings.approvalNotifs }))}
-                  {toggleCard('Payment Notifications', notificationSettings.paymentNotifs, () => setNotificationSettings({ ...notificationSettings, paymentNotifs: !notificationSettings.paymentNotifs }))}
-                  {toggleCard('Announcement Notifications', notificationSettings.announcementNotifs, () => setNotificationSettings({ ...notificationSettings, announcementNotifs: !notificationSettings.announcementNotifs }))}
+                  {toggleCard('Email Notifications', notificationSettings.emailNotifs)}
+                  {toggleCard('Order Notifications', notificationSettings.orderNotifs)}
+                  {toggleCard('Message Notifications', notificationSettings.messageNotifs)}
+                  {toggleCard('Approval Notifications', notificationSettings.approvalNotifs)}
+                  {toggleCard('Payment Notifications', notificationSettings.paymentNotifs)}
+                  {toggleCard('Announcement Notifications', notificationSettings.announcementNotifs)}
                 </div>
               </div>
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                 <h3 className="text-lg font-black text-slate-950">Security</h3>
                 <div className="mt-4 space-y-4">
-                  {toggleCard('Require Student Verification', securitySettings.requireStudentVerification, () => setSecuritySettings({ ...securitySettings, requireStudentVerification: !securitySettings.requireStudentVerification }))}
+                  {toggleCard('Require Student Verification', securitySettings.requireStudentVerification)}
                   {toggleCard(
                     'Require 2FA for all admins',
                     securitySettings.admin2FA,
-                    () => setSecuritySettings({ ...securitySettings, admin2FA: !securitySettings.admin2FA }),
                     'System login policy. This does not show whether your own authenticator is configured.'
                   )}
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -6918,7 +7037,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Audit Logging</label>
                       <div className="mt-2">
-                        {toggleCard('', securitySettings.auditLogging, () => setSecuritySettings({ ...securitySettings, auditLogging: !securitySettings.auditLogging }))}
+                        {toggleCard('Audit Logging', securitySettings.auditLogging)}
                       </div>
                     </div>
                   </div>
@@ -6930,31 +7049,31 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <div className="mt-4 space-y-4">
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Allowed Email Domain</label>
-                    <input value={studentVerificationSettings.allowedEmailDomain} onChange={(e) => setStudentVerificationSettings({ ...studentVerificationSettings, allowedEmailDomain: e.target.value })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
+                    <input value={studentVerificationSettings.allowedEmailDomain} onChange={(e) => updateSetting('studentVerificationSettings.allowedEmailDomain', e.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
                   </div>
-                  {toggleCard('Require University Email', studentVerificationSettings.requireUniversityEmail, () => setStudentVerificationSettings({ ...studentVerificationSettings, requireUniversityEmail: !studentVerificationSettings.requireUniversityEmail }))}
-                  {toggleCard('Auto Approve Students', studentVerificationSettings.autoApproveStudents, () => setStudentVerificationSettings({ ...studentVerificationSettings, autoApproveStudents: !studentVerificationSettings.autoApproveStudents }))}
+                  {toggleCard('Require University Email', studentVerificationSettings.requireUniversityEmail)}
+                  {toggleCard('Auto Approve Students', studentVerificationSettings.autoApproveStudents)}
                 </div>
               </div>
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                 <h3 className="text-lg font-black text-slate-950">Moderation</h3>
                 <div className="mt-4 space-y-4">
-                  {toggleCard('Auto Hide Reported', moderationSettings.autoHideReported, () => setModerationSettings({ ...moderationSettings, autoHideReported: !moderationSettings.autoHideReported }))}
-                  {toggleCard('Require Admin Approval', moderationSettings.requireAdminApproval, () => setModerationSettings({ ...moderationSettings, requireAdminApproval: !moderationSettings.requireAdminApproval }))}
+                  {toggleCard('Auto Hide Reported', moderationSettings.autoHideReported)}
+                  {toggleCard('Require Admin Approval', moderationSettings.requireAdminApproval)}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Max Reports Before Review</label>
-                    <input type="number" value={moderationSettings.maxReportsBeforeReview} onChange={(e) => setModerationSettings({ ...moderationSettings, maxReportsBeforeReview: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
+                    <input type="number" value={moderationSettings.maxReportsBeforeReview} onChange={(e) => setModerationSettings({ ...moderationSettings, maxReportsBeforeReview: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm" />
                   </div>
-                  {toggleCard('Allow Student Reports', moderationSettings.allowStudentReports, () => setModerationSettings({ ...moderationSettings, allowStudentReports: !moderationSettings.allowStudentReports }))}
+                  {toggleCard('Allow Student Reports', moderationSettings.allowStudentReports)}
                 </div>
               </div>
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                 <h3 className="text-lg font-black text-slate-950">Chat</h3>
                 <div className="mt-4 space-y-4">
-                  {toggleCard('Enable Chat', chatSettings.enabled, () => setChatSettings({ ...chatSettings, enabled: !chatSettings.enabled }))}
-                  {toggleCard('Allow Attachments', chatSettings.allowAttachments, () => setChatSettings({ ...chatSettings, allowAttachments: !chatSettings.allowAttachments }))}
+                  {toggleCard('Enable Chat', chatSettings.enabled)}
+                  {toggleCard('Allow Attachments', chatSettings.allowAttachments)}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Max Message Length</label>
                     <input type="number" min="1" value={chatSettings.maxMessageLength} onChange={(e) => setChatSettings({ ...chatSettings, maxMessageLength: Number(e.target.value) || 1 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
@@ -6965,7 +7084,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               <div className="rounded-[32px] border border-amber-200 bg-amber-50/50 p-6 shadow-sm">
                 <h3 className="text-lg font-black text-slate-950">Maintenance</h3>
                 <div className="mt-4 space-y-4">
-                  {toggleCard('Maintenance Mode', maintenanceSettings.maintenanceMode, () => setMaintenanceSettings({ ...maintenanceSettings, maintenanceMode: !maintenanceSettings.maintenanceMode }))}
+                  {toggleCard('Maintenance Mode', maintenanceSettings.maintenanceMode)}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Maintenance Message</label>
                     <textarea rows="3" value={maintenanceSettings.maintenanceMessage} onChange={(e) => setMaintenanceSettings({ ...maintenanceSettings, maintenanceMessage: e.target.value })} className="mt-2 block w-full rounded-2xl border border-amber-200 bg-white px-4 py-3 text-sm" />

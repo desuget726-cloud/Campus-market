@@ -83,6 +83,8 @@ function SellerOperationsCenter({
   });
   const [salesAnalyticsLoading, setSalesAnalyticsLoading] = useState(false);
   const [pickupCodes, setPickupCodes] = useState({});
+  const [rejectReasons, setRejectReasons] = useState({});
+  const [rejectNotes, setRejectNotes] = useState({});
   const [completionState, setCompletionState] = useState({});
   const [disputeResponseState, setDisputeResponseState] = useState({});
   const [disputeEvidenceFiles, setDisputeEvidenceFiles] = useState({});
@@ -222,7 +224,8 @@ function SellerOperationsCenter({
       sold: "completed",
       cancelled: "cancelled",
       canceled: "cancelled",
-      rejected: "cancelled",
+      rejected: "rejected",
+      expired: "expired",
       failed: "cancelled",
     };
     return aliases[normalized] || normalized || "pending";
@@ -327,6 +330,13 @@ function SellerOperationsCenter({
       return {
         label: "Sold",
         className: "border border-emerald-200 bg-emerald-100 text-emerald-700",
+      };
+    }
+
+    if (["rejected", "expired"].includes(normalized)) {
+      return {
+        label: normalized === "rejected" ? "Rejected" : "Expired",
+        className: "border border-rose-200 bg-rose-100 text-rose-700",
       };
     }
 
@@ -575,7 +585,7 @@ function SellerOperationsCenter({
     onOpenOrderHandled?.();
   }, [openOrderId]);
 
-  const performSellerAction = async (order, action, providedCode = "") => {
+  const performSellerAction = async (order, action, providedCode = "", rejection = {}) => {
     const orderId = order.id ?? order.order_id ?? order.orderId;
     const inputCode = String(providedCode || pickupCodes[orderId] || "").trim();
     if (action === "handover" && !/^\d{4}$/.test(inputCode)) {
@@ -630,14 +640,16 @@ function SellerOperationsCenter({
       }
 
       const response = await fetch(
-        `${API_BASE_URL}/api/student/orders/${orderId}/seller-action`,
+        action === "reject"
+          ? `${API_BASE_URL}/api/student/orders/${orderId}/reject`
+          : `${API_BASE_URL}/api/student/orders/${orderId}/seller-action`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${getSessionToken()}`,
           },
-          body: JSON.stringify({
+          body: JSON.stringify(action === "reject" ? rejection : {
             action,
             ...(action === "handover" ? { input_code: Number(inputCode) } : {}),
           }),
@@ -652,6 +664,10 @@ function SellerOperationsCenter({
         buyer_confirmed: result.buyer_confirmed,
         seller_confirmed: result.seller_confirmed,
         is_funds_released: result.is_funds_released,
+        payment_status: result.payment_status,
+        refund_status: result.refund_reference ? "succeeded" : order.refund_status,
+        rejection_reason: rejection.reason,
+        rejection_note: rejection.note,
       });
       await onRefreshOrders?.();
       await onRefreshWallet?.();
@@ -731,22 +747,56 @@ function SellerOperationsCenter({
     return (
       <div className="flex min-w-[220px] flex-col gap-2">
         {status === "pending" && (
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-2">
             <button
               type="button"
               onClick={() => performSellerAction(order, "accept")}
               disabled={state.loading}
-              className="rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:bg-slate-300"
+              className="self-start rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:bg-slate-300"
             >
               Accept Order
             </button>
+            <label htmlFor={`reject-reason-${orderId}`} className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+              Rejection reason
+            </label>
+            <select
+              id={`reject-reason-${orderId}`}
+              value={rejectReasons[orderId] || ""}
+              onChange={(event) => setRejectReasons((previous) => ({ ...previous, [orderId]: event.target.value }))}
+              disabled={state.loading}
+              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
+            >
+              <option value="">Choose a reason</option>
+              <option value="out_of_stock">Out of stock</option>
+              <option value="already_sold">Already sold</option>
+              <option value="other">Other</option>
+            </select>
+            {rejectReasons[orderId] === "other" && (
+              <textarea
+                aria-label={`Optional rejection note for order ${orderId}`}
+                value={rejectNotes[orderId] || ""}
+                onChange={(event) => setRejectNotes((previous) => ({ ...previous, [orderId]: event.target.value }))}
+                disabled={state.loading}
+                maxLength={500}
+                placeholder="Optional note"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+              />
+            )}
             <button
               type="button"
-              onClick={() => performSellerAction(order, "reject")}
+              onClick={() => {
+                const reason = rejectReasons[orderId];
+                if (!reason) {
+                  setCompletionState((previous) => ({ ...previous, [orderId]: { error: "Choose a rejection reason." } }));
+                  return;
+                }
+                const confirmed = typeof window === "undefined" || window.confirm(`Reject order #${orderId} and refund the buyer?`);
+                if (confirmed) performSellerAction(order, "reject", "", { reason, note: rejectNotes[orderId] || null });
+              }}
               disabled={state.loading}
-              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:bg-slate-100"
+              className="self-start rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:bg-slate-100"
             >
-              Reject
+              Reject Order
             </button>
           </div>
         )}
@@ -843,8 +893,8 @@ function SellerOperationsCenter({
         error={selectedOrderError}
         onBack={() => setSelectedOrder(null)}
         onRefresh={() => fetchSellerOrderDetails(selectedOrder.id)}
-        onSellerAction={(order, action, inputCode) =>
-          performSellerAction(order, action, inputCode)
+        onSellerAction={(order, action, inputCode, rejection) =>
+          performSellerAction(order, action, inputCode, rejection)
         }
         onDisputeResponse={respondToDispute}
       />

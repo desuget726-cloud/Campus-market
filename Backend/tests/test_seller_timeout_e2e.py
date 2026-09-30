@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import unittest
 from datetime import datetime, timedelta
@@ -25,6 +26,7 @@ from app.models import (
     Product,
     SellerPaymentAccount,
     Student,
+    SystemSetting,
     Transaction,
     Wallet,
 )
@@ -163,6 +165,13 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         order = self.db.query(Order).order_by(Order.id.desc()).first()
         return order
 
+    def _reject_order(self, order, *, student_id=None, reason="out_of_stock", note=None):
+        return self.client.post(
+            f"/api/student/orders/{order.id}/reject",
+            headers={"Authorization": f"Bearer {self._student_token(student_id or self.seller.student_id)}"},
+            json={"reason": reason, "note": note},
+        )
+
     def _place_additional_order(self):
         self.db.add(CartItem(
             student_id=self.buyer.student_id,
@@ -184,12 +193,17 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         self.assertIsNotNone(order.paid_at)
         self.assertIsNotNone(order.seller_accept_deadline)
         self.assertEqual(order.status, "Pending")
-        self.assertEqual(order.seller_accept_deadline, order.paid_at + timedelta(hours=24))
+        self.assertEqual(order.seller_accept_deadline, order.paid_at + timedelta(hours=48))
+        asyncio.run(main_module._process_seller_acceptance_deadlines())
+        self.db.expire_all()
+        self.assertEqual(self.db.get(Order, order.id).status, "Pending")
+        self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("399.00"))
 
         expired = self._expire_now(order)
-        self.assertEqual(expired.status, "Refunded")
+        self.assertEqual(expired.status, "Expired")
         self.assertIsNotNone(expired.expired_at)
         self.assertEqual(expired.refund_status, "succeeded")
+        self.assertEqual(expired.payment_status, "Refunded")
         self.assertEqual(self.db.query(Wallet).filter_by(student_id=self.buyer.student_id).one().balance, Decimal("500.00"))
         self.assertEqual(self.db.get(Product, self.product.id).stock, 10)
         self.assertEqual(self.seller.missed_acceptance_count, 1)
@@ -199,13 +213,14 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
             Notification.target.like(f'%"order_id": {order.id}%'),
         ).count()
         refund_ledger_rows = self.db.query(Transaction).filter(
-            Transaction.tx_id == f"REFUND-SELLER-TIMEOUT-{order.id}"
+            Transaction.tx_id == f"REFUND-{order.id}",
+            Transaction.description == f"Refund - Order #{order.id}",
         ).count()
         timeout_audits = self.db.query(AuditLog).filter(
             AuditLog.action == "seller_timeout",
             AuditLog.entity_id == order.id,
         ).count()
-        self.assertEqual(timeout_notifications, 3)
+        self.assertEqual(timeout_notifications, 2)
         self.assertEqual(self.db.query(Notification).filter(
             Notification.student_id == self.buyer.student_id,
             Notification.title == "Order Expired",
@@ -231,9 +246,173 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         self.assertEqual(self.db.query(Wallet).filter_by(student_id=self.buyer.student_id).one().balance, Decimal("500.00"))
         self.assertEqual(self.db.query(Notification).count(), before_retry_notifications)
         self.assertEqual(self.db.get(Student, self.seller.id).missed_acceptance_count, 1)
+        expired_receipt = self.client.get(
+            f"/api/student/orders/{order.id}/receipt",
+            headers={"Authorization": f"Bearer {self._student_token(self.buyer.student_id)}"},
+        )
+        self.assertEqual(expired_receipt.status_code, 409)
+        self.assertIn("refunded orders", expired_receipt.json()["detail"])
         self.assertEqual(self.db.query(Transaction).filter(
-            Transaction.tx_id == f"REFUND-SELLER-TIMEOUT-{order.id}"
+            Transaction.tx_id == f"REFUND-{order.id}"
         ).count(), 1)
+
+    def test_student_verification_settings_save_reload_and_normalize_legacy_keys(self):
+        saved = self.client.put("/api/admin/settings", json={
+            "studentVerification": {
+                "allowed_email_domain": "Mail.University.edu.et",
+                "require_university_email": False,
+                "auto_approve_students": True,
+            },
+        })
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["settings"]["studentVerification"], {
+            "allowedEmailDomain": "mail.university.edu.et",
+            "requireUniversityEmail": False,
+            "autoApproveStudents": True,
+        })
+
+        reloaded = self.client.get("/api/admin/settings")
+        self.assertEqual(reloaded.status_code, 200, reloaded.text)
+        self.assertEqual(reloaded.json()["studentVerification"]["allowedEmailDomain"], "mail.university.edu.et")
+        self.assertFalse(reloaded.json()["studentVerification"]["requireUniversityEmail"])
+        self.assertTrue(reloaded.json()["studentVerification"]["autoApproveStudents"])
+
+        camel_case_saved = self.client.put("/api/admin/settings", json={
+            "studentVerification": {
+                "allowedEmailDomain": "Students.Campus.edu.et",
+                "requireUniversityEmail": True,
+                "autoApproveStudents": False,
+            },
+        })
+        self.assertEqual(camel_case_saved.status_code, 200, camel_case_saved.text)
+        camel_case_reloaded = self.client.get("/api/admin/settings")
+        self.assertEqual(camel_case_reloaded.json()["studentVerification"], {
+            "allowedEmailDomain": "students.campus.edu.et",
+            "requireUniversityEmail": True,
+            "autoApproveStudents": False,
+        })
+
+        stored = self.db.query(SystemSetting).filter_by(key="studentVerification").one()
+        stored.value = json.dumps({
+            "allowed_email_domain": "Legacy.University.edu.et",
+            "require_university_email": True,
+            "auto_approve_students": False,
+        })
+        self.db.commit()
+        legacy_reloaded = self.client.get("/api/admin/settings")
+        self.assertEqual(legacy_reloaded.status_code, 200, legacy_reloaded.text)
+        self.assertEqual(legacy_reloaded.json()["studentVerification"], {
+            "allowedEmailDomain": "legacy.university.edu.et",
+            "requireUniversityEmail": True,
+            "autoApproveStudents": False,
+        })
+
+        invalid = self.client.put("/api/admin/settings", json={
+            "studentVerification": {
+                "allowedEmailDomain": "",
+                "requireUniversityEmail": True,
+                "autoApproveStudents": False,
+            },
+        })
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn("valid domain", invalid.json()["detail"])
+
+    def test_health_and_public_products_are_available_to_vercel_guests(self):
+        origin = "https://campus-market-gamma-eight.vercel.app"
+        headers = {"Origin": origin}
+
+        health = self.client.get("/health", headers=headers)
+        self.assertEqual(health.status_code, 200, health.text)
+        self.assertEqual(health.json(), {"status": "ok"})
+        self.assertEqual(health.headers.get("access-control-allow-origin"), origin)
+
+        products = self.client.get("/api/products", headers=headers)
+        self.assertEqual(products.status_code, 200, products.text)
+        self.assertTrue(isinstance(products.json(), list))
+        self.assertEqual(products.headers.get("access-control-allow-origin"), origin)
+
+    def test_successful_seller_reject_refunds_full_amount_and_notifies_buyer(self):
+        order = self._checkout()
+        self.buyer.notif_order_email = True
+        self.db.commit()
+        amount = Decimal(str(order.price)) * order.quantity + Decimal(str(order.platform_fee))
+
+        with patch.object(main_module, "_send_student_notification_email", return_value=True) as send_email:
+            response = self._reject_order(order, reason="other", note="Supplier stock was unavailable.")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "Rejected")
+        self.assertEqual(Decimal(str(response.json()["refund_amount"])), amount)
+        send_email.assert_called_once()
+        self.db.expire_all()
+        rejected = self.db.get(Order, order.id)
+        self.assertEqual(rejected.payment_status, "Refunded")
+        self.assertEqual(rejected.rejection_reason, "other")
+        self.assertEqual(rejected.rejection_note, "Supplier stock was unavailable.")
+        self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("500.00"))
+        self.assertEqual(self.db.get(Product, self.product.id).stock, 10)
+        refund = self.db.query(Transaction).filter(Transaction.tx_id == f"REFUND-{order.id}").one()
+        self.assertEqual(refund.description, f"Refund - Order #{order.id}")
+        self.assertEqual(refund.amount, amount)
+        escrow = self.db.query(Transaction).filter(
+            Transaction.description == f"Escrow hold for order #{order.id}"
+        ).one()
+        self.assertEqual(escrow.status, "Refunded")
+        notification = self.db.query(Notification).filter(
+            Notification.student_id == self.buyer.student_id,
+            Notification.title == "Order Rejected",
+        ).one()
+        self.assertIn("The seller declined your order.", notification.message)
+        self.assertIn("has been refunded to your wallet.", notification.message)
+        self.assertNotIn("receipt", notification.message.lower())
+        receipt_response = self.client.get(
+            f"/api/student/orders/{order.id}/receipt",
+            headers={"Authorization": f"Bearer {self._student_token(self.buyer.student_id)}"},
+        )
+        self.assertEqual(receipt_response.status_code, 409)
+        self.assertIn("refund confirmation", receipt_response.json()["detail"].lower())
+        self.assertNotIn("receipt_number", receipt_response.json())
+
+    def test_double_reject_does_not_credit_twice(self):
+        order = self._checkout()
+        first = self._reject_order(order)
+        self.assertEqual(first.status_code, 200, first.text)
+
+        second = self._reject_order(order)
+
+        self.assertEqual(second.status_code, 409)
+        self.db.expire_all()
+        self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("500.00"))
+        self.assertEqual(self.db.get(Product, self.product.id).stock, 10)
+        self.assertEqual(self.db.query(Transaction).filter(Transaction.tx_id == f"REFUND-{order.id}").count(), 1)
+
+    def test_reject_after_accept_is_blocked(self):
+        order = self._checkout()
+        accepted = self.client.post(
+            f"/api/student/orders/{order.id}/seller-action",
+            headers={"Authorization": f"Bearer {self._student_token(self.seller.student_id)}"},
+            json={"action": "accept"},
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+
+        rejected = self._reject_order(order)
+
+        self.assertEqual(rejected.status_code, 409)
+        self.db.expire_all()
+        self.assertEqual(self.db.get(Order, order.id).status, "Processing")
+        self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("399.00"))
+        self.assertEqual(self.db.get(Product, self.product.id).stock, 9)
+
+    def test_non_seller_cannot_reject_order(self):
+        order = self._checkout()
+
+        response = self._reject_order(order, student_id=self.buyer.student_id)
+
+        self.assertEqual(response.status_code, 403)
+        self.db.expire_all()
+        self.assertEqual(self.db.get(Order, order.id).status, "Pending")
+        self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("399.00"))
+        self.assertEqual(self.db.query(Transaction).filter(Transaction.tx_id == f"REFUND-{order.id}").count(), 0)
 
     def test_accept_before_deadline_survives_later_job_run(self):
         order = self._checkout()
@@ -244,6 +423,16 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["status"], "Processing")
+        receipt_response = self.client.get(
+            f"/api/student/orders/{order.id}/receipt",
+            headers={"Authorization": f"Bearer {self._student_token(self.buyer.student_id)}"},
+        )
+        self.assertEqual(receipt_response.status_code, 200, receipt_response.text)
+        receipt = receipt_response.json()
+        self.assertEqual(receipt["payment_status"], "Successful")
+        expected_percent = float(Decimal(str(order.platform_fee)) * Decimal("100") / Decimal(str(order.price)))
+        self.assertEqual(receipt["platform_commission_percent"], expected_percent)
+        self.assertIn(f"({expected_percent:g}%", receipt["platform_commission_label"])
 
         order = self.db.get(Order, order.id)
         order.seller_accept_deadline = datetime.now() - timedelta(seconds=1)
@@ -268,8 +457,10 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         self.db.expire_all()
         self.assertEqual(self.db.get(Order, order.id).status, "Pending")
 
-    def test_failed_refund_stops_after_three_attempts_and_admin_retry_credits_once(self):
+    def test_failed_expiry_refund_rolls_back_and_retries_cleanly(self):
         order = self._checkout()
+        order.seller_accept_deadline = datetime.now() - timedelta(seconds=1)
+        self.db.commit()
         original_apply_transaction = main_module.apply_transaction
 
         def fail_refund(*args, **kwargs):
@@ -278,50 +469,31 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
             return original_apply_transaction(*args, **kwargs)
 
         with patch.object(main_module, "apply_transaction", side_effect=fail_refund):
-            for expected_attempt in range(1, 4):
-                if expected_attempt == 1:
-                    order.seller_accept_deadline = datetime.now() - timedelta(seconds=1)
-                    self.db.commit()
-                asyncio.run(main_module._process_seller_acceptance_deadlines())
-                self.db.expire_all()
-                failed_order = self.db.get(Order, order.id)
-                self.assertEqual(failed_order.refund_status, "failed")
-                self.assertEqual(failed_order.refund_attempts, expected_attempt)
-
             asyncio.run(main_module._process_seller_acceptance_deadlines())
             self.db.expire_all()
-            self.assertEqual(self.db.get(Order, order.id).refund_attempts, 3)
+            self.assertEqual(self.db.get(Order, order.id).status, "Pending")
+            self.assertEqual(self.db.get(Order, order.id).payment_status, "Successful")
+            self.assertEqual(self.db.get(Order, order.id).refund_status, "none")
+            self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("399.00"))
+            self.assertEqual(self.db.get(Product, self.product.id).stock, 9)
+            self.assertEqual(self.db.query(Transaction).filter(
+                Transaction.tx_id == f"REFUND-{order.id}"
+            ).count(), 0)
 
-            unauthorized = self.client.post(f"/api/admin/orders/{order.id}/retry-refund")
-            self.assertEqual(unauthorized.status_code, 401)
-
-        admin_token = self._admin_token()
-        retried = self.client.post(
-            f"/api/admin/orders/{order.id}/retry-refund",
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        self.assertEqual(retried.status_code, 200, retried.text)
+        asyncio.run(main_module._process_seller_acceptance_deadlines())
         self.db.expire_all()
+        self.assertEqual(self.db.get(Order, order.id).status, "Expired")
         self.assertEqual(self.db.get(Order, order.id).refund_status, "succeeded")
-        self.assertEqual(self.db.get(Order, order.id).refund_attempts, 4)
         self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("500.00"))
+        self.assertEqual(self.db.get(Product, self.product.id).stock, 10)
         self.assertEqual(self.db.query(Transaction).filter(
-            Transaction.tx_id == f"REFUND-SELLER-TIMEOUT-{order.id}"
+            Transaction.tx_id == f"REFUND-{order.id}"
         ).count(), 1)
-
-        retried_again = self.client.post(
-            f"/api/admin/orders/{order.id}/retry-refund",
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        self.assertEqual(retried_again.status_code, 200)
-        self.db.expire_all()
-        self.assertEqual(self.db.get(Wallet, self.wallet.id).balance, Decimal("500.00"))
-        self.assertEqual(self.db.get(Order, order.id).refund_attempts, 4)
 
     def test_12_hour_and_22_hour_reminders_are_each_sent_once(self):
         order = self._checkout()
-        order.paid_at = datetime.now() - timedelta(hours=13)
-        order.seller_accept_deadline = order.paid_at + timedelta(hours=24)
+        order.paid_at = datetime.now() - timedelta(hours=37)
+        order.seller_accept_deadline = order.paid_at + timedelta(hours=48)
         self.db.commit()
         asyncio.run(main_module._process_seller_acceptance_deadlines())
         self.db.expire_all()
@@ -339,8 +511,8 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         ).count(), 1)
 
         second_order = self._place_additional_order()
-        second_order.paid_at = datetime.now() - timedelta(hours=2)
-        second_order.seller_accept_deadline = second_order.paid_at + timedelta(hours=24)
+        second_order.paid_at = datetime.now() - timedelta(hours=27)
+        second_order.seller_accept_deadline = second_order.paid_at + timedelta(hours=48)
         self.db.commit()
         asyncio.run(main_module._process_seller_acceptance_deadlines())
         self.db.expire_all()

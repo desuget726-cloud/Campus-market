@@ -27,6 +27,14 @@ function applyGoogleLanguage(language, attempts = 30) {
 // eslint-disable-next-line react-refresh/only-export-components
 export const translations = {
     en: {
+        home: {
+            listingsFailure: "We couldn't load listings right now. Please try again.",
+            listingsLoading: 'Loading, please wait a moment…',
+            noConnection: 'No connection. Check your internet and try again.',
+            tryAgain: 'Try again',
+            dismiss: 'Dismiss',
+            developmentHint: 'Development mode: check the backend service.'
+        },
         navbar: {
             language: 'Language',
             english: 'English',
@@ -88,7 +96,21 @@ export const translations = {
             creatingAccount: 'Creating account…',
             registrationSuccess: 'Registration successful. You can now log in.',
             registrationFailed: 'Registration failed.',
-            couldNotCreate: 'Could not create account.'
+            couldNotCreate: 'Could not create account.',
+            oauthErrors: {
+                domain_not_allowed: 'A personal Gmail address is not allowed while university email is required. Use an address ending in @{domain}.',
+                account_pending: 'Your account is waiting for university approval. You can sign in after an administrator approves it.',
+                email_not_verified: 'Google did not confirm this email address. Verify it with Google, then try again.',
+                token_exchange_failed: 'Google could not complete sign-in. The authorization code may have expired; please try again.',
+                google_state: 'This sign-in attempt expired or could not be verified. Please start again.',
+                google_cancelled: 'Google sign-in was cancelled. You can try again whenever you are ready.',
+                identity_provider_unavailable: 'Google sign-in is temporarily unavailable. Please try again shortly.',
+                identity_verification_failed: 'Google could not verify your identity. Please try again.',
+                oauth_not_configured: 'Google sign-in is not configured on the server. Please contact support.',
+                oauth_configuration_error: 'Google sign-in is misconfigured on the server. Please check the OAuth client and redirect URI settings.',
+                account_unavailable: 'Your account could not be signed in. Please contact support.',
+                session_restore_failed: 'Google signed you in, but this browser could not restore the session. Please try again.'
+            }
         },
         studentToast: {
             profileSaved: 'Profile saved successfully.',
@@ -119,7 +141,33 @@ export const translations = {
             aiResponseReady: 'AI response received.',
             attachmentUploaded: 'Attachment sent successfully.'
         }
-    }
+    },
+    am: {
+        home: {
+            listingsFailure: 'ምርቶችን ማምጣት አልተቻለም። እባክዎ እንደገና ይሞክሩ።',
+            listingsLoading: 'ገጹ እየተጫነ ነው፣ ትንሽ ይጠብቁ…',
+            noConnection: 'ግንኙነት የለም። ኢንተርኔትዎን ያረጋግጡና እንደገና ይሞክሩ።',
+            tryAgain: 'እንደገና ሞክር',
+            dismiss: 'ዝጋ',
+            developmentHint: 'የልማት ሁነታ፦ የጀርባ አገልጋዩን ያረጋግጡ።'
+        },
+        auth: {
+            oauthErrors: {
+                domain_not_allowed: 'የዩኒቨርሲቲ ኢሜይል ሲያስፈልግ የግል Gmail አድራሻ አይፈቀድም። @{domain} የሚያበቃ አድራሻ ይጠቀሙ።',
+                account_pending: 'መለያዎ የዩኒቨርሲቲ ፈቃድ እየጠበቀ ነው። አስተዳዳሪ ካጸደቀው በኋላ መግባት ይችላሉ።',
+                email_not_verified: 'Google ይህን ኢሜይል አላረጋገጠም። በGoogle ያረጋግጡትና እንደገና ይሞክሩ።',
+                token_exchange_failed: 'Google መግባትን ማጠናቀቅ አልቻለም። የፈቃድ ኮዱ ጊዜው አልፎ ሊሆን ይችላል፤ እንደገና ይሞክሩ።',
+                google_state: 'ይህ የመግቢያ ሙከራ ጊዜው አልፎታል ወይም ማረጋገጥ አልተቻለም። እባክዎ እንደገና ይጀምሩ።',
+                google_cancelled: 'የGoogle መግቢያ ተሰርዟል። ሲፈልጉ እንደገና መሞከር ይችላሉ።',
+                identity_provider_unavailable: 'የGoogle መግቢያ ለጊዜው አይገኝም። ቆይተው እንደገና ይሞክሩ።',
+                identity_verification_failed: 'Google ማንነትዎን ማረጋገጥ አልቻለም። እንደገና ይሞክሩ።',
+                oauth_not_configured: 'የGoogle መግቢያ በአገልጋዩ ላይ አልተዋቀረም። ድጋፍን ያነጋግሩ።',
+                oauth_configuration_error: 'በአገልጋዩ ላይ የGoogle መግቢያ ቅንብር ችግር አለ። የOAuth ደንበኛና የመመለሻ ዩአርአይ ቅንብሮችን ያረጋግጡ።',
+                account_unavailable: 'ወደ መለያዎ መግባት አልተቻለም። ድጋፍን ያነጋግሩ።',
+                session_restore_failed: 'Google ገብተው ነበር፣ ግን ክፍለ ጊዜውን ማስመለስ አልተቻለም። እንደገና ይሞክሩ።'
+            }
+        }
+    },
 };
 
 const LanguageContext = createContext(null);
@@ -150,23 +198,36 @@ export function LanguageProvider({ children }) {
         };
 
         window.googleTranslateElementInit = initializeGoogleTranslate;
-        const script = document.getElementById(GOOGLE_TRANSLATE_SCRIPT_ID);
-        if (window.google?.translate?.TranslateElement) {
-            initializeGoogleTranslate();
-        } else if (!script) {
+        const loadGoogleTranslate = () => {
+            if (language !== 'am' || !navigator.onLine) return;
+
+            if (window.google?.translate?.TranslateElement) {
+                initializeGoogleTranslate();
+                return;
+            }
+
+            if (document.getElementById(GOOGLE_TRANSLATE_SCRIPT_ID)) return;
+
             const translateScript = document.createElement('script');
             translateScript.id = GOOGLE_TRANSLATE_SCRIPT_ID;
             translateScript.src = 'https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';
             translateScript.async = true;
+            translateScript.onerror = () => translateScript.remove();
             document.body.appendChild(translateScript);
-        }
+        };
+
+        loadGoogleTranslate();
+        window.addEventListener('online', loadGoogleTranslate);
 
         const handleRenderedContent = () => {
             if (languageRef.current === 'am') applyGoogleLanguage('am');
         };
         window.addEventListener('campace:content-rendered', handleRenderedContent);
-        return () => window.removeEventListener('campace:content-rendered', handleRenderedContent);
-    }, []);
+        return () => {
+            window.removeEventListener('online', loadGoogleTranslate);
+            window.removeEventListener('campace:content-rendered', handleRenderedContent);
+        };
+    }, [language]);
 
     const changeLanguage = useCallback((nextLanguage) => {
         const selectedLanguage = nextLanguage === 'am' ? 'am' : 'en';
@@ -183,7 +244,9 @@ export function LanguageProvider({ children }) {
     const value = useMemo(() => ({
         language,
         setLanguage: changeLanguage,
-        t: (key) => getTranslation(translations.en, key) || key
+        t: (key) => getTranslation(translations[language] || {}, key)
+            ?? getTranslation(translations.en, key)
+            ?? key
     }), [changeLanguage, language]);
 
     return <LanguageContext.Provider value={value}>{children}</LanguageContext.Provider>;

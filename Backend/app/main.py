@@ -25,12 +25,12 @@ from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, F
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 import bcrypt
-from typing import Optional, List, Dict, Tuple, Any, cast
+from typing import Optional, List, Dict, Tuple, Any, Literal, cast
 from dataclasses import dataclass
 import shutil
 import logging
@@ -156,15 +156,19 @@ class ChapaWebhookPayload(BaseModel):
 
 
 # React (CORS)
+DEPLOYED_FRONTEND_ORIGIN = "https://campus-market-gamma-eight.vercel.app"
 origins = [
     "http://localhost:5173",      
     "http://127.0.0.1:5173",     
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    DEPLOYED_FRONTEND_ORIGIN,
 ]
 configured_origins = os.getenv("CORS_ORIGINS", "")
 if configured_origins:
     origins = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
+    if DEPLOYED_FRONTEND_ORIGIN not in origins:
+        origins.append(DEPLOYED_FRONTEND_ORIGIN)
 
 app.add_middleware(
     CORSMiddleware,
@@ -173,6 +177,11 @@ app.add_middleware(
     allow_methods=["*"],          # All HTTP methods
     allow_headers=["*"],          #  All headers
 )
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 # Create static directory for uploads if it doesn't exist
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "uploads")
@@ -570,6 +579,7 @@ def _normalize_order_status(raw_value: Optional[str]) -> str:
         "delivery": "Ready for Pickup",
         "completed": "Completed",
         "expired": "Expired",
+        "rejected": "Rejected",
         "refunded": "Refunded",
         "success": "Completed",
         "successful": "Completed",
@@ -1398,63 +1408,23 @@ async def _process_seller_acceptance_deadlines() -> None:
     for order_id in expired_order_ids:
         db = SessionLocal()
         try:
-            claimed = db.query(Order).filter(
-                Order.id == order_id,
-                func.lower(Order.status) == "pending",
-                Order.seller_accept_deadline < now,
-            ).update(
-                {Order.status: "Expired", Order.expired_at: now},
-                synchronize_session=False,
-            )
-            if claimed != 1:
-                db.rollback()
-                continue
-            order = db.query(Order).filter(Order.id == order_id).first()
-            buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
-            product = db.query(Product).filter(Product.id == order.product_id).with_for_update().first()
-            seller = db.query(Student).filter(Student.student_id == order.seller_id).with_for_update().first() if order.seller_id else None
-            if not buyer or not product:
-                raise ValueError("Buyer or product is missing for expired order.")
-
-            _restock_product_for_order(product, order)
-            order.is_funds_released = False
-            if seller:
-                seller.missed_acceptance_count = int(seller.missed_acceptance_count or 0) + 1
-                if seller.missed_acceptance_count >= SELLER_TIMEOUT_SUSPENSION_COUNT:
-                    seller.suspended_until = now + timedelta(days=SELLER_TIMEOUT_SUSPENSION_DAYS)
-                    seller.restriction_reason = "Temporarily suspended after repeated seller order acceptance timeouts."
-                    seller_message = f"Your account is temporarily suspended for {SELLER_TIMEOUT_SUSPENSION_DAYS} days after {seller.missed_acceptance_count} missed order acceptances."
-                elif seller.missed_acceptance_count >= SELLER_TIMEOUT_WARNING_COUNT:
-                    seller_message = "Warning: you missed the acceptance deadline for an order. Repeated missed acceptances may temporarily suspend your account."
-                else:
-                    seller_message = "An order expired because it was not accepted before the deadline."
-                _dispatch_student_notification(db, seller, "Seller Acceptance Timeout", seller_message, "order", order_id=order.id)
-
-            _dispatch_student_notification(
+            order, _refund_amount = _refund_pending_order(
                 db,
-                buyer,
-                "Order Expired",
-                f"Your order for '{order.title}' expired because the seller did not respond. Your wallet refund is being processed.",
-                "order",
-                order_id=order.id,
+                order_id,
+                final_status="Expired",
             )
-            db.add(AuditLog(
-                action="seller_timeout",
-                entity_type="Order",
-                entity_id=order.id,
-                description=f"Order #{order.id} expired because the seller did not accept it before seller_accept_deadline.",
-                status="SUCCESS",
-                severity="warning",
-            ))
-            db.commit()
+            attempted_order_ids.add(order.id)
+        except HTTPException as error:
+            db.rollback()
+            if error.status_code != 409:
+                logger.warning("Unable to expire seller-pending order %s: %s", order_id, error.detail)
+            continue
         except Exception:
             db.rollback()
             logger.exception("Unable to expire seller-pending order %s.", order_id)
             continue
         finally:
             db.close()
-        attempted_order_ids.add(order_id)
-        _attempt_seller_timeout_refund(order_id)
 
     retry_db = SessionLocal()
     try:
@@ -2025,6 +1995,107 @@ def _escrow_hold_refund_amount(escrow_hold: Transaction, order: Optional[Order] 
     return refund_amount
 
 
+def _refund_pending_order(
+    db: Session,
+    order_id: int,
+    *,
+    final_status: Literal["Rejected", "Expired"],
+    reason: Optional[str] = None,
+    note: Optional[str] = None,
+) -> tuple[Order, Decimal]:
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    if str(order.status or "").strip().lower() != "pending":
+        raise HTTPException(status_code=409, detail="Only pending orders can be rejected or expired.")
+
+    buyer = db.query(Student).filter(
+        Student.student_id == order.student_id,
+    ).with_for_update().first()
+    product = db.query(Product).filter(
+        Product.id == order.product_id,
+    ).with_for_update().first()
+    if not buyer or not product:
+        raise HTTPException(status_code=409, detail="Buyer or product not found for order.")
+
+    refund_reference = f"REFUND-{order.id}"
+    existing_refund = db.query(Transaction).filter(
+        Transaction.tx_id == refund_reference,
+        Transaction.status == "Successful",
+    ).with_for_update().first()
+    if existing_refund:
+        raise HTTPException(status_code=409, detail="A refund has already been recorded for this order.")
+
+    escrow_hold = _get_held_escrow_transaction(db, order)
+    if not escrow_hold:
+        raise HTTPException(status_code=409, detail="Escrow hold not found for order.")
+    refund_amount = _escrow_hold_refund_amount(escrow_hold)
+    normalized_note = str(note or "").strip() or None
+
+    apply_transaction(
+        db,
+        student_id=buyer.student_id,
+        tx_id=refund_reference,
+        transaction_type="Refund",
+        amount=refund_amount,
+        description=f"Refund - Order #{order.id}",
+    )
+    escrow_hold.status = "Refunded"
+    order.status = final_status
+    order.payment_status = "Refunded"
+    order.refund_status = "succeeded"
+    order.refund_reference = refund_reference
+    order.refund_attempts = max(int(order.refund_attempts or 0), 1)
+    order.is_funds_released = False
+    order.rejection_reason = reason if final_status == "Rejected" else None
+    order.rejection_note = normalized_note if final_status == "Rejected" else None
+    if final_status == "Expired":
+        order.expired_at = datetime.now()
+    _restock_product_for_order(product, order)
+
+    if final_status == "Rejected":
+        message = f"The seller declined your order. {refund_amount:,.2f} ETB has been refunded to your wallet."
+        _dispatch_student_notification(db, buyer, "Order Rejected", message, "order", order_id=order.id)
+        db.add(AuditLog(
+            action="seller_reject",
+            entity_type="Order",
+            entity_id=order.id,
+            description=f"Order #{order.id} was rejected by its seller ({reason}).",
+            status="SUCCESS",
+            severity="info",
+        ))
+    else:
+        message = f"Your order expired after 48 hours without seller confirmation. {refund_amount:,.2f} ETB has been refunded to your wallet."
+        _dispatch_student_notification(db, buyer, "Order Expired", message, "order", order_id=order.id)
+        seller_identifier = order.seller_id or product.seller
+        seller = db.query(Student).filter(
+            or_(Student.student_id == seller_identifier, Student.name == seller_identifier),
+        ).with_for_update().first() if seller_identifier else None
+        if seller:
+            seller.missed_acceptance_count = int(seller.missed_acceptance_count or 0) + 1
+            if seller.missed_acceptance_count >= SELLER_TIMEOUT_SUSPENSION_COUNT:
+                seller.suspended_until = datetime.now() + timedelta(days=SELLER_TIMEOUT_SUSPENSION_DAYS)
+                seller.restriction_reason = "Temporarily suspended after repeated seller order acceptance timeouts."
+                seller_message = f"Your account is temporarily suspended for {SELLER_TIMEOUT_SUSPENSION_DAYS} days after {seller.missed_acceptance_count} missed order acceptances."
+            elif seller.missed_acceptance_count >= SELLER_TIMEOUT_WARNING_COUNT:
+                seller_message = "Warning: you missed the acceptance deadline for an order. Repeated missed acceptances may temporarily suspend your account."
+            else:
+                seller_message = "An order expired because it was not accepted before the deadline."
+            _dispatch_student_notification(db, seller, "Seller Acceptance Timeout", seller_message, "order", order_id=order.id)
+        db.add(AuditLog(
+            action="seller_timeout",
+            entity_type="Order",
+            entity_id=order.id,
+            description=f"Order #{order.id} expired after 48 hours without seller acceptance.",
+            status="SUCCESS",
+            severity="warning",
+        ))
+
+    db.commit()
+    db.refresh(order)
+    return order, refund_amount
+
+
 def _sync_product_status_with_stock(product: Product) -> None:
     product.stock = max(0, int(getattr(product, "stock", 0) or 0))
     if product.stock == 0:
@@ -2059,6 +2130,11 @@ class PickupVerificationRequest(BaseModel):
 class SellerOrderActionRequest(BaseModel):
     action: str
     input_code: Optional[int] = None
+
+
+class SellerOrderRejectionRequest(BaseModel):
+    reason: Literal["out_of_stock", "already_sold", "other"]
+    note: Optional[str] = None
 
 
 class OrderCancellationRequest(BaseModel):
@@ -2277,6 +2353,26 @@ def get_payment_settings(db: Session) -> dict:
 
 def _payment_security_enabled(db: Session, key: str) -> bool:
     return bool(get_payment_settings(db)["security"].get(key, False))
+
+
+class StudentVerificationSettingsModel(BaseModel):
+    allowed_email_domain: str = Field(alias="allowedEmailDomain")
+    require_university_email: bool = Field(alias="requireUniversityEmail")
+    auto_approve_students: bool = Field(alias="autoApproveStudents")
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+def _normalize_student_verification_settings(values: dict) -> dict:
+    defaults = DEFAULT_SETTINGS_BLOCKS["studentVerification"]
+    normalized = StudentVerificationSettingsModel(
+        allowed_email_domain=values.get("allowedEmailDomain", values.get("allowed_email_domain", defaults["allowedEmailDomain"])),
+        require_university_email=values.get("requireUniversityEmail", values.get("require_university_email", defaults["requireUniversityEmail"])),
+        auto_approve_students=values.get("autoApproveStudents", values.get("auto_approve_students", defaults["autoApproveStudents"])),
+    )
+    result = normalized.model_dump(by_alias=True)
+    result["allowedEmailDomain"] = str(result["allowedEmailDomain"] or "").strip().lstrip("@").lower()
+    return result
 
 
 @dataclass(frozen=True)
@@ -3332,10 +3428,8 @@ async def _exchange_oauth_code(token_url: str, payload: dict) -> dict:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(token_url, data=payload)
-    except httpx.RequestError as error:
-        logging.getLogger("app.auth").error(
-            "OAuth token exchange failed for %s: %s", token_url, error
-        )
+    except httpx.RequestError:
+        logging.getLogger("app.auth").error("OAuth token exchange failed: reason=provider_unavailable")
         raise HTTPException(
             status_code=502,
             detail="The server could not reach the OAuth provider. Check backend internet access and try again.",
@@ -3344,12 +3438,9 @@ async def _exchange_oauth_code(token_url: str, payload: dict) -> dict:
     token_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
     if not response.is_success or not token_data.get("access_token"):
         provider_error = token_data.get("error") if isinstance(token_data, dict) else None
-        provider_description = token_data.get("error_description") if isinstance(token_data, dict) else None
         logging.getLogger("app.auth").warning(
-            "OAuth token exchange rejected by provider: status=%s error=%s description=%s",
+            "OAuth token exchange rejected by provider: status=%s",
             response.status_code,
-            provider_error or "unknown",
-            provider_description or "none",
         )
         if provider_error == "invalid_client":
             raise HTTPException(
@@ -3392,21 +3483,34 @@ def _oauth_frontend_url() -> str:
     return (os.getenv("FRONTEND_URL") or "http://localhost:5173").strip().rstrip("#")
 
 
-def _google_state_error_redirect() -> RedirectResponse:
+def _google_oauth_frontend_redirect(error: Optional[str] = None, domain: Optional[str] = None) -> RedirectResponse:
     frontend_url = urlsplit(_oauth_frontend_url())
     login_path = frontend_url.path.rstrip("/")
     if not login_path.endswith("/login"):
         login_path = f"{login_path}/login"
+    query = {"oauth": "success"} if error is None else {"error": error}
+    if domain:
+        query["domain"] = domain
     return RedirectResponse(
         url=urlunsplit((
             frontend_url.scheme,
             frontend_url.netloc,
             login_path,
-            urlencode({"error": "google_state"}),
+            urlencode(query),
             "",
         )),
         status_code=303,
     )
+
+
+def _log_google_oauth_failure(reason: str) -> None:
+    logging.getLogger("app.auth").warning("Google OAuth callback failed: reason=%s", reason)
+
+
+class GoogleOAuthPolicyError(Exception):
+    def __init__(self, code: str, domain: Optional[str] = None):
+        self.code = code
+        self.domain = domain
 
 
 def _consume_google_oauth_state(db: Session, state: Optional[str]) -> Optional[str]:
@@ -3443,7 +3547,10 @@ def _consume_google_oauth_state(db: Session, state: Optional[str]) -> Optional[s
 
 
 def _oauth_cookie_secure() -> bool:
-    return os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    configured = os.getenv("COOKIE_SECURE")
+    if configured is not None:
+        return configured.strip().lower() in {"1", "true", "yes", "on"}
+    return urlsplit(_oauth_frontend_url()).scheme.lower() == "https"
 
 
 def _create_secure_session_for_student(student: Student, response: Response, db: Session) -> dict:
@@ -3455,7 +3562,7 @@ def _create_secure_session_for_student(student: Student, response: Response, db:
         max_age=security.session_timeout * 60,
         httponly=True,
         secure=_oauth_cookie_secure(),
-        samesite="lax",
+        samesite="none" if _oauth_cookie_secure() else "lax",
         path="/",
     )
 
@@ -3481,24 +3588,41 @@ def _get_or_create_oauth_student(email: str, name: Optional[str], db: Session) -
     if student:
         security = get_security_settings(db)
         if security.require_student_verification and not student.is_verified:
-            raise HTTPException(status_code=403, detail="Student verification is required before login.")
+            raise GoogleOAuthPolicyError("account_pending")
         return student
 
     security = get_security_settings(db)
+    student_verification_defaults = DEFAULT_SETTINGS_BLOCKS["studentVerification"]
     require_university_email = _setting_bool(
-        _get_setting_value(db, "studentVerification", "requireUniversityEmail", False),
-        False,
+        _get_setting_value(
+            db,
+            "studentVerification",
+            "requireUniversityEmail",
+            student_verification_defaults["requireUniversityEmail"],
+        ),
+        student_verification_defaults["requireUniversityEmail"],
     )
     allowed_email_domain = str(
-        _get_setting_value(db, "studentVerification", "allowedEmailDomain", "university.edu.et")
+        _get_setting_value(
+            db,
+            "studentVerification",
+            "allowedEmailDomain",
+            student_verification_defaults["allowedEmailDomain"],
+        )
         or ""
     ).strip().lstrip("@").lower()
+    auto_approve_students = _setting_bool(
+        _get_setting_value(
+            db,
+            "studentVerification",
+            "autoApproveStudents",
+            student_verification_defaults["autoApproveStudents"],
+        ),
+        student_verification_defaults["autoApproveStudents"],
+    )
     email_domain = normalized_email.rsplit("@", 1)[-1]
     if require_university_email and email_domain != allowed_email_domain:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Please use your official university email ending with @{allowed_email_domain}.",
-        )
+        raise GoogleOAuthPolicyError("domain_not_allowed", allowed_email_domain)
 
     for _ in range(5):
         generated_student_id = f"OAUTH-{secrets.token_hex(5).upper()}"
@@ -3515,14 +3639,16 @@ def _get_or_create_oauth_student(email: str, name: Optional[str], db: Session) -
         college="Pending profile",
         department="Pending profile",
         wallet_balance=Decimal("0.00"),
-        status="Active",
-        is_verified=True,
+        status="Pending Verification" if security.require_student_verification else "Active",
+        is_verified=auto_approve_students,
     )
     db.add(student)
     db.flush()
     db.add(Wallet(student_id=student.student_id, balance=Decimal("0.00")))
     db.commit()
     db.refresh(student)
+    if security.require_student_verification and not student.is_verified:
+        raise GoogleOAuthPolicyError("account_pending")
     return student
 
 
@@ -3558,44 +3684,78 @@ def google_login(db: Session = Depends(get_db)):
 
 
 @app.get("/auth/google/callback")
-async def google_callback(code: str, state: Optional[str] = None, db: Session = Depends(get_db)):
-    client_id, client_secret, redirect_uri = _google_oauth_settings()
+async def google_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    if error:
+        _log_google_oauth_failure("google_denied")
+        return _google_oauth_frontend_redirect("google_cancelled")
+    if not code:
+        _log_google_oauth_failure("missing_code")
+        return _google_oauth_frontend_redirect("token_exchange_failed")
+    try:
+        client_id, client_secret, redirect_uri = _google_oauth_settings()
+    except RuntimeError:
+        _log_google_oauth_failure("oauth_not_configured")
+        return _google_oauth_frontend_redirect("oauth_not_configured")
+
     verifier = _consume_google_oauth_state(db, state)
     if verifier is None:
-        return _google_state_error_redirect()
+        _log_google_oauth_failure("state_rejected")
+        return _google_oauth_frontend_redirect("google_state")
 
-    token_data = await _exchange_oauth_code(
-        "https://oauth2.googleapis.com/token",
-        {
-            "code": code,
-            "code_verifier": verifier,
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-        },
-    )
+    try:
+        token_data = await _exchange_oauth_code(
+            "https://oauth2.googleapis.com/token",
+            {
+                "code": code,
+                "code_verifier": verifier,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+    except HTTPException as exchange_error:
+        error_code = (
+            "oauth_configuration_error"
+            if exchange_error.status_code == 503
+            else "token_exchange_failed"
+        )
+        _log_google_oauth_failure(error_code)
+        return _google_oauth_frontend_redirect(error_code)
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             identity_response = await client.get(
                 "https://openidconnect.googleapis.com/v1/userinfo",
                 headers={"Authorization": f"Bearer {token_data['access_token']}"},
             )
-    except httpx.RequestError as error:
-        logging.getLogger("app.auth").error("Google userinfo request failed: %s", error)
-        raise HTTPException(
-            status_code=502,
-            detail="The server could not reach Google identity services. Check backend internet access and try again.",
-        ) from error
+    except httpx.RequestError:
+        _log_google_oauth_failure("identity_provider_unavailable")
+        return _google_oauth_frontend_redirect("identity_provider_unavailable")
 
     if not identity_response.is_success:
-        raise HTTPException(status_code=400, detail="Google identity verification failed.")
+        _log_google_oauth_failure("identity_verification_failed")
+        return _google_oauth_frontend_redirect("identity_verification_failed")
     profile = identity_response.json()
     if not profile.get("email") or profile.get("email_verified") is not True:
-        raise HTTPException(status_code=400, detail="Google did not return a verified email address.")
+        _log_google_oauth_failure("email_not_verified")
+        return _google_oauth_frontend_redirect("email_not_verified")
 
-    student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
-    response = RedirectResponse(url=_oauth_frontend_url(), status_code=303)
+    try:
+        student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
+    except GoogleOAuthPolicyError as error:
+        _log_google_oauth_failure(error.code)
+        return _google_oauth_frontend_redirect(error.code, error.domain)
+    except HTTPException:
+        _log_google_oauth_failure("account_unavailable")
+        return _google_oauth_frontend_redirect("account_unavailable")
+
+    response = _google_oauth_frontend_redirect()
     _create_secure_session_for_student(student, response, db)
     return response
 
@@ -3615,6 +3775,7 @@ def get_oauth_session(
         raise HTTPException(status_code=401, detail="No active student session.")
     return {
         "role": "student",
+        "access_token": session_token or (authorization.split(" ", 1)[-1] if authorization else ""),
         "user": {
             "name": student.name,
             "studentId": student.student_id,
@@ -4622,7 +4783,13 @@ def get_admin_settings(db: Session = Depends(get_db)):
     for item in db.query(SystemSetting).filter(SystemSetting.key.in_(grouped_keys)).all():
         parsed = _parse_setting_value(item.value)
         if isinstance(parsed, dict):
-            response[item.key].update(parsed)
+            if item.key == "studentVerification":
+                response[item.key] = _normalize_student_verification_settings(parsed)
+            else:
+                response[item.key].update(parsed)
+    response["studentVerification"] = _normalize_student_verification_settings(
+        response.get("studentVerification", {})
+    )
     response["payment"] = get_payment_settings(db)
     public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
     secret_key = os.getenv("CHAPA_SECRET_KEY", "")
@@ -4645,6 +4812,35 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
             if not isinstance(values, dict):
                 raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
             normalized[block].update(values)
+
+        submitted_verification = payload.get("studentVerification", {})
+        verification_values = {}
+        verification_fields = (
+            ("allowed_email_domain", "allowedEmailDomain"),
+            ("require_university_email", "requireUniversityEmail"),
+            ("auto_approve_students", "autoApproveStudents"),
+        )
+        for snake_key, camel_key in verification_fields:
+            if camel_key in submitted_verification:
+                verification_values[camel_key] = submitted_verification[camel_key]
+            elif snake_key in submitted_verification:
+                verification_values[snake_key] = submitted_verification[snake_key]
+            else:
+                verification_values[camel_key] = normalized["studentVerification"].get(
+                    camel_key,
+                    DEFAULT_SETTINGS_BLOCKS["studentVerification"][camel_key],
+                )
+        try:
+            normalized_verification = _normalize_student_verification_settings(verification_values)
+        except ValidationError as error:
+            raise HTTPException(status_code=400, detail="Student verification settings are invalid.") from error
+        domain = normalized_verification["allowedEmailDomain"]
+        if normalized_verification["requireUniversityEmail"] and not re.fullmatch(
+            r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+            domain,
+        ):
+            raise HTTPException(status_code=400, detail="Allowed Email Domain must be a valid domain when university email is required.")
+        normalized["studentVerification"] = normalized_verification
 
         payment_values = normalized["payment"]
         submitted_payment = payload.get("payment", {})
@@ -8730,6 +8926,8 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
     seller_name = getattr(order, "seller_name", None) or (seller.name if seller else (product.seller if product else "Campus Seller"))
     buyer_name = getattr(order, "buyer_name", None) or (buyer.name if buyer else order.student_id)
     item_total = (Decimal(str(_parse_price_to_etb(order.price))) * int(getattr(order, "quantity", 1) or 1)).quantize(Decimal("0.01"))
+    order_platform_fee = Decimal(str(getattr(order, "platform_fee", 0) or 0)).quantize(Decimal("0.01"))
+    total_paid = item_total + order_platform_fee
     commission_settings = _get_commission_settings(db)
     platform_commission = _calculate_platform_commission(db, item_total)
     commission_percent = _get_platform_commission_percent(db)
@@ -8738,6 +8936,9 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         Transaction.type == "Escrow Release",
         Transaction.status == "Successful",
     ).first()
+    refund_transaction = db.query(Transaction).filter(
+        Transaction.tx_id == order.refund_reference,
+    ).first() if order.refund_reference else None
 
     payload = {
         "id": order.id,
@@ -8765,11 +8966,11 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "payment_status": _normalize_payment_status(getattr(order, "payment_status", None) or "Successful"),
         "item_total": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
         "subtotal": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
-        "fees": platform_commission,
+        "fees": float(order_platform_fee),
         "platform_commission_percent": commission_percent,
         "platform_commission_label": f"Platform commission ({commission_percent:g}%, deducted from seller payout)",
-        "total_paid": item_total,
-        "total": item_total,
+        "total_paid": float(total_paid),
+        "total": float(total_paid),
         "pickup_location": pickup_location,
         "pickup_code": order.pickup_code if include_pickup_code else None,
         "buyer_confirmed": bool(order.buyer_confirmed),
@@ -8781,11 +8982,15 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "expiry_reason": "seller_timeout" if order.expired_at else None,
         "refund_status": order.refund_status,
         "refund_reference": order.refund_reference,
+        "refund_amount": float(refund_transaction.amount) if refund_transaction else None,
+        "refund_date": refund_transaction.created_at.isoformat() if refund_transaction and refund_transaction.created_at else None,
         "refund_attempts": int(order.refund_attempts or 0),
+        "rejection_reason": order.rejection_reason,
+        "rejection_note": order.rejection_note,
         "payout_id": order.id,
         "net_amount": float(released_payout.amount) if released_payout else None,
         "hidden_by_buyer": bool(getattr(order, "hidden_by_buyer", False)),
-        "payout_status": "Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold"),
+        "payout_status": "Cancelled - refunded to buyer" if _normalize_payment_status(order.payment_status) == "Refunded" else ("Released" if order.is_funds_released else ("HOLD - DISPUTED" if dispute and dispute.status in ACTIVE_DISPUTE_STATUSES else "Escrow Hold")),
         "reviewed": bool(getattr(order, "reviewed", False)),
         "created_at": order.created_at,
         "dispute": _serialize_dispute(dispute) if dispute else None,
@@ -8801,6 +9006,8 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "Completed": "Completed",
         "Disputed": "Respond to dispute",
         "Cancelled": "No action required",
+        "Rejected": "No action required",
+        "Expired": "No action required",
     }.get(status, "Review order")
     return payload
 
@@ -9278,7 +9485,7 @@ def checkout_student_cart(
             quantity=int(cart_item.quantity or 1),
             status="Pending",
             paid_at=paid_at,
-            seller_accept_deadline=paid_at + timedelta(hours=24),
+            seller_accept_deadline=paid_at + timedelta(hours=48),
             pickup_code=secrets.randbelow(9000) + 1000,
             pickup_location=_resolve_pickup_location(db, product),
             payment_status="Successful",
@@ -9581,8 +9788,11 @@ def get_student_order_receipt(
         raise HTTPException(status_code=404, detail="Order not found.")
     if buyer.student_id.strip().lower() != order.student_id.strip().lower():
         raise HTTPException(status_code=403, detail="You are not authorized to view this receipt.")
+    normalized_order_status = _normalize_order_status(order.status).lower()
+    if normalized_order_status in {"rejected", "expired", "refunded"} or _normalize_payment_status(order.payment_status) == "Refunded":
+        raise HTTPException(status_code=409, detail="Receipts are unavailable for rejected, expired, or refunded orders. Your refund confirmation is available in order details.")
     if _normalize_payment_status(order.payment_status) != "Successful":
-        raise HTTPException(status_code=409, detail="A receipt is available only for successful payments.")
+        raise HTTPException(status_code=409, detail="A receipt is available only for paid orders.")
 
     product = db.query(Product).filter(Product.id == order.product_id).first()
     seller_identifier = getattr(order, "seller_id", None) or (product.seller if product else None)
@@ -9644,7 +9854,7 @@ def get_student_order_receipt(
         "order_number": order.id,
         "order_date": order.created_at,
         "payment_date": paid_on,
-        "payment_status": _normalize_payment_status(payment_transaction.status),
+        "payment_status": _normalize_payment_status(order.payment_status),
         "product_name": getattr(order, "title", None) or (product.title if product else "Campus Purchase"),
         "product_image": _normalize_product_image(getattr(order, "product_image", None) or (product.image if product else None)),
         "quantity": quantity,
@@ -10621,6 +10831,8 @@ def _seller_order_action(
     action_key = str(action or "").strip().lower().replace(" ", "_")
     if order_seller.suspended_until and order_seller.suspended_until > datetime.now():
         raise HTTPException(status_code=423, detail=f"Seller account is suspended until {order_seller.suspended_until.isoformat()}.")
+    if action_key == "reject":
+        raise HTTPException(status_code=400, detail="Use the reject order endpoint and provide a rejection reason.")
     if action_key in {"accept", "ready", "handover", "verify_pickup"}:
         _require_active_payout_account(db, seller)
 
@@ -10647,6 +10859,51 @@ def _seller_order_action(
         "buyer_confirmed": bool(order.buyer_confirmed),
         "seller_confirmed": bool(order.seller_confirmed),
         "is_funds_released": bool(order.is_funds_released),
+    }
+
+
+@app.post("/api/student/orders/{order_id}/reject")
+def reject_seller_order(
+    order_id: int,
+    payload: SellerOrderRejectionRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    seller = _student_from_authorization(authorization, db)
+    order = db.query(Order).filter(Order.id == order_id).with_for_update().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    order_seller = _seller_for_order(db, order)
+    if order_seller.student_id != seller.student_id:
+        raise HTTPException(status_code=403, detail="Only the seller for this order can reject it.")
+    if seller.suspended_until and seller.suspended_until > datetime.now():
+        raise HTTPException(status_code=423, detail=f"Seller account is suspended until {seller.suspended_until.isoformat()}.")
+
+    try:
+        rejected_order, refund_amount = _refund_pending_order(
+            db,
+            order_id,
+            final_status="Rejected",
+            reason=payload.reason,
+            note=payload.note,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        logging.getLogger("app.orders").exception("Unable to reject order %s and refund buyer.", order_id)
+        raise HTTPException(status_code=500, detail="Unable to reject order and refund buyer.")
+
+    return {
+        "success": True,
+        "message": f"The seller declined your order. {refund_amount:,.2f} ETB has been refunded to your wallet.",
+        "order_id": rejected_order.id,
+        "status": rejected_order.status,
+        "payment_status": rejected_order.payment_status,
+        "refund_amount": float(refund_amount),
+        "refund_reference": rejected_order.refund_reference,
+        "is_funds_released": bool(rejected_order.is_funds_released),
     }
 
 

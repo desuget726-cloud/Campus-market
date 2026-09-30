@@ -9,6 +9,7 @@ import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '../../config';
+import { isOrderRefunded } from '../../utils/orderReceiptState';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
@@ -768,7 +769,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     await loadOrdersView(hidden);
   };
 
+  const isReceiptUnavailable = (orderId) => {
+    const matchingOrders = orders.filter((item) => String(item.id) === String(orderId));
+    if (String(selectedOrder?.id) === String(orderId)) matchingOrders.push(selectedOrder);
+    return matchingOrders.some(isOrderRefunded);
+  };
+
   const fetchPaymentReceipt = async (orderId) => {
+    if (isReceiptUnavailable(orderId)) {
+      throw new Error('Receipts are unavailable for refunded orders. See the refund confirmation in order details.');
+    }
     const token = getStudentSessionToken();
     setPaymentReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
     try {
@@ -964,15 +974,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const handleViewPaymentReceipt = async (orderId) => {
+    if (isReceiptUnavailable(orderId)) return;
     if (!paymentReceiptState[orderId]?.data) await fetchPaymentReceipt(orderId);
   };
 
   const handleDownloadPaymentReceipt = async (orderId) => {
+    if (isReceiptUnavailable(orderId)) return;
     const receipt = paymentReceiptState[orderId]?.data || await fetchPaymentReceipt(orderId);
     buildReceiptPdf(receipt).save(`UniXchange-Order-${receipt.order_number}-Receipt.pdf`);
   };
 
   const handlePrintPaymentReceipt = async (orderId) => {
+    if (isReceiptUnavailable(orderId)) return;
     const printWindow = window.open('', '_blank', 'width=900,height=700');
     if (!printWindow) {
       setOrdersError('Allow pop-ups to print the receipt.');
@@ -4476,7 +4489,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           const pickupLocation = order.pickup_location || order.pickupLocation || 'Student Center';
                           const deadlineTimestamp = order.seller_accept_deadline ? new Date(order.seller_accept_deadline).getTime() : 0;
                           const isWaitingForSeller = orderStatus === 'Pending' && deadlineTimestamp > clockNow;
-                          const hasSellerTimeout = Boolean(order.expired_at || order.expiry_reason === 'seller_timeout');
+                          const refunded = isOrderRefunded(order);
                           const hoursUntilExpiry = deadlineTimestamp > clockNow
                             ? Math.max(1, Math.ceil((deadlineTimestamp - clockNow) / 3600000))
                             : 0;
@@ -4497,8 +4510,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   <h4 className="mt-2 text-xl font-bold text-slate-900">{order.title || order.product_title || 'Campus Purchase'}</h4>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${orderStatus === 'Disputed' ? 'bg-rose-100 text-rose-700' : 'bg-blue-50 text-blue-700'}`}>{orderStatusLabel}</span>
-                                  <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700">{paymentStatus}</span>
+                                  <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${orderStatus === 'Disputed' || refunded ? 'bg-rose-100 text-rose-700' : 'bg-blue-50 text-blue-700'}`}>{orderStatusLabel}</span>
+                                  <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${refunded ? 'bg-rose-100 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>{paymentStatus}</span>
                                   <button type="button" onClick={() => { setSelectedOrder({ id: order.id }); fetchOrderDetails(order.id); }} className="rounded-full bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-700">View Order</button>
                                   <button type="button" onClick={() => handleOrderVisibility(order)} className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100">{showHiddenOrders ? 'Unhide' : 'Hide'}</button>
                                 </div>
@@ -4509,10 +4522,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   Waiting for seller (expires in {hoursUntilExpiry} h)
                                 </p>
                               )}
-                              {hasSellerTimeout && (
-                                <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800">
-                                  Cancelled - seller did not respond. Refund: {order.refund_status || 'pending'}
-                                </p>
+                              {refunded && (
+                                <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+                                  <p className="font-black">Refund confirmation</p>
+                                  <p className="mt-1 font-bold">{formatETB(order.refund_amount ?? order.total_paid ?? (Number(order.price || 0) * Number(order.quantity || 1) + Number(order.fees || 0)))} refunded to your wallet.</p>
+                                  <p className="mt-1">Refunded on: {order.refund_date ? new Date(order.refund_date).toLocaleString() : 'Date unavailable'}</p>
+                                  <p className="mt-1 break-all">Refund reference: {order.refund_reference || `REFUND-${order.id}`}</p>
+                                </div>
                               )}
 
                               <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">

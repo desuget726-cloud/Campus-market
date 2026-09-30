@@ -286,6 +286,8 @@ class Order(Base):
     refund_attempts = Column(Integer, default=0, nullable=False)
     seller_reminder_12h_sent = Column(Boolean, default=False, nullable=False)
     seller_reminder_22h_sent = Column(Boolean, default=False, nullable=False)
+    rejection_reason = Column(String(30), nullable=True)
+    rejection_note = Column(Text, nullable=True)
     hidden_by_buyer = Column(Boolean, default=False, nullable=False)
     dispute_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import AuthInfoModal from './AuthInfoModal';
-import logo1 from '../../assets/logo1.jpg';
+import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL } from '../../config';
 
@@ -137,35 +137,11 @@ function RegisterForm({ onRegisterSuccess, onCancel, onToggleLogin }) {
   };
 
   return (
-    <div className="grid min-h-screen grid-cols-1 overflow-hidden bg-white md:grid-cols-2">
-      <section className="relative hidden items-center justify-center overflow-hidden bg-gradient-to-br from-blue-700 via-blue-800 to-indigo-950 px-8 py-16 text-white md:flex">
-        <div className="relative z-10 max-w-lg text-center">
-          <img src={logo1} alt="Campus Portal logo" className="mx-auto mb-8 h-28 w-28 rounded-3xl object-cover shadow-2xl ring-4 ring-white/20" />
-          <h1 className="text-4xl font-black tracking-tight lg:text-5xl">{t('auth.campusPortal')}</h1>
-          <p className="mx-auto mt-5 max-w-md text-base leading-7 text-blue-100 lg:text-lg">
-            {t('auth.secureRegisterDescription')}
-          </p>
-          <svg className="mx-auto mt-12 h-52 w-full max-w-sm text-blue-100/90" viewBox="0 0 420 230" fill="none" aria-label="Students exchanging items through a campus marketplace" role="img">
-            <rect x="70" y="32" width="280" height="166" rx="18" fill="white" fillOpacity=".12" stroke="currentColor" strokeWidth="3" />
-            <rect x="98" y="62" width="224" height="102" rx="10" fill="#172554" stroke="currentColor" strokeWidth="3" />
-            <path d="M126 96h78M126 116h126M126 136h52" stroke="currentColor" strokeWidth="8" strokeLinecap="round" />
-            <circle cx="210" cy="184" r="8" fill="currentColor" />
-            <path d="M55 183c22-18 42-18 62 0M303 183c22-18 42-18 62 0" stroke="currentColor" strokeWidth="8" strokeLinecap="round" />
-            <path d="M44 190h84M292 190h84" stroke="currentColor" strokeWidth="5" strokeLinecap="round" />
-            <path d="M183 25c10-13 25-13 35 0M218 25c10-13 25-13 35 0" stroke="#93C5FD" strokeWidth="4" strokeLinecap="round" />
-          </svg>
-        </div>
-        <div className="absolute -bottom-24 -left-16 h-64 w-64 rounded-full border border-white/10" />
-        <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full border border-white/10" />
-      </section>
-
-      <section className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4 py-10 sm:px-8">
-        <div className="w-full max-w-xl rounded-[28px] border border-slate-200/60 bg-white p-8 shadow-sm animate-fade-in">
-          <div className="mb-6 flex flex-col items-center text-center md:hidden">
-            <img src={logo1} alt="Campus Portal logo" className="h-16 w-16 rounded-2xl object-cover shadow-md ring-2 ring-blue-100" />
-            <p className="mt-3 text-lg font-bold text-blue-800">{t('auth.campusPortal')}</p>
-          </div>
+    <div className="min-h-screen bg-slate-50 px-4 py-8 sm:px-6 sm:py-10">
+      <section className="mx-auto flex w-full max-w-[520px] flex-col items-center">
+        <div className="w-full rounded-[28px] border border-slate-200/60 bg-white p-5 shadow-sm animate-fade-in sm:p-8">
           <div className="mb-6 text-center">
+            <img src={logs} alt="UniXchange logo" className="mx-auto mb-4 h-12 w-12 rounded-full object-cover ring-2 ring-emerald-100" />
             <h2 className="text-2xl font-semibold text-slate-900">{t('auth.createAccount')}</h2>
             <p className="mt-2 text-sm text-slate-500">{t('auth.registerDescription')}</p>
           </div>

@@ -42,25 +42,35 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
   const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
-    let hasStoredUserSession = false;
-    try {
-      const savedSession = window.localStorage.getItem('campaceSession');
-      hasStoredUserSession = Boolean(savedSession && JSON.parse(savedSession)?.user);
-    } catch {
-      hasStoredUserSession = false;
+    const callbackUrl = new URL(window.location.href);
+    const callbackError = callbackUrl.searchParams.get('error');
+    if (callbackError) {
+      const domain = callbackUrl.searchParams.get('domain') || 'your university domain';
+      const messageKey = `auth.oauthErrors.${callbackError}`;
+      const translatedMessage = t(messageKey);
+      callbackUrl.searchParams.delete('error');
+      callbackUrl.searchParams.delete('domain');
+      window.history.replaceState({}, document.title, `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`);
+      queueMicrotask(() => setError(translatedMessage === messageKey
+        ? `Social login failed: ${callbackError}`
+        : translatedMessage.replace('{domain}', domain)));
+      return;
     }
 
-    if (!hasStoredUserSession) return;
+    if (callbackUrl.searchParams.get('oauth') === 'success') {
+      callbackUrl.searchParams.delete('oauth');
+      window.history.replaceState({}, document.title, `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`);
+      fetch(apiUrl('/api/auth/session'), { credentials: 'include' })
+        .then(async (response) => {
+          if (!response.ok) throw new Error(t('auth.oauthErrors.session_restore_failed'));
+          const data = await response.json();
+          if (!data.user || !data.role) throw new Error(t('auth.oauthErrors.session_restore_failed'));
+          onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
+        })
+        .catch((restoreError) => setError(restoreError.message || t('auth.oauthErrors.session_restore_failed')));
+      return;
+    }
 
-    fetch(apiUrl('/api/auth/session'), { credentials: 'include' })
-      .then(async (response) => {
-        if (!response.ok) return;
-        const data = await response.json();
-        onLoginSuccess?.(data.user, data.role);
-      })
-      .catch(() => { });
-
-    const callbackUrl = new URL(window.location.href);
     const oauthFragment = new URLSearchParams(callbackUrl.hash.slice(1));
     const oauthAccessToken = oauthFragment.get('access_token');
     if (oauthFragment.get('oauth') === 'success' && oauthAccessToken) {
@@ -80,7 +90,27 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
     const provider = sessionStorage.getItem('campaceOAuthProvider');
     const expectedState = sessionStorage.getItem('campaceOAuthState');
 
-    if (!code && !oauthError) return;
+    if (!code && !oauthError) {
+      const hasStoredUserSession = (() => {
+        try {
+          const savedSession = window.localStorage.getItem('campaceSession');
+          return Boolean(savedSession && JSON.parse(savedSession)?.user);
+        } catch {
+          return false;
+        }
+      })();
+
+      if (hasStoredUserSession) {
+        fetch(apiUrl('/api/auth/session'), { credentials: 'include' })
+          .then(async (response) => {
+            if (!response.ok) return;
+            const data = await response.json();
+            onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
+          })
+          .catch(() => { });
+      }
+      return;
+    }
 
     callbackUrl.searchParams.delete('code');
     callbackUrl.searchParams.delete('state');
@@ -132,7 +162,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
       .catch((error) => {
         setError(error.message || 'Social login failed.');
       });
-  }, [onLoginSuccess]);
+  }, [onLoginSuccess, t]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { isOrderRefunded, shouldShowReceiptActions } from '../../utils/orderReceiptState';
 
 const TIMELINE = [
   { key: 'placed', label: 'Order Placed' },
@@ -10,6 +11,13 @@ const TIMELINE = [
   { key: 'received', label: 'Item Received' },
   { key: 'confirmed', label: 'Buyer Confirmed + Seller Confirmed' },
   { key: 'completed', label: 'Completed' },
+];
+
+const REJECTION_TIMELINE = [
+  { key: 'placed', label: 'Order Placed' },
+  { key: 'paid', label: 'Payment Successful' },
+  { key: 'rejected', label: 'Rejected by Seller' },
+  { key: 'refunded', label: 'Refunded' },
 ];
 
 const formatPrice = (value) => `${Number(value || 0).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`;
@@ -84,6 +92,8 @@ function PrintableReceipt({ receipt }) {
 
 function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt, isSidebarOpen, onToggleSidebar }) {
   const [sellerPickupCode, setSellerPickupCode] = useState('');
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [rejectionNote, setRejectionNote] = useState('');
   const [sellerResponse, setSellerResponse] = useState('');
   const [sellerResponseError, setSellerResponseError] = useState('');
   const [sellerResponseLoading, setSellerResponseLoading] = useState(false);
@@ -219,41 +229,51 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
 
   const rawStatus = order.status || order.fulfillment_status || 'Pending';
   const status = /out[_ ]for[_ ]delivery|delivery/i.test(rawStatus) ? 'Ready for Pickup' : rawStatus;
-  const statusLabel = status === 'Pending' ? 'Order Placed' : status;
+  const isSellerRejected = String(status).toLowerCase() === 'rejected';
+  const statusLabel = isSellerRejected ? 'Rejected by Seller' : status === 'Pending' ? 'Order Placed' : status;
   const paymentStatus = order.payment_status || order.pay_status || 'Pending';
-  const paymentSuccessful = String(paymentStatus).toLowerCase() === 'successful';
+  const normalizedPaymentStatus = String(paymentStatus).toLowerCase();
+  const paymentSuccessful = normalizedPaymentStatus === 'successful';
+  const paymentRefunded = normalizedPaymentStatus === 'refunded';
+  const timeline = isSellerRejected ? REJECTION_TIMELINE : TIMELINE;
   const bothConfirmed = Boolean(order.buyer_confirmed && order.seller_confirmed);
-  let currentIndex = paymentSuccessful ? 1 : 0;
+  let currentIndex = paymentSuccessful || paymentRefunded ? 1 : 0;
   if (['Processing', 'Ready for Pickup', 'Completed'].includes(status)) currentIndex = Math.max(currentIndex, 2);
   if (['Ready for Pickup', 'Completed'].includes(status) || order.seller_confirmed) currentIndex = Math.max(currentIndex, 3);
   if (order.buyer_confirmed) currentIndex = Math.max(currentIndex, 4);
   if (bothConfirmed) currentIndex = Math.max(currentIndex, status === 'Completed' ? 6 : 5);
+  if (isSellerRejected) currentIndex = REJECTION_TIMELINE.length - 1;
   const quantity = Number(order.quantity || 1);
   const itemTotal = Number(order.item_total ?? Number(order.price || 0) * quantity);
   const totalPaid = Number(paymentReceipt?.total_paid ?? itemTotal + Number(order.fees || 0));
   const isBuyer = role === 'buyer';
-  const hasSellerTimeout = Boolean(order.expired_at || order.expiry_reason === 'seller_timeout');
-  const refundStatus = String(order.refund_status || 'none');
+  const showReceiptActions = shouldShowReceiptActions(order, role);
+  const refundReference = order.refund_reference || `REFUND-${order.id}`;
+  const refundDate = formatDateTime(order.refund_date || order.expired_at || order.updated_at);
   const dispute = order.dispute;
   const hasDispute = order.dispute_status !== null && order.dispute_status !== undefined;
   const hasActiveDispute = ['OPEN', 'UNDER_REVIEW'].includes(String(order.dispute_status || dispute?.status || '').toUpperCase());
   const canDispute = isBuyer && !hasActiveDispute && ['Ready for Pickup', 'Item Received'].includes(status);
   const canConfirm = isBuyer && status === 'Ready for Pickup' && !order.buyer_confirmed;
-  const isRefunded = ['REFUNDED', 'REFUND'].includes(String(order.status || order.escrow_status || order.payout_status || '').toUpperCase());
+  const isRefunded = isOrderRefunded(order) || ['REFUNDED', 'REFUND'].includes(String(order.escrow_status || order.payout_status || '').toUpperCase());
   const escrowHeading = hasActiveDispute
     ? 'Payout: HOLD - DISPUTED'
-    : isRefunded
-      ? 'Payout: Refunded'
-      : order.is_funds_released
-        ? 'Payout: Released'
-        : `Payout: ${order.payout_status || 'Escrow Hold'}`;
+    : isSellerRejected
+      ? 'Payout: Cancelled - refunded to buyer'
+      : isRefunded
+        ? 'Payout: Cancelled - refunded to buyer'
+        : order.is_funds_released
+          ? 'Payout: Released'
+          : `Payout: ${order.payout_status || 'Escrow Hold'}`;
   const escrowMessage = hasActiveDispute
     ? 'Payout: HOLD - DISPUTED — Your payment is on hold because a dispute was raised on this order. Funds will be released or refunded once an admin reviews and resolves the case.'
-    : isRefunded
-      ? 'Payout: REFUNDED - Your payment was refunded after the dispute was resolved.'
-      : order.is_funds_released
-        ? 'Payout: RELEASED - Funds were released after the order was completed.'
-        : 'Your payment is being held until the order is successfully completed.';
+    : isSellerRejected
+      ? 'The seller declined this order. Your payment was refunded to your wallet.'
+      : isRefunded
+        ? 'Payout: Cancelled - refunded to buyer.'
+        : order.is_funds_released
+          ? 'Payout: RELEASED - Funds were released after the order was completed.'
+          : 'Your payment is being held until the order is successfully completed.';
   const waitingForConfirmation = status === 'Ready for Pickup' && (order.buyer_confirmed || order.seller_confirmed) && !(order.buyer_confirmed && order.seller_confirmed);
   const action = String(order.required_seller_action || '').toLowerCase();
   const submitSellerResponse = async (event) => {
@@ -303,16 +323,30 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
 
       <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
         <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Tracking</p><h2 className="mt-1 text-xl font-black text-slate-950">Order progress</h2></div><button type="button" onClick={onRefresh} className="inline-flex items-center gap-2 rounded-full border border-[var(--brand-primary)] px-3 py-2 text-sm font-bold text-[var(--brand-primary)] hover:bg-sky-50 hover:text-[var(--brand-primary-hover)]"><span aria-hidden="true" className="text-base">↻</span>Refresh</button></div>
-        <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-          {TIMELINE.map((step, index) => {
+        <div className={`mt-7 grid gap-4 sm:grid-cols-2 ${isSellerRejected ? 'lg:grid-cols-4' : 'lg:grid-cols-6'}`}>
+          {timeline.map((step, index) => {
             const complete = status === 'Disputed' ? index < currentIndex : index <= currentIndex;
-            const current = status === 'Disputed' ? index === currentIndex : index === currentIndex;
-            return <div key={step.key} className="relative min-w-0"><div className="flex items-center gap-3 lg:block"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-black ${complete ? 'bg-emerald-500 text-white' : current ? 'bg-sky-600 text-white ring-4 ring-sky-100' : 'bg-slate-100 text-slate-400'}`}>{complete ? '✓' : index + 1}</span><p className={`mt-0 text-sm font-bold lg:mt-3 ${current ? 'text-slate-950' : complete ? 'text-emerald-700' : 'text-slate-400'}`}>{step.label}</p></div>{index < TIMELINE.length - 1 && <div className={`ml-4 mt-2 h-1 lg:ml-0 lg:mr-3 ${index < currentIndex ? 'bg-emerald-400' : 'bg-slate-100'}`} />}</div>;
+            const current = index === currentIndex;
+            const markerStyle = isSellerRejected
+              ? 'bg-rose-500 text-white'
+              : complete
+                ? 'bg-emerald-500 text-white'
+                : current
+                  ? 'bg-sky-600 text-white ring-4 ring-sky-100'
+                  : 'bg-slate-100 text-slate-400';
+            const labelStyle = isSellerRejected
+              ? 'text-rose-700'
+              : current
+                ? 'text-slate-950'
+                : complete
+                  ? 'text-emerald-700'
+                  : 'text-slate-400';
+            return <div key={step.key} className="relative min-w-0"><div className="flex items-center gap-3 lg:block"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-black ${markerStyle}`}>{complete ? '✓' : index + 1}</span><p className={`mt-0 text-sm font-bold lg:mt-3 ${labelStyle}`}>{step.label}</p></div>{index < timeline.length - 1 && <div className={`ml-4 mt-2 h-1 lg:ml-0 lg:mr-3 ${index < currentIndex ? (isSellerRejected ? 'bg-rose-400' : 'bg-emerald-400') : 'bg-slate-100'}`} />}</div>;
           })}
         </div>
+        {isRefunded && isBuyer && <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><p className="font-black">Refund confirmation</p><p className="mt-1 font-bold">{formatPrice(order.refund_amount ?? totalPaid)} refunded to your wallet.</p><p className="mt-1">Refunded on: {refundDate || 'Date unavailable'}</p><p className="mt-1 break-all">Refund reference: {refundReference}</p></div>}
         {status === 'Disputed' && <p className="mt-5 rounded-2xl bg-rose-50 p-4 text-sm font-bold text-rose-700">Disputed order. Payout remains on escrow hold while the case is reviewed.</p>}
         {status === 'Cancelled' && <p className="mt-5 rounded-2xl bg-slate-100 p-4 text-sm font-bold text-slate-600">This order was cancelled.</p>}
-        {hasSellerTimeout && <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800"><p>Cancelled - seller did not respond.</p><p className="mt-1">Refund: {refundStatus}</p><p className="mt-1 text-xs font-semibold">Expiry reason: {order.expiry_reason || 'Seller did not accept within 24 hours'}</p></div>}
         {waitingForConfirmation && <p className="mt-5 rounded-2xl bg-amber-50 p-4 text-sm font-bold text-amber-800">Waiting for other party confirmation.</p>}
       </section>
 
@@ -327,7 +361,38 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
 
       <div className="grid gap-5 lg:grid-cols-2">
         {hasActiveDispute && <div className="lg:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800" role="alert"><span aria-hidden="true" className="mr-2">⚠️</span>This order has an open dispute. Escrow funds are on hold pending resolution.</div>}
-        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7"><p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">Payment</p><div className="mt-5 space-y-3 text-sm"><div className="flex justify-between gap-4"><span className="text-slate-500">Item price</span><span className="font-bold text-slate-900">{formatPrice(itemTotal)}</span></div><div className="flex justify-between gap-4"><span className="text-slate-500">Fees</span><span className="font-bold text-slate-900">{formatPrice(order.fees || 0)}</span></div><div className="flex justify-between gap-4 border-t border-slate-100 pt-3"><span className="font-black text-slate-900">Total paid</span><span className="font-black text-slate-950">{formatPrice(totalPaid)}</span></div><p className="rounded-2xl bg-emerald-50 p-3 font-bold text-emerald-700">Payment Status: {paymentSuccessful ? '✓ Successful' : paymentStatus}</p>{paymentSuccessful && isBuyer && <div className="flex flex-wrap gap-2 pt-1"><button type="button" onClick={() => onViewReceipt?.(order.id)} disabled={paymentReceiptLoading} className="rounded-full bg-slate-900 px-4 py-2.5 text-xs font-black text-white hover:bg-slate-700 disabled:opacity-60">{paymentReceiptLoading ? 'Loading...' : 'View Receipt'}</button><button type="button" onClick={() => onDownloadReceipt?.(order.id)} disabled={paymentReceiptLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">Download Receipt</button><button type="button" onClick={() => onPrintReceipt?.(order.id)} disabled={paymentReceiptLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">Print Receipt</button></div>}{paymentReceiptError && <p className="rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-700">{paymentReceiptError}</p>}{paymentReceipt && <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="flex items-center justify-between gap-3"><div><p className="font-black uppercase tracking-[0.12em] text-slate-950">CAMPUS MARKET</p><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-600">Payment Receipt</p></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700">✓ PAYMENT {String(paymentReceipt.payment_status || '').toUpperCase()}</span></div><div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2"><p>Receipt #: <strong className="text-slate-900">{paymentReceipt.receipt_number}</strong></p><p>Order #: <strong className="text-slate-900">{paymentReceipt.order_number}</strong></p><p className="sm:col-span-2">Paid on: <strong className="text-slate-900">{new Date(paymentReceipt.payment_date || paymentReceipt.order_date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong></p><p>Product: <strong className="text-slate-900">{paymentReceipt.product_name}</strong></p><p>Quantity: <strong className="text-slate-900">{paymentReceipt.quantity}</strong></p><p>Unit price: <strong className="text-slate-900">{formatPrice(paymentReceipt.unit_price)}</strong></p><p>Item total: <strong className="text-slate-900">{formatPrice(paymentReceipt.item_total)}</strong></p><p>Fees: <strong className="text-slate-900">{formatPrice(paymentReceipt.fees)}</strong></p><p>Total paid: <strong className="text-slate-900">{formatPrice(paymentReceipt.total_paid)}</strong></p><p>Payment method: <strong className="text-slate-900">{paymentReceipt.payment_method}</strong></p><p className="flex items-center gap-2">Reference: <strong className="break-all text-slate-900">{paymentReceipt.transaction_reference}</strong><button type="button" onClick={copyPaymentReference} className="shrink-0 rounded border border-slate-300 px-2 py-1 text-[10px] font-bold text-slate-700">{referenceCopied ? 'Copied' : 'Copy'}</button></p><p>Buyer: <strong className="text-slate-900">{paymentReceipt.buyer_name}</strong></p><p>Seller: <strong className="text-slate-900">{paymentReceipt.seller_name}</strong></p><p>Order status: <strong className="text-slate-900">{String(paymentReceipt.order_status || '').toUpperCase()}</strong></p><p>Escrow: <strong className="text-slate-900">{String(paymentReceipt.escrow_status || '').toUpperCase()}</strong></p>{paymentReceipt.dispute_status && <p>Dispute: <strong className="text-slate-900">{paymentReceipt.dispute_status}</strong></p>}{paymentReceipt.refund_amount !== null && paymentReceipt.refund_amount !== undefined && <p>Refund: <strong className="text-slate-900">{formatPrice(paymentReceipt.refund_amount)}</strong></p>}</div><p className="mt-4 text-xs font-semibold leading-5 text-slate-600">{paymentReceipt.escrow_message}</p><p className="mt-3 border-t border-slate-200 pt-3 text-center text-xs font-black uppercase tracking-[0.14em] text-slate-700">Payment Confirmed</p></div>}</div></section>
+        <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">Payment</p>
+          <div className="mt-5 space-y-3 text-sm">
+            <div className="flex justify-between gap-4"><span className="text-slate-500">Item price</span><span className="font-bold text-slate-900">{formatPrice(itemTotal)}</span></div>
+            <div className="flex justify-between gap-4"><span className="text-slate-500">Fees</span><span className="font-bold text-slate-900">{formatPrice(order.fees || 0)}</span></div>
+            <div className="flex justify-between gap-4 border-t border-slate-100 pt-3"><span className="font-black text-slate-900">Total paid</span><span className="font-black text-slate-950">{formatPrice(totalPaid)}</span></div>
+            <p className={`rounded-2xl p-3 font-bold ${paymentRefunded ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>Payment Status: {paymentRefunded ? 'Refunded' : paymentSuccessful ? '✓ Successful' : paymentStatus}</p>
+            {showReceiptActions && <div className="flex flex-wrap gap-2 pt-1">
+              <button type="button" onClick={() => onViewReceipt?.(order.id)} disabled={paymentReceiptLoading} className="rounded-full bg-slate-900 px-4 py-2.5 text-xs font-black text-white hover:bg-slate-700 disabled:opacity-60">{paymentReceiptLoading ? 'Loading...' : 'View Receipt'}</button>
+              <button type="button" onClick={() => onDownloadReceipt?.(order.id)} disabled={paymentReceiptLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">Download Receipt</button>
+              <button type="button" onClick={() => onPrintReceipt?.(order.id)} disabled={paymentReceiptLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-xs font-black text-slate-700 hover:bg-slate-50 disabled:opacity-60">Print Receipt</button>
+            </div>}
+            {paymentReceiptError && <p className="rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-700">{paymentReceiptError}</p>}
+            {paymentReceipt && showReceiptActions && <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between gap-3"><div><p className="font-black uppercase tracking-[0.12em] text-slate-950">CAMPUS MARKET</p><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-600">Payment Receipt</p></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-black text-emerald-700">✓ PAYMENT SUCCESSFUL</span></div>
+              <div className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+                <p>Receipt #: <strong className="text-slate-900">{paymentReceipt.receipt_number}</strong></p><p>Order #: <strong className="text-slate-900">{paymentReceipt.order_number}</strong></p>
+                <p className="sm:col-span-2">Paid on: <strong className="text-slate-900">{new Date(paymentReceipt.payment_date || paymentReceipt.order_date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong></p>
+                <p>Product: <strong className="text-slate-900">{paymentReceipt.product_name}</strong></p><p>Quantity: <strong className="text-slate-900">{paymentReceipt.quantity}</strong></p>
+                <p>Unit price: <strong className="text-slate-900">{formatPrice(paymentReceipt.unit_price)}</strong></p><p>Item total: <strong className="text-slate-900">{formatPrice(paymentReceipt.item_total)}</strong></p>
+                <p>Fees: <strong className="text-slate-900">{formatPrice(paymentReceipt.fees)}</strong></p><p>Total paid: <strong className="text-slate-900">{formatPrice(paymentReceipt.total_paid)}</strong></p>
+                <p>Payment method: <strong className="text-slate-900">{paymentReceipt.payment_method}</strong></p>
+                <p className="flex items-center gap-2">Reference: <strong className="break-all text-slate-900">{paymentReceipt.transaction_reference}</strong><button type="button" onClick={copyPaymentReference} className="shrink-0 rounded border border-slate-300 px-2 py-1 text-[10px] font-bold text-slate-700">{referenceCopied ? 'Copied' : 'Copy'}</button></p>
+                <p>Buyer: <strong className="text-slate-900">{paymentReceipt.buyer_name}</strong></p><p>Seller: <strong className="text-slate-900">{paymentReceipt.seller_name}</strong></p>
+                <p>Order status: <strong className="text-slate-900">{String(paymentReceipt.order_status || '').toUpperCase()}</strong></p><p>Escrow: <strong className="text-slate-900">{String(paymentReceipt.escrow_status || '').toUpperCase()}</strong></p>
+                {paymentReceipt.dispute_status && <p>Dispute: <strong className="text-slate-900">{paymentReceipt.dispute_status}</strong></p>}
+              </div>
+              <p className="mt-4 text-xs font-semibold leading-5 text-slate-600">{paymentReceipt.escrow_message}</p>
+              <p className="mt-3 border-t border-slate-200 pt-3 text-center text-xs font-black uppercase tracking-[0.14em] text-slate-700">Payment Confirmed</p>
+            </div>}
+          </div>
+        </section>
         <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7"><p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-600">Escrow</p><h2 className="mt-2 text-xl font-black text-slate-950">{escrowHeading}</h2><p className="mt-3 text-sm leading-6 text-slate-600">{escrowMessage}</p></section>
       </div>
 
@@ -350,7 +415,21 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
         </div>
         <div className="mt-5 flex flex-wrap gap-3">
           {isBuyer && canConfirm && <button type="button" disabled={hasActiveDispute} onClick={() => onConfirmReceived?.(order)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Confirm Item Received</button>}
-          {!isBuyer && action.includes('accept') && <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'accept')} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Accept Order</button>}
+          {!isBuyer && action.includes('accept') && <>
+            <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'accept')} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Accept Order</button>
+            <label htmlFor={`detail-reject-reason-${order.id}`} className="sr-only">Rejection reason</label>
+            <select id={`detail-reject-reason-${order.id}`} value={rejectionReason} onChange={(event) => setRejectionReason(event.target.value)} className="rounded-full border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700">
+              <option value="">Choose rejection reason</option>
+              <option value="out_of_stock">Out of stock</option>
+              <option value="already_sold">Already sold</option>
+              <option value="other">Other</option>
+            </select>
+            {rejectionReason === 'other' && <textarea value={rejectionNote} onChange={(event) => setRejectionNote(event.target.value)} maxLength={500} placeholder="Optional note" aria-label="Optional rejection note" className="min-w-48 rounded-xl border border-slate-200 px-3 py-2 text-sm" />}
+            <button type="button" disabled={hasActiveDispute || !rejectionReason} onClick={() => {
+              const confirmed = typeof window === 'undefined' || window.confirm(`Reject order #${order.id} and refund the buyer?`);
+              if (confirmed) onSellerAction?.(order, 'reject', '', { reason: rejectionReason, note: rejectionNote || null });
+            }} className="rounded-full border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-black text-rose-700 hover:bg-rose-100 disabled:cursor-not-allowed disabled:bg-slate-100">Reject Order</button>
+          </>}
           {!isBuyer && action.includes('prepare') && <button type="button" disabled={hasActiveDispute} onClick={() => onSellerAction?.(order, 'ready')} className="rounded-full bg-sky-600 px-5 py-3 text-sm font-black text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300">Mark Ready for Pickup</button>}
           {!isBuyer && action.includes('handover') && <div className="flex flex-wrap items-center gap-2"><input type="text" inputMode="numeric" maxLength={4} value={sellerPickupCode} onChange={(event) => setSellerPickupCode(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="Pickup code" disabled={hasActiveDispute} className="w-32 rounded-full border border-slate-200 px-4 py-3 text-sm font-bold tracking-[0.15em] outline-none focus:border-emerald-400 disabled:bg-slate-100" /><button type="button" disabled={hasActiveDispute || sellerPickupCode.length !== 4} onClick={() => onSellerAction?.(order, 'handover', sellerPickupCode)} className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-black text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Confirm Handover</button></div>}
           {hasActiveDispute && <p className="basis-full text-sm font-bold text-rose-700">You can't confirm receipt while a dispute is open. Wait for admin resolution or withdraw your dispute.</p>}
@@ -399,7 +478,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
           {!isBuyer && hasActiveDispute && !dispute.seller_response && onDisputeResponse && <form onSubmit={submitSellerResponse} className="mt-4"><label htmlFor="seller-dispute-response" className="text-sm font-bold text-slate-700">Your response</label><textarea id="seller-dispute-response" rows="4" value={sellerResponse} onChange={(event) => setSellerResponse(event.target.value)} placeholder="Explain your side of the order dispute..." className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400" /><div className="mt-4"><label className="text-sm font-bold text-slate-700">Evidence images <span className="font-normal text-slate-400">(optional)</span></label><input type="file" multiple accept="image/*" onChange={(event) => setSellerEvidenceFiles(Array.from(event.target.files || []))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700" /><div className="mt-3 grid grid-cols-3 gap-2">{sellerEvidenceFiles.map((file, index) => <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50"><img src={URL.createObjectURL(file)} alt={`Seller evidence preview ${index + 1}`} className="h-20 w-full object-cover" /><button type="button" onClick={() => setSellerEvidenceFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white">Remove</button></div>)}</div></div><div className="mt-3 flex flex-wrap items-center gap-3"><button type="submit" disabled={sellerResponseLoading || sellerResponse.trim().length < 20} className="rounded-full bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{sellerResponseLoading ? 'Submitting...' : 'Submit Response'}</button>{sellerResponseError && <p className="text-sm font-bold text-rose-700">{sellerResponseError}</p>}</div></form>}
         </>}
       </section>)}
-      <PrintableReceipt receipt={paymentReceipt} />
+      <PrintableReceipt receipt={showReceiptActions ? paymentReceipt : null} />
     </div>
   );
 }

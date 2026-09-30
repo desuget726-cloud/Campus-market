@@ -46,10 +46,7 @@ def apply_seller_order_action(order, action: str, input_code: Optional[int] = No
         order.seller_confirmed = True
         return "Handover confirmed. Waiting for buyer to confirm the item was received."
     if normalized_action == "reject":
-        if order_status != "pending":
-            raise HTTPException(status_code=409, detail="Only pending orders can be rejected.")
-        order.status = "Cancelled"
-        return "Order rejected."
+        raise HTTPException(status_code=409, detail="Order rejection must use the seller refund workflow.")
     raise HTTPException(status_code=400, detail="Seller action must be accept, ready, handover, or reject.")
 
 

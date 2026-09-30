@@ -2,22 +2,65 @@
 import ProductDetails from './ProductDetails';
 import { apiUrl } from '../../api/config';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { useLanguage } from '../../context/LanguageContext';
 import logs from '../../assets/logs.png';
-import c2 from '../../assets/c2.jpg';
 import laptop_586 from '../../assets/laptop_586.webp';
 import phone1 from '../../assets/phone1.jpg';
 import c3 from '../../assets/c3.jpg';
 import c7 from '../../assets/c7.jpg';
 
-const fetchWithTimeout = (url, timeoutMs = 10000) => {
+const fetchWithTimeout = (url, timeoutMs = 15000, parentSignal) => {
   const controller = new AbortController();
+  const abortFromParent = () => controller.abort();
+  if (parentSignal?.aborted) controller.abort();
+  else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { signal: controller.signal }).finally(() => window.clearTimeout(timeoutId));
+  return fetch(url, { signal: controller.signal }).finally(() => {
+    window.clearTimeout(timeoutId);
+    parentSignal?.removeEventListener('abort', abortFromParent);
+  });
 };
+
+const waitBeforeRetry = (signal) => new Promise((resolve) => {
+  if (signal?.aborted) return resolve();
+  const timeoutId = window.setTimeout(done, 4000);
+  function done() {
+    window.clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', done);
+    resolve();
+  }
+  signal?.addEventListener('abort', done, { once: true });
+});
+
+const fetchWithRetries = async (url, signal) => {
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (signal?.aborted) {
+      const abortError = new Error('Request cancelled');
+      abortError.name = 'AbortError';
+      throw abortError;
+    }
+    try {
+      const response = await fetchWithTimeout(url, 15000, signal);
+      if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
+      return response;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      lastError = error;
+      if (attempt < 3) await waitBeforeRetry(signal);
+    }
+  }
+  throw lastError;
+};
+
+const getListingFailureKind = (error) => (
+  (typeof navigator !== 'undefined' && navigator.onLine === false) || error instanceof TypeError
+    ? 'offline'
+    : 'generic'
+);
 
 const bannerImages = [
   logs,
-  // c2,
   c3,
   laptop_586,
   phone1,
@@ -68,11 +111,13 @@ const getCategoryAdCount = (value) => {
 };
 
 function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, onNavigateToMessages }) {
+  const { t } = useLanguage();
   const contentContainerClass = 'mx-auto w-full max-w-[1920px] px-4 sm:px-6 lg:px-10 2xl:px-16';
   const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState('');
+  const [loadError, setLoadError] = useState(null);
+  const [isLoadErrorDismissed, setIsLoadErrorDismissed] = useState(false);
   const [hoveredCategoryId, setHoveredCategoryId] = useState(null);
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -82,6 +127,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   const [aiRecommendations, setAiRecommendations] = useState([]);
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const aiScrollRef = useRef(null);
+  const latestProductsRequestRef = useRef(0);
+  const lastProductRequestRef = useRef({});
+  const hasSignedInUser = Boolean(user);
 
   const openProduct = (product) => {
     if (!product?.id) return;
@@ -115,12 +163,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
     return () => clearInterval(intervalId);
   }, []);
 
-  const fetchCategories = async () => {
+  const fetchCategories = async (signal) => {
     try {
-      const response = await fetchWithTimeout(apiUrl('/api/categories'));
-      if (!response.ok) {
-        throw new Error('Failed to load categories');
-      }
+      const response = await fetchWithRetries(apiUrl('/api/categories'), signal);
       const data = await response.json();
       const normalizedCategories = (Array.isArray(data) ? data : []).map((category) => ({
         ...category,
@@ -134,13 +179,20 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
       }));
       setCategories(normalizedCategories);
     } catch (error) {
-      console.error('Category fetch error:', error);
-      setLoadError('The marketplace service is unavailable. Please check the backend and try again.');
-      setCategories([]);
+      if (error.name !== 'AbortError') {
+        console.error('Category fetch error:', error);
+        setCategories([]);
+      }
     }
   };
 
-  const fetchProducts = async ({ search, category, subcategory, department } = {}) => {
+  const fetchProducts = async ({ search, category, subcategory, department } = {}, signal) => {
+    const requestId = latestProductsRequestRef.current + 1;
+    latestProductsRequestRef.current = requestId;
+    lastProductRequestRef.current = { search, category, subcategory, department };
+    setLoading(true);
+    setLoadError(null);
+    setIsLoadErrorDismissed(false);
     try {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
@@ -151,34 +203,35 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
       const url = params.toString()
         ? `/api/products?${params.toString()}`
         : '/api/products';
-      const response = await fetchWithTimeout(apiUrl(url));
-      if (!response.ok) {
-        throw new Error('Failed to load products');
-      }
+      const response = await fetchWithRetries(apiUrl(url), signal);
       const data = await response.json();
-      setSearchResults(Array.isArray(data) ? data : []);
+      if (requestId === latestProductsRequestRef.current) {
+        setSearchResults(Array.isArray(data) ? data : []);
+      }
     } catch (error) {
-      console.error('Product fetch error:', error);
-      setLoadError('The marketplace service is unavailable. Please check the backend and try again.');
-      setSearchResults([]);
+      if (error.name !== 'AbortError') console.error('Product fetch error:', error);
+      if (requestId === latestProductsRequestRef.current && error.name !== 'AbortError') {
+        setLoadError({ kind: getListingFailureKind(error) });
+        setSearchResults([]);
+      }
+    } finally {
+      if (requestId === latestProductsRequestRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    const loadInitialData = async () => {
-      setLoading(true);
-      setLoadError('');
+    const controller = new AbortController();
+    const startTimeoutId = window.setTimeout(async () => {
       const department = user?.department || user?.college || user?.departmentName || '';
-      try {
-        await Promise.all([
-          fetchCategories(),
-          fetchProducts({ department: department || undefined }),
-        ]);
-      } finally {
-        setLoading(false);
-      }
+      await Promise.all([
+        fetchCategories(controller.signal),
+        fetchProducts({ department: department || undefined }, controller.signal),
+      ]);
+    }, 0);
+    return () => {
+      window.clearTimeout(startTimeoutId);
+      controller.abort();
     };
-    loadInitialData();
   }, [user?.department, user?.college, user?.departmentName]);
 
   useEffect(() => {
@@ -276,16 +329,14 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
     setHoveredCategoryId(null);
   };
 
+  const retryLastProductRequest = () => fetchProducts(lastProductRequestRef.current);
+  const listingFailureMessage = loadError?.kind === 'offline'
+    ? t('home.noConnection')
+    : t('home.listingsFailure');
+
   return (
     <div className="w-full">
-      {loading ? (
-        <div className={contentContainerClass}>
-          <div className="rounded-[28px] bg-white border border-slate-200 p-12 text-center text-slate-600 shadow-md haight=500">
-            <p className="text-lg font-semibold text-slate-900">Loading marketplace data…</p>
-            <p className="mt-2 text-sm">Please wait while categories and products are loaded.</p>
-          </div>
-        </div>
-      ) : selectedProduct ? (
+      {selectedProduct ? (
         <div className="w-full">
           <ProductDetails
             product={selectedProduct}
@@ -300,7 +351,6 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
         </div>
       ) : (
         <div className="w-full space-y-6 pt-1">
-          {loadError && <div className={contentContainerClass}><div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{loadError}</div></div>}
           <section className="group relative w-full rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
             {bannerImages.map((src, index) => (
               <img
@@ -346,6 +396,21 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
               ))}
             </div>
           </section>
+
+          {loadError && hasSignedInUser && !isLoadErrorDismissed && (
+            <div className={contentContainerClass}>
+              <div role="status" className="notranslate flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-semibold">{listingFailureMessage}</p>
+                  {import.meta.env.DEV && <p className="mt-1 text-xs text-slate-600">{t('home.developmentHint')}</p>}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button type="button" onClick={retryLastProductRequest} className="rounded-full border border-amber-300 bg-white px-4 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100">{t('home.tryAgain')}</button>
+                  <button type="button" aria-label={t('home.dismiss')} onClick={() => setIsLoadErrorDismissed(true)} className="flex h-8 w-8 items-center justify-center rounded-full text-lg text-amber-800 hover:bg-amber-100">×</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className={`${contentContainerClass} space-y-6`}>
             <div className="mx-auto w-full max-w-3xl">
@@ -507,10 +572,31 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
 
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-xl font-bold text-slate-900">{searchedTitle}</h3>
-                  <span className="text-sm text-slate-500">{searchResults.length} items found</span>
+                  {!loading && !loadError && <span className="text-sm text-slate-500">{searchResults.length} items found</span>}
                 </div>
 
-                {searchResults.length === 0 ? (
+                {loading ? (
+                  <section className="notranslate rounded-[24px] border border-slate-200 bg-white p-5 sm:p-8" role="status">
+                    <p className="text-center text-sm font-semibold text-slate-600">{t('home.listingsLoading')}</p>
+                    <div aria-hidden="true" className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                      {Array.from({ length: 8 }, (_, index) => (
+                        <div key={index} className="animate-pulse overflow-hidden rounded-xl border border-slate-200 bg-white sm:rounded-2xl">
+                          <div className="aspect-square bg-slate-100 sm:aspect-[4/3]" />
+                          <div className="space-y-2 p-3"><div className="h-3 w-3/4 rounded bg-slate-100" /><div className="h-3 w-1/2 rounded bg-slate-100" /></div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : loadError ? (
+                  hasSignedInUser || (!isLoadErrorDismissed && (
+                    <section className="notranslate relative rounded-[24px] border border-slate-200 bg-slate-50 p-6 text-center text-slate-700 sm:p-8" role="status">
+                      <button type="button" aria-label={t('home.dismiss')} onClick={() => setIsLoadErrorDismissed(true)} className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-lg text-slate-500 hover:bg-slate-200">×</button>
+                      <p className="font-semibold">{listingFailureMessage}</p>
+                      {import.meta.env.DEV && <p className="mt-1 text-xs text-slate-500">{t('home.developmentHint')}</p>}
+                      <button type="button" onClick={retryLastProductRequest} className="mt-4 rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-100">{t('home.tryAgain')}</button>
+                    </section>
+                  ))
+                ) : searchResults.length === 0 ? (
                   <div className="rounded-[24px] border border-slate-200 bg-white p-12 text-center text-slate-500">
                     <span className="text-4xl">🔍</span>
                     <p className="mt-3 text-lg font-semibold">No products found matching that query.</p>
