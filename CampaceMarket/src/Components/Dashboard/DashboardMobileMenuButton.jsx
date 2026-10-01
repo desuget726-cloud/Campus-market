@@ -10,7 +10,7 @@ function DashboardMobileMenuButton({ isOpen, onToggle, tone = 'light' }) {
             aria-controls="student-mobile-navigation"
             aria-expanded={isOpen}
             aria-label={isOpen ? 'Close navigation menu' : 'Open navigation menu'}
-            className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition focus-visible:outline-none focus-visible:ring-2 md:hidden ${toneClasses}`}
+            className={`inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition focus-visible:outline-none focus-visible:ring-2 lg:hidden ${toneClasses}`}
         >
             <span className="text-2xl leading-none" aria-hidden="true">☰</span>
         </button>

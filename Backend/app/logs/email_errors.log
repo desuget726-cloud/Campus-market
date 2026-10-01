@@ -2198,3 +2198,31 @@ Traceback (most recent call last):
     self._sslobj.do_handshake()
     ~~~~~~~~~~~~~~~~~~~~~~~~~^^
 TimeoutError: _ssl.c:1015: The handshake operation timed out
+2026-10-01 15:45:33,687 ERROR Failed to send student notification email: Connection unexpectedly closed: [WinError 10054] An existing connection was forcibly closed by the remote host
+Traceback (most recent call last):
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 407, in getreply
+    line = self.file.readline(_MAXLINE + 1)
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 723, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Lab 3\Documents\Campus-market\backend\app\main.py", line 2633, in _send_student_notification_email
+    server.starttls()
+    ~~~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 783, in starttls
+    self.ehlo_or_helo_if_needed()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 620, in ehlo_or_helo_if_needed
+    if not (200 <= self.ehlo()[0] <= 299):
+                   ~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 461, in ehlo
+    (code, msg) = self.getreply()
+                  ~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 410, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed: "
+                                 + str(e))
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed: [WinError 10054] An existing connection was forcibly closed by the remote host

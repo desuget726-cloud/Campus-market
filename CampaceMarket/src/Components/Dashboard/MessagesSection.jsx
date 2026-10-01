@@ -14,12 +14,12 @@ const MessagesSection = () => {
   ];
 
   return (
-    <div className="min-h-screen bg-sky-50 p-6">
-      <div className="max-w-7xl mx-auto">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[600px]">
+    <div className="min-h-screen w-full min-w-0 max-w-full bg-sky-50 p-3 sm:p-6">
+      <div className="mx-auto w-full min-w-0 max-w-7xl">
+        <div className="grid h-[600px] min-w-0 grid-cols-1 gap-6 lg:grid-cols-4">
 
           {/* Left Sidebar */}
-          <div className="lg:col-span-1 bg-white rounded-[28px] shadow-lg border border-slate-100 p-6 flex flex-col">
+          <div className="flex min-w-0 flex-col rounded-[28px] border border-slate-100 bg-white p-4 shadow-lg sm:p-6 lg:col-span-1">
 
             {/* Header */}
             <div className="mb-6">
@@ -49,8 +49,8 @@ const MessagesSection = () => {
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
                   className={`w-full text-left px-4 py-2.5 rounded-lg font-semibold transition-all relative ${activeTab === tab.id
-                      ? 'text-emerald-600 bg-emerald-50'
-                      : 'text-slate-600 hover:bg-slate-50'
+                    ? 'text-emerald-600 bg-emerald-50'
+                    : 'text-slate-600 hover:bg-slate-50'
                     }`}
                 >
                   {tab.label}
@@ -77,9 +77,9 @@ const MessagesSection = () => {
           </div>
 
           {/* Right Panel - Chat Window */}
-          <div className="lg:col-span-3 bg-white rounded-[28px] shadow-lg border border-slate-100 overflow-hidden flex flex-col">
-            <div className="border-b border-slate-200 bg-white px-6 py-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
+          <div className="flex min-w-0 flex-col overflow-hidden rounded-[28px] border border-slate-100 bg-white shadow-lg lg:col-span-3">
+            <div className="flex min-w-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
+              <div className="flex min-w-0 items-center gap-3">
                 <button type="button" className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -111,7 +111,7 @@ const MessagesSection = () => {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6 bg-slate-50">
+            <div className="min-w-0 flex-1 space-y-6 overflow-y-auto bg-slate-50 px-4 py-5 sm:px-6">
               <div className="text-center">
                 <p className="text-sm font-medium text-slate-500">How can we help you?</p>
               </div>
@@ -135,7 +135,7 @@ const MessagesSection = () => {
               </div>
             </div>
 
-            <div className="border-t border-slate-200 bg-slate-50 px-6 py-5">
+            <div className="min-w-0 border-t border-slate-200 bg-slate-50 px-4 py-5 sm:px-6">
               <div className="border-2 border-emerald-500 rounded-[24px] p-3 flex flex-col gap-3 bg-white">
                 <textarea
                   ref={textareaRef}

@@ -12,6 +12,7 @@ pydantic
 pymysql
 python-dotenv
 python-multipart
+Pillow
 requests
 scikit-learn
 sqlalchemy

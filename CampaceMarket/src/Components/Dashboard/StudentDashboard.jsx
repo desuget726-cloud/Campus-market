@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { Check, Pencil, X } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
 import SellerOperationsCenter from './SellerOperationsCenter';
@@ -14,6 +15,8 @@ import { isOrderRefunded } from '../../utils/orderReceiptState';
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
 const DEBIT_TRANSACTION_TYPES = new Set(['wallet withdrawal', 'seller payout', 'product purchase', 'escrow hold']);
+const EDIT_WINDOW_MINUTES = 15;
+const MAX_CHAT_MESSAGE_LENGTH = 1000;
 const disputeReasons = [
   'Item not received',
   'Wrong item',
@@ -83,6 +86,26 @@ const getStudentAvatar = (studentId) => (
     : IMAGE_PLACEHOLDER
 );
 
+const getConversationIdFromUrl = () => (
+  typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('conversation') || ''
+);
+
+const formatConversationTimestamp = (value, language) => {
+  const timestamp = String(value || '').trim();
+  const date = new Date(timestamp);
+  if (!timestamp || Number.isNaN(date.getTime())) return timestamp;
+
+  const locale = language === 'am' ? 'am' : 'en';
+  const elapsedMinutes = Math.round((date.getTime() - Date.now()) / 60000);
+  const relativeTime = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+  if (Math.abs(elapsedMinutes) < 60) return relativeTime.format(elapsedMinutes, 'minute');
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (Math.abs(elapsedHours) < 24) return relativeTime.format(elapsedHours, 'hour');
+  const elapsedDays = Math.round(elapsedHours / 24);
+  if (Math.abs(elapsedDays) < 7) return relativeTime.format(elapsedDays, 'day');
+  return date.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
+};
+
 const getRecommendationImage = (rawImage) => {
   if (Array.isArray(rawImage)) return rawImage.find((image) => String(image || '').trim()) || null;
   if (typeof rawImage !== 'string') return null;
@@ -128,7 +151,7 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 
 
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const studentToast = (key) => t(`studentToast.${key}`);
   const getStudentSessionToken = () => {
     const userToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
@@ -156,7 +179,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [clockNow, setClockNow] = useState(Date.now());
-  const [activeTab, setActiveTab] = useState(initialTab); // የጎን መቆጣጠሪያ ታብ
+  const [activeTab, setActiveTab] = useState(() => getConversationIdFromUrl() ? 'messages' : initialTab); // የጎን መቆጣጠሪያ ታብ
+  const messagesViewRef = useRef(null);
+  const [messagesViewHeight, setMessagesViewHeight] = useState(null);
   const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
   const [settingsTab, setSettingsTab] = useState('account');
 
@@ -222,17 +247,62 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       ]
     },
   ];
-  const [activeConversationId, setActiveConversationId] = useState(initialConversations[0]?.id || '');
+  const [activeConversationId, setActiveConversationId] = useState(() => getConversationIdFromUrl() || initialConversations[0]?.id || '');
   const [conversationsList, setConversationsList] = useState(initialConversations);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
   const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
-  const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
+  const suppressNextMessageAutoScrollRef = useRef(false);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingMessageContent, setEditingMessageContent] = useState('');
+  const [lightboxImage, setLightboxImage] = useState('');
+  const scrollMessagesToLatest = (behavior = 'smooth') => {
+    const container = messagesContainerRef.current;
+    if (container) container.scrollTo({ top: container.scrollHeight, behavior });
+  };
+  const updateAutoScrollPreference = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    shouldAutoScrollRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 80;
+  };
+  useEffect(() => {
+    if (!lightboxImage) return undefined;
+    const handleLightboxKeyDown = (event) => {
+      if (event.key === 'Escape') setLightboxImage('');
+    };
+    window.addEventListener('keydown', handleLightboxKeyDown);
+    return () => window.removeEventListener('keydown', handleLightboxKeyDown);
+  }, [lightboxImage]);
   const [replyToMessage, setReplyToMessage] = useState(null);
   const [typingInput, setTypingInput] = useState('');
   const [peerIsTyping, setPeerIsTyping] = useState(false);
   const [showChatDropdown, setShowChatDropdown] = useState(false);
   const [conversationSearch, setConversationSearch] = useState('');
-  const [mobileChatView, setMobileChatView] = useState('list');
+  const [mobileChatView, setMobileChatView] = useState(() => getConversationIdFromUrl() ? 'chat' : 'list');
+  useLayoutEffect(() => {
+    if (activeTab !== 'messages') return undefined;
+    const messagesView = messagesViewRef.current;
+    if (!messagesView) return undefined;
+
+    const measureMessagesView = () => {
+      const viewport = window.visualViewport;
+      const viewportBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+      const availableHeight = Math.max(0, Math.floor(viewportBottom - messagesView.getBoundingClientRect().top - 16));
+      setMessagesViewHeight((currentHeight) => currentHeight === availableHeight ? currentHeight : availableHeight);
+    };
+
+    measureMessagesView();
+    window.addEventListener('resize', measureMessagesView);
+    window.addEventListener('orientationchange', measureMessagesView);
+    window.visualViewport?.addEventListener('resize', measureMessagesView);
+
+    return () => {
+      window.removeEventListener('resize', measureMessagesView);
+      window.removeEventListener('orientationchange', measureMessagesView);
+      window.visualViewport?.removeEventListener('resize', measureMessagesView);
+    };
+  }, [activeTab]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isVoiceRecording, setIsVoiceRecording] = useState(false);
   const mediaRecorderRef = useRef(null);
@@ -537,6 +607,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       return 'Failed to complete action.';
     }
   };
+  const translateProductOwnershipError = (message) => (
+    message === 'You cannot buy or save your own product.'
+      ? studentToast('ownProductAction')
+      : message
+  );
 
   const cartTotal = cart.reduce(
     (total, item) => total + normalizeCheckoutPrice(item.price) * Number(item.quantity || 1),
@@ -1211,7 +1286,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       if (limit) params.set('limit', String(limit));
       if (department) params.set('department', department);
       const url = `${API_BASE_URL}/api/products${params.toString() ? `?${params.toString()}` : ''}`;
-      const res = await fetch(url);
+      const token = getStudentSessionToken();
+      const res = await fetch(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!res.ok) throw new Error('Failed to load products');
       const productData = await res.json();
       setSearchResults(Array.isArray(productData) ? productData : []);
@@ -1551,11 +1629,35 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   }, [activeTab, user?.department]);
 
   useEffect(() => {
-    const requestedTab = initialTab === 'profile' ? 'settings' : initialTab;
+    const requestedTab = getConversationIdFromUrl() ? 'messages' : initialTab === 'profile' ? 'settings' : initialTab;
     if (requestedTab) {
       setActiveTab((currentTab) => currentTab === requestedTab ? currentTab : requestedTab);
     }
   }, [initialTab]);
+
+  useEffect(() => {
+    if (activeTab === 'messages' || !getConversationIdFromUrl()) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('conversation');
+    window.history.replaceState(window.history.state, '', url);
+  }, [activeTab]);
+
+  useEffect(() => {
+    const syncSelectedConversation = () => {
+      const conversationId = getConversationIdFromUrl();
+      if (conversationId) {
+        shouldAutoScrollRef.current = true;
+        setActiveConversationId(conversationId);
+        setMobileChatView('chat');
+        setActiveTab('messages');
+      } else {
+        setMobileChatView('list');
+      }
+    };
+
+    window.addEventListener('popstate', syncSelectedConversation);
+    return () => window.removeEventListener('popstate', syncSelectedConversation);
+  }, []);
 
   const lastSyncedTabRef = useRef(null);
 
@@ -1884,7 +1986,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     try {
       const res = await fetch(`${API_BASE_URL}/api/student/wishlist`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getStudentSessionToken()}`,
+        },
         body: JSON.stringify({
           student_id: user?.studentId || user?.student_id || effectiveStudentId,
           product_id: parseInt(productId, 10)
@@ -1892,7 +1997,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
 
       if (!res.ok) {
-        const message = await getErrorString(res);
+        const message = translateProductOwnershipError(await getErrorString(res));
         setWishlistMessage(message);
         notifyError({ detail: message }, `student-wishlist-add-${productId}`);
         return;
@@ -1977,7 +2082,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         notifySuccess(studentToast('cartAdded'), `student-cart-add-${safePayload.product_id}`);
         setBuyerTab('cart');
       } else {
-        const message = await getErrorString(res);
+        const message = translateProductOwnershipError(await getErrorString(res));
         setCartMessage(message);
         notifyError({ detail: message }, `student-cart-add-${safePayload.product_id}`);
       }
@@ -2184,6 +2289,33 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
+  function selectConversation(conversationId) {
+    const url = new URL(window.location.href);
+    const currentConversationId = url.searchParams.get('conversation');
+    url.searchParams.set('conversation', conversationId);
+    const historyState = { ...window.history.state, dashboardConversation: conversationId };
+    if (currentConversationId) {
+      window.history.replaceState(historyState, '', url);
+    } else {
+      window.history.pushState(historyState, '', url);
+    }
+    shouldAutoScrollRef.current = true;
+    setActiveConversationId(conversationId);
+    setMobileChatView('chat');
+  }
+
+  function showConversationList() {
+    setMobileChatView('list');
+    if (!getConversationIdFromUrl()) return;
+    if (window.history.state?.dashboardConversation) {
+      window.history.back();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('conversation');
+    window.history.replaceState(window.history.state, '', url);
+  }
+
   const handleChatInitiate = (sellerId, sellerName) => {
     const normalizedSellerId = String(sellerId || '').trim();
     if (!normalizedSellerId) return;
@@ -2192,7 +2324,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       String(conversation.studentId || conversation.student_id || '').trim() === normalizedSellerId
     ));
     if (existingConversation) {
-      setActiveConversationId(existingConversation.id);
+      selectConversation(existingConversation.id);
     } else {
       const newConversation = {
         id: `conv-${normalizedSellerId}`,
@@ -2206,7 +2338,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         messages: [],
       };
       setConversationsList((previousConversations) => [newConversation, ...previousConversations]);
-      setActiveConversationId(newConversation.id);
+      selectConversation(newConversation.id);
       setActiveChatMessages([]);
     }
     setActiveTab('messages');
@@ -3028,15 +3160,30 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         if (res.ok) {
           const data = await res.json();
           if (data.conversations && Array.isArray(data.conversations)) {
+            const requestedConversationId = getConversationIdFromUrl();
+            const restoredConversation = data.conversations.find((conversation) => String(conversation.id) === String(requestedConversationId));
+            const selectedConversation = restoredConversation || data.conversations[0] || null;
             setConversationsList(data.conversations);
-            setActiveConversationId(data.conversations[0]?.id || '');
-            setActiveChatMessages(data.conversations[0]?.messages || []);
+            setActiveConversationId(selectedConversation?.id || '');
+            setActiveChatMessages(selectedConversation?.messages || []);
+            setMobileChatView(restoredConversation ? 'chat' : 'list');
+            if (requestedConversationId && !restoredConversation) {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('conversation');
+              window.history.replaceState(window.history.state, '', url);
+            }
           }
         }
       } catch (error) {
         console.error('Error fetching conversations:', error);
         setConversationsList([]);
         setActiveConversationId('');
+        setMobileChatView('list');
+        if (getConversationIdFromUrl()) {
+          const url = new URL(window.location.href);
+          url.searchParams.delete('conversation');
+          window.history.replaceState(window.history.state, '', url);
+        }
       } finally {
         setConversationsLoaded(true);
       }
@@ -3077,6 +3224,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               created_at: msg.created_at,
               productId: msg.product_id,
               is_read: Boolean(msg.is_read),
+              edited: Boolean(msg.edited),
+              edited_at: msg.edited_at,
             }));
             setActiveChatMessages(formattedMessages);
           }
@@ -3090,7 +3239,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   }, [activeConversationId, user?.studentId, conversationsList, conversationsLoaded]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const desktopChatIsVisible = window.matchMedia('(min-width: 1024px)').matches;
+    if (activeTab !== 'messages' || (mobileChatView !== 'chat' && !desktopChatIsVisible)) return undefined;
+    shouldAutoScrollRef.current = true;
+    const frame = window.requestAnimationFrame(() => scrollMessagesToLatest());
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeConversationId, mobileChatView, activeTab]);
+
+  useEffect(() => {
+    if (suppressNextMessageAutoScrollRef.current) {
+      suppressNextMessageAutoScrollRef.current = false;
+      return undefined;
+    }
+    if (!shouldAutoScrollRef.current) return undefined;
+    const frame = window.requestAnimationFrame(() => scrollMessagesToLatest());
+    return () => window.cancelAnimationFrame(frame);
   }, [activeChatMessages]);
 
   const handleDeleteMessage = async (messageId) => {
@@ -3111,6 +3274,75 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch (error) {
       console.error('Error deleting message:', error);
       notifyError(error, `student-message-delete-${messageId}`);
+    }
+  };
+
+  const handleStartEditMessage = (message) => {
+    setEditingMessageId(message.id);
+    setEditingMessageContent(message.text || '');
+  };
+
+  const handleCancelEditMessage = () => {
+    setEditingMessageId(null);
+    setEditingMessageContent('');
+  };
+
+  const handleSaveEditMessage = async (message) => {
+    const content = editingMessageContent.trim();
+    if (!content || content === message.text || content.length > MAX_CHAT_MESSAGE_LENGTH) return;
+
+    const previousText = message.text;
+    const conversationPreview = conversationsList.find((conversation) => conversation.id === activeConversationId)?.lastMessage;
+    const isLatestMessage = String(activeChatMessages.at(-1)?.id) === String(message.id);
+    suppressNextMessageAutoScrollRef.current = true;
+    setActiveChatMessages((previousMessages) => previousMessages.map((item) => (
+      String(item.id) === String(message.id)
+        ? { ...item, text: content, edited: true, edited_at: new Date().toISOString() }
+        : item
+    )));
+    if (isLatestMessage) {
+      setConversationsList((previousConversations) => previousConversations.map((conversation) => (
+        conversation.id === activeConversationId ? { ...conversation, lastMessage: content } : conversation
+      )));
+    }
+    handleCancelEditMessage();
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/student/messages/${message.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getStudentSessionToken()}`,
+        },
+        body: JSON.stringify({ content }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Failed to edit message.');
+
+      suppressNextMessageAutoScrollRef.current = true;
+      setActiveChatMessages((previousMessages) => previousMessages.map((item) => (
+        String(item.id) === String(message.id)
+          ? { ...item, text: data.content || data.message_text || content, edited: true, edited_at: data.editedAt || data.edited_at }
+          : item
+      )));
+      if (data.is_latest) {
+        setConversationsList((previousConversations) => previousConversations.map((conversation) => (
+          conversation.id === data.conversationId ? { ...conversation, lastMessage: content } : conversation
+        )));
+      }
+    } catch (error) {
+      suppressNextMessageAutoScrollRef.current = true;
+      setActiveChatMessages((previousMessages) => previousMessages.map((item) => (
+        String(item.id) === String(message.id) ? { ...item, text: previousText, edited: Boolean(message.edited), edited_at: message.edited_at } : item
+      )));
+      if (isLatestMessage) {
+        setConversationsList((previousConversations) => previousConversations.map((conversation) => (
+          conversation.id === activeConversationId && conversation.lastMessage === content
+            ? { ...conversation, lastMessage: conversationPreview }
+            : conversation
+        )));
+      }
+      notifyError(error, `student-message-edit-${message.id}`);
     }
   };
 
@@ -3217,6 +3449,24 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           }
           return;
         }
+        if (eventType === 'message_edited') {
+          const editedConversationId = String(incoming.conversationId || '');
+          const editedMessageId = String(incoming.id || '');
+          if (editedConversationId === String(activeConversationId)) {
+            suppressNextMessageAutoScrollRef.current = true;
+            setActiveChatMessages((previousMessages) => previousMessages.map((message) => (
+              String(message.id) === editedMessageId
+                ? { ...message, text: incoming.content, edited: true, edited_at: incoming.editedAt }
+                : message
+            )));
+          }
+          if (incoming.is_latest) {
+            setConversationsList((previousConversations) => previousConversations.map((conversation) => (
+              conversation.id === editedConversationId ? { ...conversation, lastMessage: incoming.content } : conversation
+            )));
+          }
+          return;
+        }
         const message = incoming?.type === 'incoming_message' ? incoming : null;
         if (!message) return;
 
@@ -3225,6 +3475,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
         // Append message to active chat if this is the current conversation
         if (activeConversationId === counterpartConversationId || activeConversationId?.includes(counterpartId)) {
+          if (String(message.sender_id) === String(user.studentId)) {
+            shouldAutoScrollRef.current = true;
+          } else {
+            updateAutoScrollPreference();
+          }
           setActiveChatMessages((prev) => [
             ...prev,
             {
@@ -3238,6 +3493,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               created_at: message.created_at,
               productId: message.product_id,
               is_read: Boolean(message.is_read),
+              edited: Boolean(message.edited),
+              edited_at: message.edited_at,
             }
           ]);
         }
@@ -3316,6 +3573,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       reply_to_id: replyToMessage?.id || null,
     };
 
+    shouldAutoScrollRef.current = true;
     setActiveChatMessages((prev) => [...prev, newMessage]);
     setTypingInput('');
     setReplyToMessage(null);
@@ -3358,6 +3616,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     try {
       const uploaded = await uploadChatAttachment(file);
+      shouldAutoScrollRef.current = true;
       socketRef.current.send(JSON.stringify({
         receiver_id: receiverId,
         message_text: '',
@@ -3454,7 +3713,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setBlockedConversations((previous) => ({ ...previous, [`conv-${normalizedPartnerId}`]: true }));
     setTypingInput('');
     setShowChatDropdown(false);
-    setMobileChatView('list');
+    showConversationList();
     setActiveConversationId('');
   };
 
@@ -3546,7 +3805,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         const remainingConversations = conversationsList.filter((conversation) => conversation.id !== activeConversation.id);
         setConversationsList(remainingConversations);
         setActiveConversationId(remainingConversations[0]?.id || '');
-        setMobileChatView('list');
+        showConversationList();
       }
     }
   };
@@ -3579,14 +3838,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   return (
-    <div className="min-h-0 w-full bg-slate-100 pt-10 text-slate-900 md:pt-0">
-      <div className="flex min-h-0 w-full flex-col gap-3 md:h-[calc(100dvh-5rem)] md:overflow-hidden md:flex-row md:items-stretch md:gap-3">
+    <div className={`min-h-0 w-full bg-slate-100 pt-10 text-slate-900 lg:pt-0 ${activeTab === 'messages' ? 'h-full overflow-hidden' : ''}`}>
+      <div className={`flex min-h-0 w-full flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-3 lg:overflow-hidden ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'lg:h-[calc(100dvh-5rem)]'}`}>
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside id="student-mobile-navigation" data-open={isSidebarOpen} style={{ transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }} className={`student-mobile-sidebar
           fixed top-20 bottom-0 left-0 z-40 flex h-[calc(100vh-5rem)] w-72 flex-col overflow-y-auto overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          md:sticky md:top-20 md:h-[calc(100dvh-5rem)] md:w-72 md:shrink-0 md:rounded-[32px] md:p-6 md:shadow-none
-          ${isSidebarCollapsed ? 'md:w-24 md:p-3' : 'md:w-72 md:p-6'}
+          lg:sticky lg:top-20 lg:h-[calc(100dvh-5rem)] lg:w-72 lg:shrink-0 lg:rounded-[32px] lg:p-6 lg:shadow-none
+          ${isSidebarCollapsed ? 'lg:w-24 lg:p-3' : 'lg:w-72 lg:p-6'}
         `}>
           <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
@@ -3595,7 +3854,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   type="button"
                   onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer md:hidden"
+                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer lg:hidden"
                   title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -3621,7 +3880,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {!isSidebarCollapsed && (
               <button
                 onClick={() => setIsSidebarOpen(false)}
-                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer md:hidden"
+                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer lg:hidden"
                 title="Close sidebar"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -3651,6 +3910,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       onTabChange(item.key);
                     }
                   }}
+                  data-dashboard-target={item.key}
                   className={`group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-200 hover:bg-white/15 hover:text-white focus-visible:bg-white/15 focus-visible:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
                   title={item.label}
                 >
@@ -3722,12 +3982,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         {isSidebarOpen && (
           <div
             onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm md:hidden"
+            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm lg:hidden"
           />
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className="min-h-0 min-w-0 flex-1 px-2 transition-all duration-300 sm:px-3 md:h-full md:overflow-y-auto md:overscroll-y-contain md:pr-2 md:pt-1">
+        <main className={`min-h-0 min-w-0 w-full max-w-full flex-1 px-2 transition-all duration-300 sm:px-3 lg:h-full lg:pr-2 lg:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'lg:overflow-y-auto lg:overscroll-y-contain'}`}>
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
@@ -3787,13 +4047,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             </div>
           )}
 
-          <section className="grid gap-6 px-4 animate-fade-in">
+          <section className={`grid min-w-0 w-full max-w-full grid-cols-[minmax(0,1fr)] gap-6 px-2 animate-fade-in [&>*]:min-w-0 [&>*]:max-w-full sm:px-4 ${activeTab === 'messages' ? 'min-h-0 flex-1' : ''}`}>
 
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
-              <div className="space-y-6">
-                <div className="rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex items-center gap-4">
+              <div data-dashboard-view="home" className="min-w-0 space-y-6">
+                <div className="flex flex-col rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-8">
+                  <div className="flex min-w-0 flex-1 items-center gap-4">
                     {/* ዴስክቶፕ ላይ ማውጫው ከተዘጋ በኋላ ለመክፈቻ የሚሆን የ [|] ቁልፍ (ምስል 2 - Sidebar Toggle Open Button) */}
                     {!isSidebarOpen && (
                       <button
@@ -3809,36 +4069,36 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     )}
 
                     {/* በሞባይል ስልኮች ላይ የሚታየው የሜኑ መክፈቻ ቁልፍ (Mobile Hamburger Menu) */}
-                    <div>
-                      <p className="text-sm uppercase tracking-[0.24em] text-slate-600">User Experience</p>
-                      <div className="mt-2 flex items-center gap-3">
-                        <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
-                        <h2 className="text-3xl font-semibold text-slate-900">Buyer and Seller dashboard</h2>
+                    <div className="flex min-w-0 flex-1 items-center gap-3">
+                      <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm uppercase tracking-[0.24em] text-slate-600">User Experience</p>
+                        <h2 className="mt-2 break-words text-xl font-semibold text-slate-900 sm:text-3xl">Buyer and Seller dashboard</h2>
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <button onClick={() => setShowSupportModal(true)} className="btn-primary rounded-full px-5 py-3 text-sm font-semibold shadow cursor-pointer">Support</button>
+                  <div className="mt-4 flex w-full items-center gap-3 sm:mt-0 sm:w-auto">
+                    <button onClick={() => setShowSupportModal(true)} className="btn-primary w-30  rounded-full px-5 py-2 text-sm font-semibold shadow cursor-pointer sm:w-auto">Support</button>
                   </div>
                 </div>
 
-                <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
+                <div className="grid min-w-0 max-w-full gap-6 xl:grid-cols-[1.35fr_0.65fr]">
                   {/* AI Recommendations */}
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                    <div className="mb-4 flex items-center justify-between border-b pb-2">
-                      <h3 className="text-xl font-bold text-slate-900">AI Recommendations</h3>
-                      <span className="rounded-full bg-sky-100 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Department Match</span>
+                  <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6 dark:border-slate-700 dark:bg-slate-900">
+                    <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b pb-2">
+                      <h3 className="min-w-0 break-words text-xl font-bold text-slate-900 dark:text-white">AI Recommendations</h3>
+                      <span className="max-w-full whitespace-nowrap rounded-full bg-sky-100 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-sky-700 dark:bg-sky-950 dark:text-sky-200 sm:tracking-[0.2em]">Department Match</span>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-2">
+                    <div className="-mx-2 flex min-w-0 max-w-full snap-x snap-mandatory touch-pan-x gap-3 overflow-x-auto px-2 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mx-0 md:grid md:grid-cols-2 md:overflow-visible md:px-0 md:pb-0 lg:grid-cols-4">
                       {recommendedProducts.length ? (
                         recommendedProducts.map((item) => {
                           const fallbackImage = getRecommendationPlaceholder(item.category);
                           const displayImage = getRecommendationImage(item.image) || fallbackImage;
 
                           return (
-                            <div key={item.id} className="rounded-[24px] border border-slate-200 bg-slate-50 p-4 transition hover:-translate-y-0.5 hover:shadow-sm">
-                              <div className="mb-4 h-32 w-full overflow-hidden rounded-[18px] bg-slate-200">
+                            <div key={item.id} className="flex w-[75%] min-w-0 max-w-full shrink-0 snap-start flex-col rounded-[24px] border border-slate-200 bg-slate-50 p-3 transition hover:-translate-y-0.5 hover:shadow-sm dark:border-slate-700 dark:bg-slate-800 md:w-auto md:shrink md:snap-none">
+                              <div className="mb-3 aspect-square w-full max-w-full overflow-hidden rounded-[18px] bg-slate-200 dark:bg-slate-700">
                                 <img
                                   src={resolveImageUrl(displayImage)}
                                   alt={item.title || 'Recommended marketplace product'}
@@ -3846,55 +4106,55 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                     event.currentTarget.onerror = null;
                                     event.currentTarget.src = fallbackImage;
                                   }}
-                                  className="h-full w-full object-cover"
+                                  className="h-full w-full max-w-full object-cover"
                                 />
                               </div>
-                              <div className="flex items-center justify-between gap-3">
-                                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+                              <div className="flex min-w-0 items-center justify-between gap-2">
+                                <span className="max-w-[70%] truncate rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-700 dark:bg-emerald-950 dark:text-emerald-200">
                                   {item.category || 'Recommended'}
                                 </span>
-                                <span className="text-xs font-semibold text-slate-500">{item.match || 'High match'}</span>
+                                <span className="hidden shrink-0 text-xs font-semibold text-slate-500 dark:text-slate-300 md:inline">{item.match || 'High match'}</span>
                               </div>
-                              <h4 className="mt-3 text-lg font-bold text-slate-900">{item.title}</h4>
-                              <p className="mt-2 line-clamp-2 text-sm text-slate-600">{item.description || 'Popular campus item tailored to your department.'}</p>
-                              <div className="mt-4 flex items-center justify-between">
-                                <span className="text-lg font-black text-slate-950">{formatETB(item.price)}</span>
-                                <button type="button" onClick={() => handleRecommendationClick(item.id)} className="rounded-full bg-slate-950 px-3.5 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 transition">View Details →</button>
+                              <h4 className="mt-2 line-clamp-2 break-words text-sm font-bold text-slate-900 dark:text-white">{item.title}</h4>
+                              <p className="mt-1 line-clamp-2 text-xs text-slate-600 dark:text-slate-300">{item.description || 'Popular campus item tailored to your department.'}</p>
+                              <div className="mt-auto pt-3">
+                                <span className="text-sm font-bold text-slate-950 dark:text-white">{formatETB(item.price)}</span>
+                                <button type="button" onClick={() => handleRecommendationClick(item.id)} className="mt-2 w-full whitespace-normal break-words rounded-full bg-slate-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200">View Details →</button>
                               </div>
                             </div>
                           );
                         })
                       ) : (
-                        <div className="rounded-[24px] bg-slate-50 p-4 border border-slate-100 text-sm text-slate-500 md:col-span-2">
+                        <div className="w-full rounded-[24px] border border-slate-100 bg-slate-50 p-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:col-span-2 lg:col-span-4">
                           No recommendations are available yet for your department.
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="space-y-6">
+                  <div className="min-w-0 max-w-full space-y-6">
                     {/* Quick Actions */}
-                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                      <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Quick Actions</h3>
+                    <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                      <h3 className="mb-4 break-words border-b pb-2 text-xl font-bold text-slate-900">Quick Actions</h3>
                       <div className="space-y-2">
-                        <button onClick={() => setActiveTab('buyer')} className="w-full text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Continue browsing marketplace</button>
-                        <button onClick={() => setActiveTab('buyer')} className="w-full text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Check seller orders</button>
+                        <button onClick={() => setActiveTab('buyer')} className="w-full whitespace-normal break-words text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Continue browsing marketplace</button>
+                        <button onClick={() => setActiveTab('buyer')} className="w-full whitespace-normal break-words text-left rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 transition cursor-pointer">Check seller orders</button>
                       </div>
                     </div>
 
                     {/* Recent Campus Activity */}
-                    <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                      <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Recent Campus Activity</h3>
+                    <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                      <h3 className="mb-4 break-words border-b pb-2 text-xl font-bold text-slate-900">Recent Campus Activity</h3>
                       <div className="space-y-3">
                         {recentCampusActivity.length ? (
                           recentCampusActivity.map((item, index) => (
-                            <div key={`${item.title || 'activity'}-${index}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                              <div className="mb-1 flex items-center justify-between gap-2">
-                                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{item.time || 'Now'}</span>
-                                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                            <div key={`${item.title || 'activity'}-${index}`} className="min-w-0 max-w-full rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                              <div className="mb-1 flex min-w-0 flex-wrap items-center justify-between gap-2">
+                                <span className="min-w-0 max-w-full break-words text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{item.time || 'Now'}</span>
+                                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500"></span>
                               </div>
-                              <p className="text-sm font-semibold text-slate-900">{item.title || item.action || 'Marketplace update'}</p>
-                              <p className="mt-1 text-xs text-slate-600">{item.description || item.detail || 'Fresh student marketplace activity.'}</p>
+                              <p className="min-w-0 max-w-full break-words text-sm font-semibold text-slate-900">{item.title || item.action || 'Marketplace update'}</p>
+                              <p className="mt-1 min-w-0 max-w-full break-words text-xs text-slate-600">{item.description || item.detail || 'Fresh student marketplace activity.'}</p>
                             </div>
                           ))
                         ) : (
@@ -4026,27 +4286,28 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
 
             {activeTab === 'buyer' && !selectedOrder && (
-              <div className="space-y-6">
-                <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
-                  <div className="flex items-start gap-3">
+              <div data-dashboard-view="buyer" className="min-w-0 w-full max-w-full space-y-6 [&>*]:min-w-0 [&>*]:max-w-full">
+                <div className="min-w-0 w-full max-w-full rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
+                  <div className="flex min-w-0 items-center gap-3">
                     <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
-                    <div>
+                    <div className="min-w-0">
                       <h3 className="text-xl font-bold text-slate-900">Buyer Hub</h3>
-                      <p className="text-sm text-slate-600 mt-1">Search products, manage your wishlist, cart, orders, and payments.</p>
+                      <p className="mt-1 break-words text-sm text-slate-600">Search products, manage your wishlist, cart, orders, and payments.</p>
                     </div>
                   </div>
 
                   {/* Buyer Hub Sub-tabs (White Pill Buttons) */}
-                  <div className="mt-6 flex flex-row gap-2 overflow-x-auto pb-1 scrollbar-none snap-x md:overflow-x-visible md:flex-wrap">
+                  <div className="buyer-hub-tabs mt-6 flex w-full min-w-0 max-w-full flex-wrap gap-2 pb-1">
                     {buyerSubTabs.map((tab) => (
                       <button
                         key={tab.id}
+                        data-buyer-tab={tab.id}
                         onClick={() => setBuyerTab(tab.id)}
-                        className={`inline-flex shrink-0 items-center gap-2 rounded-full px-5 py-2.5 text-xs font-semibold cursor-pointer transition-all duration-200 ${buyerTab === tab.id ? 'btn-primary border border-[var(--brand-primary)] shadow-sm' : 'border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+                        className={`inline-flex shrink-0 items-center gap-2 rounded-full px-3 py-2 text-xs font-semibold cursor-pointer transition-all duration-200 sm:text-sm ${buyerTab === tab.id ? 'btn-primary border border-[var(--brand-primary)] shadow-sm' : 'border border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
                       >
                         <span>{tab.label}</span>
                         {tab.badge > 0 && (
-                          <span className={`inline-flex min-w-6 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold ${buyerTab === tab.id ? 'bg-slate-950 text-white' : 'bg-slate-200 text-slate-700'}`}>
+                          <span className={`inline-flex min-w-6 shrink-0 items-center justify-center whitespace-nowrap rounded-full px-1.5 py-0.5 text-[10px] font-bold ${buyerTab === tab.id ? 'bg-slate-950 text-white' : 'bg-slate-200 text-slate-700'}`}>
                             {tab.badge}
                           </span>
                         )}
@@ -4057,29 +4318,29 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                 {/* Sub-tab 1: Search / Browse */}
                 {buyerTab === 'search' && (
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-                      <div>
+                  <div className="min-w-0 w-full max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                    <div className="min-w-0">
+                      <div className="min-w-0">
                         <h3 className="text-xl font-bold text-slate-900">Search & Browse Marketplace</h3>
                         <p className="text-sm text-slate-500 mt-1">Find student listings by name, category, or subcategory.</p>
                       </div>
-                      <div className="flex flex-col gap-3 sm:flex-row">
-                        <button onClick={handleSearchSubmit} className="btn-primary rounded-full px-5 py-3 text-sm font-semibold shadow-sm transition cursor-pointer">Search</button>
-                        <button onClick={() => { resetSearchFilters(); fetchProducts(); }} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer">Reset</button>
+                      <div className="mt-4 grid w-full min-w-0 grid-cols-2 gap-2">
+                        <button onClick={handleSearchSubmit} className="btn-primary w-full min-w-0 rounded-full px-5 py-3 text-sm font-semibold shadow-sm transition cursor-pointer">Search</button>
+                        <button onClick={() => { resetSearchFilters(); fetchProducts(); }} className="w-full min-w-0 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer">Reset</button>
                       </div>
                     </div>
 
-                    <form onSubmit={handleSearchSubmit} className="mt-6 grid gap-4 md:grid-cols-[1fr_1fr] lg:grid-cols-[1fr_1fr_1fr]">
-                      <div>
+                    <form onSubmit={handleSearchSubmit} className="mt-6 grid min-w-0 grid-cols-1 gap-4 md:grid-cols-3">
+                      <div className="min-w-0">
                         <label className="block text-sm font-semibold text-slate-700">Search</label>
                         <input
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
                           placeholder="Search for textbooks, phones, bags..."
-                          className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition"
+                          className="mt-2 block min-w-0 w-full max-w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition"
                         />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <label className="block text-sm font-semibold text-slate-700">Category</label>
                         <select
                           value={searchCategory}
@@ -4087,7 +4348,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             setSearchCategory(e.target.value);
                             setSearchSubcategory('');
                           }}
-                          className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition"
+                          className="mt-2 block min-w-0 w-full max-w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition"
                         >
                           <option value="">All categories</option>
                           {categories.map((cat) => (
@@ -4095,13 +4356,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           ))}
                         </select>
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <label className="block text-sm font-semibold text-slate-700">Subcategory</label>
                         <select
                           value={searchSubcategory}
                           onChange={(e) => setSearchSubcategory(e.target.value)}
                           disabled={!searchCategory}
-                          className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
+                          className="mt-2 block min-w-0 w-full max-w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none transition disabled:cursor-not-allowed disabled:opacity-60"
                         >
                           <option value="">All subcategories</option>
                           {categories.find((cat) => cat.name === searchCategory)?.items?.map((sub) => (
@@ -4111,7 +4372,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       </div>
                     </form>
 
-                    <div className="mt-6 rounded-[28px] border border-slate-200 bg-slate-50 p-4">
+                    <div className="mt-6 min-w-0 max-w-full overflow-hidden rounded-[28px] border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800">
                       {wishlistMessage && <p className="text-sm text-emerald-700">{wishlistMessage}</p>}
                       {cartMessage && <p className="text-sm text-emerald-700">{cartMessage}</p>}
                       {searchLoading ? (
@@ -4119,7 +4380,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       ) : searchResults.length === 0 ? (
                         <p className="text-sm text-slate-500">No products match your search yet. Try a different keyword or category.</p>
                       ) : (
-                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                        <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                           {searchResults.map((item) => {
                             const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
                             const sellerPayoutBlocked = String(item.seller_payout_status || '').trim().toLowerCase() !== 'active';
@@ -4154,8 +4415,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             }
 
                             return (
-                              <div key={item.id} onClick={() => handleViewProductFromChat(item.id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.id)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-4">
-                                <div className="flex min-w-0 flex-col gap-4">
+                              <div key={item.id} onClick={() => handleViewProductFromChat(item.id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.id)} role="button" tabIndex={0} className="flex w-full min-w-0 cursor-pointer flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
+                                <div className="flex min-w-0 flex-col gap-3">
                                   <img
                                     src={resolveImageUrl(displayImage)}
                                     alt={item.title}
@@ -4163,18 +4424,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       e.currentTarget.onerror = null;
                                       e.currentTarget.src = fallbackImage;
                                     }}
-                                    className="aspect-[4/3] h-auto w-full rounded-2xl object-cover"
+                                    className="aspect-square h-auto w-full max-w-full rounded-2xl object-cover"
                                   />
                                   <div className="min-w-0">
-                                    <p className="text-xs uppercase tracking-[0.25em] text-slate-400">{item.category} / {item.subcategory || 'General'}</p>
-                                    <h4 className="mt-2 break-words text-lg font-semibold text-slate-900">{item.title}</h4>
-                                    <p className="mt-1 text-sm text-slate-500">{item.description || item.summary || 'No description available.'}</p>
-                                    <p className="mt-2 font-bold text-slate-900">{formatETB(normalizePrice(item.price))}</p>
+                                    <p className="max-w-full truncate text-[10px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-400">{item.category} / {item.subcategory || 'General'}</p>
+                                    <h4 className="mt-2 line-clamp-2 break-words text-sm font-semibold text-slate-900 dark:text-white">{item.title}</h4>
+                                    <p className="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-300">{item.description || item.summary || 'No description available.'}</p>
+                                    <p className="mt-2 text-sm font-bold text-slate-900 dark:text-white">{formatETB(normalizePrice(item.price))}</p>
                                   </div>
                                 </div>
                                 <div className="mt-auto flex min-w-0 flex-col gap-2">
                                   {isOwnProduct ? (
-                                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 xl:grid-cols-1">
+                                    <div className="grid grid-cols-1 gap-2">
                                       <button type="button" onClick={(event) => { event.stopPropagation(); handleViewProductFromChat(item.id); }} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">View</button>
                                       <button type="button" onClick={(event) => { event.stopPropagation(); handleEditProduct(item); }} className="w-full rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">Edit</button>
                                       <button type="button" onClick={(event) => { event.stopPropagation(); handleDeleteProduct(item); }} className="w-full rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">Delete</button>
@@ -4184,7 +4445,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       {isOutOfStock ? (
                                         <span className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700">Out of Stock</span>
                                       ) : sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
-                                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                                      <div className="grid grid-cols-1 gap-2">
                                         {!isOutOfStock && <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToCartFromSearch(item.id); }} disabled={purchaseBlocked} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">Add to Cart</button>}
                                         {isInWishlist ? (
                                           <button type="button" onClick={(event) => event.stopPropagation()} disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
@@ -4206,7 +4467,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                 {/* Sub-tab 2: Wishlist */}
                 {buyerTab === 'wishlist' && (
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Your Wishlist</h3>
@@ -4308,7 +4569,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                 {/* Sub-tab 2: Cart */}
                 {buyerTab === 'cart' && (
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Your Shopping Cart</h3>
@@ -4459,7 +4720,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                 {/* Sub-tab 3: My Orders */}
                 {buyerTab === 'orders' && (
-                  <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
                     <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="border-b border-slate-200 pb-2 text-xl font-bold text-slate-900">Your Orders</h3>
@@ -5077,22 +5338,30 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             )}
 
             {activeTab === 'messages' && (
-              <div className="mx-auto w-full max-w-[1300px] px-0 py-2 sm:px-2">
-                <div className="flex h-auto min-h-[620px] w-full flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white sm:rounded-[32px] lg:h-[620px] lg:flex-row">
-                  <aside className={`max-h-[360px] min-h-[280px] w-full shrink-0 flex-col justify-between border-b border-slate-100 p-4 sm:p-6 lg:flex lg:h-full lg:max-h-none lg:min-h-0 lg:w-[360px] lg:border-b-0 lg:border-r ${mobileChatView === 'list' ? 'flex' : 'hidden'}`}>
-                    <div>
+              <div
+                ref={messagesViewRef}
+                data-dashboard-view="messages"
+                style={{
+                  height: messagesViewHeight === null ? undefined : `${messagesViewHeight}px`,
+                  minHeight: messagesViewHeight === null ? undefined : `${Math.min(420, messagesViewHeight)}px`,
+                }}
+                className="mx-auto flex min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden px-0 sm:px-2"
+              >
+                <div className="flex h-full min-h-0 w-full min-w-0 max-w-full flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 sm:rounded-[32px] lg:flex-row">
+                  <aside className={`h-full min-h-0 w-full min-w-0 max-w-full shrink-0 flex-col border-b border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900 sm:p-6 lg:w-80 lg:border-b-0 lg:border-r xl:w-96 ${mobileChatView === 'list' ? 'flex' : 'hidden'} lg:flex`}>
+                    <div className="flex min-h-0 flex-1 flex-col">
                       <div className="flex items-center justify-between border-b border-slate-200 pb-4">
                         <div className="min-w-0">
                           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Peer chat</p>
                           <div className="mt-1 flex items-center gap-3">
                             <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
-                            <h3 className="text-xl font-bold text-slate-900">Messages</h3>
+                            <h3 className="text-xl font-bold text-slate-900 dark:text-white">Messages</h3>
                           </div>
                         </div>
                         <button
                           type="button"
                           onClick={() => setShowAddChatModal(true)}
-                          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100"
+                          className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                           aria-label="New chat"
                         >
                           +
@@ -5106,12 +5375,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           value={conversationSearch}
                           onChange={(event) => setConversationSearch(event.target.value)}
                           placeholder="Search conversations..."
-                          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-10 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-sky-400"
+                          className="w-full min-w-0 rounded-2xl border border-slate-200 bg-white px-4 py-3 pr-10 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-sky-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         />
                         <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true">⌕</span>
                       </label>
 
-                      <div className="mt-4 max-h-[190px] space-y-3 overflow-y-auto lg:max-h-none">
+                      <div className="messages-scroll-area mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain">
                         {filteredConversations.length > 0 ? filteredConversations.map((conversation) => {
                           const isActive = conversation.id === activeConversationId;
                           const participantOnline = conversation.status === 'online';
@@ -5120,27 +5389,24 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <button
                               key={conversation.id}
                               type="button"
-                              onClick={() => {
-                                setActiveConversationId(conversation.id);
-                                setMobileChatView('chat');
-                              }}
-                              className={`relative flex w-full items-center gap-3 rounded-[24px] border px-3 py-3 text-left transition ${isActive ? 'border-sky-200 bg-sky-50 shadow-sm' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-100'}`}
+                              onClick={() => selectConversation(conversation.id)}
+                              className={`relative flex w-full min-w-0 items-center gap-3 rounded-[24px] border px-3 py-3 text-left transition ${isActive ? 'border-sky-200 bg-sky-50 shadow-sm dark:border-sky-800 dark:bg-sky-950/40' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-100 dark:bg-slate-900 dark:hover:border-slate-700 dark:hover:bg-slate-800'}`}
                             >
                               <div className="relative shrink-0">
                                 <img
                                   src={getStudentAvatar(conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, ''))}
                                   alt={conversation.name}
                                   onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
-                                  className="h-12 w-12 rounded-full object-cover ring-2 ring-white"
+                                  className="h-12 w-12 shrink-0 rounded-full object-cover ring-2 ring-white"
                                 />
                                 <span className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-white ${participantOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
                               </div>
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <p className="truncate text-sm font-bold text-slate-900">{conversation.name}</p>
-                                  <span className="shrink-0 text-[10px] text-slate-400">{conversation.timestamp}</span>
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <p className="min-w-0 flex-1 truncate text-sm font-bold text-slate-900 dark:text-white">{conversation.name}</p>
+                                  <span className="shrink-0 whitespace-nowrap text-[10px] text-slate-400">{formatConversationTimestamp(conversation.timestamp, language)}</span>
                                 </div>
-                                <p className="mt-1 truncate pr-7 text-xs text-slate-500">{conversation.lastMessage}</p>
+                                <p className="mt-1 min-w-0 truncate pr-7 text-xs text-slate-500 dark:text-slate-400">{conversation.lastMessage}</p>
                               </div>
                               {Number(conversation.unread) > 0 && (
                                 <span className="absolute right-3 top-1/2 inline-flex h-5 min-w-[20px] -translate-y-1/2 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold text-white ring-2 ring-white">
@@ -5150,16 +5416,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             </button>
                           );
                         }) : (
-                          <p className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500">No conversations found.</p>
+                          <p className="rounded-2xl border border-dashed border-slate-200 px-4 py-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">No conversations found.</p>
                         )}
                       </div>
                     </div>
                   </aside>
 
-                  <section className={`relative h-[600px] min-w-0 flex-1 flex-col justify-between bg-slate-50/25 p-4 sm:p-6 lg:flex ${mobileChatView === 'chat' ? 'flex' : 'hidden'}`}>
-                    <header className="flex shrink-0 items-center justify-between border-b border-slate-200 pb-4">
+                  <section className={`relative h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-slate-50/25 p-3 dark:bg-slate-950/30 sm:p-6 ${mobileChatView === 'chat' ? 'flex' : 'hidden'} lg:flex`}>
+                    <header className="flex min-w-0 shrink-0 items-center justify-between gap-2 border-b border-slate-200 pb-4 dark:border-slate-700">
                       <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-                        <button type="button" onClick={() => setMobileChatView('list')} className="rounded-full p-2 text-slate-500 hover:bg-slate-100 lg:hidden" aria-label="Back to conversations">←</button>
+                        <button type="button" onClick={showConversationList} className="shrink-0 rounded-full p-2 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 lg:hidden" aria-label="Back to conversations">←</button>
                         <div className="relative shrink-0">
                           <img
                             src={getStudentAvatar(activeConversation?.studentId || activeConversation?.student_id || String(activeConversation?.id || '').replace(/^conv-/, ''))}
@@ -5172,11 +5438,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <div className="flex min-w-0 items-center gap-2">
                           <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
                           <div className="min-w-0">
-                            <p className="truncate text-base font-bold text-slate-900">{activeConversation?.name || 'Student'}</p>
+                            <p className="truncate text-base font-bold text-slate-900 dark:text-white">{activeConversation?.name || 'Student'}</p>
                             {peerIsTyping ? (
                               <p className="text-xs font-semibold text-sky-600 animate-pulse">{activeConversation?.name || 'Student'} is typing...</p>
                             ) : (
-                              <p className="text-xs text-slate-500">{activeConversation?.status === 'online' ? '🟢 Online' : '⚪ Offline'}</p>
+                              <p className="text-xs text-slate-500 dark:text-slate-400">{activeConversation?.status === 'online' ? '🟢 Online' : '⚪ Offline'}</p>
                             )}
                           </div>
                         </div>
@@ -5186,24 +5452,24 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <button
                           type="button"
                           onClick={() => setShowChatDropdown((visible) => !visible)}
-                          className="rounded-full border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-100"
+                          className="rounded-full border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                           aria-label="Conversation actions"
                         >
                           ⋮
                         </button>
                         {showChatDropdown && (
-                          <div className="absolute right-0 top-12 z-10 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
-                            <button type="button" onClick={() => handleChatMenuAction('profile')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Profile</button>
-                            <button type="button" onClick={() => handleChatMenuAction('product')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">View Product</button>
-                            <button type="button" onClick={() => handleChatMenuAction('report')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Report User</button>
-                            <button type="button" onClick={() => handleChatMenuAction('block')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">Block User</button>
-                            <button type="button" onClick={() => handleChatMenuAction('delete')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50">Delete Conversation</button>
+                          <div className="absolute right-0 top-12 z-20 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                            <button type="button" onClick={() => handleChatMenuAction('profile')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">View Profile</button>
+                            <button type="button" onClick={() => handleChatMenuAction('product')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">View Product</button>
+                            <button type="button" onClick={() => handleChatMenuAction('report')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Report User</button>
+                            <button type="button" onClick={() => handleChatMenuAction('block')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Block User</button>
+                            <button type="button" onClick={() => handleChatMenuAction('delete')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-950/40">Delete Conversation</button>
                           </div>
                         )}
                       </div>
                     </header>
 
-                    <div className="min-h-0 flex flex-1 flex-col overflow-y-auto bg-gradient-to-b from-slate-50 to-white px-2 py-4 pb-24">
+                    <div ref={messagesContainerRef} onScroll={updateAutoScrollPreference} className="messages-scroll-area flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain bg-gradient-to-b from-slate-50 to-white px-2 py-4 dark:from-slate-900 dark:to-slate-950">
                       {activeChatMessages.map((message) => {
                         const isOwnMessage = message.sender_id
                           ? String(message.sender_id) === String(user?.studentId)
@@ -5221,11 +5487,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                         return (
                           <div key={message.id} className="group">
-                            <div className={`mb-4 flex items-end gap-2 ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`mb-4 flex min-w-0 flex-wrap items-end gap-2 ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
                               {!isOwnMessage && (
-                                <img src={getStudentAvatar(message.sender_id || activeConversation?.studentId)} alt={activeConversation?.name || 'Student'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                                <img src={getStudentAvatar(message.sender_id || activeConversation?.studentId)} alt={activeConversation?.name || 'Student'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="order-1 h-8 w-8 shrink-0 rounded-full object-cover sm:order-none" />
                               )}
-                              <div className={`max-w-[78%] rounded-[22px] px-4 py-3 shadow-sm ${isOwnMessage ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800'}`}>
+                              <div className={`${isOwnMessage ? 'order-1' : 'order-2'} min-w-0 break-words shadow-sm sm:order-none ${message.attachment_type === 'image' && message.attachment_url ? 'w-fit max-w-[260px] overflow-hidden rounded-2xl p-1 sm:max-w-[320px]' : 'max-w-[85%] rounded-[22px] px-4 py-3 sm:max-w-[70%]'} ${isOwnMessage ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-800 dark:bg-slate-800 dark:text-slate-100'}`}>
                                 {parentMessage && (
                                   <div className={`mb-2 border-l-2 px-2 py-1 text-xs ${isOwnMessage ? 'border-blue-200 bg-blue-700/50 text-blue-100' : 'border-slate-400 bg-slate-300/60 text-slate-600'}`}>
                                     <p className="font-semibold">{parentMessage.sender_id === user?.studentId ? 'You' : activeConversation?.name || 'Student'}</p>
@@ -5233,7 +5499,33 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                   </div>
                                 )}
                                 {message.attachment_type === 'image' && message.attachment_url && (
-                                  <img src={resolveImageUrl(message.attachment_url)} alt="Chat attachment" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="mb-2 max-h-64 max-w-full rounded-2xl object-cover" />
+                                  <div className="relative w-full">
+                                    <img
+                                      src={resolveImageUrl(message.attachment_url)}
+                                      alt="Open chat attachment"
+                                      loading="lazy"
+                                      onClick={() => setLightboxImage(resolveImageUrl(message.attachment_url))}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter' || event.key === ' ') {
+                                          event.preventDefault();
+                                          setLightboxImage(resolveImageUrl(message.attachment_url));
+                                        }
+                                      }}
+                                      onLoad={() => {
+                                        if (shouldAutoScrollRef.current) {
+                                          window.requestAnimationFrame(() => scrollMessagesToLatest());
+                                        }
+                                      }}
+                                      onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
+                                      role="button"
+                                      tabIndex={0}
+                                      className="block h-auto w-full max-h-[240px] aspect-[4/3] cursor-pointer rounded-xl object-cover sm:max-h-[300px]"
+                                    />
+                                    <div className="absolute bottom-2 right-2 flex items-center gap-1 rounded-full bg-black/60 px-2 py-1 text-[10px] text-white">
+                                      <span>{messageTime}</span>
+                                      {isOwnMessage && <span>{message.is_read ? '✓✓' : '✓'}</span>}
+                                    </div>
+                                  </div>
                                 )}
                                 {message.attachment_type === 'audio' && message.attachment_url && (
                                   <audio src={message.attachment_url} controls className="mb-2 max-w-full" />
@@ -5241,15 +5533,64 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 {message.attachment_type === 'video' && message.attachment_url && (
                                   <video src={message.attachment_url} controls className="mb-2 max-h-64 max-w-full rounded-2xl" />
                                 )}
-                                {message.text && message.text !== '[Attachment]' && <p className="text-sm leading-6">{message.text}</p>}
-                                <div className={`mt-2 flex items-center gap-1 text-[10px] ${isOwnMessage ? 'text-blue-100' : 'text-slate-500'}`}>
-                                  <span>{messageTime}</span>
-                                  {isOwnMessage && <span>{message.is_read ? '✓✓' : '✓'}</span>}
-                                </div>
+                                {editingMessageId === message.id ? (
+                                  <div className="flex min-w-0 items-end gap-2">
+                                    <textarea
+                                      autoFocus
+                                      value={editingMessageContent}
+                                      maxLength={MAX_CHAT_MESSAGE_LENGTH}
+                                      onChange={(event) => setEditingMessageContent(event.target.value)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Escape') {
+                                          event.preventDefault();
+                                          handleCancelEditMessage();
+                                        } else if (event.key === 'Enter' && !event.shiftKey) {
+                                          event.preventDefault();
+                                          handleSaveEditMessage(message);
+                                        }
+                                      }}
+                                      className="min-h-10 w-full min-w-0 resize-y break-words rounded-md border border-blue-200 bg-white/95 px-2 py-1 text-sm leading-5 text-slate-900 outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-white"
+                                      aria-label="Edit message"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveEditMessage(message)}
+                                      disabled={!editingMessageContent.trim() || editingMessageContent.trim() === message.text || editingMessageContent.trim().length > MAX_CHAT_MESSAGE_LENGTH}
+                                      className="shrink-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                                      aria-label="Save edited message"
+                                      title="Save"
+                                    ><Check size={16} /></button>
+                                    <button type="button" onClick={handleCancelEditMessage} className="shrink-0 cursor-pointer" aria-label="Cancel editing message" title="Cancel"><X size={16} /></button>
+                                  </div>
+                                ) : (
+                                  message.text && message.text !== '[Attachment]' && <p className="break-words text-sm leading-6">{message.text}</p>
+                                )}
+                                {!(message.attachment_type === 'image' && message.attachment_url) && (
+                                  <div className={`mt-2 flex items-center gap-1 text-[10px] ${isOwnMessage ? 'text-blue-100' : 'text-slate-500'}`}>
+                                    <span>{messageTime}</span>
+                                    {message.edited && <span>edited</span>}
+                                    {isOwnMessage && <span>{message.is_read ? '✓✓' : '✓'}</span>}
+                                  </div>
+                                )}
                               </div>
-                              <div className="flex shrink-0 items-center gap-1 text-xs text-slate-400">
+                              <div className={`order-3 flex w-full shrink-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-400 sm:text-xs ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
                                 {isOwnMessage ? (
                                   <>
+                                    {(() => {
+                                      const sentAt = new Date(message.created_at || message.time).getTime();
+                                      const canEdit = !message.attachment_url
+                                        && !message.attachment_type
+                                        && !message.productId
+                                        && message.text
+                                        && message.text !== '[Attachment]'
+                                        && !message.deleted
+                                        && !message.is_deleted
+                                        && Number.isFinite(sentAt)
+                                        && Date.now() - sentAt < EDIT_WINDOW_MINUTES * 60 * 1000;
+                                      return canEdit && editingMessageId !== message.id ? (
+                                        <button type="button" onClick={() => handleStartEditMessage(message)} className="inline-flex cursor-pointer items-center gap-1 hover:text-sky-600"><Pencil size={12} /> Edit</button>
+                                      ) : null;
+                                    })()}
                                     <button type="button" onClick={() => handleForwardClick(message)} className="cursor-pointer hover:text-sky-600">➡️ Forward</button>
                                     <button type="button" onClick={() => handleDeleteMessage(message.id)} className="cursor-pointer hover:text-rose-600">🗑️ Delete</button>
                                   </>
@@ -5261,16 +5602,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 )}
                               </div>
                               {isOwnMessage && (
-                                <img src={getStudentAvatar(user?.studentId)} alt={user?.name || 'You'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                                <img src={getStudentAvatar(user?.studentId)} alt={user?.name || 'You'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="order-2 h-8 w-8 shrink-0 rounded-full object-cover sm:order-none" />
                               )}
                             </div>
 
                             {product && (
                               <div className={`mb-4 flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
-                                <div className="w-full max-w-xs rounded-[24px] border border-slate-200 bg-white p-3 text-slate-900 shadow-sm">
-                                  {product.image && <img src={resolveImageUrl(product.image)} alt={product.title} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-28 w-full rounded-2xl object-cover" />}
-                                  <p className="mt-2 text-sm font-semibold">{product.title}</p>
-                                  <p className="mt-1 text-xs text-slate-500">{product.category || 'Campus marketplace item'}</p>
+                                <div className="w-full max-w-full rounded-[24px] border border-slate-200 bg-white p-3 text-slate-900 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white sm:max-w-xs">
+                                  {product.image && <img src={resolveImageUrl(product.image)} alt={product.title} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="mb-2 block h-auto max-h-[160px] w-full max-w-full rounded-2xl object-cover" />}
+                                  <p className="mt-2 break-words text-sm font-semibold">{product.title}</p>
+                                  <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">{product.category || 'Campus marketplace item'}</p>
                                   <div className="mt-2 flex items-center justify-between gap-3">
                                     <span className="text-sm font-bold text-emerald-600">{product.price} ETB</span>
                                     <button
@@ -5284,23 +5625,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 </div>
                               </div>
                             )}
-                            {productUnavailable && (
-                              <div className={`mb-4 flex ${isOwnMessage ? 'justify-end' : 'justify-start'}`}>
-                                <p className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-500">This product is no longer available.</p>
-                              </div>
-                            )}
                           </div>
                         );
                       })}
-                      <div ref={messagesEndRef} />
-
                       {activeConversation?.product && (
-                        <div className="order-first mb-5 rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm">
-                          <div className="flex items-center gap-3">
-                            <img src={resolveImageUrl(activeConversation.product.image)} alt={activeConversation.product.title} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-16 w-16 rounded-2xl object-cover" />
+                        <div className="order-first mb-5 max-w-full rounded-[24px] border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <img src={resolveImageUrl(activeConversation.product.image)} alt={activeConversation.product.title} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-16 w-16 shrink-0 rounded-2xl object-cover" />
                             <div className="min-w-0 flex-1">
                               <p className="truncate text-sm font-bold text-slate-900">{activeConversation.product.title}</p>
-                              <p className="mt-1 text-xs text-slate-500">{activeConversation.product.category || productDetails[activeConversation.product.id]?.category || 'Campus marketplace item'}</p>
+                              <p className="mt-1 break-words text-xs text-slate-500 dark:text-slate-400">{activeConversation.product.category || productDetails[activeConversation.product.id]?.category || 'Campus marketplace item'}</p>
                               <p className="mt-1 text-sm font-bold text-emerald-600">{Number(activeConversation.product.price).toLocaleString('en-US')} ETB</p>
                             </div>
                             <button type="button" onClick={() => handleViewProductFromChat(activeConversation.product.id)} className="btn-primary shrink-0 rounded-full px-3 py-2 text-xs font-semibold">View Product</button>
@@ -5309,75 +5643,82 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       )}
                     </div>
 
-                    <div className="absolute bottom-0 left-0 right-0 border-t border-slate-200 bg-white p-3 sm:p-4">
-                      {isActiveConversationBlocked ? (
-                        <div className="flex items-center justify-center rounded-2xl border border-slate-300 bg-slate-200 px-4 py-4 text-sm font-semibold text-slate-500" role="status">
-                          This conversation is blocked
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          {replyToMessage && (
-                            <div className="flex items-center gap-2 border-l-4 border-sky-500 bg-sky-50 px-3 py-2 text-sm text-slate-700">
-                              <div className="min-w-0 flex-1">
-                                <p className="text-xs font-semibold text-sky-700">Replying to...</p>
-                                <p className="truncate text-xs text-slate-600">{replyToMessage.text || '[Attachment]'}</p>
-                              </div>
-                              <button type="button" onClick={() => setReplyToMessage(null)} className="shrink-0 text-slate-400 hover:text-slate-700" aria-label="Cancel reply">✕</button>
-                            </div>
-                          )}
-                          <div className="flex min-w-0 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white sm:gap-3 sm:px-3">
-                            <label className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Attach file">
-                              📎
-                              <input ref={attachmentInputRef} type="file" accept="image/*,audio/*,video/*" onChange={handleFileAttachmentSelect} className="sr-only" />
-                            </label>
-                            <button
-                              type="button"
-                              onClick={isVoiceRecording ? handleStopVoiceRecording : handleStartVoiceRecording}
-                              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg shadow-sm ${isVoiceRecording ? 'bg-rose-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
-                              aria-label={isVoiceRecording ? 'Stop voice recording' : 'Record voice note'}
-                            >
-                              {isVoiceRecording ? '■' : '🎙️'}
-                            </button>
-                            <div className="relative shrink-0">
-                              <button type="button" onClick={() => setShowEmojiPicker((visible) => !visible)} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100" aria-label="Open emoji picker">😊</button>
-                              {showEmojiPicker && (
-                                <div className="absolute bottom-12 left-0 z-20 flex gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
-                                  {['😀', '😂', '👍', '❤️', '🎉', '🙏'].map((emoji) => (
-                                    <button key={emoji} type="button" onClick={() => { setTypingInput((value) => `${value}${emoji}`); setShowEmojiPicker(false); }} className="rounded-lg p-1.5 text-lg hover:bg-slate-100" aria-label={`Insert ${emoji}`}>{emoji}</button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <input
-                              type="text"
-                              value={typingInput}
-                              onChange={(e) => {
-                                const nextValue = e.target.value;
-                                setTypingInput(nextValue);
-                                const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
-                                if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
-                                  socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: Boolean(nextValue.trim()) }));
-                                }
-                              }}
-                              onBlur={() => {
-                                const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
-                                if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
-                                  socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: false }));
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  sendChatMessage();
-                                }
-                              }}
-                              placeholder="Type a message..."
-                              className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
-                            />
-                            <button type="button" onClick={sendChatMessage} className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold shadow-sm" aria-label="Send message">➤</button>
-                          </div>
-                        </div>
+                    <div className="sticky bottom-0 z-10 w-full shrink-0 border-t border-slate-200 bg-white p-3 sm:p-4 dark:border-slate-700 dark:bg-slate-900">
+                      {activeChatMessages.some((message) => message.productId && productDetails[message.productId]?.unavailable) && (
+                        <p className="mb-2 rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" role="status">
+                          This product is no longer available.
+                        </p>
                       )}
+                      {isActiveConversationBlocked && (
+                        <p className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200" role="status">
+                          Messaging is disabled because this conversation is blocked.
+                        </p>
+                      )}
+                      <div className="space-y-2">
+                        {replyToMessage && (
+                          <div className="flex items-center gap-2 border-l-4 border-sky-500 bg-sky-50 px-3 py-2 text-sm text-slate-700">
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-semibold text-sky-700">Replying to...</p>
+                              <p className="truncate text-xs text-slate-600">{replyToMessage.text || '[Attachment]'}</p>
+                            </div>
+                            <button type="button" onClick={() => setReplyToMessage(null)} className="shrink-0 text-slate-400 hover:text-slate-700" aria-label="Cancel reply">✕</button>
+                          </div>
+                        )}
+                        <div className="flex min-w-0 items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-2 py-2 shadow-sm focus-within:border-sky-300 focus-within:bg-white dark:border-slate-700 dark:bg-slate-800 dark:focus-within:bg-slate-900 sm:gap-3 sm:px-3">
+                          <label className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm ${isActiveConversationBlocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-slate-100'}`} aria-label="Attach file">
+                            📎
+                            <input ref={attachmentInputRef} type="file" accept="image/*,audio/*,video/*" onChange={handleFileAttachmentSelect} disabled={isActiveConversationBlocked} className="sr-only" />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={isVoiceRecording ? handleStopVoiceRecording : handleStartVoiceRecording}
+                            disabled={isActiveConversationBlocked}
+                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-lg shadow-sm disabled:cursor-not-allowed disabled:opacity-50 ${isVoiceRecording ? 'bg-rose-500 text-white' : 'bg-white text-slate-600 hover:bg-slate-100'}`}
+                            aria-label={isVoiceRecording ? 'Stop voice recording' : 'Record voice note'}
+                          >
+                            {isVoiceRecording ? '■' : '🎙️'}
+                          </button>
+                          <div className="relative shrink-0">
+                            <button type="button" onClick={() => setShowEmojiPicker((visible) => !visible)} disabled={isActiveConversationBlocked} className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50" aria-label="Open emoji picker">😊</button>
+                            {showEmojiPicker && (
+                              <div className="absolute bottom-12 left-0 z-20 flex gap-1 rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
+                                {['😀', '😂', '👍', '❤️', '🎉', '🙏'].map((emoji) => (
+                                  <button key={emoji} type="button" onClick={() => { setTypingInput((value) => `${value}${emoji}`); setShowEmojiPicker(false); }} className="rounded-lg p-1.5 text-lg hover:bg-slate-100" aria-label={`Insert ${emoji}`}>{emoji}</button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={typingInput}
+                            maxLength={MAX_CHAT_MESSAGE_LENGTH}
+                            onChange={(e) => {
+                              const nextValue = e.target.value;
+                              setTypingInput(nextValue);
+                              const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
+                              if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
+                                socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: Boolean(nextValue.trim()) }));
+                              }
+                            }}
+                            onBlur={() => {
+                              const receiverId = activeConversation?.studentId || (String(activeConversation?.id || '').replace(/^conv-/, '') || null);
+                              if (receiverId && socketRef.current?.readyState === WebSocket.OPEN) {
+                                socketRef.current.send(JSON.stringify({ type: 'typing', receiver_id: receiverId, is_typing: false }));
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                sendChatMessage();
+                              }
+                            }}
+                            disabled={isActiveConversationBlocked}
+                            placeholder={isActiveConversationBlocked ? 'Messaging disabled' : 'Type a message...'}
+                            className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white"
+                          />
+                          <button type="button" onClick={sendChatMessage} disabled={isActiveConversationBlocked || !typingInput.trim()} className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold shadow-sm disabled:cursor-not-allowed disabled:opacity-50" aria-label="Send message">➤</button>
+                        </div>
+                      </div>
                     </div>
                   </section>
                 </div>
@@ -5457,8 +5798,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           key={conversation.id}
                           type="button"
                           onClick={() => {
-                            setActiveConversationId(conversation.id);
-                            setMobileChatView('chat');
+                            selectConversation(conversation.id);
                             setShowAddChatModal(false);
                           }}
                           className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 p-3 text-left transition hover:border-sky-200 hover:bg-sky-50"
@@ -5824,6 +6164,31 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+          onClick={() => setLightboxImage('')}
+        >
+          <button
+            type="button"
+            onClick={() => setLightboxImage('')}
+            className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-xl text-white"
+            aria-label="Close image preview"
+          >
+            ×
+          </button>
+          <img
+            src={lightboxImage}
+            alt="Full-size chat attachment"
+            onClick={(event) => event.stopPropagation()}
+            className="max-h-[90dvh] max-w-[95vw] object-contain"
+          />
         </div>
       )}
     </div>

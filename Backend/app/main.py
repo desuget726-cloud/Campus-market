@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
-import bcrypt
+from app.password_security import hash_password, verify_password
 from typing import Optional, List, Dict, Tuple, Any, Literal, cast
 from dataclasses import dataclass
 import shutil
@@ -56,8 +56,10 @@ from email.mime.multipart import MIMEMultipart
 import asyncio
 import socket
 import io
+import warnings
 import pyotp
 import qrcode
+from PIL import Image, ImageOps, UnidentifiedImageError
 from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from deep_translator import GoogleTranslator
@@ -184,9 +186,11 @@ def health_check():
     return {"status": "ok"}
 
 # Create static directory for uploads if it doesn't exist
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static", "uploads")
+STATIC_ROOT = os.path.join(os.path.dirname(__file__), "static")
+STATIC_DIR = os.path.join(STATIC_ROOT, "uploads")
+UPLOADS_DIR = os.getenv("UPLOADS_DIR", STATIC_DIR)
 os.makedirs(STATIC_DIR, exist_ok=True)
-AVATAR_DIR = os.path.join(STATIC_DIR, "avatars")
+AVATAR_DIR = os.path.join(UPLOADS_DIR, "avatars")
 os.makedirs(AVATAR_DIR, exist_ok=True)
 ATTACHMENT_DIR = os.path.join(STATIC_DIR, "attachments")
 os.makedirs(ATTACHMENT_DIR, exist_ok=True)
@@ -204,7 +208,8 @@ def _get_avatar_url(user: Any, filename: str) -> str:
     return DEFAULT_AVATAR_URL
 
 # Mount static files directory
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 
 @app.get("/health")
@@ -316,39 +321,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 payment_scheduler: Optional[AsyncIOScheduler] = None
-
-# Password hashing helper functions using native bcrypt
-def hash_password(password: str) -> str:
-    """
-    Hash a password using bcrypt.
-    Truncates password to 72 bytes to satisfy bcrypt limits.
-    """
-    password_bytes = password.encode('utf-8')[:72]
-    salt = bcrypt.gensalt(rounds=12)
-    hashed = bcrypt.hashpw(password_bytes, salt)
-    return hashed.decode('utf-8')
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verify a plain password against either a bcrypt hash or a legacy plaintext value.
-    This allows secure fallback for old test records that stored passwords directly.
-    """
-    if plain_password is None or hashed_password is None:
-        return False
-
-    if isinstance(plain_password, str) and secrets.compare_digest(plain_password, hashed_password):
-        return True
-
-    try:
-        plain_bytes = plain_password.encode('utf-8')[:72]
-        hashed_bytes = hashed_password.encode('utf-8')
-        return bcrypt.checkpw(plain_bytes, hashed_bytes)
-    except (ValueError, TypeError):
-        return False
-    except Exception:
-        return False
-
 
 def _generate_otp_code() -> str:
     """Generate a cryptographically secure six-digit one-time password."""
@@ -1833,6 +1805,10 @@ class SendMessageRequest(BaseModel):
     message_text: str
 
 
+class EditMessageRequest(BaseModel):
+    content: str
+
+
 class VerificationDecisionRequest(BaseModel):
     status: str
     reason: Optional[str] = None
@@ -2466,47 +2442,6 @@ def _is_email_identifier(value: Optional[str]) -> bool:
     return bool(normalized) and "@" in normalized and "." in normalized.split("@", 1)[1]
 
 
-def _ensure_default_admin(db: Session) -> None:
-    """Create or repair the default admin account used for local access."""
-    identifier = "mau9999"
-    fallback_email = "admin@campace.edu"
-    admin = db.query(Admin).filter(
-        or_(func.lower(Admin.username) == identifier, func.lower(Admin.email) == fallback_email.lower())
-    ).first()
-    if admin:
-        needs_update = False
-        if not admin.password_hash or not verify_password("admin123", admin.password_hash):
-            admin.password_hash = hash_password("admin123")
-            needs_update = True
-        if not admin.full_name or admin.full_name.strip() == admin.username:
-            admin.full_name = "System Administrator"
-            needs_update = True
-        admin.username = identifier
-        if not admin.email or admin.email.strip().lower() != fallback_email.lower():
-            admin.email = fallback_email
-            needs_update = True
-        if admin.role != "Admin":
-            admin.role = "Admin"
-            needs_update = True
-        if admin.status != "Active":
-            admin.status = "Active"
-            needs_update = True
-        if needs_update:
-            db.commit()
-        return
-
-    db.add(Admin(
-        username=identifier,
-        email=fallback_email,
-        full_name="System Administrator",
-        password_hash=hash_password("admin123"),
-        role="Admin",
-        status="Active",
-        two_factor_enabled=False,
-    ))
-    db.commit()
-
-
 def _as_utc_datetime(value: Optional[datetime]) -> Optional[datetime]:
     """Treat naive database timestamps as UTC before performing time comparisons."""
     if value is None:
@@ -2997,6 +2932,8 @@ def ensure_database_compatibility(db: Session) -> None:
             "attachment_url": "ALTER TABLE messages ADD COLUMN attachment_url VARCHAR(500) NULL",
             "attachment_type": "ALTER TABLE messages ADD COLUMN attachment_type VARCHAR(20) NULL",
             "reply_to_id": "ALTER TABLE messages ADD COLUMN reply_to_id INT NULL",
+            "edited": "ALTER TABLE messages ADD COLUMN edited BOOLEAN NOT NULL DEFAULT FALSE",
+            "edited_at": "ALTER TABLE messages ADD COLUMN edited_at DATETIME NULL",
         }
         for column_name, statement in message_add_statements.items():
             column = db.execute(text("SHOW COLUMNS FROM messages LIKE :column_name"), {"column_name": column_name})
@@ -3193,7 +3130,6 @@ async def on_startup():
         try:
             ensure_database_compatibility(db)
             _seed_default_system_settings(db)
-            _ensure_default_admin(db)
         finally:
             db.close()
     except Exception:
@@ -3400,7 +3336,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         _create_admin_session(db, admin, token, request)
         _record_admin_login_event(db, admin.id, "login_success", request)
         db.commit()
-        return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email, "avatarUrl": avatar_url}}
+        return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email, "avatar_url": avatar_url, "avatarUrl": avatar_url}}
 
     if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
         raise HTTPException(
@@ -4290,6 +4226,7 @@ def get_admin_profile(username: Optional[str] = None, db: Session = Depends(get_
         "status": admin.status,
         "last_login": admin.last_login.isoformat() if admin.last_login else datetime.now(timezone.utc).isoformat(),
         "total_actions": total_actions,
+        "avatar_url": avatar_url,
         "avatarUrl": avatar_url,
         "session_ip": "192.168.10.24",
         "two_factor_enabled": _admin_two_factor_configured(admin),
@@ -4317,6 +4254,7 @@ def get_current_admin_profile(
         "status": admin.status,
         "last_login": admin.last_login.isoformat() if admin.last_login else None,
         "total_actions": total_actions,
+        "avatar_url": avatar_url,
         "avatarUrl": avatar_url,
         "two_factor_enabled": _admin_two_factor_configured(admin),
         "permissions": _admin_permissions(admin),
@@ -4787,38 +4725,86 @@ def disable_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, d
     return {"enabled": False}
 
 
-@app.post("/api/admin/upload-avatar")
+@app.post("/api/admin/profile/avatar")
 async def upload_admin_avatar(
     request: Request,
-    username: str = Form(...),
-    image: UploadFile = File(...),
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    avatar: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    allowed_extensions = {".jpg", ".jpeg", ".png", ".webp", ".jfif"}
-    filename = image.filename or ""
-    extension = os.path.splitext(filename)[1].lower()
-
-    if extension not in allowed_extensions:
-        raise HTTPException(status_code=400, detail="Only image files are allowed: jpg, jpeg, png, webp, jfif.")
-
-    admin = db.query(Admin).filter(Admin.username == username).first()
-    if not admin:
-        raise HTTPException(status_code=404, detail="Admin not found.")
-
+    current_token = _extract_admin_token(authorization, session_token)
+    admin, _ = _admin_for_session(db, current_token)
+    max_size = 5 * 1024 * 1024
+    previous_url = str(admin.avatar_url or "")
+    new_path = None
     try:
-        image_url = save_upload(image, "campace/profiles")
-        admin.avatar_url = image_url
+        content = await avatar.read(max_size + 1)
+        if len(content) > max_size:
+            raise HTTPException(status_code=413, detail="Profile photo must be 5 MB or smaller.")
+
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(content)) as image:
+                    detected_format = image.format
+                    image.verify()
+                if detected_format not in {"JPEG", "PNG", "WEBP"}:
+                    raise HTTPException(status_code=415, detail="Unsupported image type. Upload a JPEG, PNG, or WEBP image.")
+
+                with Image.open(io.BytesIO(content)) as image:
+                    normalized = ImageOps.exif_transpose(image).convert("RGB")
+                    normalized = ImageOps.fit(
+                        normalized,
+                        (512, 512),
+                        method=Image.Resampling.LANCZOS,
+                        centering=(0.5, 0.5),
+                    )
+                    output = io.BytesIO()
+                    normalized.save(output, format="WEBP", quality=85)
+        except HTTPException:
+            raise
+        except (Image.DecompressionBombError, Image.DecompressionBombWarning, OSError, UnidentifiedImageError, ValueError) as error:
+            raise HTTPException(status_code=415, detail="Unsupported or invalid image. Upload a valid JPEG, PNG, or WEBP image.") from error
+
+        os.makedirs(AVATAR_DIR, exist_ok=True)
+        filename = f"admin_{admin.id}_{uuid.uuid4().hex}.webp"
+        new_path = os.path.join(AVATAR_DIR, filename)
+        with open(new_path, "wb") as saved_file:
+            saved_file.write(output.getvalue())
+
+        avatar_url = f"/uploads/avatars/{filename}"
+        admin.avatar_url = avatar_url
+        _add_admin_audit(db, admin, request, "Profile photo updated", "Profile photo updated")
+        db.commit()
     except HTTPException:
         raise
     except Exception:
+        db.rollback()
+        if new_path and os.path.exists(new_path):
+            os.remove(new_path)
         logging.getLogger("app.avatar").exception("Failed to save admin avatar file.")
-        raise HTTPException(status_code=500, detail="Failed to save avatar file.")
+        raise HTTPException(status_code=500, detail="Failed to save profile photo.")
     finally:
-        await image.close()
+        await avatar.close()
 
-    _add_admin_audit(db, admin, request, "Admin Avatar Updated", "Administrator updated their profile photo.")
-    db.commit()
-    return {"success": True, "imageUrl": image_url, "avatarUrl": image_url}
+    previous_path = None
+    previous_url_path = urlsplit(previous_url).path
+    if previous_url_path.startswith(("/uploads/avatars/", "/static/uploads/avatars/")):
+        previous_path = os.path.join(AVATAR_DIR, os.path.basename(previous_url_path))
+    elif previous_url_path.startswith("/static/uploads/"):
+        relative_path = previous_url_path.removeprefix("/static/uploads/")
+        candidate_path = os.path.realpath(os.path.join(STATIC_DIR, relative_path))
+        static_upload_root = os.path.realpath(STATIC_DIR)
+        if os.path.commonpath([static_upload_root, candidate_path]) == static_upload_root:
+            previous_path = candidate_path
+    if previous_path and previous_path != new_path and os.path.isfile(previous_path):
+        try:
+            os.remove(previous_path)
+        except OSError:
+            logging.getLogger("app.avatar").warning("Could not remove previous admin avatar %s", previous_path)
+
+    return {"avatar_url": avatar_url, "message": "Profile photo updated"}
 
 
 @app.get("/api/admin/settings")
@@ -4927,7 +4913,7 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
 
         db.query(SystemSetting).filter(~SystemSetting.key.in_(normalized.keys())).delete(synchronize_session=False)
 
-        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
         audit_current = json.loads(json.dumps(current))
         audit_current.get("payment", {}).pop("publicKey", None)
         audit_current.get("payment", {}).pop("secretKey", None)
@@ -4990,7 +4976,7 @@ def test_chapa_connection(db: Session = Depends(get_db)):
             detail = "Connected" if connected else f"Chapa rejected the connection (HTTP {response.status_code})."
         except httpx.HTTPError as exc:
             detail = f"Unable to reach Chapa: {exc}"
-    admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+    admin = db.query(Admin).order_by(Admin.id.asc()).first()
     if admin:
         db.add(AuditLog(
             admin_id=admin.id,
@@ -6147,6 +6133,21 @@ def _public_marketplace_product_query(db: Session):
         query = query.filter(Product.stock > 0)
     return query
 
+
+PRODUCT_OWNERSHIP_ERROR = "You cannot buy or save your own product."
+
+
+def _reject_own_product_action(db: Session, product: Product, student: Student) -> None:
+    if not product.seller:
+        return
+
+    seller = db.query(Student).filter(
+        or_(Student.student_id == product.seller, Student.name == product.seller)
+    ).first()
+    seller_identifier = seller.student_id if seller else product.seller
+    if str(seller_identifier).strip().lower() == student.student_id.strip().lower():
+        raise HTTPException(status_code=400, detail=PRODUCT_OWNERSHIP_ERROR)
+
 # 4. የዕቃዎች ማውጫ እና ማጣሪያ ኤፒአይ (GET /api/products)
 @app.get("/api/products")
 def get_products(
@@ -6157,6 +6158,7 @@ def get_products(
     department: Optional[str] = None,
     seller: Optional[str] = None,
     product_ids: Optional[List[int]] = Query(None),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import case, or_
@@ -6173,6 +6175,18 @@ def get_products(
         )
 
     query = _public_marketplace_product_query(db)
+    authenticated_student = _student_from_authorization(authorization, db) if authorization else None
+    if authenticated_student:
+        seller_identifiers = {
+            authenticated_student.student_id.strip().lower(),
+            authenticated_student.name.strip().lower(),
+        }
+        query = query.filter(
+            or_(
+                Product.seller.is_(None),
+                func.lower(func.trim(Product.seller)).notin_(seller_identifiers),
+            )
+        )
     try:
         auto_hide_reported = _setting_bool(
             _get_setting_value(
@@ -8507,6 +8521,8 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
                 "attachment_type": message.attachment_type,
                 "is_read": bool(message.is_read),
                 "created_at": message.created_at.isoformat() if message.created_at else None,
+                "edited": bool(message.edited),
+                "edited_at": message.edited_at.isoformat() if message.edited_at else None,
             })
 
         return formatted_messages
@@ -8529,6 +8545,83 @@ def delete_student_message(message_id: int, student_id: str, db: Session = Depen
     db.delete(message)
     db.commit()
     return {"success": True, "message": "Message deleted successfully."}
+
+
+@app.patch("/api/student/messages/{message_id}")
+async def edit_student_message(
+    message_id: int,
+    request: EditMessageRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Edit a sender's plain-text message during the allowed edit window."""
+    student = _student_from_authorization(authorization, db)
+    message = db.query(Message).filter(Message.id == message_id).first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    if message.sender_id != student.student_id:
+        raise HTTPException(status_code=403, detail="You can only edit your own messages.")
+    if message.attachment_url or message.attachment_type or message.product_id is not None or message.message_text == "[Attachment]":
+        raise HTTPException(status_code=400, detail="Only plain text messages can be edited.")
+
+    created_at = message.created_at
+    current_time = datetime.now(timezone.utc) if created_at and created_at.tzinfo else datetime.now()
+    if not created_at or current_time - created_at > timedelta(minutes=15):
+        raise HTTPException(status_code=400, detail="Messages can only be edited within 15 minutes of sending.")
+
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message content cannot be empty.")
+    try:
+        max_message_length = int(_get_setting_value(
+            db, "chat", "maxMessageLength", DEFAULT_SETTINGS_BLOCKS["chat"]["maxMessageLength"]
+        ))
+    except (TypeError, ValueError):
+        max_message_length = DEFAULT_SETTINGS_BLOCKS["chat"]["maxMessageLength"]
+    if len(content) > max_message_length:
+        raise HTTPException(status_code=400, detail=f"Message exceeds the {max_message_length} character limit.")
+
+    message.message_text = content
+    message.edited = True
+    message.edited_at = datetime.now(timezone.utc) if created_at.tzinfo else datetime.now()
+    try:
+        db.commit()
+        db.refresh(message)
+    except Exception:
+        db.rollback()
+        logging.exception("Failed to edit student message")
+        raise HTTPException(status_code=500, detail="Failed to edit message.")
+
+    edited_at = message.edited_at.isoformat() if message.edited_at else None
+    latest_message = db.query(Message.id).filter(
+        or_(
+            (Message.sender_id == message.sender_id) & (Message.receiver_id == message.receiver_id),
+            (Message.sender_id == message.receiver_id) & (Message.receiver_id == message.sender_id),
+        )
+    ).order_by(Message.created_at.desc(), Message.id.desc()).first()
+    is_latest = bool(latest_message and latest_message[0] == message.id)
+    response = {
+        "id": message.id,
+        "conversationId": f"conv-{message.receiver_id}",
+        "sender_id": message.sender_id,
+        "receiver_id": message.receiver_id,
+        "message_text": message.message_text,
+        "content": message.message_text,
+        "edited": True,
+        "edited_at": edited_at,
+        "editedAt": edited_at,
+        "is_latest": is_latest,
+    }
+    await manager.send_personal_message(message.receiver_id, {
+        "type": "message_edited",
+        "id": message.id,
+        "conversationId": f"conv-{message.sender_id}",
+        "content": message.message_text,
+        "edited": True,
+        "editedAt": edited_at,
+        "is_latest": is_latest,
+    })
+    return response
 
 
 @app.post("/api/student/chat/upload-attachment")
@@ -8751,6 +8844,8 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 "reply_to_id": db_message.reply_to_id,
                 "is_read": db_message.is_read,
                 "created_at": db_message.created_at.isoformat() if hasattr(db_message.created_at, "isoformat") else str(db_message.created_at),
+                "edited": bool(db_message.edited),
+                "edited_at": db_message.edited_at.isoformat() if db_message.edited_at else None,
             }
 
             delivered = await manager.send_personal_message(receiver_id, chat_payload)
@@ -8852,6 +8947,8 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
             "message_text": chat_message.message_text,
             "is_read": chat_message.is_read,
             "created_at": chat_message.created_at.isoformat() if chat_message.created_at else None,
+            "edited": bool(chat_message.edited),
+            "edited_at": chat_message.edited_at.isoformat() if chat_message.edited_at else None,
         },
         "readReceiptUpdated": 0,
         "read_receipt_updated": 0,
@@ -9093,12 +9190,19 @@ def get_student_wishlist(student_id: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/student/wishlist", status_code=status.HTTP_201_CREATED)
-def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(get_db)):
+def create_wishlist_item(
+    wishlist_data: WishlistCreate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    authenticated_student = _student_from_authorization(authorization, db)
     raw_student_id = wishlist_data.student_id
     normalized_student_id = str(raw_student_id).strip() if raw_student_id is not None else ""
 
     if not normalized_student_id:
         raise HTTPException(status_code=400, detail="student_id is required.")
+    if authenticated_student.student_id.strip().lower() != normalized_student_id.lower():
+        raise HTTPException(status_code=403, detail="You can only update your own wishlist.")
 
     student = db.query(Student).filter(Student.student_id == normalized_student_id).first()
     if not student:
@@ -9110,6 +9214,7 @@ def create_wishlist_item(wishlist_data: WishlistCreate, db: Session = Depends(ge
     product = db.query(Product).filter(Product.id == wishlist_data.product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    _reject_own_product_action(db, product, authenticated_student)
 
     existing_item = (
         db.query(WishlistItem)
@@ -9250,12 +9355,7 @@ def add_to_cart(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
     _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), product.status)
-    seller = db.query(Student).filter(
-        or_(Student.student_id == product.seller, Student.name == product.seller)
-    ).first() if product.seller else None
-    seller_identifier = seller.student_id if seller else product.seller
-    if seller_identifier and str(seller_identifier).strip().lower() == authenticated_student.student_id.strip().lower():
-        raise HTTPException(status_code=409, detail="You cannot purchase your own material.")
+    _reject_own_product_action(db, product, authenticated_student)
     if str(product.status or "").strip().lower() == "sold":
         raise HTTPException(status_code=400, detail="This product is already sold and cannot be added to the cart.")
 
@@ -12758,13 +12858,13 @@ def create_admin_user(payload: AdminStudentCreate, db: Session = Depends(get_db)
             status="Active",
         )
         db.add(student)
-        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
         db.add(AuditLog(
             admin_id=admin.id if admin else None,
             action="Admin Student Created",
             entity_type="Student",
             entity_id=None,
-            description=f"Admin mau9999 created a new student account: {student.name} ({student.student_id}).",
+            description=f"Admin {admin.username if admin else 'system'} created a new student account: {student.name} ({student.student_id}).",
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
@@ -13816,7 +13916,7 @@ def verify_payment_with_chapa(tx_ref: str, db: Session = Depends(get_db)):
         if not transaction:
             raise HTTPException(status_code=404, detail="Payment transaction not found after verification.")
 
-        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
         if admin:
             db.add(AuditLog(
                 admin_id=admin.id,
@@ -13929,7 +14029,7 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
             "payment",
         )
 
-        admin = db.query(Admin).filter(Admin.username == "mau9999").first() or db.query(Admin).order_by(Admin.id.asc()).first()
+        admin = db.query(Admin).order_by(Admin.id.asc()).first()
         db.add(AuditLog(
             admin_id=admin.id if admin else None,
             action="Payment Verified",

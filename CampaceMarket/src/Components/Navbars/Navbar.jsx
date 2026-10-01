@@ -12,16 +12,16 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const languageMenuRef = useRef(null);
   const { t, language, setLanguage } = useLanguage();
   const isDashboardLayout = variant === 'dashboard';
-  const effectiveRole = String(userRole || user?.role || 'student').toLowerCase();
-  const isAdmin = effectiveRole === 'admin';
+  const effectiveRole = String(userRole || user?.role || 'student').toLowerCase().trim().replace(/_/g, ' ');
+  const isAdmin = ['admin', 'sub admin', 'super admin', 'superadministrator'].includes(effectiveRole);
   const displayUser = isAdmin ? { ...user, ...profileUser } : user;
   const displayName = isAdmin
     ? (displayUser?.username || displayUser?.name || 'Admin')
     : (displayUser?.name || displayUser?.studentId || 'Student');
   const displayEmail = displayUser?.email || 'Email unavailable';
   const displayRole = String(displayUser?.role || effectiveRole).toUpperCase();
-  const avatarSrc = displayUser?.avatarUrl || (isAdmin
-    ? (displayUser?.username ? `${API_BASE_URL}/static/uploads/avatars/${displayUser.username}.jpg` : '')
+  const avatarSrc = displayUser?.avatarUrl || displayUser?.avatar_url || (isAdmin
+    ? ''
     : (displayUser?.studentId ? `/static/uploads/avatars/${displayUser.studentId}.jpg` : ''));
 
   useEffect(() => {
@@ -74,15 +74,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
 
   return (
-    <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-20 text-white border-b border-blue-900">
-      <div className={`${isHomeView ? 'w-full px-4 sm:px-6 lg:px-10' : 'mx-auto max-w-7xl px-4 sm:px-6 lg:px-8'} h-20 min-w-0 flex items-center justify-between gap-2`}>
+    <header className="site-navbar fixed top-0 left-0 right-0 z-50 min-h-[88px] text-white border-b border-blue-900 md:h-20 md:min-h-20">
+      <div className={`${isHomeView ? 'w-full px-2 sm:px-6 lg:px-10' : 'mx-auto max-w-7xl px-2 sm:px-6 lg:px-8'} flex min-h-[88px] min-w-0 items-center justify-between gap-1 py-2 md:h-20 md:min-h-20 md:gap-2 md:py-0`}>
 
-        {/* Logo */}
-        <div className="flex min-w-0 shrink items-center gap-1.5 cursor-pointer sm:gap-3" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
-          <img src={logs} alt="UniXchange logo" className="notranslate h-10 w-10 shrink-0 rounded-full object-cover sm:h-20 sm:w-20" />
-          <div className="flex min-w-0 items-center gap-1 text-lg font-black text-white sm:text-2xl">
-
-            <span className="notranslate whitespace-nowrap text-white">UniXchange</span>
+        <div className="flex shrink-0 items-center gap-1 md:gap-3">
+          <div className="flex shrink-0 cursor-pointer flex-col items-center justify-center gap-0.5 md:flex-row md:gap-3" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
+            <img src={logs} alt="UniXchange logo" className="notranslate h-11 w-11 shrink-0 rounded-full object-cover md:h-20 md:w-20" />
+            <span className="notranslate whitespace-nowrap text-[13px] font-black text-white max-[359px]:hidden md:text-2xl">UniXchange</span>
           </div>
           {!isDashboardLayout && (
             <button
@@ -93,9 +91,9 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 event.stopPropagation();
                 setIsMobileMenuOpen(true);
               }}
-              className="block shrink-0 rounded-lg p-1.5 text-white transition hover:bg-white/10 sm:p-2 md:hidden"
+              className="block shrink-0 rounded-lg p-1 text-white transition hover:bg-white/10 md:hidden"
             >
-              <svg className="h-6 w-6 sm:h-7 sm:w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                 <path d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
@@ -123,7 +121,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         )}
 
         {/* Right side: Login/Register OR Profile Dropdown */}
-        <div className="relative flex shrink-0 items-center gap-2 sm:gap-4">
+        <div className="relative flex min-w-0 max-w-full shrink-0 items-center gap-1 md:gap-4">
           <div className="notranslate relative shrink-0" ref={languageMenuRef}>
             <button
               type="button"
@@ -132,10 +130,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               aria-expanded={isLanguageMenuOpen}
               aria-controls="navbar-language-menu"
               onClick={() => setIsLanguageMenuOpen((isOpen) => !isOpen)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/30 bg-white/10 px-2.5 text-xs font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:h-10 sm:gap-2 sm:px-3 sm:text-sm"
+              className="inline-flex h-9 items-center gap-1 rounded-lg border border-white/30 bg-white/10 px-1.5 text-[11px] font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 md:h-10 md:gap-2 md:px-3 md:text-sm"
             >
               <span>{language === 'am' ? 'አማርኛ' : 'English'}</span>
-              <ChevronDown className={`h-4 w-4 transition-transform ${isLanguageMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform md:h-4 md:w-4 ${isLanguageMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
             </button>
             {isLanguageMenuOpen && (
               <div id="navbar-language-menu" role="menu" aria-label={t('navbar.language')} className="absolute right-0 top-full z-[60] mt-2 w-40 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm text-slate-800 shadow-xl">
@@ -163,15 +161,15 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           </div>
           {user ? (
             // Logged In Dropdown View
-            <div className="relative flex items-center gap-4">
+            <div className="relative flex min-w-0 max-w-full items-center gap-1 md:gap-4">
               <button
                 type="button"
                 onClick={onNotificationClick}
                 aria-label="Open notifications"
-                className="relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-full bg-transparent text-white  transition hover:bg-white/10 hover:text-slate-200 focus:outline-none"
+                className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10 hover:text-slate-200 focus:outline-none md:h-11 md:w-11"
                 title="Notifications"
               >
-                <svg className="h-7 w-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="h-6 w-6 text-white md:h-7 md:w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0a3 3 0 11-6 0h6z" />
                 </svg>
                 {unreadCount > 0 && (
@@ -185,15 +183,11 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 <button
                   type="button"
                   onClick={() => setIsDropdownOpen((prev) => !prev)}
-                  className="flex cursor-pointer items-center gap-3 rounded-full border border-slate-200 bg-white px-2 py-1.5 text-left shadow-sm transition hover:bg-slate-50"
+                  className="flex cursor-pointer items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-1 text-left shadow-sm transition hover:bg-slate-50 md:gap-3 md:px-2 md:py-1.5"
                   title="Account Menu"
                 >
-                  <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50">
-                    {isAdmin ? (
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
-                      </svg>
-                    ) : avatarSrc ? (
+                  <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50 md:h-10 md:w-10">
+                    {avatarSrc ? (
                       <img src={resolveImageUrl(avatarSrc)} alt={displayName} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
                     ) : (
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
@@ -207,7 +201,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   </div>
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className={`h-4 w-4 text-slate-500 transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                    className={`h-3.5 w-3.5 text-slate-500 transition-transform duration-200 md:h-4 md:w-4 ${isDropdownOpen ? 'rotate-180' : ''}`}
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"

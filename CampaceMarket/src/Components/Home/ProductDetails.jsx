@@ -1,8 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { useLanguage } from '../../context/LanguageContext';
+import { restorePendingProductAction, startProductActionLogin } from '../../utils/productActionState';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+const getStudentAccessToken = (student) => {
+  const userToken = student?.access_token || student?.accessToken || student?.token || student?.session_token || student?.sessionToken;
+  if (userToken) return userToken;
+
+  try {
+    const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+    return session?.user?.access_token || session?.user?.accessToken || session?.access_token || session?.accessToken || '';
+  } catch {
+    return '';
+  }
+};
 
 const parseProductImages = (image) => {
   if (Array.isArray(image)) return image;
@@ -16,7 +29,8 @@ const parseProductImages = (image) => {
   }
 };
 
-function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
+function ProductDetails({ product, currentUser, pendingAction, onPendingActionHandled, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
+  const { t } = useLanguage();
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [chatStatus, setChatStatus] = useState('');
@@ -37,8 +51,11 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
   const [isWishlisted, setIsWishlisted] = useState(false);
   const [wishlistItemId, setWishlistItemId] = useState(null);
   const [wishlistStatus, setWishlistStatus] = useState('');
+  const [wishlistLoadedFor, setWishlistLoadedFor] = useState('');
+  const [guestActionIntent, setGuestActionIntent] = useState(null);
   const [offerAmount, setOfferAmount] = useState('');
   const [reportReasons, setReportReasons] = useState([]);
+  const restoredActionRef = useRef('');
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
 
   useEffect(() => {
@@ -67,6 +84,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
     if (!studentId || !product?.id) {
       setIsWishlisted(false);
       setWishlistItemId(null);
+      setWishlistLoadedFor('');
       return undefined;
     }
 
@@ -82,6 +100,9 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
       })
       .catch(() => {
         if (active) setIsWishlisted(false);
+      })
+      .finally(() => {
+        if (active) setWishlistLoadedFor(String(studentId));
       });
 
     return () => {
@@ -221,23 +242,26 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
     }
   };
 
-  const handleAddToCart = async () => {
+  const handleAddToCart = async (requestedQuantity = selectedQuantity) => {
     const studentId = String(currentUser?.studentId || '').trim();
     if (!studentId) {
-      window.alert('Please log in first to add items to your cart.');
+      setGuestActionIntent({ action: 'addToCart', quantity: selectedQuantity });
       return;
     }
     if (isOwnProduct) {
-      setCartStatus('This is your material. You cannot purchase your own material.');
+      setCartStatus(t('studentToast.ownProductAction'));
       return;
     }
 
     setCartStatus('');
     try {
-      await handleAddToCartFromSearch(item?.id || product?.id, selectedQuantity);
+      const quantity = typeof requestedQuantity === 'number' ? requestedQuantity : selectedQuantity;
+      await handleAddToCartFromSearch(item?.id || product?.id, quantity);
       setCartStatus('Product added to cart successfully.');
     } catch (error) {
-      setCartStatus(error.message || 'Unable to add this product to your cart.');
+      setCartStatus(error.message === 'You cannot buy or save your own product.'
+        ? t('studentToast.ownProductAction')
+        : error.message || 'Unable to add this product to your cart.');
       console.error(error);
     }
   };
@@ -245,8 +269,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
   const handleToggleWishlist = async () => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
     if (!studentId) {
-      setWishlistStatus('Please log in first to save this item.');
-      toast.error('Please log in first to save this item.');
+      setGuestActionIntent({ action: 'wishlist', quantity: 1 });
       return;
     }
 
@@ -255,10 +278,16 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
         ? await fetch(`${API_BASE_URL}/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' })
         : await fetch(`${API_BASE_URL}/api/student/wishlist`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${getStudentAccessToken(currentUser)}`,
+          },
           body: JSON.stringify({ student_id: studentId, product_id: Number(product.id) }),
         });
-      if (!response.ok) throw new Error('Unable to update wishlist.');
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Unable to update wishlist.');
+      }
       const data = isWishlisted ? {} : await response.json().catch(() => ({}));
       setIsWishlisted((previous) => !previous);
       setWishlistItemId(data.id || null);
@@ -266,11 +295,52 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
       setWishlistStatus(statusMessage);
       toast.success(statusMessage);
     } catch (error) {
-      const errorMessage = error.message || 'Unable to update wishlist.';
+      const errorMessage = error.message === 'You cannot buy or save your own product.'
+        ? t('studentToast.ownProductAction')
+        : error.message || 'Unable to update wishlist.';
       setWishlistStatus(errorMessage);
       toast.error(errorMessage);
     }
   };
+
+  const handleShowContact = () => {
+    const studentId = currentUser?.studentId || currentUser?.student_id;
+    if (!studentId) {
+      setGuestActionIntent({ action: 'showContact', quantity: 1 });
+      return;
+    }
+    setShowPhone((previous) => !previous);
+  };
+
+  const handleGuestLogin = () => {
+    if (!guestActionIntent) return;
+    startProductActionLogin({ ...guestActionIntent, returnTo: product?.id }, () => {
+      setGuestActionIntent(null);
+      onNavigate?.('login');
+    });
+  };
+
+  const runPendingAction = useEffectEvent((action) => restorePendingProductAction(action, {
+    addToCart: ({ quantity }) => handleAddToCart(quantity),
+    showContact: () => setShowPhone(true),
+    wishlist: async () => {
+      if (!isWishlisted) await handleToggleWishlist();
+    },
+  }, onPendingActionHandled));
+
+  useEffect(() => {
+    const studentId = currentUser?.studentId || currentUser?.student_id;
+    if (!pendingAction || !studentId || String(pendingAction.returnTo) !== String(product?.id)) return;
+    if (pendingAction.action === 'wishlist' && wishlistLoadedFor !== String(studentId)) return;
+
+    const actionKey = `${pendingAction.returnTo}:${pendingAction.action}:${pendingAction.quantity}`;
+    if (restoredActionRef.current === actionKey) return;
+    restoredActionRef.current = actionKey;
+
+    runPendingAction(pendingAction).catch((error) => {
+      setCartStatus(error.message || 'Unable to restore this product action.');
+    });
+  }, [currentUser, pendingAction, product?.id, wishlistLoadedFor]);
 
   const handleMakeOffer = () => {
     const amount = offerAmount.trim() || '[amount]';
@@ -536,7 +606,7 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
             <div className="mt-6 space-y-3">
               {/* ስልክ ቁጥር ማሳያ ቁልፍ (Show Contact Button) */}
               <button
-                onClick={() => setShowPhone((prev) => !prev)}
+                onClick={handleShowContact}
                 className="w-full rounded-full bg-white border border-slate-800 py-3.5 text-sm font-semibold text-slate-900 hover:bg-slate-50 transition flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>📞</span>
@@ -638,6 +708,20 @@ function ProductDetails({ product, currentUser, onNavigate, onNavigateToMessages
         </div>
         {cartStatus && <p className="mx-auto mt-1 w-full max-w-7xl px-1 text-xs text-blue-700">{cartStatus}</p>}
       </div>
+      {guestActionIntent && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="guest-action-title" className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+            <div className="notranslate">
+              <h2 id="guest-action-title" className="text-lg font-bold text-slate-900 dark:text-white">{t('productDetails.loginRequired')}</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{t('productDetails.loginPrompt')}</p>
+              <div className="mt-6 flex justify-end gap-3">
+                <button type="button" onClick={() => setGuestActionIntent(null)} className="notranslate rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{t('productDetails.cancel')}</button>
+                <button type="button" autoFocus onClick={handleGuestLogin} className="notranslate rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">{t('productDetails.login')}</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
       {isZoomed && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" role="dialog" aria-modal="true" aria-label="Product image preview" onClick={() => setIsZoomed(false)}><div className="relative max-h-[90vh] max-w-5xl" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => setIsZoomed(false)} className="absolute right-3 top-3 z-10 rounded-full bg-white px-3 py-1 text-lg font-black text-slate-700 shadow" aria-label="Close image preview">×</button><img src={resolveImageUrl(activeImage)} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = fallbackImage; }} className="max-h-[88vh] max-w-full rounded-2xl object-contain" /></div></div>}
     </div>
   );

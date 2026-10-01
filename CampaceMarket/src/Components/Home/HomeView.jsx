@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useRef } from 'react';
+import { Search, X } from 'lucide-react';
 import ProductDetails from './ProductDetails';
 import { apiUrl } from '../../api/config';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
@@ -9,13 +10,13 @@ import phone1 from '../../assets/phone1.jpg';
 import c3 from '../../assets/c3.jpg';
 import c7 from '../../assets/c7.jpg';
 
-const fetchWithTimeout = (url, timeoutMs = 15000, parentSignal) => {
+const fetchWithTimeout = (url, timeoutMs = 15000, parentSignal, init = {}) => {
   const controller = new AbortController();
   const abortFromParent = () => controller.abort();
   if (parentSignal?.aborted) controller.abort();
   else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { signal: controller.signal }).finally(() => {
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => {
     window.clearTimeout(timeoutId);
     parentSignal?.removeEventListener('abort', abortFromParent);
   });
@@ -32,7 +33,7 @@ const waitBeforeRetry = (signal) => new Promise((resolve) => {
   signal?.addEventListener('abort', done, { once: true });
 });
 
-const fetchWithRetries = async (url, signal) => {
+const fetchWithRetries = async (url, signal, init) => {
   let lastError;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     if (signal?.aborted) {
@@ -41,7 +42,7 @@ const fetchWithRetries = async (url, signal) => {
       throw abortError;
     }
     try {
-      const response = await fetchWithTimeout(url, 15000, signal);
+      const response = await fetchWithTimeout(url, 15000, signal, init);
       if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
       return response;
     } catch (error) {
@@ -67,26 +68,21 @@ const bannerImages = [
   c7
 ];
 
-const formatEtb = (value) => {
+const formatEtb = (value, language = 'en') => {
   if (value === null || value === undefined || value === '') return 'Price unavailable';
 
   const numericValue = Number(String(value).replace(/[$,\s]|ETB/gi, ''));
   if (Number.isFinite(numericValue)) {
-    return `${numericValue.toLocaleString('en-ET')} ETB`;
+    const locale = language === 'am' ? 'am-ET' : 'en-ET';
+    return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(numericValue)} ETB`;
   }
 
   return `${String(value).replace(/\$/g, '').replace(/\s*ETB\s*/gi, '').trim()} ETB`;
 };
 
-const CompactEtbPrice = ({ value, className }) => {
-  const formattedPrice = formatEtb(value);
-  const hasEtbSuffix = formattedPrice.endsWith(' ETB');
-
+const CompactEtbPrice = ({ value, className, language }) => {
   return (
-    <p className={className}>
-      {hasEtbSuffix ? formattedPrice.slice(0, -4) : formattedPrice}
-      {hasEtbSuffix && <span className="hidden sm:inline"> ETB</span>}
-    </p>
+    <p className={className}>{formatEtb(value, language)}</p>
   );
 };
 
@@ -110,8 +106,20 @@ const getCategoryAdCount = (value) => {
   return Number(match[1]) * multiplier;
 };
 
-function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, onNavigateToMessages }) {
-  const { t } = useLanguage();
+const getStudentAccessToken = (user) => {
+  const userToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
+  if (userToken) return userToken;
+
+  try {
+    const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
+    return session?.user?.access_token || session?.user?.accessToken || session?.access_token || session?.accessToken || '';
+  } catch {
+    return '';
+  }
+};
+
+function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onUserUpdate, onNavigate, onNavigateToMessages }) {
+  const { t, language } = useLanguage();
   const contentContainerClass = 'mx-auto w-full max-w-[1920px] px-4 sm:px-6 lg:px-10 2xl:px-16';
   const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
@@ -121,7 +129,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   const [hoveredCategoryId, setHoveredCategoryId] = useState(null);
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchedTitle, setSearchedTitle] = useState('All Products');
+  const [searchedTitle, setSearchedTitle] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [aiRecommendations, setAiRecommendations] = useState([]);
@@ -129,7 +137,12 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   const aiScrollRef = useRef(null);
   const latestProductsRequestRef = useRef(0);
   const lastProductRequestRef = useRef({});
+  const searchDebounceTimeoutRef = useRef(null);
   const hasSignedInUser = Boolean(user);
+
+  useEffect(() => () => {
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+  }, []);
 
   const openProduct = (product) => {
     if (!product?.id) return;
@@ -203,7 +216,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
       const url = params.toString()
         ? `/api/products?${params.toString()}`
         : '/api/products';
-      const response = await fetchWithRetries(apiUrl(url), signal);
+      const token = getStudentAccessToken(user);
+      const init = token ? { headers: { Authorization: `Bearer ${token}` } } : undefined;
+      const response = await fetchWithRetries(apiUrl(url), signal, init);
       const data = await response.json();
       if (requestId === latestProductsRequestRef.current) {
         setSearchResults(Array.isArray(data) ? data : []);
@@ -298,20 +313,43 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
     });
   };
 
-  const handleSearch = async (e) => {
-    e?.preventDefault();
-    const trimmedSearch = searchQuery.trim();
+  const performSearch = async (query) => {
+    const trimmedSearch = query.trim();
     const department = user?.department || user?.college || user?.departmentName || '';
+    setSearchedTitle(trimmedSearch ? t('home.resultsFor').replace('{query}', trimmedSearch) : '');
     if (!trimmedSearch) {
       await fetchProducts({ department: department || undefined });
-      setSearchedTitle('All Products');
       return;
     }
     await fetchProducts({ search: trimmedSearch, department: department || undefined });
-    setSearchedTitle(`Results for "${trimmedSearch}"`);
+  };
+
+  const scheduleSearch = (query) => {
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+    searchDebounceTimeoutRef.current = window.setTimeout(() => {
+      void performSearch(query);
+    }, 300);
+  };
+
+  const handleSearch = (event) => {
+    event?.preventDefault();
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+    void performSearch(searchQuery);
+  };
+
+  const handleSearchInputChange = (value) => {
+    setSearchQuery(value);
+    scheduleSearch(value);
+  };
+
+  const clearSearch = () => {
+    setSearchQuery('');
+    setSearchedTitle('');
+    scheduleSearch('');
   };
 
   const handleCategoryClick = async (categoryName) => {
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
     setIsDirectoryOpen(false);
     setSearchQuery('');
     const department = user?.department || user?.college || user?.departmentName || '';
@@ -321,6 +359,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
   };
 
   const handleSubCategoryClick = async (subCategoryName, categoryName) => {
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
     setIsDirectoryOpen(false);
     setSearchQuery(subCategoryName);
     const department = user?.department || user?.college || user?.departmentName || '';
@@ -341,6 +380,8 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
           <ProductDetails
             product={selectedProduct}
             currentUser={user}
+            pendingAction={pendingProductAction}
+            onPendingActionHandled={onPendingProductActionHandled}
             onNavigate={onNavigate}
             onNavigateToMessages={onNavigateToMessages}
             onBack={() => setSelectedProduct(null)}
@@ -413,31 +454,45 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
           )}
 
           <div className={`${contentContainerClass} space-y-6`}>
-            <div className="mx-auto w-full max-w-3xl">
-              <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3 p-2 rounded-full bg-white border border-slate-200 shadow-md max-w-3xl mx-auto w-full">
-                <input
-                  type="text"
-                  placeholder="Search books, laptops, lab coats, calculators..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="flex-1 bg-slate-50 border border-slate-100 rounded-full px-6 py-3.5 text-slate-900 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 transition"
-                />
-                <button
-                  type="submit"
-                  className="btn-primary rounded-full px-8 py-3.5 font-semibold transition shadow-md whitespace-nowrap"
-                >
-                  Search Materials
+            <div className="sticky top-[88px] z-20 -mx-4 w-auto bg-white px-4 py-2 shadow-sm sm:mx-0 sm:px-0 sm:py-0 sm:shadow-none md:static md:z-auto md:bg-transparent">
+              <form onSubmit={handleSearch} role="search" className="mx-auto flex w-full min-w-0 items-center gap-2 rounded-full bg-white px-2 py-1.5 shadow sm:max-w-3xl sm:gap-3 sm:border sm:border-slate-200 sm:p-2 sm:shadow-md">
+                <Search aria-hidden="true" className="ml-1 h-4 w-4 shrink-0 text-slate-500 sm:hidden" />
+                <label className="relative flex min-w-0 flex-1 items-center">
+                  <span className="sr-only">{t('home.search')}</span>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(event) => handleSearchInputChange(event.target.value)}
+                    aria-label={t('home.search')}
+                    className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 sm:rounded-full sm:border sm:border-slate-100 sm:bg-slate-50 sm:px-6 sm:py-3.5 sm:focus:border-blue-300 sm:focus:ring-2 sm:focus:ring-blue-100 sm:transition"
+                  />
+                  {!searchQuery && (
+                    <span aria-hidden="true" className="pointer-events-none absolute left-0 truncate text-sm text-slate-400 sm:hidden">{t('home.searchPlaceholderMobile')}</span>
+                  )}
+                  {!searchQuery && (
+                    <span aria-hidden="true" className="pointer-events-none absolute left-0 hidden truncate text-sm text-slate-400 sm:block">{t('home.searchPlaceholderFull')}</span>
+                  )}
+                </label>
+                {searchQuery && (
+                  <button type="button" onClick={clearSearch} aria-label={t('home.clearSearch')} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
+                    <X aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                )}
+                <button type="submit" aria-label={t('home.search')} className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-semibold transition shadow-md sm:h-auto sm:w-auto sm:whitespace-nowrap sm:px-8 sm:py-3.5">
+                  <Search aria-hidden="true" className="h-4 w-4 sm:hidden" />
+                  <span className="hidden sm:inline">{t('home.searchMaterials')}</span>
                 </button>
               </form>
+              <div className="mt-2 flex min-w-0 items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:hidden">
+                <button
+                  type="button"
+                  onClick={() => setIsDirectoryOpen(true)}
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+                >
+                  <span aria-hidden="true">☰</span> {t('home.browseDirectory')}
+                </button>
+              </div>
             </div>
-
-            <button
-              type="button"
-              onClick={() => setIsDirectoryOpen(true)}
-              className="inline-flex items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 md:hidden"
-            >
-              <span aria-hidden="true">☰</span> Browse Directory
-            </button>
 
             {isDirectoryOpen && (
               <div
@@ -447,13 +502,13 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
             )}
 
             <div className="grid gap-8 md:grid-cols-[280px_1fr]">
-              <aside className={`fixed inset-y-0 left-0 z-50 w-80 -translate-x-full overflow-y-auto bg-white p-3 shadow-2xl transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:translate-x-0 md:overflow-visible md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
-                <div className="rounded-[24px] border border-slate-200 bg-white shadow-sm min-h-[500px]">
-                  <div className="flex items-center justify-between border-b pb-2 md:block">
+              <aside className={`fixed inset-y-0 left-0 z-50 h-full min-h-0 w-full max-w-full -translate-x-full overflow-hidden bg-white p-3 shadow-2xl transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:translate-x-0 md:overflow-visible md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
+                <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm md:h-auto md:min-h-[500px] md:overflow-visible">
+                  <div className="flex shrink-0 items-center justify-between border-b pb-2 md:block">
                     <h3 className="m-4 text-md font-bold text-slate-900">Directory</h3>
                     <button type="button" onClick={() => setIsDirectoryOpen(false)} className="mr-4 rounded-full p-2 text-slate-500 hover:bg-slate-100 md:hidden" aria-label="Close directory">✕</button>
                   </div>
-                  <ul className="grid grid-cols-4 gap-2 md:block md:gap-0 md:divide-y md:divide-slate-100">
+                  <ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overscroll-contain [scrollbar-width:thin] md:block md:flex-none md:overflow-visible md:overscroll-auto md:[scrollbar-width:auto] md:gap-0 md:divide-y md:divide-slate-100">
                     {visibleCategories.map((cat) => (
                       <li
                         key={cat.id}
@@ -462,14 +517,14 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                       >
                         <button
                           onClick={() => handleCategoryClick(cat.name)}
-                          className="flex w-full min-w-0 flex-col items-center justify-start gap-1 rounded-xl px-1 py-2 text-center text-[11px] leading-tight text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700 focus-visible:bg-indigo-50 focus-visible:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 md:flex-row md:items-center md:justify-between md:gap-3 md:rounded-2xl md:px-4 md:py-3.5 md:text-left md:text-sm first:md:rounded-t-[24px] last:md:rounded-b-[24px]"
+                          className="flex min-h-[48px] w-full min-w-0 items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-medium leading-tight text-slate-700 transition hover:bg-indigo-50 hover:text-indigo-700 active:bg-indigo-50 focus-visible:bg-indigo-50 focus-visible:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 md:justify-between md:rounded-2xl md:px-4 md:py-3.5 md:text-sm first:md:rounded-t-[24px] last:md:rounded-b-[24px]"
                         >
-                          <span className="flex w-full min-w-0 flex-col items-center gap-1 md:w-auto md:flex-row md:gap-3">
-                            <span className="flex aspect-square w-full shrink-0 items-center justify-center rounded-xl border border-slate-100 bg-slate-50 text-xl transition group-hover:bg-emerald-50 md:aspect-auto md:h-11 md:w-11">
+                          <span className="flex min-w-0 flex-1 items-center gap-3 md:flex-none">
+                            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-100 bg-slate-50 text-xl transition group-hover:bg-emerald-50 md:h-11 md:w-11">
                               {cat.icon}
                             </span>
-                            <span className="flex w-full min-w-0 flex-col md:w-auto">
-                              <span className="line-clamp-2 break-words text-[11px] leading-tight font-semibold text-slate-800 group-hover:text-emerald-600 md:truncate md:text-sm md:leading-normal">{cat.name}</span>
+                            <span className="flex min-w-0 flex-1 flex-col md:flex-none">
+                              <span className="min-w-0 break-words text-sm font-medium leading-tight text-slate-800 group-hover:text-emerald-600 md:truncate md:text-sm md:font-semibold md:leading-normal">{cat.name}</span>
                               <span className="mt-0.5 hidden text-[11px] text-slate-400 sm:block">{getCategoryAdCount(cat.adsCount) === 0 ? 'Coming Soon' : cat.adsCount}</span>
                             </span>
                           </span>
@@ -517,7 +572,7 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                       </li>
                     ))}
                   </ul>
-                  <div className="border-t border-slate-100 px-4 py-4">
+                  <div className="sticky bottom-0 z-10 w-full shrink-0 border-t border-slate-100 bg-white px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] md:static md:py-4">
                     <button
                       type="button"
                       onClick={() => setShowAllCategories((prev) => !prev)}
@@ -570,9 +625,9 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                   </section>
                 )}
 
-                <div className="mb-4 flex items-center justify-between">
-                  <h3 className="text-xl font-bold text-slate-900">{searchedTitle}</h3>
-                  {!loading && !loadError && <span className="text-sm text-slate-500">{searchResults.length} items found</span>}
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-xl font-bold text-slate-900">{searchedTitle || t('home.allProducts')}</h3>
+                  {!loading && !loadError && <span className="text-sm text-slate-500">{t('home.itemsFound').replace('{count}', String(searchResults.length))}</span>}
                 </div>
 
                 {loading ? (
@@ -597,29 +652,29 @@ function HomeView({ onAction, user, initialProductId, onUserUpdate, onNavigate, 
                     </section>
                   ))
                 ) : searchResults.length === 0 ? (
-                  <div className="rounded-[24px] border border-slate-200 bg-white p-12 text-center text-slate-500">
+                  <div className="rounded-[24px] border border-slate-200 bg-white p-6 text-center text-slate-500 sm:p-12">
                     <span className="text-4xl">🔍</span>
-                    <p className="mt-3 text-lg font-semibold">No products found matching that query.</p>
-                    <p className="text-sm text-slate-400 mt-1">Try selecting another subcategory from the sidebar.</p>
+                    <p className="mt-3 break-words text-lg font-semibold">{searchQuery.trim() ? t('home.noProductsFound').replace('{query}', searchQuery.trim()) : t('home.noProductsAvailable')}</p>
+                    {searchQuery.trim() && <button type="button" onClick={clearSearch} className="mt-4 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">{t('home.clearSearch')}</button>}
                   </div>
                 ) : (
-                  <div className="grid min-w-0 grid-cols-4 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                  <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
                     {searchResults.map((product, idx) => (
                       <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
-                        <div>
+                        <div className="min-w-0">
                           <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
                           <div className="flex min-w-0 flex-col p-2 sm:p-4">
                             <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
                               <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category}</span>
                               {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
                             </div>
-                            <h4 className="mt-1 line-clamp-2 text-[10px] leading-tight text-slate-900 sm:line-clamp-1 sm:text-sm sm:leading-normal sm:font-semibold">{product.title}</h4>
+                            <h4 className="mt-1 line-clamp-2 break-words text-sm leading-tight text-slate-900 sm:line-clamp-1 sm:leading-normal sm:font-semibold">{product.title}</h4>
                             <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
                           </div>
                         </div>
                         <div className="mt-auto min-w-0 p-3 pt-0 sm:p-4 sm:pt-0">
                           <div className="flex min-w-0 flex-col gap-2 border-t border-slate-50 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                            <CompactEtbPrice value={product.price} className="min-w-0 text-[10px] font-bold text-slate-900 sm:text-base" />
+                            <CompactEtbPrice value={product.price} language={language} className="min-w-0 whitespace-nowrap text-sm font-semibold text-slate-900 sm:text-base" />
                             <button
                               onClick={(event) => {
                                 event.stopPropagation();

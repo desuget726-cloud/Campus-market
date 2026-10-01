@@ -17,6 +17,7 @@ import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast'
 import { LanguageProvider } from './context/LanguageContext';
 import { Toaster } from 'react-hot-toast';
 import { API_BASE_URL } from './config';
+import { clearPendingProductAction, getPendingProductAction } from './utils/productActionState';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
@@ -111,6 +112,7 @@ function AppContent() {
   const [pendingView, setPendingView] = useState('home');
   const [pendingUsername, setPendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
+  const [pendingProductAction, setPendingProductAction] = useState(null);
   const [pendingSellerId, setPendingSellerId] = useState(null);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
@@ -291,11 +293,16 @@ function AppContent() {
   };
 
   const handleLoginSuccess = (userData, role) => {
-    const nextView = role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
+    const productAction = getPendingProductAction();
+    const nextView = productAction
+      ? 'home'
+      : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
 
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
     setUser(nextUser);
     setUserRole(role);
+    setPendingProductId(productAction?.returnTo || null);
+    setPendingProductAction(productAction);
     setDashboardTab('home');
     setStudentTab('home');
     setCurrentView(nextView);
@@ -341,6 +348,7 @@ function AppContent() {
   }, [activeRole, currentView, sessionTimeoutMinutes, user]);
 
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
+  const isStudentMessagesView = currentView === 'student-dashboard' && studentTab === 'messages';
   const isHomeView = currentView === 'home';
 
   const handleNavigate = (view, params = {}) => {
@@ -499,8 +507,12 @@ function AppContent() {
         }}
       />
 
-      <div className={`flex flex-1 flex-col pt-20 lg:flex-row ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
-        <main className={isHomeView ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8' : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
+      <div className={`flex flex-1 flex-col pt-[89px] md:pt-20 lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
+        <main className={isStudentMessagesView
+          ? 'min-h-0 min-w-0 w-full flex-1 overflow-hidden px-4 pb-0 sm:px-6 lg:px-8'
+          : isHomeView
+            ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8'
+            : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
@@ -525,6 +537,12 @@ function AppContent() {
             <HomeView
               user={user}
               initialProductId={pendingProductId}
+              pendingProductAction={pendingProductAction}
+              onPendingProductActionHandled={() => {
+                clearPendingProductAction();
+                setPendingProductId(null);
+                setPendingProductAction(null);
+              }}
               onAction={(product) => console.log('view', product)}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}

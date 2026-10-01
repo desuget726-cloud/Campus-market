@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { Check, Copy, Eye, Pencil, Trash2 } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { useLanguage } from '../../context/LanguageContext';
 import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
 
@@ -115,6 +117,60 @@ function SettingsToggle({ label, checked, onChange, description = '', disabled =
     </div>
   );
 }
+
+const STATUS_BADGE_COLORS = {
+  Successful: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+  Delivered: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+  Resolved: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+  Verified: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+  Active: 'border-emerald-100 bg-emerald-50 text-emerald-700',
+  Low: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+  Pending: 'border-amber-200 bg-amber-100 text-amber-700',
+  Medium: 'border-amber-200 bg-amber-100 text-amber-700',
+  Suspended: 'border-amber-100 bg-amber-50 text-amber-700',
+  Failed: 'border-red-200 bg-red-100 text-red-700',
+  Rejected: 'border-rose-200 bg-rose-100 text-rose-700',
+  High: 'border-rose-200 bg-rose-100 text-rose-700',
+  Open: 'border-sky-200 bg-sky-100 text-sky-700',
+  Scheduled: 'border-sky-200 bg-sky-100 text-sky-700',
+  'In Review': 'border-violet-200 bg-violet-100 text-violet-700',
+  Review: 'border-violet-200 bg-violet-100 text-violet-700',
+  Everyone: 'border-violet-200 bg-violet-100 text-violet-700',
+  Closed: 'border-emerald-200 bg-emerald-100 text-emerald-700',
+};
+
+function StatusBadge({ status, className = '', ...props }) {
+  return (
+    <span
+      {...props}
+      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap shrink-0 border ${STATUS_BADGE_COLORS[status] || 'border-slate-200 bg-slate-100 text-slate-600'} ${className}`}
+    >
+      {status}
+    </span>
+  );
+}
+
+function AdminTable({ children, className = '', tableClassName = '' }) {
+  return (
+    <div className={`w-full overflow-x-auto rounded-2xl ${className}`}>
+      <table className={`w-full min-w-[1000px] table-auto text-left text-sm text-slate-700 ${tableClassName}`}>
+        {children}
+      </table>
+    </div>
+  );
+}
+
+function ActionButton({ children, className = '', ...props }) {
+  return (
+    <button
+      {...props}
+      className={`inline-flex items-center justify-center h-9 px-4 rounded-full text-sm font-medium whitespace-nowrap shrink-0 ${className}`}
+    >
+      {children}
+    </button>
+  );
+}
+
 const PRODUCT_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'%3E%3Crect width='96' height='96' rx='16' fill='%23f1f5f9'/%3E%3Cpath d='M24 35l24-12 24 12v28L48 75 24 63V35z' fill='%2394a3b8'/%3E%3Cpath d='M24 35l24 12 24-12M48 47v28' fill='none' stroke='%23e2e8f0' stroke-width='4'/%3E%3C/svg%3E";
 
 const getComplaintType = (issue = '') => {
@@ -298,6 +354,9 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const [history, setHistory] = useState([]);
   const [backupCodes, setBackupCodes] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState('');
+  const avatarInputRef = useRef(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [backupCodesCopied, setBackupCodesCopied] = useState(false);
   const [setupData, setSetupData] = useState(null);
@@ -307,6 +366,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const [reauthCode, setReauthCode] = useState('');
   const [permissionState, setPermissionState] = useState({ users: true, products: true, orders: true, payments: true, reports: true, ai: true, analytics: true, audit_logs: true, settings: true });
   const [permissionsSaving, setPermissionsSaving] = useState(false);
+  const { language } = useLanguage();
   const token = () => {
     try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || ''; } catch { return user?.access_token || ''; }
   };
@@ -349,6 +409,9 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
     const interval = window.setInterval(refreshSecurityData, 30000);
     return () => window.clearInterval(interval);
   }, []);
+  useEffect(() => () => {
+    if (avatarPreview) URL.revokeObjectURL(avatarPreview);
+  }, [avatarPreview]);
   const passwordScore = [form.new_password.length >= 8, /[A-Z]/.test(form.new_password), /[a-z]/.test(form.new_password), /\d/.test(form.new_password), /[^A-Za-z0-9]/.test(form.new_password)].filter(Boolean).length;
   const updateProfile = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/me`, { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); notifySuccess('Profile saved successfully', 'admin-profile-save'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-profile-save'); } finally { setBusy(false); } };
   const normalizedRole = String(profile.role || '').trim().toLowerCase().replace(/_/g, ' ');
@@ -362,12 +425,61 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { notifyError(new Error('Enter your current password or a valid authenticator/backup code.'), 'admin-2fa-reauth'); return; } if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); notifySuccess(data.message || 'Security action completed.', 'admin-2fa-reauth'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-reauth'); } finally { setBusy(false); } };
   const copyBackupCodes = async () => { if (!backupCodes.length || !navigator.clipboard) { notifyError(new Error('Clipboard access is unavailable.'), 'admin-backup-codes-copy'); return; } try { await navigator.clipboard.writeText(backupCodes.join('\n')); setBackupCodesCopied(true); notifySuccess('Backup codes copied.', 'admin-backup-codes-copy'); window.setTimeout(() => setBackupCodesCopied(false), 2000); } catch (error) { notifyError(error, 'admin-backup-codes-copy'); } };
   const downloadBackupCodes = () => { if (!backupCodes.length) return; const generatedDate = new Date().toISOString().slice(0, 10); const contents = `DG Market Admin - Backup Codes (Generated: ${generatedDate}). Keep these safe. Each code can only be used once.\n\n${backupCodes.join('\n')}\n`; const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'dg-market-backup-codes.txt'; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); };
-  const uploadAvatar = async (event) => { const file = event.target.files?.[0]; if (!file || busy) return; const data = new FormData(); data.append('username', form.username); data.append('image', file); setBusy(true); try { const response = await fetch(`${API_BASE_URL}/api/admin/upload-avatar`, { method: 'POST', body: data }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || 'Avatar upload failed.'); setProfile((current) => ({ ...current, avatarUrl: `${result.imageUrl}?t=${Date.now()}` })); notifySuccess('Profile photo updated', 'admin-avatar-upload'); } catch (error) { notifyError(error, 'admin-avatar-upload'); } finally { setBusy(false); } };
+  const localizeAvatarMessage = (message) => {
+    if (language !== 'am') return message;
+    const amharicMessages = {
+      'Profile photo updated': 'የመገለጫ ፎቶ ተቀይሯል።',
+      'Profile photo must be 5 MB or smaller.': 'የመገለጫ ፎቶው 5 ሜባ ወይም ከዚያ በታች መሆን አለበት።',
+      'Unsupported image type. Upload a JPEG, PNG, or WEBP image.': 'ያልተደገፈ የምስል አይነት ነው። JPEG፣ PNG ወይም WEBP ይምረጡ።',
+      'Unsupported or invalid image. Upload a valid JPEG, PNG, or WEBP image.': 'የምስሉ ፋይል ትክክለኛ አይደለም። JPEG፣ PNG ወይም WEBP ይምረጡ።',
+      'Failed to save profile photo.': 'የመገለጫ ፎቶውን ማስቀመጥ አልተቻለም።',
+    };
+    return amharicMessages[message] || message;
+  };
+  const uploadAvatar = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || avatarUploading) return;
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      notifyError(new Error(language === 'am' ? 'JPEG፣ PNG ወይም WEBP ፎቶ ይምረጡ።' : 'Choose a JPEG, PNG, or WEBP image.'), 'admin-avatar-upload');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      notifyError(new Error(localizeAvatarMessage('Profile photo must be 5 MB or smaller.')), 'admin-avatar-upload');
+      return;
+    }
+
+    const previewUrl = URL.createObjectURL(file);
+    setAvatarPreview(previewUrl);
+    onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), avatarUrl: previewUrl }));
+    const formData = new FormData();
+    formData.append('avatar', file);
+    setAvatarUploading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/profile/avatar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token()}` },
+        body: formData,
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(localizeAvatarMessage(result.detail || 'Failed to save profile photo.'));
+      const savedAvatarUrl = `${result.avatar_url}?v=${Date.now()}`;
+      setProfile((current) => ({ ...current, avatar_url: result.avatar_url, avatarUrl: savedAvatarUrl }));
+      setAvatarPreview('');
+      onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), avatar_url: result.avatar_url, avatarUrl: savedAvatarUrl }));
+      notifySuccess(localizeAvatarMessage(result.message || 'Profile photo updated'), 'admin-avatar-upload');
+    } catch (error) {
+      notifyError(error, 'admin-avatar-upload');
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
   const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions'], ...(isMainAdmin ? [['admin-accounts', 'Admin Accounts']] : [])];
   const field = (label, key, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{label}</span><input type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500" /></label>;
   if (profileLoading) return <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-500 shadow-sm" role="status">Loading your admin profile...</div>;
   return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>
-    {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={resolveImageUrl(profile.avatarUrl || ADMIN_AVATAR_PLACEHOLDER)} alt="Admin profile" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-20 w-20 rounded-full object-cover" /><label className="btn-primary cursor-pointer rounded-xl px-4 py-2 text-sm font-bold">Upload Photo<input type="file" accept="image/*" onChange={uploadAvatar} className="hidden" /></label></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Save Changes</button></form>}
+    {section === 'personal' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="mb-6 flex items-center gap-4"><img src={avatarPreview || resolveImageUrl(profile.avatarUrl || profile.avatar_url || ADMIN_AVATAR_PLACEHOLDER)} alt="Admin profile" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-20 w-20 rounded-full object-cover" /><div><button type="button" disabled={avatarUploading} onClick={() => avatarInputRef.current?.click()} className="btn-primary cursor-pointer rounded-xl px-4 py-2 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60">{avatarUploading ? 'Uploading...' : 'Upload Photo'}</button><input ref={avatarInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={uploadAvatar} className="hidden" /></div></div><div className="grid gap-4 md:grid-cols-2">{field('Full Name', 'full_name')}{field('Username', 'username')}{field('Email', 'email', 'email')}{field('Phone Number', 'phone')}</div><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Save Changes</button></form>}
     {section === 'password' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="grid gap-4 md:grid-cols-2">{field('Current Password', 'current_password', 'password')}{field('New Password', 'new_password', 'password')}</div>{form.new_password && <div className="mt-4"><div className="flex h-2 gap-1">{[0, 1, 2, 3, 4].map((item) => <span key={item} className={`flex-1 rounded-full ${item < passwordScore ? (passwordScore < 3 ? 'bg-rose-500' : passwordScore < 5 ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-200'}`} />)}</div><p className="mt-2 text-xs text-slate-500">{passwordScore}/5 password requirements met</p></div>}{field('Confirm New Password', 'confirm_password', 'password')}<label className="mt-5 flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={form.logout_all_sessions} onChange={(event) => setForm((current) => ({ ...current, logout_all_sessions: event.target.checked }))} />Log out of all active sessions</label><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Update Password</button></form>}
     {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection for this admin</h3><p className="mt-2 text-sm text-slate-500">Current admin status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><p className="mt-2 text-xs font-medium leading-5 text-slate-500">This status reflects the authenticated admin&apos;s configured authenticator, not the system-wide login policy in Settings.</p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={startTwoFactorSetup} className="btn-primary rounded-xl px-4 py-3 text-sm font-bold">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('backup-codes')} title={profile.two_factor_enabled ? 'Generate one-time backup codes' : 'Enable 2FA first to generate backup codes'} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('disable')} title={profile.two_factor_enabled ? 'Disable authenticator protection' : 'Enable 2FA first'} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">Disable 2FA</button></div></div>}
     {setupData && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={verifyTwoFactorSetup} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Set up authenticator</h3><p className="mt-2 text-sm text-slate-600">Scan this QR code with Google Authenticator or Authy, then enter the six-digit code.</p><img src={setupData.qr_code} alt="Authenticator setup QR code" className="mx-auto mt-5 h-52 w-52" /><p className="mt-3 break-all text-center font-mono text-xs text-slate-500">Manual key: {setupData.secret}</p><input autoFocus inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={setupCode} onChange={(event) => setSetupCode(event.target.value.replace(/\D/g, ''))} placeholder="6-digit code" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-lg tracking-[0.3em]" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setSetupData(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy || setupCode.length !== 6} className="btn-primary rounded-xl px-4 py-3 text-sm font-bold">Verify and Enable</button></div></form></div>}
@@ -561,6 +673,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [dbDepartmentsList, setDbDepartmentsList] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [statusSavingUserIds, setStatusSavingUserIds] = useState([]);
   const [editingUser, setEditingUser] = useState(null);
   const [showEnforcementModal, setShowEnforcementModal] = useState(false);
   const [enforcementTarget, setEnforcementTarget] = useState(null);
@@ -573,7 +686,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     suspendedAccounts: 18,
   });
   const [studentUsers, setStudentUsers] = useState([
-    { id: 1, student_id: "MAU1600002", name: "Tefesayiku", email: "desu5392@gmail.com", phone: "0962714305", college: "CCI", department: "Software Engineering", year: "Year 3", is_verified: true, status: "Active", rating: "4.8 ★", activity: [{ action: "Logged in", time: "10m ago" }] },
+    { id: 1, student_id: "MAU1600002", name: "Tefesayiku", email: "student@example.edu", phone: "0962714305", college: "CCI", department: "Software Engineering", year: "Year 3", is_verified: true, status: "Active", rating: "4.8 ★", activity: [{ action: "Logged in", time: "10m ago" }] },
     { id: 2, student_id: "IT2026-001", name: "Abebe Kebede", email: "student@university.edu", phone: "0911223344", college: "CCI", department: "Information Technology", year: "Year 2", is_verified: false, status: "Active", rating: "No ratings", activity: [{ action: "Updated Profile", time: "3h ago" }] }
   ]);
   const [showAddStudentModal, setShowAddStudentModal] = useState(false);
@@ -2085,6 +2198,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     const target = studentUsers.find(u => u.id === userId);
     if (!target) return;
 
+    setStatusSavingUserIds((ids) => ids.includes(userId) ? ids : [...ids, userId]);
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/status`, {
         method: 'PUT',
@@ -2141,6 +2255,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       console.error('Failed to update user status:', error);
       notifyError(error, `admin-user-status-${userId}`);
     } finally {
+      setStatusSavingUserIds((ids) => ids.filter((id) => id !== userId));
       setShowEnforcementModal(false);
       setEnforcementTarget(null);
       setEnforcementReason('Scam attempts');
@@ -3584,6 +3699,89 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         });
         const totalUserPages = Math.max(1, Math.ceil(filteredUsers.length / USERS_PER_PAGE));
         const displayedUsers = filteredUsers.slice((userPage - 1) * USERS_PER_PAGE, userPage * USERS_PER_PAGE);
+        const renderUserAvatar = (student) => {
+          const avatarUrl = student.avatar_url || student.avatarUrl;
+          return (
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-sm font-bold text-slate-600">
+              {avatarUrl ? (
+                <img src={resolveImageUrl(avatarUrl)} alt="" className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
+              ) : String(student.name || '?').trim().charAt(0).toUpperCase()}
+            </span>
+          );
+        };
+        const renderVerificationBadge = (student) => {
+          const isRejected = !student.is_verified && Boolean(student.verification_reason);
+          const label = student.is_verified ? 'Verified' : isRejected ? 'Rejected' : 'Pending';
+          const badgeColor = student.is_verified
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : isRejected
+              ? 'border-rose-200 bg-rose-50 text-rose-700'
+              : 'border-slate-200 bg-slate-100 text-slate-600';
+          return (
+            <button
+              type="button"
+              onClick={() => toggleVerification(student)}
+              title={`Change verification for ${student.name}`}
+              aria-label={`${label}: change verification for ${student.name}`}
+              className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-semibold ${badgeColor}`}
+            >
+              {student.is_verified && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
+              {label}
+            </button>
+          );
+        };
+        const renderStatusBadge = (student) => {
+          return <StatusBadge status={student.status} title={student.status} />;
+        };
+        const renderUserActions = (student) => (
+          <>
+            <ActionButton
+              type="button"
+              onClick={() => setSelectedUser(student)}
+              title="Details"
+              aria-label={`Details for ${student.name}`}
+              className="gap-1 border border-slate-200 bg-white text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              <Eye className="h-4 w-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Details</span>
+            </ActionButton>
+            <ActionButton
+              type="button"
+              onClick={() => {
+                setEditingUser({ ...student });
+                fetchDepartmentsData(student.college);
+              }}
+              title="Edit"
+              aria-label={`Edit ${student.name}`}
+              className="border border-sky-200 bg-sky-50 text-sky-700 transition hover:bg-sky-100"
+            >
+              <Pencil className="h-4 w-4" aria-hidden="true" />
+            </ActionButton>
+            <ActionButton
+              type="button"
+              onClick={() => handleDeleteUser(student)}
+              title="Delete"
+              aria-label={`Delete ${student.name}`}
+              className="border border-rose-200 bg-rose-50 text-rose-700 transition hover:bg-rose-100"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </ActionButton>
+          </>
+        );
+        const renderStatusControl = (student) => (
+          <select
+            value={student.status}
+            onChange={(event) => handleStatusChange(student.id, event.target.value)}
+            disabled={statusSavingUserIds.includes(student.id)}
+            title="Change enforcement status"
+            aria-label={`Change status for ${student.name}`}
+            className="h-9 min-w-[110px] shrink-0 cursor-pointer whitespace-nowrap rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:cursor-wait disabled:opacity-60"
+          >
+            <option value="Active">Active</option>
+            <option value="Suspended">Suspend</option>
+            <option value="Deactivated">Deactivate</option>
+          </select>
+        );
         const handleExportUsersCSV = () => exportCSVFile('users.csv', ['ID', 'Name', 'Email', 'Phone', 'College', 'Department', 'Verified Status', 'Account Status'], filteredUsers.map((student) => [
           String(student.id || ''), String(student.name || ''), String(student.email || ''), String(student.phone || ''),
           String(student.college || ''), String(student.department || ''), String(student.is_verified || ''), String(student.status || ''),
@@ -3669,112 +3867,95 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
             </div>
 
-            <div className="flex flex-col gap-3 rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm font-semibold text-slate-500">{selectedUserIds.length} user(s) selected from the filtered results.</p>
-              <div className="flex flex-wrap gap-2">
-                <button type="button" onClick={handleBulkApproveUsers} disabled={!selectedUserIds.length} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Approve Selected</button>
-                <button type="button" onClick={handleBulkRejectUsers} disabled={!selectedUserIds.length} className="rounded-full bg-rose-500 px-4 py-2 text-xs font-bold text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-300">Reject Selected</button>
+            {selectedUserIds.length > 0 && (
+              <div className="sticky bottom-3 z-30 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-lg sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm font-semibold text-slate-600">{selectedUserIds.length} users selected</p>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={handleBulkApproveUsers} className="h-9 shrink-0 whitespace-nowrap rounded-full bg-emerald-500 px-4 text-xs font-bold text-white hover:bg-emerald-600">Approve Selected</button>
+                  <button type="button" onClick={handleBulkRejectUsers} className="h-9 shrink-0 whitespace-nowrap rounded-full bg-rose-500 px-4 text-xs font-bold text-white hover:bg-rose-600">Reject Selected</button>
+                </div>
               </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-3 md:hidden">
+              {displayedUsers.length === 0 ? (
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 text-center text-sm font-semibold text-slate-500">No users found</div>
+              ) : displayedUsers.map((student) => (
+                <article key={student.id} className="min-h-[72px] min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex min-w-0 items-center gap-3">
+                    {renderUserAvatar(student)}
+                    <div className="min-w-0 flex-1">
+                      <h3 title={student.name} className="truncate text-sm font-semibold text-slate-900">{student.name}</h3>
+                      <p title={`${student.student_id || ''} · ${student.email || ''}`} className="max-w-[220px] truncate whitespace-nowrap text-xs text-slate-500">{student.student_id} · {student.email}</p>
+                    </div>
+                    <input type="checkbox" checked={selectedUserIds.includes(student.id)} onChange={(event) => setSelectedUserIds((ids) => event.target.checked ? [...ids, student.id] : ids.filter((id) => id !== student.id))} aria-label={`Select ${student.name}`} className="h-4 w-4 shrink-0 accent-emerald-600" />
+                  </div>
+                  <div className="grid min-w-0 grid-cols-1 gap-3 text-sm">
+                    <div className="min-w-0"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">College</span><p title={student.college || ''} className="line-clamp-2 font-semibold text-slate-700">{student.college || 'Not provided'}</p></div>
+                    <div className="min-w-0"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Department</span><p title={student.department || ''} className="line-clamp-2 font-semibold text-slate-700">{(student.department ?? '').replace('Department of ', '') || 'Not provided'}</p></div>
+                    <div className="min-w-0"><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-500">Phone</span><p title={student.phone || 'No Phone'} className="truncate whitespace-nowrap font-semibold text-slate-700">{student.phone || 'No Phone'}</p></div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {renderVerificationBadge(student)}
+                    {renderStatusBadge(student)}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {renderUserActions(student)}
+                    {renderStatusControl(student)}
+                  </div>
+                </article>
+              ))}
             </div>
 
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-left text-sm text-slate-700">
-                  <thead className="border-b border-slate-200 text-slate-500">
+            <AdminTable className="hidden max-h-[70vh] overflow-y-auto border border-slate-200 bg-white shadow-sm md:block">
+                  <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={filteredUsers.length > 0 && filteredUsers.every((user) => selectedUserIds.includes(user.id))} onChange={(event) => setSelectedUserIds(event.target.checked ? filteredUsers.map((user) => user.id) : [])} aria-label="Select all filtered students" /></th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Student</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">College</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Department</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Phone</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Verified</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Enforcement Status</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Actions</th>
+                      <th className="min-w-[220px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">
+                        <div className="flex items-center gap-3">
+                          <input type="checkbox" checked={filteredUsers.length > 0 && filteredUsers.every((user) => selectedUserIds.includes(user.id))} onChange={(event) => setSelectedUserIds(event.target.checked ? filteredUsers.map((user) => user.id) : [])} aria-label="Select all filtered students" className="h-4 w-4 shrink-0 accent-emerald-600" />
+                          <span>Student</span>
+                        </div>
+                      </th>
+                      <th className="min-w-[200px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">College</th>
+                      <th className="min-w-[180px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Department</th>
+                      <th className="min-w-[130px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Phone</th>
+                      <th className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Verified</th>
+                      <th title="Enforcement status" className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Status</th>
+                      <th className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Change status</th>
+                      <th className="sticky right-0 z-30 min-w-[170px] whitespace-nowrap bg-slate-50 px-4 py-3 text-xs font-bold uppercase tracking-wide text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {displayedUsers.map((student) => (
-                      <tr key={student.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
-                        <td className="px-4 py-4"><input type="checkbox" checked={selectedUserIds.includes(student.id)} onChange={(event) => setSelectedUserIds((ids) => event.target.checked ? [...ids, student.id] : ids.filter((id) => id !== student.id))} aria-label={`Select ${student.name}`} /></td>
-                        <td className="min-w-[220px] px-4 py-4">
-                          <div className="font-bold text-slate-900">{student.name}</div>
-                          <div className="text-xs text-slate-400 mt-0.5">{student.student_id} • {student.email}</div>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="font-semibold text-slate-700">{student.college}</div>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="font-semibold text-slate-700">{(student.department ?? '').replace("Department of ", "")}</div>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="font-semibold text-slate-700">{student.phone || 'No Phone'}</div>
-                        </td>
-                        <td className="px-4 py-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => toggleVerification(student)}
-                            className={`rounded-full px-3 py-1 text-xs font-bold border transition cursor-pointer ${student.is_verified
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : 'bg-slate-100 text-slate-500 border-slate-200'
-                              }`}
-                          >
-                            {student.is_verified ? 'Verified ✓' : 'Unverified'}
-                          </button>
-                        </td>
-                        <td className="px-4 py-4 text-center">
-                          <span className={`rounded-full px-3 py-1 text-xs font-bold border ${student.status === 'Active' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
-                            student.status === 'Suspended' ? 'bg-amber-50 text-amber-700 border-amber-100' : 'bg-red-50 text-red-700 border-red-100'
-                            }`}>
-                            {student.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4 text-center">
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedUser(student)}
-                              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer"
-                            >
-                              Details
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingUser({ ...student });
-                                fetchDepartmentsData(student.college);
-                              }}
-                              className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-100 transition cursor-pointer"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteUser(student)}
-                              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 transition cursor-pointer"
-                            >
-                              Delete
-                            </button>
-                            <select
-                              value={student.status}
-                              onChange={(e) => handleStatusChange(student.id, e.target.value)}
-                              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100 focus:outline-none transition cursor-pointer"
-                            >
-                              <option value="Active">Active</option>
-                              <option value="Suspended">Suspend</option>
-                              <option value="Deactivated">Deactivate</option>
-                            </select>
+                    {displayedUsers.length === 0 ? (
+                      <tr><td colSpan={8} className="px-4 py-12 text-center text-sm font-semibold text-slate-500">No users found</td></tr>
+                    ) : displayedUsers.map((student) => (
+                      <tr key={student.id} className="h-[72px] border-b border-slate-100 transition hover:bg-slate-50/60">
+                        <td className="min-w-[220px] px-4 py-3 align-middle">
+                          <div className="flex min-w-0 items-center gap-3">
+                            {renderUserAvatar(student)}
+                            <div className="min-w-0">
+                              <p title={student.name} className="truncate font-semibold text-slate-900">{student.name}</p>
+                              <p title={`${student.student_id || ''} · ${student.email || ''}`} className="max-w-[220px] truncate whitespace-nowrap text-xs text-slate-500">{student.student_id} · {student.email}</p>
+                            </div>
                           </div>
+                        </td>
+                        <td className="min-w-[200px] px-4 py-3 align-middle"><p title={student.college || ''} className="line-clamp-2 font-semibold text-slate-700">{student.college || 'Not provided'}</p></td>
+                        <td className="min-w-[180px] px-4 py-3 align-middle"><p title={student.department || ''} className="line-clamp-2 font-semibold text-slate-700">{(student.department ?? '').replace('Department of ', '') || 'Not provided'}</p></td>
+                        <td className="min-w-[130px] px-4 py-3 align-middle"><p title={student.phone || 'No Phone'} className="truncate whitespace-nowrap font-semibold text-slate-700">{student.phone || 'No Phone'}</p></td>
+                        <td className="min-w-[110px] px-4 py-3 align-middle">{renderVerificationBadge(student)}</td>
+                        <td className="min-w-[110px] px-4 py-3 align-middle">{renderStatusBadge(student)}</td>
+                        <td className="min-w-[110px] px-4 py-3 align-middle">{renderStatusControl(student)}</td>
+                        <td className="sticky right-0 z-10 min-w-[170px] whitespace-nowrap bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
+                          <div className="flex flex-nowrap items-center justify-center gap-2">{renderUserActions(student)}</div>
                         </td>
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
-              <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
-                <button type="button" onClick={() => setUserPage((page) => Math.max(1, page - 1))} disabled={userPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
-                <span className="text-sm font-semibold text-slate-500">Page {userPage} of {totalUserPages}</span>
-                <button type="button" onClick={() => setUserPage((page) => Math.min(totalUserPages, page + 1))} disabled={userPage === totalUserPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
-              </div>
+            </AdminTable>
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+              <button type="button" onClick={() => setUserPage((page) => Math.max(1, page - 1))} disabled={userPage === 1} className="h-9 shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+              <span className="whitespace-nowrap text-sm font-semibold text-slate-500">Page {userPage} of {totalUserPages}</span>
+              <button type="button" onClick={() => setUserPage((page) => Math.min(totalUserPages, page + 1))} disabled={userPage === totalUserPages} className="h-9 shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
             </div>
 
             {selectedUser && (
@@ -5298,6 +5479,38 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           String(payment.transaction_id || ''), String(payment.buyer_id || ''), String(payment.seller_id || ''), String(payment.order_id || ''),
           String(payment.amount || ''), String(payment.payment_type || ''), String(payment.payment_method || ''), String(payment.status || ''), String(payment.date || ''),
         ]));
+        const renderPaymentId = (value, label) => (
+          <div className="flex min-w-0 items-center gap-2">
+            <span title={String(value ?? '')} className="max-w-[180px] truncate whitespace-nowrap font-mono text-xs">{value || '—'}</span>
+            {value && (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(String(value));
+                    notifySuccess(`${label} copied.`, 'admin-payment-id-copy');
+                  } catch (error) {
+                    notifyError(error, 'admin-payment-id-copy');
+                  }
+                }}
+                title={`Copy ${label}`}
+                aria-label={`Copy ${label}`}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              >
+                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        );
+        const formatPaymentAmount = (payment) => {
+          const amount = Math.abs(Number(payment.amount) || 0);
+          const isWithdrawal = /withdraw|refund|payout|debit/i.test(String(payment.payment_type || '')) || Number(payment.amount) < 0;
+          const isDeposit = /deposit|load|credit/i.test(String(payment.payment_type || ''));
+          return {
+            text: `${isWithdrawal ? '-' : ''}${new Intl.NumberFormat(undefined).format(amount)} ETB`,
+            color: isWithdrawal ? 'text-red-600' : isDeposit ? 'text-emerald-600' : 'text-slate-950',
+          };
+        };
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -5351,19 +5564,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
               </div>
 
-              <div className="mt-5 grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+              <div className="mt-5 flex flex-wrap gap-3">
                 <input
                   type="text"
                   value={paymentSearchTerm}
-                  onChange={(e) => setPaymentSearchTerm(e.target.value)}
+                  onChange={(e) => { setPaymentSearchTerm(e.target.value); setPaymentPage(1); }}
                   placeholder="Search transaction, buyer, seller, or order ID..."
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
                 />
 
                 <select
                   value={paymentStatusFilter}
-                  onChange={(e) => setPaymentStatusFilter(e.target.value)}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  onChange={(e) => { setPaymentStatusFilter(e.target.value); setPaymentPage(1); }}
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Status: All</option>
                   <option value="Successful">Successful</option>
@@ -5373,68 +5586,93 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
                 <select
                   value={paymentMethodFilter}
-                  onChange={(e) => setPaymentMethodFilter(e.target.value)}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  onChange={(e) => { setPaymentMethodFilter(e.target.value); setPaymentPage(1); }}
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Payment Method: All</option>
                   <option value="Chapa">Chapa</option>
                   <option value="Wallet">Wallet</option>
                 </select>
-                <input type="date" value={paymentFromDate} onChange={(e) => setPaymentFromDate(e.target.value)} aria-label="From date" className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
-                <input type="date" value={paymentToDate} onChange={(e) => setPaymentToDate(e.target.value)} aria-label="To date" className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
+                <input type="date" value={paymentFromDate} onChange={(e) => { setPaymentFromDate(e.target.value); setPaymentPage(1); }} aria-label="From date" className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
+                <input type="date" value={paymentToDate} onChange={(e) => { setPaymentToDate(e.target.value); setPaymentPage(1); }} aria-label="To date" className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
+                <ActionButton type="button" onClick={handleExportPaymentsCSV} className="border border-slate-200 bg-white text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50">Export CSV</ActionButton>
+                <ActionButton type="button" onClick={handleExportPaymentsPDF} className="bg-slate-900 text-xs font-bold text-white shadow-sm transition hover:bg-slate-800">Export PDF</ActionButton>
               </div>
 
-              <div className="mt-6 overflow-x-auto">
-                <table className="min-w-full text-left text-sm text-slate-700">
-                  <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
+              <div className="mt-6 grid grid-cols-1 gap-3 md:hidden">
+                {displayedPayments.map((payment) => {
+                  const amount = formatPaymentAmount(payment);
+                  return (
+                    <article key={payment.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex min-w-0 items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Transaction ID</p>
+                          {renderPaymentId(payment.transaction_id, 'Transaction ID')}
+                        </div>
+                        <StatusBadge status={payment.status || 'Pending'} />
+                      </div>
+                      <div className="mt-3 grid min-w-0 grid-cols-2 gap-3 text-sm">
+                        <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Buyer ID</p>{renderPaymentId(payment.buyer_id, 'Buyer ID')}</div>
+                        <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Seller ID</p>{renderPaymentId(payment.seller_id, 'Seller ID')}</div>
+                        <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Order ID</p><p className="truncate whitespace-nowrap font-mono text-xs" title={payment.order_id}>{payment.order_id || '—'}</p></div>
+                        <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Amount</p><p className={`whitespace-nowrap font-semibold ${amount.color}`}>{amount.text}</p></div>
+                        <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Payment Type</p><p className="break-words">{payment.payment_type || '—'}</p></div>
+                        <div className="min-w-0"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Payment Method</p><p className="break-words">{payment.payment_method || '—'}</p></div>
+                      </div>
+                      <div className="mt-3 flex min-w-0 items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Date</p>
+                          <p className="whitespace-nowrap text-sm">{new Date(payment.created_date || payment.date).toLocaleDateString()}</p>
+                          <p className="whitespace-nowrap text-xs text-slate-500">{new Date(payment.created_date || payment.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</p>
+                        </div>
+                        <ActionButton type="button" onClick={() => setSelectedPaymentDetail(payment)} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+
+              <AdminTable className="mt-6 hidden border border-slate-200 md:block">
+                  <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Transaction ID</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Buyer ID</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Seller ID</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Order ID</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Amount</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Payment Type</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Payment Method</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Status</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Date</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Action</th>
+                      <th className="min-w-[190px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Transaction ID</th>
+                      <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Buyer ID</th>
+                      <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Seller ID</th>
+                      <th className="min-w-[100px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Order ID</th>
+                      <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Amount</th>
+                      <th className="min-w-[150px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Payment Type</th>
+                      <th className="min-w-[140px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Payment Method</th>
+                      <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Status</th>
+                      <th className="min-w-[170px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Date</th>
+                      <th className="sticky right-0 z-30 min-w-[140px] bg-slate-50 px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {displayedPayments.map((payment) => (
+                    {displayedPayments.map((payment) => {
+                      const amount = formatPaymentAmount(payment);
+                      const transactionDate = new Date(payment.created_date || payment.date);
+                      return (
                       <tr key={payment.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
-                        <td className="px-4 py-4 font-mono font-black text-slate-900">{payment.transaction_id}</td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">{payment.buyer_id}</td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">
-                          {payment.payment_type === 'Wallet Deposit'
-                            ? (payment.seller_id === 'System (Chapa)' ? 'System (Chapa)' : 'Self')
-                            : payment.seller_id}
+                        <td className="min-w-[190px] px-4 py-3 align-middle">{renderPaymentId(payment.transaction_id, 'Transaction ID')}</td>
+                        <td className="min-w-[130px] px-4 py-3 align-middle">{renderPaymentId(payment.buyer_id, 'Buyer ID')}</td>
+                        <td className="min-w-[130px] px-4 py-3 align-middle">{renderPaymentId(payment.seller_id, 'Seller ID')}</td>
+                        <td className="min-w-[100px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-mono text-xs">{payment.order_id || '—'}</span></td>
+                        <td className="min-w-[120px] px-4 py-3 align-middle"><span className={`whitespace-nowrap font-semibold ${amount.color}`}>{amount.text}</span></td>
+                        <td className="min-w-[150px] px-4 py-3 align-middle">{payment.payment_type}</td>
+                        <td className="min-w-[140px] px-4 py-3 align-middle">{payment.payment_method}</td>
+                        <td className="min-w-[130px] px-4 py-3 align-middle"><StatusBadge status={payment.status || 'Pending'} /></td>
+                        <td className="min-w-[170px] px-4 py-3 align-middle text-slate-500">
+                          <time className="block whitespace-nowrap text-sm">{transactionDate.toLocaleDateString()}</time>
+                          <time className="block whitespace-nowrap text-xs text-slate-400">{transactionDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
                         </td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">{payment.order_id}</td>
-                        <td className="px-4 py-4 font-black text-slate-950">{new Intl.NumberFormat('en-ET').format(payment.amount)} ETB</td>
-                        <td className="px-4 py-4 text-slate-700">{payment.payment_type}</td>
-                        <td className="px-4 py-4 text-slate-700">{payment.payment_method}</td>
-                        <td className="px-4 py-4">
-                          <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-black ${payment.status === 'Successful' ? 'border-emerald-200 bg-emerald-100 text-emerald-700' : 'border-red-200 bg-red-100 text-red-700'}`}>
-                            <span>{payment.status === 'Successful' ? '🟢' : '🔴'}</span>
-                            <span>{payment.status === 'Successful' ? 'Successful' : 'Failed'}</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-4 text-xs text-slate-500">{new Date(payment.date).toLocaleString()}</td>
-                        <td className="px-4 py-4">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedPaymentDetail(payment)}
-                            className="rounded-full border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100"
-                          >
-                            View Details
-                          </button>
+                        <td className="sticky right-0 z-10 min-w-[140px] bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
+                          <ActionButton type="button" onClick={() => setSelectedPaymentDetail(payment)} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
-                </table>
-              </div>
+              </AdminTable>
 
               <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
                 <button type="button" onClick={() => setPaymentPage((page) => Math.max(1, page - 1))} disabled={paymentPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
@@ -5502,7 +5740,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Chapa Reference</p>
-                      <p className="mt-2 break-all text-base font-black text-slate-900">{selectedPaymentDetail.chapa_reference || 'Not applicable'}</p>
+                      <p className="mt-2 break-words text-base font-black text-slate-900">{selectedPaymentDetail.chapa_reference || 'Not applicable'}</p>
                     </div>
                   </div>
 
@@ -5556,13 +5794,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         const totalReportPages = Math.max(1, Math.ceil(filteredReports.length / REPORTS_PER_PAGE));
         const displayedReports = filteredReports.slice((reportPage - 1) * REPORTS_PER_PAGE, reportPage * REPORTS_PER_PAGE);
 
-        const getStatusBadge = (status) => {
-          if (status === 'Open') return 'bg-sky-100 text-sky-700 border border-sky-200';
-          if (status === 'Review') return 'bg-violet-100 text-violet-700 border border-violet-200';
-          if (status === 'Resolved' || status === 'Closed') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
-          return 'bg-slate-100 text-slate-600 border border-slate-200';
-        };
-
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
@@ -5598,19 +5829,19 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="flex flex-wrap gap-3">
                 <input
                   type="text"
                   value={reportSearchTerm}
                   onChange={(e) => { setReportSearchTerm(e.target.value); setReportPage(1); }}
                   placeholder="Search report/student..."
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
                 />
 
                 <select
                   value={reportTypeFilter}
                   onChange={(e) => { setReportTypeFilter(e.target.value); setReportPage(1); }}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Complaint Type: All</option>
                   <option value="Product Issue">Product Issue</option>
@@ -5627,7 +5858,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <select
                   value={reportStatusFilter}
                   onChange={(e) => { setReportStatusFilter(e.target.value); setReportPage(1); }}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Status: All</option>
                   <option value="Open">Open</option>
@@ -5639,7 +5870,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 <select
                   value={reportPriorityFilter}
                   onChange={(e) => { setReportPriorityFilter(e.target.value); setReportPage(1); }}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Priority: All</option>
                   <option value="Low">Low</option>
@@ -5649,62 +5880,69 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
             </div>
 
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-left text-sm text-slate-700">
-                  <thead className="border-b border-slate-200 text-slate-500 bg-slate-50">
+            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="grid grid-cols-1 gap-3 md:hidden">
+                {displayedReports.map((rep) => (
+                  <article key={rep.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Report ID</p>
+                        <p className="truncate font-mono text-xs font-bold text-slate-900" title={rep.report_id}>{rep.report_id}</p>
+                        <p className="mt-1 whitespace-nowrap text-sm font-semibold text-slate-700">{rep.inferredType}</p>
+                      </div>
+                      <time className="shrink-0 whitespace-nowrap text-xs text-slate-500">{new Date(rep.date).toLocaleDateString()}</time>
+                    </div>
+                    <div className="mt-3 min-w-0">
+                      <p className="truncate font-semibold text-slate-900" title={rep.product_name}>{rep.product_name || 'Report details'}</p>
+                      <p className="mt-1 line-clamp-2 break-words text-xs leading-5 text-slate-600" title={rep.issue}>{rep.issue}</p>
+                      <p className="mt-2 truncate text-sm font-semibold text-slate-700" title={`${rep.student || ''} ${rep.student_id || ''}`}>{rep.student} <span className="text-xs text-slate-500">{rep.student_id}</span></p>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <StatusBadge status={rep.priority.label} />
+                      <StatusBadge status={rep.status === 'Review' ? 'In Review' : rep.status} />
+                    </div>
+                    <div className="mt-4 flex justify-end">
+                      <ActionButton type="button" onClick={() => handleOpenReportModal(rep)} className="border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">Review</ActionButton>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <AdminTable className="hidden border border-slate-200 md:block">
+                  <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Report ID</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Type</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Issue / Details</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Reporter</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Priority</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Status</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Date</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Action</th>
+                      <th className="min-w-[110px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Report ID</th>
+                      <th className="min-w-[140px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Type</th>
+                      <th className="min-w-[260px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Issue / Details</th>
+                      <th className="min-w-[170px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Reporter</th>
+                      <th className="min-w-[110px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Priority</th>
+                      <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Status</th>
+                      <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Date</th>
+                      <th className="sticky right-0 z-30 min-w-[120px] bg-slate-50 px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {displayedReports.map((rep) => (
                       <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
-                        <td className="px-4 py-4 font-mono font-black text-slate-900">{rep.report_id}</td>
-                        <td className="px-4 py-4 font-semibold text-slate-700">{rep.inferredType}</td>
-                        <td className="px-4 py-4 text-slate-700 max-w-md">
-                          <div className="font-semibold text-slate-900">{rep.product_name}</div>
-                          <div className="mt-1 text-xs leading-5 text-slate-600">{rep.issue}</div>
+                        <td className="min-w-[110px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{rep.report_id}</span></td>
+                        <td className="min-w-[140px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-semibold text-slate-700">{rep.inferredType}</span></td>
+                        <td className="min-w-[260px] px-4 py-3 align-middle text-slate-700">
+                          <p title={rep.product_name} className="font-semibold text-slate-900">{rep.product_name || 'Report details'}</p>
+                          <p title={rep.issue} className="mt-1 line-clamp-2 break-words text-xs leading-5 text-slate-600">{rep.issue}</p>
                         </td>
-                        <td className="px-4 py-4 font-semibold text-slate-600">
+                        <td className="min-w-[170px] px-4 py-3 align-middle font-semibold text-slate-600">
                           <div className="text-sm font-semibold text-slate-900">{rep.student}</div>
                           <div className="text-xs text-slate-500 mt-0.5">{rep.student_id}</div>
                         </td>
-                        <td className="px-4 py-4">
-                          <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold ${rep.priority.className}`}>
-                            {rep.priority.label === 'Low' && '🟢'}
-                            {rep.priority.label === 'Medium' && '🟡'}
-                            {rep.priority.label === 'High' && '🔴'}
-                            {rep.priority.label}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4">
-                          <span className={`rounded-full px-3 py-1 text-xs font-bold ${getStatusBadge(rep.status)}`}>
-                            {rep.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-4 text-xs text-slate-500">{new Date(rep.date).toLocaleDateString()}</td>
-                        <td className="px-4 py-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenReportModal(rep)}
-                            className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 transition"
-                          >
-                            Review
-                          </button>
+                        <td className="min-w-[110px] px-4 py-3 align-middle"><StatusBadge status={rep.priority.label} /></td>
+                        <td className="min-w-[120px] px-4 py-3 align-middle"><StatusBadge status={rep.status === 'Review' ? 'In Review' : rep.status} /></td>
+                        <td className="min-w-[120px] px-4 py-3 align-middle"><time className="whitespace-nowrap text-xs text-slate-500">{new Date(rep.date).toLocaleDateString()}</time></td>
+                        <td className="sticky right-0 z-10 min-w-[120px] bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
+                          <ActionButton type="button" onClick={() => handleOpenReportModal(rep)} className="border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-50">Review</ActionButton>
                         </td>
                       </tr>
                     ))}
                   </tbody>
-                </table>
-              </div>
+              </AdminTable>
               <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
                 <button type="button" onClick={() => setReportPage((page) => Math.max(1, page - 1))} disabled={reportPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
                 <span className="text-sm font-semibold text-slate-500">Page {reportPage} of {totalReportPages}</span>
@@ -6149,25 +6387,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               ))}
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-[1.35fr_0.95fr] items-start">
-              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 md:flex-row md:items-center md:justify-between">
-                  <div>
+            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-6 items-start">
+              <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+                <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-slate-200 pb-4">
+                  <div className="min-w-0 flex-1 basis-full whitespace-normal">
                     <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Archive</p>
-                    <h3 className="mt-1 text-xl font-black text-slate-950">Historical Announcements</h3>
+                    <h3 className="mt-1 whitespace-normal text-xl font-black text-slate-950">Historical Announcements</h3>
                   </div>
-                  <div className="flex flex-col gap-2 sm:flex-row">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                     <input
                       type="text"
                       value={notificationsSearch}
                       onChange={(e) => setNotificationsSearch(e.target.value)}
                       placeholder="Search notifications"
-                      className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-violet-500 focus:outline-none"
+                      className="min-w-0 flex-1 basis-[220px] rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-violet-500 focus:outline-none"
                     />
                     <select
                       value={notificationsFilter}
                       onChange={(e) => setNotificationsFilter(e.target.value)}
-                      className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-violet-500 focus:outline-none"
+                      className="min-w-[140px] shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-violet-500 focus:outline-none"
                     >
                       <option value="All">All</option>
                       <option value="Everyone">Everyone</option>
@@ -6180,42 +6418,42 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </div>
                 </div>
 
-                <div className="mt-4 space-y-4">
+                <div className="mt-4 min-w-0 space-y-4">
                   {filteredAnnouncements.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-medium text-slate-500">
-                      No notifications match the current search or filter.
+                      No announcements found
                     </div>
                   ) : (
                     filteredAnnouncements.map((log) => (
-                      <div key={log.id} className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
+                      <div key={log.id} className="min-w-0 rounded-[24px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div className="max-w-[75%]">
-                            <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.24em] text-violet-600">
-                              <span>{log.target}</span>
-                              <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.16em] text-emerald-700">Delivered</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.24em] text-violet-600">
+                              <StatusBadge status={log.target} className="uppercase tracking-[0.16em]" />
+                              <StatusBadge status="Delivered" className="uppercase tracking-[0.16em]" />
                             </div>
-                            <h4 className="mt-2 text-base font-black text-slate-950">{log.title}</h4>
-                            <p className="mt-2 text-sm leading-6 text-slate-600">{log.message}</p>
-                            <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{log.date}</p>
+                            <h4 className="mt-2 break-words text-base font-black text-slate-950">{log.title}</h4>
+                            <p title={log.message} className="mt-2 min-w-0 break-words line-clamp-2 text-sm leading-6 text-slate-600">{log.message}</p>
+                            <p className="mt-3 whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{log.date}</p>
                           </div>
-                          <div className="flex gap-2 sm:flex-col">
-                            <button
+                          <div className="flex gap-2 shrink-0">
+                            <ActionButton
                               type="button"
                               onClick={() => {
                                 setPreviewAnnouncement(log);
                                 setShowPreviewModal(true);
                               }}
-                              className="rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:border-violet-200 hover:text-violet-700"
+                              className="border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:border-violet-200 hover:text-violet-700"
                             >
                               View
-                            </button>
-                            <button
+                            </ActionButton>
+                            <ActionButton
                               type="button"
                               onClick={() => handleDeleteAnnouncement(log.id)}
-                              className="rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                              className="border border-rose-200 bg-rose-50 text-xs font-bold text-rose-700 hover:bg-rose-100"
                             >
                               Delete
-                            </button>
+                            </ActionButton>
                           </div>
                         </div>
 
@@ -6238,7 +6476,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 </div>
               </div>
 
-              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="border-b border-slate-200 pb-4">
                   <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Composer</p>
                   <h3 className="mt-1 text-xl font-black text-slate-950">Compose Broadcast</h3>

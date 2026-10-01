@@ -33,6 +33,14 @@
   scrollbar-width: thin;
 }
 
+.dashboard-horizontal-scroll {
+  scrollbar-width: none;
+}
+
+.dashboard-horizontal-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .student-mobile-sidebar::-webkit-scrollbar,
 .student-sidebar-menu::-webkit-scrollbar {
   width: 6px;
@@ -103,7 +111,7 @@
   }
 }
 
-@media (min-width: 768px) {
+@media (min-width: 1024px) {
   .student-mobile-sidebar {
     transform: none !important;
   }

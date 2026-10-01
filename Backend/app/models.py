@@ -558,6 +558,8 @@ class Message(Base):
     reply_to_id = Column(Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    edited = Column(Boolean, nullable=False, default=False, server_default="0")
+    edited_at = Column(DateTime, nullable=True)
 
     sender = relationship("Student", foreign_keys=[sender_id], back_populates="messages_sent")
     receiver = relationship("Student", foreign_keys=[receiver_id], back_populates="messages_received")

@@ -442,7 +442,7 @@ function SettingsCenter({
                             <button type="button" onClick={handleAvatarUploadSubmit} disabled={!avatarFile || avatarUploading} className="btn-primary w-full rounded-full py-3 text-sm font-semibold">{avatarUploading ? 'Uploading...' : 'Upload Avatar'}</button>
                             {avatarUploadMessage && <p className="text-sm text-emerald-600">{avatarUploadMessage}</p>}
                         </div>
-                        <form onSubmit={handleProfileSubmit} className="grid gap-4 sm:grid-cols-2">
+                        <form onSubmit={handleProfileSubmit} className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                             <Field label="Full Name"><input value={profileForm.name} onChange={(event) => handleProfileFieldChange('name', event.target.value)} className={inputClass} /></Field>
                             <Field label="Student ID"><input value={profileForm.studentId} readOnly className={`${inputClass} bg-slate-100 text-slate-500`} /></Field>
                             {studentIdEditable && <div className="sm:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -673,8 +673,8 @@ function SettingsCenter({
             return (
                 <>
                     <PanelHeader eyebrow="Seller Payouts" title="Get paid directly from campus sales" text="Connect your Ethiopian bank account before publishing products for split payments." />
-                    <form onSubmit={handlePayoutSubmit} className="mt-6 grid gap-4 sm:grid-cols-2">
-                        <div className="sm:col-span-2 flex gap-2 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Payout type">
+                    <form onSubmit={handlePayoutSubmit} className="mt-6 grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                        <div className="sm:col-span-2 flex flex-wrap gap-2 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Payout type">
                             {[
                                 ['bank', 'Traditional Banks'],
                                 ['mobile_wallet', 'Mobile Wallets'],
@@ -689,7 +689,7 @@ function SettingsCenter({
                                         setAccountNumberError('');
                                         setFormData((previous) => ({ ...previous, bankCode: '', provider_id: '', account_number: '' }));
                                     }}
-                                    className={`flex-1 rounded-xl px-4 py-3 text-sm font-bold transition ${payoutType === type ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                    className={`min-w-0 flex-1 basis-[calc(50%-0.25rem)] rounded-xl px-3 py-2 text-xs font-bold transition sm:px-4 sm:py-3 sm:text-sm ${payoutType === type ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                                 >
                                     {label}
                                 </button>
@@ -779,31 +779,32 @@ function SettingsCenter({
     }, [settingsTab, user]);
 
     return (
-        <div className="min-h-screen bg-slate-50 px-4 pb-10 pt-16 text-slate-900 lg:px-8 lg:pt-10">
-            <div className="mx-auto max-w-7xl">
+        <div data-dashboard-view="settings" className="min-h-screen w-full min-w-0 max-w-full bg-slate-50 px-2 pb-10 pt-16 text-slate-900 sm:px-4 lg:px-8 lg:pt-10">
+            <div className="mx-auto w-full min-w-0 max-w-7xl">
                 <div className="mb-6">
                     <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Student Control Center</p>
-                    <div className="mt-2 flex items-center gap-3">
+                    <div className="mt-2 flex min-w-0 items-center gap-3">
                         <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
-                        <h2 className="text-3xl font-black text-slate-950">Account Settings</h2>
+                        <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 sm:text-3xl">Account Settings</h2>
                     </div>
                 </div>
 
                 <div className="flex flex-col gap-6">
-                    <nav className="flex max-w-md flex-row items-center gap-1.5 rounded-3xl border border-slate-200 bg-white p-1.5">
+                    <nav className="settings-tabs flex w-full min-w-0 max-w-md flex-wrap items-center gap-2 rounded-3xl border border-slate-200 bg-white p-1.5">
                         {settingsSections.map(([id, label]) => (
                             <button
                                 key={id}
                                 type="button"
+                                data-settings-tab={id}
                                 onClick={() => setSettingsTab(id)}
-                                className={`flex-1 rounded-2xl py-2.5 text-center text-sm font-semibold transition ${settingsTab === id ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
+                                className={`shrink-0 rounded-2xl px-3 py-2 text-center text-xs font-semibold transition sm:text-sm ${settingsTab === id ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
                             >
                                 {label}
                             </button>
                         ))}
                     </nav>
 
-                    <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+                    <section className="min-w-0 max-w-full rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
                         {renderPanel()}
                     </section>
                 </div>

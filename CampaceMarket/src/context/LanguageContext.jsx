@@ -28,6 +28,17 @@ function applyGoogleLanguage(language, attempts = 30) {
 export const translations = {
     en: {
         home: {
+            searchPlaceholderMobile: 'Search products…',
+            searchPlaceholderFull: 'Search books, laptops, lab coats...',
+            search: 'Search',
+            searchMaterials: 'Search Materials',
+            clearSearch: 'Clear search',
+            browseDirectory: 'Browse Directory',
+            allProducts: 'All Products',
+            resultsFor: 'Results for “{query}”',
+            itemsFound: '{count} items found',
+            noProductsFound: 'No products found for “{query}”',
+            noProductsAvailable: 'No products found.',
             listingsFailure: "We couldn't load listings right now. Please try again.",
             listingsLoading: 'Loading, please wait a moment…',
             noConnection: 'No connection. Check your internet and try again.',
@@ -40,6 +51,16 @@ export const translations = {
             english: 'English',
             login: 'Login',
             signup: 'Signup'
+        },
+        sellerHub: {
+            productManagement: 'Product Management',
+            backToOverview: 'Back to Overview'
+        },
+        productDetails: {
+            loginRequired: 'Login required',
+            loginPrompt: 'Please log in to continue with this action.',
+            login: 'Login',
+            cancel: 'Cancel'
         },
         auth: {
             campusPortal: 'Campus Portal',
@@ -139,17 +160,42 @@ export const translations = {
             notificationsRead: 'Notifications marked as read.',
             checkoutCompleted: 'Order placed successfully.',
             aiResponseReady: 'AI response received.',
-            attachmentUploaded: 'Attachment sent successfully.'
+            attachmentUploaded: 'Attachment sent successfully.',
+            ownProductAction: 'You cannot buy or save your own product.'
         }
     },
     am: {
         home: {
+            searchPlaceholderMobile: 'ምርቶችን ይፈልጉ…',
+            searchPlaceholderFull: 'መጽሐፍት፣ ላፕቶፖች፣ የላቦራቶሪ ካባዎችን ይፈልጉ...',
+            search: 'ፈልግ',
+            searchMaterials: 'ቁሳቁሶችን ፈልግ',
+            clearSearch: 'ፍለጋን አጽዳ',
+            browseDirectory: 'ማውጫውን ይመልከቱ',
+            allProducts: 'ሁሉም ምርቶች',
+            resultsFor: 'የ “{query}” ውጤቶች',
+            itemsFound: '{count} ምርቶች ተገኝተዋል',
+            noProductsFound: 'ለ “{query}” ምንም ምርት አልተገኘም',
+            noProductsAvailable: 'ምንም ምርት አልተገኘም።',
             listingsFailure: 'ምርቶችን ማምጣት አልተቻለም። እባክዎ እንደገና ይሞክሩ።',
             listingsLoading: 'ገጹ እየተጫነ ነው፣ ትንሽ ይጠብቁ…',
             noConnection: 'ግንኙነት የለም። ኢንተርኔትዎን ያረጋግጡና እንደገና ይሞክሩ።',
             tryAgain: 'እንደገና ሞክር',
             dismiss: 'ዝጋ',
             developmentHint: 'የልማት ሁነታ፦ የጀርባ አገልጋዩን ያረጋግጡ።'
+        },
+        productDetails: {
+            loginRequired: 'መግባት ያስፈልጋል',
+            loginPrompt: 'ይህን ተግባር ለመቀጠል እባክዎ ይግቡ።',
+            login: 'ግባ',
+            cancel: 'ሰርዝ'
+        },
+        sellerHub: {
+            productManagement: 'የምርት አስተዳደር',
+            backToOverview: 'ወደ አጠቃላይ እይታ ተመለስ'
+        },
+        studentToast: {
+            ownProductAction: 'የራስዎን ምርት መግዛት ወይም ወደ ተወዳጆች ማስቀመጥ አይችሉም።'
         },
         auth: {
             oauthErrors: {

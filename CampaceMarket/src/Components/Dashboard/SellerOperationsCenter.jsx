@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import OrderDetailsView from "./OrderDetailsView";
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { useLanguage } from '../../context/LanguageContext';
+import { getSellerHubSections, SELLER_HUB_VIEWS, sellerHubViewReducer } from '../../utils/sellerHubViewState';
 
 const SELLER_IMAGE_PLACEHOLDER =
   "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 200%22%3E%3Crect width=%22320%22 height=%22200%22 fill=%22%23e2e8f0%22/%3E%3Cpath d=%22M92 145l42-48 32 35 25-27 49 40H92z%22 fill=%22%2394a3b8%22/%3E%3Ccircle cx=%22125%22 cy=%2275%22 r=%2216%22 fill=%22%2394a3b8%22/%3E%3Ctext x=%22160%22 y=%22178%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2214%22 fill=%22%23475569%22%3ENo image available%3C/text%3E%3C/svg%3E";
@@ -73,6 +75,8 @@ function SellerOperationsCenter({
   openOrderId,
   onOpenOrderHandled,
 }) {
+  const { t } = useLanguage();
+  const [activeHubView, dispatchHubView] = useReducer(sellerHubViewReducer, SELLER_HUB_VIEWS.overview);
   const [chartRange, setChartRange] = useState("3 Months");
   const [salesAnalytics, setSalesAnalytics] = useState({
     points: [],
@@ -101,6 +105,7 @@ function SellerOperationsCenter({
   const [productActionState, setProductActionState] = useState({});
   const [productActionFeedback, setProductActionFeedback] = useState(null);
   const [clockNow, setClockNow] = useState(Date.now());
+  const { overview: showOverview, productManagement: showProductManagement, operations: showOperations } = getSellerHubSections(activeHubView);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setClockNow(Date.now()), 60000);
@@ -745,7 +750,7 @@ function SellerOperationsCenter({
     const orderId = order.id ?? order.order_id ?? order.orderId;
     const state = completionState[orderId] || {};
     return (
-      <div className="flex min-w-[220px] flex-col gap-2">
+      <div className="flex min-w-0 flex-col gap-2 md:min-w-[220px]">
         {status === "pending" && (
           <div className="flex flex-col gap-2">
             <button
@@ -902,7 +907,7 @@ function SellerOperationsCenter({
   }
 
   return (
-    <div className="space-y-6">
+    <div data-dashboard-view="seller" className="min-w-0 w-full max-w-full space-y-6 [&>*]:min-w-0 [&>*]:max-w-full">
       {orders.length > 0 && (
         <button
           type="button"
@@ -915,19 +920,19 @@ function SellerOperationsCenter({
           Open latest order details
         </button>
       )}
-      <section className="rounded-[30px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm sm:p-8">
+      <section className="rounded-[30px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white sm:p-8">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.24em] text-slate-600">
               Seller Hub
             </p>
-            <div className="mt-2 flex items-center gap-3">
+            <div className="mt-2 flex min-w-0 items-center gap-3">
               <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
-              <h2 className="text-3xl font-black">
+              <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 dark:text-white sm:text-3xl">
                 Seller Operations Center
               </h2>
             </div>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
               Monitor listings, fulfill customer orders, and turn marketplace
               activity into measurable campus sales.
             </p>
@@ -936,24 +941,9 @@ function SellerOperationsCenter({
             <button
               type="button"
               onClick={() => {
-                if (payoutStatus !== "active") {
-                  onNavigate("payout-settings");
-                  return;
-                }
-                onAddProduct();
+                dispatchHubView({ type: 'open-operations' });
+                window.setTimeout(() => document.getElementById("seller-orders")?.scrollIntoView({ behavior: "smooth" }), 0);
               }}
-              title={payoutStatus !== "active" ? "Configure payouts first" : "Add a product"}
-              className="btn-primary rounded-full px-4 py-2.5 text-sm font-bold"
-            >
-              + Add Product
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                document
-                  .getElementById("seller-orders")
-                  ?.scrollIntoView({ behavior: "smooth" })
-              }
               className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
             >
               Manage Orders
@@ -967,14 +957,20 @@ function SellerOperationsCenter({
             </button>
             <button
               type="button"
-              onClick={() =>
-                document
-                  .getElementById("seller-analytics")
-                  ?.scrollIntoView({ behavior: "smooth" })
-              }
+              onClick={() => {
+                dispatchHubView({ type: 'open-operations' });
+                window.setTimeout(() => document.getElementById("seller-analytics")?.scrollIntoView({ behavior: "smooth" }), 0);
+              }}
               className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
             >
               View Analytics
+            </button>
+            <button
+              type="button"
+              onClick={() => dispatchHubView({ type: 'open-product-management' })}
+              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              {t('sellerHub.productManagement')}
             </button>
             <button
               type="button"
@@ -987,7 +983,7 @@ function SellerOperationsCenter({
         </div>
       </section>
 
-      {payoutStatus !== "active" && (
+      {!showOverview && payoutStatus !== "active" && (
         <section className="flex flex-col gap-4 rounded-[24px] border border-amber-200 bg-amber-50 p-5 text-amber-950 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-700">
@@ -1014,7 +1010,7 @@ function SellerOperationsCenter({
         </section>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {showOverview && <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {[
           [
             "My Listings",
@@ -1044,28 +1040,34 @@ function SellerOperationsCenter({
             "◔",
             "text-rose-600",
           ],
-        ].map(([label, value, detail, icon, tone]) => (
-          <div
-            key={label}
-            className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                  {label}
-                </p>
-                <p className="mt-3 text-3xl font-black text-slate-950">
-                  {value}
-                </p>
-                <p className={`mt-2 text-xs font-bold ${tone}`}>{detail}</p>
+        ].map(([label, value, detail, icon, tone]) => {
+          const isListingsCard = label === 'My Listings';
+          const StatCard = isListingsCard ? 'button' : 'div';
+          return (
+            <StatCard
+              key={label}
+              type={isListingsCard ? 'button' : undefined}
+              onClick={isListingsCard ? () => dispatchHubView({ type: 'open-product-management' }) : undefined}
+              className="rounded-[24px] border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                    {label}
+                  </p>
+                  <p className="mt-3 text-3xl font-black text-slate-950">
+                    {value}
+                  </p>
+                  <p className={`mt-2 text-xs font-bold ${tone}`}>{detail}</p>
+                </div>
+                <span className={`text-2xl ${tone}`}>{icon}</span>
               </div>
-              <span className={`text-2xl ${tone}`}>{icon}</span>
-            </div>
-          </div>
-        ))}
-      </div>
+            </StatCard>
+          );
+        })}
+      </div>}
 
-      <section className="rounded-[24px] border border-amber-200 bg-amber-50 p-5">
+      {showOverview && <section className="rounded-[24px] border border-amber-200 bg-amber-50 p-5">
         <h3 className="font-black text-amber-950">Action Required</h3>
         <div className="mt-3 flex flex-wrap gap-3 text-sm font-semibold text-amber-800">
           <span>
@@ -1077,217 +1079,441 @@ function SellerOperationsCenter({
             product(s) pending admin approval
           </span>
         </div>
-      </section>
+      </section>}
 
-      <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between gap-4">
+      {showProductManagement && (
+        <div className="min-w-0 w-full space-y-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <button type="button" onClick={() => dispatchHubView({ type: 'back-to-overview' })} className="self-start rounded-full border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">
+              {t('sellerHub.backToOverview')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (payoutStatus !== "active") {
+                  onNavigate("payout-settings");
+                  return;
+                }
+                onAddProduct();
+              }}
+              title={payoutStatus !== "active" ? "Configure payouts first" : "Add a product"}
+              className="btn-primary rounded-full px-4 py-2.5 text-sm font-bold"
+            >
+              + Add Product
+            </button>
+          </div>
+          <section className="min-w-0 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
+                  Inventory
+                </p>
+                <h3 className="mt-1 text-xl font-black text-slate-950 dark:text-white">
+                  My Products
+                </h3>
+              </div>
+              <span className="flex flex-wrap justify-end gap-x-1.5 text-right text-sm font-semibold text-slate-400">
+                <span>{totalInventoryCount} total</span>
+                <span aria-hidden="true">·</span>
+                <span>{counts.active} Active</span>
+                <span aria-hidden="true">·</span>
+                <span>{counts.sold} Sold</span>
+                <span aria-hidden="true">·</span>
+                <span>{counts.pending} Pending</span>
+              </span>
+            </div>
+            {visibleListings.length === 0 ? (
+              <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
+                No active products yet. Add your first campus product to get started.
+              </div>
+            ) : (
+              <div className="mt-5 min-w-0 max-w-full overflow-x-auto">
+                {productActionFeedback && (
+                  <p className={`mb-3 rounded-xl border p-3 text-sm font-semibold ${productActionFeedback.type === "error" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                    {productActionFeedback.message}
+                  </p>
+                )}
+                <table className="w-full min-w-[1120px] table-auto text-left text-sm">
+                  <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:text-slate-300">
+                    <tr>
+                      <th className="px-3 py-3">Product</th>
+                      <th className="px-3 py-3">Price</th>
+                      <th className="whitespace-nowrap px-3 py-3">Stock</th>
+                      <th className="whitespace-nowrap px-3 py-3">Status</th>
+                      <th className="whitespace-nowrap px-3 py-3">Created</th>
+                      <th className="px-3 py-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleListings.map((listing) => {
+                      const status = listing.status || "Pending";
+                      const image = getSellerImage(listing.image);
+                      const stock = Number(listing.stock ?? 0);
+                      const soldOut = stock === 0;
+                      const hasOrders = listing.has_orders === true;
+                      const isSold = String(status).toLowerCase() === "sold";
+                      const isPaused = String(status).toLowerCase() === "paused";
+                      const actionInProgress = Boolean(productActionState[listing.id]);
+                      return (
+                        <tr
+                          key={listing.id ?? listing.product_id ?? listing.title}
+                          className={`border-b border-slate-100 dark:border-slate-700 ${isSold ? "bg-slate-50 dark:bg-slate-800" : "bg-white dark:bg-slate-900"}`}
+                        >
+                          <td className="min-w-[180px] max-w-[360px] px-3 py-4 text-slate-900 dark:text-white">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <img
+                                src={image}
+                                alt={listing.title || "Product"}
+                                onError={(event) => {
+                                  event.currentTarget.onerror = null;
+                                  event.currentTarget.src =
+                                    SELLER_IMAGE_PLACEHOLDER;
+                                }}
+                                className="h-20 w-20 rounded-xl object-cover"
+                              />
+                              <div className="flex min-w-0 max-w-[230px] flex-1 flex-col justify-center gap-1">
+                                <span
+                                  className="block min-w-0 max-w-full whitespace-normal break-words font-bold leading-5 text-slate-900"
+                                  style={{ overflowWrap: "break-word", wordBreak: "break-word" }}
+                                >
+                                  {listing.title || listing.name || "Untitled listing"}
+                                </span>
+                                <span
+                                  className="inline-flex max-w-full items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                                  style={{
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                    maxWidth: "100%",
+                                  }}
+                                  title={listing.category || "General"}
+                                >
+                                  {listing.category || "General"}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+                          <td
+                            className={`px-3 py-4 font-bold ${isSold ? "text-slate-500" : "text-emerald-600"}`}
+                          >
+                            {formatSellerEtb(
+                              String(listing.price || 0).replace(/[^0-9.]/g, ""),
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-4 text-slate-600 dark:text-slate-300">{stock}</td>
+                          <td className="whitespace-nowrap px-3 py-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                                {status === "Approved" ? "Active" : status}
+                              </span>
+                              {isSold && listing.sold_via === "Marketplace Order" && (
+                                <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700">
+                                  Marketplace Order
+                                </span>
+                              )}
+                              {isSold && listing.sold_via === "Marked by Seller" && (
+                                <span className="rounded-full bg-slate-200 px-2 py-1 text-[10px] font-bold text-slate-600">
+                                  Marked by Seller
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-4 text-xs text-slate-500 dark:text-slate-300">
+                            {listing.created_at
+                              ? new Date(listing.created_at).toLocaleDateString()
+                              : "Unavailable"}
+                          </td>
+                          <td className="px-3 py-4">
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                disabled={actionInProgress}
+                                onClick={() => setViewedProductId(listing.id)}
+                                className="btn-primary rounded-full px-3 py-1.5 text-xs font-bold transition"
+                              >
+                                View
+                              </button>
+                              <button
+                                type="button"
+                                disabled={actionInProgress}
+                                onClick={() => onEditProduct(listing.id)}
+                                className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                disabled={hasOrders || actionInProgress}
+                                title={
+                                  hasOrders
+                                    ? "This product has order history and cannot be deleted. You can still edit or mark it as unavailable."
+                                    : undefined
+                                }
+                                onClick={() => {
+                                  if (hasOrders) return;
+                                  const confirmed = typeof window === "undefined" || window.confirm(`Delete ${listing.title || "this product"}?`);
+                                  if (confirmed) runProductAction(listing.id, "delete", onDeleteProduct);
+                                }}
+                                className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                              >
+                                Delete
+                              </button>
+                              {hasOrders && (
+                                <span className="basis-full text-xs font-semibold text-slate-500">
+                                  This product has order history and cannot be
+                                  deleted. You can still edit or mark it as
+                                  unavailable.
+                                </span>
+                              )}
+                              {isSold ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={soldOut || actionInProgress}
+                                    title={
+                                      soldOut
+                                        ? "Add stock via Edit before marking this product available."
+                                        : undefined
+                                    }
+                                    onClick={() => {
+                                      if (!soldOut) runProductAction(listing.id, "available", onTogglePause);
+                                    }}
+                                    className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
+                                  >
+                                    {actionInProgress ? "Updating..." : "Mark as Available"}
+                                  </button>
+                                  {soldOut && (
+                                    <span className="basis-full text-xs font-semibold text-slate-500">
+                                      Add stock via Edit before marking this
+                                      product available.
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    disabled={actionInProgress}
+                                    onClick={() => runProductAction(listing.id, isPaused ? "resume" : "pause", onTogglePause)}
+                                    className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                                  >
+                                    {actionInProgress ? "Updating..." : isPaused ? "Resume" : "Pause"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={actionInProgress}
+                                    onClick={() => runProductAction(listing.id, "sold", onMarkAsSold)}
+                                    className="rounded-full border border-amber-200 px-3 py-1.5 text-xs font-bold text-amber-700"
+                                  >
+                                    {actionInProgress ? "Updating..." : "Mark as Sold"}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {showOverview && <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+        <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">
+          Seller Performance
+        </p>
+        <h3 className="mt-2 text-3xl font-black text-slate-950">
+          {Number(performance.rating || 0).toFixed(1)} / 5.0 ⭐
+        </h3>
+        <div className="mt-6 space-y-4">
+          {[
+            ["Response Rate", Number(performance.response_rate || 0)],
+            ["Order Completion", Number(performance.order_completion || 0)],
+            ["On-time Pickup", Number(performance.on_time_pickup || 0)],
+          ].map(([label, value]) => (
+            <div key={label}>
+              <div className="flex justify-between text-sm font-bold text-slate-700">
+                <span>{label}</span>
+                <span className="text-emerald-600">{value}%</span>
+              </div>
+              <div className="mt-2 h-2 rounded-full bg-slate-100">
+                <div
+                  className="h-full rounded-full bg-emerald-500"
+                  style={{ width: `${Math.min(value, 100)}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>}
+
+      {showOperations && <div className="space-y-6">
+        <section
+          id="seller-orders"
+          className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
+        >
+          <div className="flex items-center justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-                Inventory
+                Fulfillment Queue
               </p>
               <h3 className="mt-1 text-xl font-black text-slate-950">
-                My Products
+                Incoming Customer Orders
               </h3>
             </div>
-            <span className="flex flex-wrap justify-end gap-x-1.5 text-right text-sm font-semibold text-slate-400">
-              <span>{totalInventoryCount} total</span>
-              <span aria-hidden="true">·</span>
-              <span>{counts.active} Active</span>
-              <span aria-hidden="true">·</span>
-              <span>{counts.sold} Sold</span>
-              <span aria-hidden="true">·</span>
-              <span>{counts.pending} Pending</span>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+              {incomingOrders.length} orders
             </span>
           </div>
-          {visibleListings.length === 0 ? (
-            <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
-              No active products yet. Add your first campus product to get started.
-            </div>
+          {sellerOrdersLoading ? (
+            <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm font-semibold text-slate-600">
+              Loading seller orders...
+            </p>
+          ) : sellerOrdersError ? (
+            <p className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-sm font-semibold text-rose-700">
+              {sellerOrdersError}
+            </p>
+          ) : incomingOrders.length === 0 ? (
+            <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
+              No incoming customer orders need your action yet.
+            </p>
           ) : (
             <div className="mt-5 overflow-x-auto">
-              {productActionFeedback && (
-                <p className={`mb-3 rounded-xl border p-3 text-sm font-semibold ${productActionFeedback.type === "error" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-                  {productActionFeedback.message}
-                </p>
-              )}
               <table className="min-w-full text-left text-sm">
                 <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
                   <tr>
+                    <th className="px-3 py-3">Order</th>
+                    <th className="px-3 py-3">Customer</th>
                     <th className="px-3 py-3">Product</th>
-                    <th className="px-3 py-3">Price</th>
-                    <th className="px-3 py-3">Stock</th>
+                    <th className="px-3 py-3">Amount</th>
+                    <th className="px-3 py-3">Payment</th>
                     <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Created</th>
-                    <th className="px-3 py-3">Actions</th>
+                    <th className="px-3 py-3">Pickup</th>
+                    <th className="px-3 py-3">Action</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleListings.map((listing) => {
-                    const status = listing.status || "Pending";
-                    const image = getSellerImage(listing.image);
-                    const stock = Number(listing.stock ?? 0);
-                    const soldOut = stock === 0;
-                    const hasOrders = listing.has_orders === true;
-                    const isSold = String(status).toLowerCase() === "sold";
-                    const isPaused = String(status).toLowerCase() === "paused";
-                    const actionInProgress = Boolean(productActionState[listing.id]);
+                  {incomingOrders.map((order) => {
+                    const badge = getOrderBadgeConfig(order.status);
                     return (
                       <tr
-                        key={listing.id ?? listing.product_id ?? listing.title}
-                        className={`border-b border-slate-100 ${isSold ? "bg-slate-50" : "bg-white"}`}
+                        key={order.id ?? order.order_id}
+                        className="border-b border-slate-100"
                       >
-                        <td className="min-w-[180px] max-w-[360px] px-3 py-4 text-slate-900">
-                          <div className="flex min-w-0 items-center gap-3">
-                            <img
-                              src={image}
-                              alt={listing.title || "Product"}
-                              onError={(event) => {
-                                event.currentTarget.onerror = null;
-                                event.currentTarget.src =
-                                  SELLER_IMAGE_PLACEHOLDER;
-                              }}
-                              className="h-20 w-20 rounded-xl object-cover"
-                            />
-                            <div className="flex min-w-0 max-w-[230px] flex-1 flex-col justify-center gap-1">
-                              <span
-                                className="block min-w-0 max-w-full whitespace-normal break-words font-bold leading-5 text-slate-900"
-                                style={{ overflowWrap: "break-word", wordBreak: "break-word" }}
-                              >
-                                {listing.title || listing.name || "Untitled listing"}
-                              </span>
-                              <span
-                                className="inline-flex max-w-full items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600"
-                                style={{
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                  maxWidth: "100%",
-                                }}
-                                title={listing.category || "General"}
-                              >
-                                {listing.category || "General"}
-                              </span>
-                            </div>
+                        <td className="px-3 py-4 font-bold text-slate-900">
+                          {order.id ?? order.order_id}
+                        </td>
+                        <td className="px-3 py-4 text-slate-600">
+                          {order.buyer_name || order.buyer_id || "Student"}
+                        </td>
+                        <td className="px-3 py-4 text-slate-700">
+                          <div className="flex items-center gap-2">
+                            {order.image && (
+                              <img
+                                src={resolveImageUrl(order.image)}
+                                alt=""
+                                onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
+                                className="h-10 w-10 rounded-lg object-cover"
+                              />
+                            )}
+                            <span>
+                              {order.product_title ||
+                                order.title ||
+                                "Campus product"}
+                            </span>
                           </div>
                         </td>
-                        <td
-                          className={`px-3 py-4 font-bold ${isSold ? "text-slate-500" : "text-emerald-600"}`}
-                        >
-                          {formatSellerEtb(
-                            String(listing.price || 0).replace(/[^0-9.]/g, ""),
+                        <td className="px-3 py-4 font-bold text-slate-900">
+                          {formatSellerEtb(order.price)}
+                        </td>
+                        <td className="px-3 py-4 text-slate-600">
+                          {order.payment_status || "Successful"}
+                        </td>
+                        <td className="px-3 py-4">
+                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
+                            {badge.label}
+                          </span>
+                        </td>
+                        <td className="px-3 py-4 text-slate-600">
+                          <p>{order.pickup_location || "Student Center"}</p>
+                          <p className="mt-1 text-xs">
+                            {order.required_seller_action || "Review order"}
+                          </p>
+                          {normalizeOrderStatus(order.status) === "pending" && order.seller_accept_deadline && (
+                            <p className="mt-2 text-xs font-bold text-amber-700">
+                              Accept within {sellerDeadlineCountdown(order.seller_accept_deadline)}
+                            </p>
                           )}
                         </td>
-                        <td className="px-3 py-4 text-slate-600">{stock}</td>
+                        <td className="px-3 py-4">{orderAction(order)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">
+                Order History
+              </p>
+              <h3 className="mt-1 text-xl font-black text-slate-950">
+                Completed Orders
+              </h3>
+            </div>
+            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
+              {completedOrders.length} orders
+            </span>
+          </div>
+          {completedOrders.length === 0 ? (
+            <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
+              No completed orders yet.
+            </p>
+          ) : (
+            <div className="mt-5 overflow-x-auto">
+              <table className="min-w-full text-left text-sm">
+                <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
+                  <tr>
+                    <th className="px-3 py-3">Order</th>
+                    <th className="px-3 py-3">Customer</th>
+                    <th className="px-3 py-3">Product</th>
+                    <th className="px-3 py-3">Amount</th>
+                    <th className="px-3 py-3">Status</th>
+                    <th className="px-3 py-3">Completed</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {completedOrders.map((order) => {
+                    const badge = getOrderBadgeConfig(order.status);
+                    return (
+                      <tr key={order.id ?? order.order_id} className="border-b border-slate-100">
+                        <td className="px-3 py-4 font-bold text-slate-900">
+                          {order.id ?? order.order_id}
+                        </td>
+                        <td className="px-3 py-4 text-slate-600">
+                          {order.buyer_name || order.buyer_id || "Student"}
+                        </td>
+                        <td className="px-3 py-4 text-slate-700">
+                          {order.product_title || order.title || "Campus product"}
+                        </td>
+                        <td className="px-3 py-4 font-bold text-slate-900">
+                          {formatSellerEtb(order.price)}
+                        </td>
                         <td className="px-3 py-4">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">
-                              {status === "Approved" ? "Active" : status}
-                            </span>
-                            {isSold && listing.sold_via === "Marketplace Order" && (
-                              <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700">
-                                Marketplace Order
-                              </span>
-                            )}
-                            {isSold && listing.sold_via === "Marked by Seller" && (
-                              <span className="rounded-full bg-slate-200 px-2 py-1 text-[10px] font-bold text-slate-600">
-                                Marked by Seller
-                              </span>
-                            )}
-                          </div>
+                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
+                            {badge.label}
+                          </span>
                         </td>
                         <td className="px-3 py-4 text-xs text-slate-500">
-                          {listing.created_at
-                            ? new Date(listing.created_at).toLocaleDateString()
-                            : "Unavailable"}
-                        </td>
-                        <td className="px-3 py-4">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              disabled={actionInProgress}
-                              onClick={() => setViewedProductId(listing.id)}
-                              className="btn-primary rounded-full px-3 py-1.5 text-xs font-bold transition"
-                            >
-                              View
-                            </button>
-                            <button
-                              type="button"
-                              disabled={actionInProgress}
-                              onClick={() => onEditProduct(listing.id)}
-                              className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              disabled={hasOrders || actionInProgress}
-                              title={
-                                hasOrders
-                                  ? "This product has order history and cannot be deleted. You can still edit or mark it as unavailable."
-                                  : undefined
-                              }
-                              onClick={() => {
-                                if (hasOrders) return;
-                                const confirmed = typeof window === "undefined" || window.confirm(`Delete ${listing.title || "this product"}?`);
-                                if (confirmed) runProductAction(listing.id, "delete", onDeleteProduct);
-                              }}
-                              className="rounded-full border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-                            >
-                              Delete
-                            </button>
-                            {hasOrders && (
-                              <span className="basis-full text-xs font-semibold text-slate-500">
-                                This product has order history and cannot be
-                                deleted. You can still edit or mark it as
-                                unavailable.
-                              </span>
-                            )}
-                            {isSold ? (
-                              <>
-                                <button
-                                  type="button"
-                                  disabled={soldOut || actionInProgress}
-                                  title={
-                                    soldOut
-                                      ? "Add stock via Edit before marking this product available."
-                                      : undefined
-                                  }
-                                  onClick={() => {
-                                    if (!soldOut) runProductAction(listing.id, "available", onTogglePause);
-                                  }}
-                                  className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
-                                >
-                                  {actionInProgress ? "Updating..." : "Mark as Available"}
-                                </button>
-                                {soldOut && (
-                                  <span className="basis-full text-xs font-semibold text-slate-500">
-                                    Add stock via Edit before marking this
-                                    product available.
-                                  </span>
-                                )}
-                              </>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  disabled={actionInProgress}
-                                  onClick={() => runProductAction(listing.id, isPaused ? "resume" : "pause", onTogglePause)}
-                                  className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
-                                >
-                                  {actionInProgress ? "Updating..." : isPaused ? "Resume" : "Pause"}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={actionInProgress}
-                                  onClick={() => runProductAction(listing.id, "sold", onMarkAsSold)}
-                                  className="rounded-full border border-amber-200 px-3 py-1.5 text-xs font-bold text-amber-700"
-                                >
-                                  {actionInProgress ? "Updating..." : "Mark as Sold"}
-                                </button>
-                              </>
-                            )}
-                          </div>
+                          {order.updated_at ? new Date(order.updated_at).toLocaleDateString() : order.created_at ? new Date(order.created_at).toLocaleDateString() : "—"}
                         </td>
                       </tr>
                     );
@@ -1297,614 +1523,415 @@ function SellerOperationsCenter({
             </div>
           )}
         </section>
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">
-            Seller Performance
-          </p>
-          <h3 className="mt-2 text-3xl font-black text-slate-950">
-            {Number(performance.rating || 0).toFixed(1)} / 5.0 ⭐
-          </h3>
-          <div className="mt-6 space-y-4">
-            {[
-              ["Response Rate", Number(performance.response_rate || 0)],
-              ["Order Completion", Number(performance.order_completion || 0)],
-              ["On-time Pickup", Number(performance.on_time_pickup || 0)],
-            ].map(([label, value]) => (
-              <div key={label}>
-                <div className="flex justify-between text-sm font-bold text-slate-700">
-                  <span>{label}</span>
-                  <span className="text-emerald-600">{value}%</span>
-                </div>
-                <div className="mt-2 h-2 rounded-full bg-slate-100">
-                  <div
-                    className="h-full rounded-full bg-emerald-500"
-                    style={{ width: `${Math.min(value, 100)}%` }}
-                  />
-                </div>
+
+        <section className="rounded-[28px] border border-rose-200 bg-rose-50 p-6 shadow-sm">
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">
+                  Seller Hub
+                </p>
+                <h3 className="mt-1 text-xl font-black text-slate-950">Disputes</h3>
               </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <section
-        id="seller-orders"
-        className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
-      >
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-              Fulfillment Queue
-            </p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">
-              Incoming Customer Orders
-            </h3>
-          </div>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-            {incomingOrders.length} orders
-          </span>
-        </div>
-        {sellerOrdersLoading ? (
-          <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm font-semibold text-slate-600">
-            Loading seller orders...
-          </p>
-        ) : sellerOrdersError ? (
-          <p className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-sm font-semibold text-rose-700">
-            {sellerOrdersError}
-          </p>
-        ) : incomingOrders.length === 0 ? (
-          <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
-            No incoming customer orders need your action yet.
-          </p>
-        ) : (
-          <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                <tr>
-                  <th className="px-3 py-3">Order</th>
-                  <th className="px-3 py-3">Customer</th>
-                  <th className="px-3 py-3">Product</th>
-                  <th className="px-3 py-3">Amount</th>
-                  <th className="px-3 py-3">Payment</th>
-                  <th className="px-3 py-3">Status</th>
-                  <th className="px-3 py-3">Pickup</th>
-                  <th className="px-3 py-3">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {incomingOrders.map((order) => {
-                  const badge = getOrderBadgeConfig(order.status);
-                  return (
-                    <tr
-                      key={order.id ?? order.order_id}
-                      className="border-b border-slate-100"
-                    >
-                      <td className="px-3 py-4 font-bold text-slate-900">
-                        {order.id ?? order.order_id}
-                      </td>
-                      <td className="px-3 py-4 text-slate-600">
-                        {order.buyer_name || order.buyer_id || "Student"}
-                      </td>
-                      <td className="px-3 py-4 text-slate-700">
-                        <div className="flex items-center gap-2">
-                          {order.image && (
-                            <img
-                              src={resolveImageUrl(order.image)}
-                              alt=""
-                              onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
-                              className="h-10 w-10 rounded-lg object-cover"
-                            />
-                          )}
-                          <span>
-                            {order.product_title ||
-                              order.title ||
-                              "Campus product"}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-4 font-bold text-slate-900">
-                        {formatSellerEtb(order.price)}
-                      </td>
-                      <td className="px-3 py-4 text-slate-600">
-                        {order.payment_status || "Successful"}
-                      </td>
-                      <td className="px-3 py-4">
-                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
-                          {badge.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-4 text-slate-600">
-                        <p>{order.pickup_location || "Student Center"}</p>
-                        <p className="mt-1 text-xs">
-                          {order.required_seller_action || "Review order"}
-                        </p>
-                        {normalizeOrderStatus(order.status) === "pending" && order.seller_accept_deadline && (
-                          <p className="mt-2 text-xs font-bold text-amber-700">
-                            Accept within {sellerDeadlineCountdown(order.seller_accept_deadline)}
-                          </p>
-                        )}
-                      </td>
-                      <td className="px-3 py-4">{orderAction(order)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">
-              Order History
-            </p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">
-              Completed Orders
-            </h3>
-          </div>
-          <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
-            {completedOrders.length} orders
-          </span>
-        </div>
-        {completedOrders.length === 0 ? (
-          <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
-            No completed orders yet.
-          </p>
-        ) : (
-          <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                <tr>
-                  <th className="px-3 py-3">Order</th>
-                  <th className="px-3 py-3">Customer</th>
-                  <th className="px-3 py-3">Product</th>
-                  <th className="px-3 py-3">Amount</th>
-                  <th className="px-3 py-3">Status</th>
-                  <th className="px-3 py-3">Completed</th>
-                </tr>
-              </thead>
-              <tbody>
-                {completedOrders.map((order) => {
-                  const badge = getOrderBadgeConfig(order.status);
-                  return (
-                    <tr key={order.id ?? order.order_id} className="border-b border-slate-100">
-                      <td className="px-3 py-4 font-bold text-slate-900">
-                        {order.id ?? order.order_id}
-                      </td>
-                      <td className="px-3 py-4 text-slate-600">
-                        {order.buyer_name || order.buyer_id || "Student"}
-                      </td>
-                      <td className="px-3 py-4 text-slate-700">
-                        {order.product_title || order.title || "Campus product"}
-                      </td>
-                      <td className="px-3 py-4 font-bold text-slate-900">
-                        {formatSellerEtb(order.price)}
-                      </td>
-                      <td className="px-3 py-4">
-                        <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
-                          {badge.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-4 text-xs text-slate-500">
-                        {order.updated_at ? new Date(order.updated_at).toLocaleDateString() : order.created_at ? new Date(order.created_at).toLocaleDateString() : "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="rounded-[28px] border border-rose-200 bg-rose-50 p-6 shadow-sm">
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-rose-600">
-                Seller Hub
-              </p>
-              <h3 className="mt-1 text-xl font-black text-slate-950">Disputes</h3>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-rose-700">
+                {recentDisputes.filter((item) => ["OPEN", "UNDER_REVIEW"].includes(String(item.status || "").toUpperCase())).length} active
+              </span>
             </div>
-            <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-rose-700">
-              {recentDisputes.filter((item) => ["OPEN", "UNDER_REVIEW"].includes(String(item.status || "").toUpperCase())).length} active
-            </span>
-          </div>
 
-          <div className="grid gap-3 md:grid-cols-[1.4fr_0.8fr_0.8fr_1fr]">
-            <input
-              value={disputeSearch}
-              onChange={(event) => setDisputeSearch(event.target.value)}
-              placeholder="Search by order # or product"
-              className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
-            />
-            <select
-              value={disputeStatusFilter}
-              onChange={(event) => setDisputeStatusFilter(event.target.value)}
-              className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
-            >
-              <option value="all">All statuses</option>
-              <option value="active">Active</option>
-              <option value="pending">Pending</option>
-              <option value="resolved">Resolved</option>
-            </select>
-            <select
-              value={disputeDateFilter}
-              onChange={(event) => setDisputeDateFilter(event.target.value)}
-              className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
-            >
-              <option value="all">All dates</option>
-              <option value="30d">Last 30 days</option>
-              <option value="90d">Last 90 days</option>
-              <option value="180d">Last 180 days</option>
-            </select>
-            <div className="flex items-center gap-2 rounded-xl border border-rose-200 bg-white p-1">
-              {[
-                { key: "recent", label: "Recent" },
-                { key: "archived", label: "Archived" },
-              ].map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setDisputeTab(tab.key)}
-                  className={`flex-1 rounded-lg px-3 py-2 text-xs font-bold ${disputeTab === tab.key ? "bg-rose-600 text-white" : "text-slate-600"}`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {filteredDisputes.length === 0 ? (
-          <p className="mt-5 text-sm text-slate-600">
-            No disputes match your current filters.
-          </p>
-        ) : (
-          <div className="mt-5 space-y-4">
-            {displayedDisputes.map((dispute) => {
-              const state = disputeResponseState[dispute.id] || {};
-              const isExpanded = Boolean(expandedDisputes[dispute.id]);
-              const orderStatus = String(dispute?.order?.status || "").toLowerCase();
-              const resolutionLabel =
-                dispute?.resolution_label ||
-                (orderStatus.includes("refund") || orderStatus === "returned" ? "Resolved - Refunded" :
-                  orderStatus.includes("cancel") ? "Resolved - Order Cancelled" :
-                    orderStatus.includes("complete") || orderStatus === "sold" ? "Resolved - Completed" :
-                      dispute?.status === "RESOLVED" ? "Resolved" : dispute?.status || "Open");
-              const tagTone =
-                orderStatus.includes("refund") || orderStatus === "returned"
-                  ? "bg-amber-100 text-amber-800 border-amber-200"
-                  : orderStatus.includes("cancel")
-                    ? "bg-rose-100 text-rose-700 border-rose-200"
-                    : ["OPEN", "UNDER_REVIEW"].includes(String(dispute?.status || "").toUpperCase())
-                      ? "bg-sky-100 text-sky-700 border-sky-200"
-                      : "bg-emerald-100 text-emerald-700 border-emerald-200";
-
-              return (
-                <article
-                  key={dispute.id}
-                  className="rounded-2xl border border-rose-100 bg-white p-4"
-                >
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedDisputes((previous) => ({
-                        ...previous,
-                        [dispute.id]: !previous[dispute.id],
-                      }))
-                    }
-                    className="flex w-full items-start justify-between gap-3 text-left"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">
-                        Order #{dispute.order_id} · {dispute.product?.title || dispute.order?.title || "Product"}
-                      </p>
-                      <h4 className="mt-1 truncate font-black text-slate-900">
-                        {dispute.reason}
-                      </h4>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <span className={`rounded-full border px-3 py-1 text-[11px] font-bold ${tagTone}`}>
-                        {resolutionLabel}
-                      </span>
-                      <span className="text-lg text-slate-400">{isExpanded ? "−" : "+"}</span>
-                    </div>
-                  </button>
-
-                  {isExpanded && (
-                    <div className="mt-4 border-t border-slate-100 pt-4">
-                      <div className="grid gap-4 text-sm text-slate-700 md:grid-cols-2">
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Issue</p>
-                          <p className="mt-1 font-semibold text-slate-900">{dispute.reason}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Status</p>
-                          <p className="mt-1 font-semibold text-slate-900">{getDisputeStatusLabel(dispute)}</p>
-                        </div>
-                      </div>
-
-                      <p className="mt-4 text-sm leading-6 text-slate-700">
-                        {dispute.description}
-                      </p>
-
-                      {dispute.status === "OPEN" || dispute.status === "UNDER_REVIEW" ? (
-                        <div className="mt-4">
-                          <textarea
-                            rows="3"
-                            value={state.response || ""}
-                            onChange={(event) =>
-                              setDisputeResponseState((previous) => ({
-                                ...previous,
-                                [dispute.id]: {
-                                  ...state,
-                                  response: event.target.value,
-                                },
-                              }))
-                            }
-                            placeholder="Provide your explanation or evidence..."
-                            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-rose-400"
-                          />
-
-                          <div className="mt-3">
-                            <label className="block text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Evidence images</label>
-                            <input
-                              type="file"
-                              multiple
-                              accept="image/*"
-                              onChange={(event) => {
-                                const files = Array.from(event.target.files || []);
-                                setDisputeEvidenceFiles((previous) => ({
-                                  ...previous,
-                                  [dispute.id]: files,
-                                }));
-                              }}
-                              className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700"
-                            />
-                            {(disputeEvidenceFiles[dispute.id] || []).length > 0 && (
-                              <div className="mt-3 grid grid-cols-3 gap-2">
-                                {(disputeEvidenceFiles[dispute.id] || []).map((file, index) => (
-                                  <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-                                    <img src={URL.createObjectURL(file)} alt={`Dispute evidence ${index + 1}`} className="h-20 w-full object-cover" />
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setDisputeEvidenceFiles((previous) => ({
-                                          ...previous,
-                                          [dispute.id]: (previous[dispute.id] || []).filter((_, itemIndex) => itemIndex !== index),
-                                        }))
-                                      }
-                                      className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white"
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-
-                          <button
-                            type="button"
-                            onClick={() => respondToDispute(dispute, state.response, disputeEvidenceFiles[dispute.id] || [])}
-                            disabled={!String(state.response || "").trim() || state.loading}
-                            className="mt-3 rounded-full bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300"
-                          >
-                            {state.loading ? "Submitting..." : "Respond to dispute"}
-                          </button>
-                          {state.error && <p className="mt-2 text-xs font-bold text-rose-700">{state.error}</p>}
-                          {state.success && <p className="mt-2 text-xs font-bold text-emerald-700">{state.success}</p>}
-                        </div>
-                      ) : (
-                        <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
-                          <p className="font-bold text-slate-800">Seller response:</p>
-                          <p className="mt-1 whitespace-pre-wrap">{dispute.seller_response || "No response recorded."}</p>
-                          {(() => {
-                            const evidenceValues = Array.isArray(dispute.seller_evidence)
-                              ? dispute.seller_evidence
-                              : typeof dispute.seller_evidence === "string"
-                                ? (() => {
-                                  try {
-                                    const parsed = JSON.parse(dispute.seller_evidence);
-                                    return Array.isArray(parsed) ? parsed : [parsed];
-                                  } catch {
-                                    return [dispute.seller_evidence];
-                                  }
-                                })()
-                                : [];
-                            return evidenceValues.filter(Boolean).length > 0 ? (
-                              <div className="mt-3 grid grid-cols-3 gap-2">
-                                {evidenceValues.filter(Boolean).map((image, index) => (
-                                  <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-slate-200 bg-white">
-                                    <img src={resolveImageUrl(image)} alt={`Seller dispute evidence ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-20 w-full object-cover" />
-                                  </a>
-                                ))}
-                              </div>
-                            ) : null;
-                          })()}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </article>
-              );
-            })}
-
-            {hasMoreDisputes && (
-              <button
-                type="button"
-                onClick={() => setVisibleDisputeCount((previous) => previous + 10)}
-                className="mt-2 w-full rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm font-bold text-rose-700 hover:bg-rose-50"
+            <div className="grid gap-3 md:grid-cols-[1.4fr_0.8fr_0.8fr_1fr]">
+              <input
+                value={disputeSearch}
+                onChange={(event) => setDisputeSearch(event.target.value)}
+                placeholder="Search by order # or product"
+                className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
+              />
+              <select
+                value={disputeStatusFilter}
+                onChange={(event) => setDisputeStatusFilter(event.target.value)}
+                className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
               >
-                Load more disputes
-              </button>
-            )}
+                <option value="all">All statuses</option>
+                <option value="active">Active</option>
+                <option value="pending">Pending</option>
+                <option value="resolved">Resolved</option>
+              </select>
+              <select
+                value={disputeDateFilter}
+                onChange={(event) => setDisputeDateFilter(event.target.value)}
+                className="rounded-xl border border-rose-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none focus:border-rose-400"
+              >
+                <option value="all">All dates</option>
+                <option value="30d">Last 30 days</option>
+                <option value="90d">Last 90 days</option>
+                <option value="180d">Last 180 days</option>
+              </select>
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-rose-200 bg-white p-1">
+                {[
+                  { key: "recent", label: "Recent" },
+                  { key: "archived", label: "Archived" },
+                ].map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setDisputeTab(tab.key)}
+                    className={`min-w-0 flex-1 basis-[calc(50%-0.25rem)] rounded-lg px-3 py-2 text-xs font-bold ${disputeTab === tab.key ? "bg-rose-600 text-white" : "text-slate-600"}`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        )}
-      </section>
 
-      <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
-        <section
-          id="seller-analytics"
-          className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
-        >
+          {filteredDisputes.length === 0 ? (
+            <p className="mt-5 text-sm text-slate-600">
+              No disputes match your current filters.
+            </p>
+          ) : (
+            <div className="mt-5 space-y-4">
+              {displayedDisputes.map((dispute) => {
+                const state = disputeResponseState[dispute.id] || {};
+                const isExpanded = Boolean(expandedDisputes[dispute.id]);
+                const orderStatus = String(dispute?.order?.status || "").toLowerCase();
+                const resolutionLabel =
+                  dispute?.resolution_label ||
+                  (orderStatus.includes("refund") || orderStatus === "returned" ? "Resolved - Refunded" :
+                    orderStatus.includes("cancel") ? "Resolved - Order Cancelled" :
+                      orderStatus.includes("complete") || orderStatus === "sold" ? "Resolved - Completed" :
+                        dispute?.status === "RESOLVED" ? "Resolved" : dispute?.status || "Open");
+                const tagTone =
+                  orderStatus.includes("refund") || orderStatus === "returned"
+                    ? "bg-amber-100 text-amber-800 border-amber-200"
+                    : orderStatus.includes("cancel")
+                      ? "bg-rose-100 text-rose-700 border-rose-200"
+                      : ["OPEN", "UNDER_REVIEW"].includes(String(dispute?.status || "").toUpperCase())
+                        ? "bg-sky-100 text-sky-700 border-sky-200"
+                        : "bg-emerald-100 text-emerald-700 border-emerald-200";
+
+                return (
+                  <article
+                    key={dispute.id}
+                    className="rounded-2xl border border-rose-100 bg-white p-4"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedDisputes((previous) => ({
+                          ...previous,
+                          [dispute.id]: !previous[dispute.id],
+                        }))
+                      }
+                      className="flex w-full items-start justify-between gap-3 text-left"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                          Order #{dispute.order_id} · {dispute.product?.title || dispute.order?.title || "Product"}
+                        </p>
+                        <h4 className="mt-1 truncate font-black text-slate-900">
+                          {dispute.reason}
+                        </h4>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className={`rounded-full border px-3 py-1 text-[11px] font-bold ${tagTone}`}>
+                          {resolutionLabel}
+                        </span>
+                        <span className="text-lg text-slate-400">{isExpanded ? "−" : "+"}</span>
+                      </div>
+                    </button>
+
+                    {isExpanded && (
+                      <div className="mt-4 border-t border-slate-100 pt-4">
+                        <div className="grid gap-4 text-sm text-slate-700 md:grid-cols-2">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Issue</p>
+                            <p className="mt-1 font-semibold text-slate-900">{dispute.reason}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">Status</p>
+                            <p className="mt-1 font-semibold text-slate-900">{getDisputeStatusLabel(dispute)}</p>
+                          </div>
+                        </div>
+
+                        <p className="mt-4 text-sm leading-6 text-slate-700">
+                          {dispute.description}
+                        </p>
+
+                        {dispute.status === "OPEN" || dispute.status === "UNDER_REVIEW" ? (
+                          <div className="mt-4">
+                            <textarea
+                              rows="3"
+                              value={state.response || ""}
+                              onChange={(event) =>
+                                setDisputeResponseState((previous) => ({
+                                  ...previous,
+                                  [dispute.id]: {
+                                    ...state,
+                                    response: event.target.value,
+                                  },
+                                }))
+                              }
+                              placeholder="Provide your explanation or evidence..."
+                              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-rose-400"
+                            />
+
+                            <div className="mt-3">
+                              <label className="block text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Evidence images</label>
+                              <input
+                                type="file"
+                                multiple
+                                accept="image/*"
+                                onChange={(event) => {
+                                  const files = Array.from(event.target.files || []);
+                                  setDisputeEvidenceFiles((previous) => ({
+                                    ...previous,
+                                    [dispute.id]: files,
+                                  }));
+                                }}
+                                className="mt-2 block w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700"
+                              />
+                              {(disputeEvidenceFiles[dispute.id] || []).length > 0 && (
+                                <div className="mt-3 grid grid-cols-3 gap-2">
+                                  {(disputeEvidenceFiles[dispute.id] || []).map((file, index) => (
+                                    <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                                      <img src={URL.createObjectURL(file)} alt={`Dispute evidence ${index + 1}`} className="h-20 w-full object-cover" />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setDisputeEvidenceFiles((previous) => ({
+                                            ...previous,
+                                            [dispute.id]: (previous[dispute.id] || []).filter((_, itemIndex) => itemIndex !== index),
+                                          }))
+                                        }
+                                        className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => respondToDispute(dispute, state.response, disputeEvidenceFiles[dispute.id] || [])}
+                              disabled={!String(state.response || "").trim() || state.loading}
+                              className="mt-3 rounded-full bg-rose-600 px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300"
+                            >
+                              {state.loading ? "Submitting..." : "Respond to dispute"}
+                            </button>
+                            {state.error && <p className="mt-2 text-xs font-bold text-rose-700">{state.error}</p>}
+                            {state.success && <p className="mt-2 text-xs font-bold text-emerald-700">{state.success}</p>}
+                          </div>
+                        ) : (
+                          <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">
+                            <p className="font-bold text-slate-800">Seller response:</p>
+                            <p className="mt-1 whitespace-pre-wrap">{dispute.seller_response || "No response recorded."}</p>
+                            {(() => {
+                              const evidenceValues = Array.isArray(dispute.seller_evidence)
+                                ? dispute.seller_evidence
+                                : typeof dispute.seller_evidence === "string"
+                                  ? (() => {
+                                    try {
+                                      const parsed = JSON.parse(dispute.seller_evidence);
+                                      return Array.isArray(parsed) ? parsed : [parsed];
+                                    } catch {
+                                      return [dispute.seller_evidence];
+                                    }
+                                  })()
+                                  : [];
+                              return evidenceValues.filter(Boolean).length > 0 ? (
+                                <div className="mt-3 grid grid-cols-3 gap-2">
+                                  {evidenceValues.filter(Boolean).map((image, index) => (
+                                    <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-slate-200 bg-white">
+                                      <img src={resolveImageUrl(image)} alt={`Seller dispute evidence ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-20 w-full object-cover" />
+                                    </a>
+                                  ))}
+                                </div>
+                              ) : null;
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+
+              {hasMoreDisputes && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleDisputeCount((previous) => previous + 10)}
+                  className="mt-2 w-full rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm font-bold text-rose-700 hover:bg-rose-50"
+                >
+                  Load more disputes
+                </button>
+              )}
+            </div>
+          )}
+        </section>
+
+        <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
+          <section
+            id="seller-analytics"
+            className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
+          >
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
+                  Sales Analytics
+                </p>
+                <h3 className="mt-1 text-xl font-black text-slate-950">
+                  Sales Performance
+                </h3>
+              </div>
+              <div className="flex flex-wrap gap-1 rounded-full bg-slate-100 p-1">
+                {["7 Days", "30 Days", "3 Months"].map((range) => (
+                  <button
+                    key={range}
+                    type="button"
+                    onClick={() => setChartRange(range)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === range ? "bg-slate-900 text-white" : "text-slate-500"}`}
+                  >
+                    {range}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <svg
+              viewBox="0 0 640 230"
+              className="mt-6 h-56 w-full"
+              role="img"
+              aria-label={`Sales revenue trend for ${chartRange}`}
+            >
+              <path
+                d="M35 190 H610 M35 145 H610 M35 100 H610 M35 55 H610"
+                stroke="#e2e8f0"
+                strokeDasharray="5 8"
+              />
+              <polyline
+                points={chartPoints}
+                fill="none"
+                stroke="#10b981"
+                strokeWidth="5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <polyline
+                points={`${chartPoints} 610,205 35,205`}
+                fill="#10b981"
+                fillOpacity="0.1"
+                stroke="none"
+              />
+              {salesAnalytics.points.map((point, index) => (
+                <circle
+                  key={`${point.date}-${index}`}
+                  cx={35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)}
+                  cy={190 - ((Number(point.total) || 0) / chartMax) * 135}
+                  r="5"
+                  fill="#10b981"
+                />
+              ))}
+              {salesAnalytics.points.map((point, index) => (
+                <text
+                  key={`${point.label ?? point.date ?? 'label'}-${index}-label`}
+                  x={35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)}
+                  y="225"
+                  textAnchor="middle"
+                  fill="#64748b"
+                  fontSize="12"
+                >
+                  {point.label}
+                </text>
+              ))}
+            </svg>
+          </section>
+          <section className="rounded-[28px] border border-slate-200 bg-slate-950 p-6 text-white shadow-xl">
+            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">
+              🤖 AI Seller Advisor
+            </p>
+            <h3 className="mt-2 text-xl font-black">Improve your conversion</h3>
+            <p className="mt-4 text-sm leading-6 text-slate-300">
+              Your Dell XPS 13 received high views but low conversion. Consider
+              updating images or adjusting the price by 3% to match the market
+              average.
+            </p>
+            <button
+              type="button"
+              onClick={onAddProduct}
+              className="btn-primary mt-5 rounded-full px-4 py-2.5 text-sm font-bold"
+            >
+              Edit target product
+            </button>
+          </section>
+        </div>
+        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-                Sales Analytics
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">
+                Leaderboard
               </p>
               <h3 className="mt-1 text-xl font-black text-slate-950">
-                Sales Performance
+                Top Performing Products
               </h3>
             </div>
-            <div className="flex gap-1 rounded-full bg-slate-100 p-1">
-              {["7 Days", "30 Days", "3 Months"].map((range) => (
+            <span className="text-sm text-slate-400">
+              Views · Orders · Revenue
+            </span>
+          </div>
+          <div className="mt-5 grid gap-4 md:grid-cols-3">
+            {topProducts.length ? (
+              topProducts.map((product, index) => (
                 <button
-                  key={range}
                   type="button"
-                  onClick={() => setChartRange(range)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === range ? "bg-slate-900 text-white" : "text-slate-500"}`}
+                  key={product.id}
+                  onClick={() =>
+                    onNavigate("product-details", { productId: product.id })
+                  }
+                  className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md"
                 >
-                  {range}
-                </button>
-              ))}
-            </div>
-          </div>
-          <svg
-            viewBox="0 0 640 230"
-            className="mt-6 h-56 w-full"
-            role="img"
-            aria-label={`Sales revenue trend for ${chartRange}`}
-          >
-            <path
-              d="M35 190 H610 M35 145 H610 M35 100 H610 M35 55 H610"
-              stroke="#e2e8f0"
-              strokeDasharray="5 8"
-            />
-            <polyline
-              points={chartPoints}
-              fill="none"
-              stroke="#10b981"
-              strokeWidth="5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <polyline
-              points={`${chartPoints} 610,205 35,205`}
-              fill="#10b981"
-              fillOpacity="0.1"
-              stroke="none"
-            />
-            {salesAnalytics.points.map((point, index) => (
-              <circle
-                key={`${point.date}-${index}`}
-                cx={35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)}
-                cy={190 - ((Number(point.total) || 0) / chartMax) * 135}
-                r="5"
-                fill="#10b981"
-              />
-            ))}
-            {salesAnalytics.points.map((point, index) => (
-              <text
-                key={`${point.label ?? point.date ?? 'label'}-${index}-label`}
-                x={35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)}
-                y="225"
-                textAnchor="middle"
-                fill="#64748b"
-                fontSize="12"
-              >
-                {point.label}
-              </text>
-            ))}
-          </svg>
-        </section>
-        <section className="rounded-[28px] border border-slate-200 bg-slate-950 p-6 text-white shadow-xl">
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">
-            🤖 AI Seller Advisor
-          </p>
-          <h3 className="mt-2 text-xl font-black">Improve your conversion</h3>
-          <p className="mt-4 text-sm leading-6 text-slate-300">
-            Your Dell XPS 13 received high views but low conversion. Consider
-            updating images or adjusting the price by 3% to match the market
-            average.
-          </p>
-          <button
-            type="button"
-            onClick={onAddProduct}
-            className="btn-primary mt-5 rounded-full px-4 py-2.5 text-sm font-bold"
-          >
-            Edit target product
-          </button>
-        </section>
-      </div>
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">
-              Leaderboard
-            </p>
-            <h3 className="mt-1 text-xl font-black text-slate-950">
-              Top Performing Products
-            </h3>
-          </div>
-          <span className="text-sm text-slate-400">
-            Views · Orders · Revenue
-          </span>
-        </div>
-        <div className="mt-5 grid gap-4 md:grid-cols-3">
-          {topProducts.length ? (
-            topProducts.map((product, index) => (
-              <button
-                type="button"
-                key={product.id}
-                onClick={() =>
-                  onNavigate("product-details", { productId: product.id })
-                }
-                className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left transition hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md"
-              >
-                <div className="flex items-start gap-3">
-                  <img
-                    src={getSellerImage(product.image)}
-                    alt=""
-                    onError={(event) => {
-                      event.currentTarget.onerror = null;
-                      event.currentTarget.src = SELLER_IMAGE_PLACEHOLDER;
-                    }}
-                    className="h-14 w-14 shrink-0 rounded-xl object-cover"
-                  />
-                  <div className="min-w-0">
-                    <span className="text-3xl">
-                      {["🥇", "🥈", "🥉"][index]}
-                    </span>
-                    <h4 className="mt-1 truncate font-black text-slate-950">
-                      {product.title || product.name}
-                    </h4>
-                    <p className="truncate text-xs font-semibold text-slate-500">
-                      {[product.category, product.subcategory]
-                        .filter(Boolean)
-                        .join(" · ") || "General"}
-                    </p>
+                  <div className="flex items-start gap-3">
+                    <img
+                      src={getSellerImage(product.image)}
+                      alt=""
+                      onError={(event) => {
+                        event.currentTarget.onerror = null;
+                        event.currentTarget.src = SELLER_IMAGE_PLACEHOLDER;
+                      }}
+                      className="h-14 w-14 shrink-0 rounded-xl object-cover"
+                    />
+                    <div className="min-w-0">
+                      <span className="text-3xl">
+                        {["🥇", "🥈", "🥉"][index]}
+                      </span>
+                      <h4 className="mt-1 truncate font-black text-slate-950">
+                        {product.title || product.name}
+                      </h4>
+                      <p className="truncate text-xs font-semibold text-slate-500">
+                        {[product.category, product.subcategory]
+                          .filter(Boolean)
+                          .join(" · ") || "General"}
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <p className="mt-3 text-sm text-slate-600">
-                  {product.views} views · {product.orderCount} orders
-                </p>
-                <p className="mt-2 font-bold text-emerald-600">
-                  {formatSellerEtb(product.revenue)} generated
-                </p>
-              </button>
-            ))
-          ) : (
-            <p className="text-sm text-slate-500">
-              Performance data will appear after your first listing receives
-              activity.
-            </p>
-          )}
-        </div>
-      </section>
+                  <p className="mt-3 text-sm text-slate-600">
+                    {product.views} views · {product.orderCount} orders
+                  </p>
+                  <p className="mt-2 font-bold text-emerald-600">
+                    {formatSellerEtb(product.revenue)} generated
+                  </p>
+                </button>
+              ))
+            ) : (
+              <p className="text-sm text-slate-500">
+                Performance data will appear after your first listing receives
+                activity.
+              </p>
+            )}
+          </div>
+        </section>
+
+      </div>}
 
       {viewedProduct && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">

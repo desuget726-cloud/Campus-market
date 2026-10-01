@@ -174,16 +174,16 @@ function NotificationCenter({
     };
 
     return (
-        <div className="w-full max-w-none px-0 py-0">
-            <section className="min-h-[550px] rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <div data-dashboard-view="notifications" className="w-full min-w-0 max-w-full px-0 py-0">
+            <section className="min-h-[550px] min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
                 <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
+                    <div className="min-w-0">
                         <p className="text-xs font-bold uppercase tracking-[0.28em] text-sky-600">
                             Notification Center
                         </p>
-                        <div className="mt-2 flex items-center gap-3">
+                        <div className="mt-2 flex min-w-0 items-center gap-3">
                             <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
-                            <h2 className="text-3xl font-black text-slate-950">
+                            <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 sm:text-3xl">
                                 Stay ahead of campus activity.
                             </h2>
                         </div>
@@ -259,14 +259,14 @@ function NotificationCenter({
                                                 className={`border-l-4 ${priority.border} rounded-r-2xl border-y border-r border-slate-200 p-5 transition-all duration-200 hover:shadow-md ${isRead ? "bg-slate-50/50 text-slate-500" : "bg-slate-50/70 text-slate-700 hover:bg-slate-100"}`}
                                             >
                                                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                                                    <div className="flex gap-3">
+                                                    <div className="flex min-w-0 gap-3">
                                                         {!isRead && (
                                                             <span
                                                                 className={`mt-1 h-3 w-3 shrink-0 rounded-full ${priority.color}`}
                                                                 title={priority.label}
                                                             />
                                                         )}
-                                                        <div>
+                                                        <div className="min-w-0">
                                                             <div className="flex flex-wrap items-center gap-2">
                                                                 <h4 className={`font-black ${isRead ? "text-slate-700" : "text-slate-950"}`}>
                                                                     {notification.title || "Campus update"}
