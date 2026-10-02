@@ -576,6 +576,10 @@ function AppContent() {
           {activeRole === 'admin' && currentView === 'admin-dashboard' && (
             <AdminDashboard
               onLogout={handleLogout}
+              onSessionExpired={() => {
+                handleLogout();
+                setCurrentView('login');
+              }}
               user={user}
               onUserUpdate={setUser}
               initialTab={adminTab}

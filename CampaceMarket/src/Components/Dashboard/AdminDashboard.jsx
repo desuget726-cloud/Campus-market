@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Check, Copy, Eye, Pencil, Trash2 } from 'lucide-react';
+import { Check, Copy, Eye, Pencil, Trash2, X } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
 import { notifyError, notifySuccess } from '../../utils/notify';
+import { adminApiGet, getStoredAccessToken } from '../../api/apiClient';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import logs from '../../assets/logs.png';
@@ -219,7 +220,7 @@ const normalizeTarget = (target = '') => {
 
 const parseAuditDescription = (description = '') => {
   const match = String(description).match(/([A-Za-z][\w.]*)\s+changed\s+from\s+["']([^"']*)["']\s+to\s+["']([^"']*)["']/i);
-  if (!match) return null;
+  if (!match || AUDIT_SECRET_KEY.test(match[1])) return null;
 
   return { field: match[1], previousValue: match[2], newValue: match[3] };
 };
@@ -233,6 +234,53 @@ const parseAuditJson = (value) => {
   } catch {
     return null;
   }
+};
+
+const AUDIT_SECRET_KEY = /(password(?!_?length)|secret|token|backup.?codes?|credential|api.?key|private.?key|authorization)/i;
+
+const redactAuditJson = (value) => {
+  if (Array.isArray(value)) return value.map(redactAuditJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    AUDIT_SECRET_KEY.test(key) ? '[REDACTED]' : redactAuditJson(item),
+  ]));
+};
+
+const redactAuditText = (value) => String(value || '')
+  .replace(
+    /((?:password(?!_?length)|secret|token|backup.?codes?|credential|api.?key|private.?key|authorization)\s*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,\s}]+)/gi,
+    '$1"[REDACTED]"',
+  )
+  .replace(
+    /((?:password(?!_?length)|secret|token|backup.?codes?|credential|api.?key|private.?key|authorization)\s+changed\s+from\s+)(["'])(.*?)\2(\s+to\s+)(["'])(.*?)\5/gi,
+    '$1[REDACTED]$4[REDACTED]',
+  );
+
+const getAuditDescriptionPresentation = (description) => {
+  const rawText = String(description || 'No additional description provided.');
+  const parsed = parseAuditJson(rawText);
+  if (!parsed || typeof parsed !== 'object') {
+    const safeText = redactAuditText(rawText);
+    return { summary: safeText, details: safeText };
+  }
+
+  const safeValue = redactAuditJson(parsed);
+  const summaryParts = Object.entries(safeValue)
+    .filter(([key, value]) => !AUDIT_SECRET_KEY.test(key) && !['old_values', 'new_values', 'changes'].includes(key) && ['string', 'number', 'boolean'].includes(typeof value))
+    .slice(0, 3)
+    .map(([key, value]) => `${key.replace(/_/g, ' ')}: ${String(value)}`);
+  const oldValues = safeValue.old_values && typeof safeValue.old_values === 'object' ? safeValue.old_values : {};
+  const newValues = safeValue.new_values && typeof safeValue.new_values === 'object' ? safeValue.new_values : {};
+  const changedFields = [...new Set([...Object.keys(oldValues), ...Object.keys(newValues)])]
+    .filter((key) => !AUDIT_SECRET_KEY.test(key))
+    .map((key) => `${key}: ${String(oldValues[key] ?? 'empty')} -> ${String(newValues[key] ?? 'empty')}`);
+  if (changedFields.length) summaryParts.push(`Changed ${changedFields.slice(0, 2).join('; ')}`);
+
+  return {
+    summary: summaryParts.join(' · ') || 'Structured audit event',
+    details: JSON.stringify(safeValue, null, 2),
+  };
 };
 
 const getProductImageUrl = (image) => {
@@ -611,7 +659,7 @@ function AdminAccountsPanel({ user }) {
   );
 }
 
-function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
+function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(initialTab === 'ai-recommendations' ? 'dashboard' : initialTab);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isReady, setIsReady] = useState(false);
@@ -652,13 +700,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   });
 
   const getAdminSessionToken = () => {
-    try {
-      const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-      const sessionUser = session?.user || {};
-      return session.access_token || session.accessToken || session.token || sessionUser.access_token || sessionUser.accessToken || sessionUser.token || user?.access_token || user?.accessToken || user?.token || '';
-    } catch {
-      return user?.access_token || user?.accessToken || user?.token || '';
-    }
+    return getStoredAccessToken() || user?.access_token || user?.accessToken || user?.token || '';
   };
 
   // === HOISTED STATES FOR ALL PANELS (OBEYING RULES OF HOOKS) ===
@@ -887,70 +929,21 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   // 8. Audit Logs List
-  const [auditLogs, setAuditLogs] = useState([
-    {
-      id: 1,
-      action: 'Product Approved',
-      actionType: 'Approvals',
-      description: 'Admin approved the student product listing "Calculus II" and enabled it for marketplace visibility.',
-      performed_by: 'admin.tekle',
-      entity_type: 'Product',
-      entity_id: 'PRD-2048',
-      ip_address: '10.24.8.17',
-      date_time: '2026-08-12T22:25:00',
-      status: 'Success',
-      severity: 'success'
-    },
-    {
-      id: 2,
-      action: 'User Suspended',
-      actionType: 'Suspensions',
-      description: 'Admin suspended MAU1600004 following a fraud investigation and restricted marketplace access.',
-      performed_by: 'admin.meron',
-      entity_type: 'User',
-      entity_id: 'MAU1600004',
-      ip_address: '10.24.8.21',
-      date_time: '2026-08-12T22:31:00',
-      status: 'Success',
-      severity: 'warning'
-    },
-    {
-      id: 3,
-      action: 'Product Deleted',
-      actionType: 'Deletions',
-      description: 'Admin removed a counterfeit listing after multiple community abuse reports and verification review.',
-      performed_by: 'admin.selam',
-      entity_type: 'Product',
-      entity_id: 'PRD-1983',
-      ip_address: '10.24.9.03',
-      date_time: '2026-08-12T22:42:00',
-      status: 'Failed',
-      severity: 'critical'
-    },
-    {
-      id: 4,
-      action: 'Admin Login',
-      actionType: 'Logins',
-      description: 'Administrator account login succeeded from the institution’s secure management subnet.',
-      performed_by: 'admin.tekle',
-      entity_type: 'Session',
-      entity_id: 'SES-4382',
-      ip_address: '10.24.8.14',
-      date_time: '2026-08-12T21:10:00',
-      status: 'Success',
-      severity: 'success'
-    }
-  ]);
+  const [auditLogs, setAuditLogs] = useState([]);
   const [auditLogSearch, setAuditLogSearch] = useState('');
   const [auditLogFilterAction, setAuditLogFilterAction] = useState('All');
   const [auditLogFilterStatus, setAuditLogFilterStatus] = useState('All');
   const [auditLogFilterDate, setAuditLogFilterDate] = useState('All');
+  const [auditLogSummary, setAuditLogSummary] = useState(null);
+  const [auditLogsLoading, setAuditLogsLoading] = useState(true);
+  const [auditLogsError, setAuditLogsError] = useState('');
+  const [auditLogsRetry, setAuditLogsRetry] = useState(0);
+  const auditSessionExpiredHandled = useRef(false);
   const [selectedLogDetails, setSelectedLogDetails] = useState(null);
   const [auditLogPage, setAuditLogPage] = useState(1);
   const [auditLogTotal, setAuditLogTotal] = useState(0);
-  const auditLogPageSize = 50;
-  const [auditPage, setAuditPage] = useState(1);
-  const LOGS_PER_PAGE = 10;
+  const auditLogPageSize = 20;
+  const refreshAuditLogs = () => setAuditLogsRetry((retry) => retry + 1);
 
   useEffect(() => {
     setUserPage(1);
@@ -997,10 +990,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     if (activeTab !== 'payments') return;
     fetchGatewayStatus();
   }, [activeTab]);
-
-  useEffect(() => {
-    setAuditPage(1);
-  }, [auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate]);
 
   useEffect(() => {
     const fetchAdminProfile = async () => {
@@ -1067,17 +1056,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
   }, [user?.role]);
 
   useEffect(() => {
+    if (activeTab !== 'audit-logs') return;
+    let cancelled = false;
     const fetchAuditLogs = async () => {
+      setAuditLogsLoading(true);
+      setAuditLogsError('');
       try {
-        const sessionToken = getAdminSessionToken();
-        if (!sessionToken || String(user?.role || '').toLowerCase() !== 'admin') return;
-
-        const params = new URLSearchParams({
-          limit: String(auditLogPageSize),
-          offset: String((auditLogPage - 1) * auditLogPageSize),
-        });
+        const params = new URLSearchParams({ page: String(auditLogPage), page_size: String(auditLogPageSize) });
         if (auditLogSearch.trim()) params.set('search', auditLogSearch.trim());
-        if (auditLogFilterAction !== 'All') params.set('action_type', auditLogFilterAction);
+        if (auditLogFilterAction !== 'All') params.set('action', auditLogFilterAction);
         if (auditLogFilterStatus !== 'All') params.set('status', auditLogFilterStatus);
         const now = new Date();
         const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -1088,49 +1075,59 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         };
         if (dateStarts[auditLogFilterDate]) {
           params.set('start_date', dateStarts[auditLogFilterDate].toISOString());
-          params.set('end_date', now.toISOString());
+          params.set('end_date', (auditLogFilterDate === 'Yesterday' ? startOfToday : now).toISOString());
         }
 
-        const response = await fetch(`${API_BASE_URL}/api/admin/audit-logs?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${sessionToken}` },
-        });
-        if (!response.ok) {
-          throw new Error('Audit logs endpoint unavailable');
-        }
-
-        const data = await response.json();
-        const logs = Array.isArray(data) ? data : data.items;
-        if (Array.isArray(logs)) {
-          const mappedLogs = logs.map((log, index) => ({
-            id: log.id ?? index + 1,
-            action: log.action ?? 'System Event',
-            actionType: log.actionType ?? 'Logins',
-            description: log.description ?? 'No description available.',
-            old_values: log.old_values,
-            new_values: log.new_values,
-            changes: log.changes,
-            performed_by: log.performed_by ?? 'system.admin',
-            entity_type: log.entity_type ?? 'Unknown',
+        const [data, summary] = await Promise.all([
+          adminApiGet(`/api/admin/audit-logs?${params.toString()}`),
+          adminApiGet('/api/admin/audit-logs/summary'),
+        ]);
+        if (cancelled) return;
+        const mappedLogs = (Array.isArray(data.items) ? data.items : []).map((log) => {
+          const description = getAuditDescriptionPresentation(log.description);
+          const rowStatus = String(log.status || '').toUpperCase();
+          return {
+            id: log.id,
+            action: log.action || 'System Event',
+            actionType: log.entity_type || 'System',
+            description: description.summary,
+            rawDescription: description.details,
+            performed_by: log.username || 'System',
+            entity_type: log.entity_type || 'System',
             entity_id: log.entity_id ?? 'N/A',
-            ip_address: log.ip_address ?? '10.0.0.0',
-            date_time: log.date_time ?? new Date().toISOString(),
-            status: log.status ?? 'Success',
-            severity: log.severity ?? 'success'
-          }));
-          setAuditLogs(mappedLogs);
-          setAuditLogTotal(Number(data.total ?? mappedLogs.length));
-        }
+            ip_address: log.ip_address || 'Unknown',
+            date_time: log.created_at,
+            status: ['SUCCESS', 'SUCCESSFUL', 'COMPLETED'].includes(rowStatus) ? 'SUCCESS' : 'FAILED',
+            severity: String(log.severity || 'informational').toLowerCase(),
+          };
+        });
+        setAuditLogs(mappedLogs);
+        setAuditLogTotal(Number(data.total) || 0);
+        setAuditLogSummary(summary);
       } catch (error) {
-        console.error('Failed to fetch audit logs:', error);
+        if (cancelled) return;
+        setAuditLogs([]);
+        setAuditLogTotal(0);
+        setAuditLogSummary(null);
+        if (error?.status === 401) {
+          const message = 'Your session expired, please sign in again';
+          setAuditLogsError(message);
+          if (!auditSessionExpiredHandled.current) {
+            auditSessionExpiredHandled.current = true;
+            notifyError(message, 'admin-audit-session-expired');
+            onSessionExpired?.();
+          }
+          return;
+        }
+        setAuditLogsError(error instanceof Error ? error.message : 'Unable to load audit logs.');
+      } finally {
+        if (!cancelled) setAuditLogsLoading(false);
       }
     };
 
     fetchAuditLogs();
-  }, [auditLogPage, auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate]);
-
-  useEffect(() => {
-    setAuditLogPage(1);
-  }, [auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate]);
+    return () => { cancelled = true; };
+  }, [activeTab, auditLogPage, auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate, auditLogsRetry, user?.role, onSessionExpired]);
 
   useEffect(() => {
     const fetchVerificationColleges = async () => {
@@ -2066,6 +2063,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         ? { ...payment, status: data.status }
         : payment));
       setSelectedPaymentDetail((previous) => previous ? { ...previous, status: data.status } : previous);
+      refreshAuditLogs();
       notifySuccess('Payment verification updated.', `admin-payment-verify-${txRef}`);
     } catch (error) {
       notifyError(error, `admin-payment-verify-${txRef}`);
@@ -2103,12 +2101,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         payment_status: updatedPaymentStatus
       } : item));
 
-      setAuditLogs(prev => [{
-        id: Date.now(),
-        action: `Admin updated order ${orderId} status from "${previousOrderStatus}" to "${updatedOrderStatus}" and payment status from "${previousPaymentStatus}" to "${updatedPaymentStatus}".`,
-        date: new Date().toLocaleString()
-      }, ...prev]);
-
+      refreshAuditLogs();
       setSelectedOrderDetails(null);
       notifySuccess('Order status updated successfully.', `admin-order-update-${orderId}`);
     } catch (err) {
@@ -2187,6 +2180,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           ? { ...user, is_verified: payload.is_verified ?? nextStatus === 'Verified', verification_reason: payload.reason ?? '' }
           : user
       ));
+      refreshAuditLogs();
       notifySuccess(`${student.name} verification status updated to ${nextStatus}.`, `admin-verification-${student.id}`);
     } catch (error) {
       console.error('Failed to update student verification:', error);
@@ -2218,20 +2212,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           : user
       ));
       await fetchUsersData();
-
-      setAuditLogs(prev => [{
-        id: Date.now(),
-        action: `User ${newStatus}`,
-        actionType: 'Account Enforcement',
-        description: `${target.name} (${target.student_id}) was marked as ${newStatus}${reason ? ` due to: ${reason}` : ''}.`,
-        performed_by: 'admin.system',
-        entity_type: 'User',
-        entity_id: String(userId),
-        ip_address: '127.0.0.1',
-        date_time: new Date().toISOString(),
-        status: 'Success',
-        severity: newStatus === 'Active' ? 'success' : 'warning'
-      }, ...prev]);
+      refreshAuditLogs();
 
       try {
         await fetch(`${API_BASE_URL}/api/student/notifications`, {
@@ -2394,20 +2375,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
       setStudentUsers(prev => prev.map(u =>
         u.student_id === target.student_id ? { ...u, is_verified: actionStatus === 'Verified' } : u
       ));
-
-      setAuditLogs(prev => [{
-        id: Date.now(),
-        action: `Student verification ${actionStatus.toLowerCase()}`,
-        actionType: 'Identity Review',
-        description: `${target.name} (${target.student_id}) was ${actionStatus.toLowerCase()}${actionStatus === 'Rejected' ? ` for: ${reason || 'Verification failed'}` : ''}.`,
-        performed_by: 'admin.system',
-        entity_type: 'Verification',
-        entity_id: String(id),
-        ip_address: '127.0.0.1',
-        date_time: new Date().toISOString(),
-        status: 'Success',
-        severity: actionStatus === 'Verified' ? 'success' : 'warning'
-      }, ...prev]);
+      refreshAuditLogs();
 
       try {
         await fetch(`${API_BASE_URL}/api/student/notifications`, {
@@ -2618,17 +2586,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         setNewCatName('');
         setNewCatIcon('📁');
+        refreshAuditLogs();
         notifySuccess('Category added successfully.', 'admin-category-add');
-
-        // Log to audit logs
-        setAuditLogs(prev => [
-          {
-            id: Date.now(),
-            action: `Admin created new main category "${newCatName}" with icon "${newCatIcon}"`,
-            date: new Date().toLocaleString()
-          },
-          ...prev
-        ]);
 
       } else {
         const payload = await response.json().catch(() => ({}));
@@ -2664,18 +2623,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
 
         setNewSubName('');
         setNewSubParentId('');
+        refreshAuditLogs();
         notifySuccess('Subcategory added successfully.', 'admin-subcategory-add');
-
-        // Log to audit logs
-        const parentCat = categoriesList.find(c => c.id === parseInt(newSubParentId));
-        setAuditLogs(prev => [
-          {
-            id: Date.now(),
-            action: `Admin created subcategory "${newSubName}" under "${parentCat?.name}"`,
-            date: new Date().toLocaleString()
-          },
-          ...prev
-        ]);
 
       } else {
         const payload = await response.json().catch(() => ({}));
@@ -2707,18 +2656,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         // Update local state - remove the deleted category
         setCategoriesList(prev => prev.filter(cat => cat.id !== id));
 
+        refreshAuditLogs();
         notifySuccess('Category deleted successfully.', `admin-category-delete-${id}`);
 
-        // Log to audit logs
-        const deletedCat = categoriesList.find(c => c.id === id);
-        setAuditLogs(prev => [
-          {
-            id: Date.now(),
-            action: `Admin deleted category "${deletedCat?.name}"`,
-            date: new Date().toLocaleString()
-          },
-          ...prev
-        ]);
       } else {
         const payload = await response.json().catch(() => ({}));
         notifyError(new Error(payload.detail || 'Failed to delete category.'), `admin-category-delete-${id}`);
@@ -2752,19 +2692,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             : cat
         ));
 
+        refreshAuditLogs();
         notifySuccess('Subcategory deleted successfully.', `admin-subcategory-delete-${subId}`);
 
-        // Log to audit logs
-        const parentCat = categoriesList.find(c => c.id === catId);
-        const deletedSub = parentCat?.subcategories.find(s => s.id === subId);
-        setAuditLogs(prev => [
-          {
-            id: Date.now(),
-            action: `Admin deleted subcategory "${deletedSub?.name}" from "${parentCat?.name}"`,
-            date: new Date().toLocaleString()
-          },
-          ...prev
-        ]);
       } else {
         const payload = await response.json().catch(() => ({}));
         notifyError(new Error(payload.detail || 'Failed to delete subcategory.'), `admin-subcategory-delete-${subId}`);
@@ -2782,8 +2712,6 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
     setReportActionLoading(true);
 
     try {
-      const timestamp = new Date().toLocaleString();
-
       // Call backend API with corrected endpoint and payload
       const response = await fetch(`${API_BASE_URL}/api/admin/reports/${id}`, {
         method: 'PUT',
@@ -2797,18 +2725,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           r.id === id ? { ...r, status: 'Closed' } : r
         ));
 
-        // Log to audit logs
-        setAuditLogs(prev => [
-          {
-            id: Date.now(),
-            action: `Admin closed report ${report.report_id}. Case marked as Closed.`,
-            date: timestamp
-          },
-          ...prev
-        ]);
-
         // Close modal and reset
         setSelectedReport(null);
+        refreshAuditLogs();
         notifySuccess('Report closed successfully.', `admin-report-close-${id}`);
       } else {
         const payload = await response.json().catch(() => ({}));
@@ -2848,17 +2767,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           r.id === id ? { ...r, status: 'Resolved', decision, priority: r.priority || 'Medium' } : r
         ));
 
-        setAuditLogs(prev => [
-          {
-            id: Date.now(),
-            action: `Admin resolved report ${report.report_id} via ${decision}.`,
-            date: new Date().toLocaleString()
-          },
-          ...prev
-        ]);
-
         setSelectedReport(null);
         setShowReportModal(false);
+        refreshAuditLogs();
         notifySuccess('Report resolved successfully.', `admin-report-resolve-${id}`);
       } else {
         const payload = await response.json().catch(() => ({}));
@@ -3146,20 +3057,8 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
         status: 'Active',
       }));
       setProfileForm((prev) => ({ ...prev, currentPassword: '', newPassword: '', confirmPassword: '' }));
+      refreshAuditLogs();
       notifySuccess('Profile saved successfully.', 'admin-profile-save-legacy');
-      setAuditLogs((prev) => [{
-        id: Date.now(),
-        action: 'Admin Profile Updated',
-        actionType: 'Logins',
-        description: `Administrator ${profileForm.username} updated their account information and security settings.`,
-        performed_by: profileForm.username,
-        entity_type: 'Admin',
-        entity_id: 1,
-        ip_address: adminProfile.sessionIp || 'Unavailable',
-        date_time: new Date().toISOString(),
-        status: 'Success',
-        severity: 'success'
-      }, ...prev]);
     } catch (error) {
       console.error('Profile update failed:', error);
       notifyError(error, 'admin-profile-save-legacy');
@@ -3908,49 +3807,49 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
 
             <AdminTable className="hidden max-h-[70vh] overflow-y-auto border border-slate-200 bg-white shadow-sm md:block">
-                  <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
-                    <tr>
-                      <th className="min-w-[220px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">
-                        <div className="flex items-center gap-3">
-                          <input type="checkbox" checked={filteredUsers.length > 0 && filteredUsers.every((user) => selectedUserIds.includes(user.id))} onChange={(event) => setSelectedUserIds(event.target.checked ? filteredUsers.map((user) => user.id) : [])} aria-label="Select all filtered students" className="h-4 w-4 shrink-0 accent-emerald-600" />
-                          <span>Student</span>
+              <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="min-w-[220px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">
+                    <div className="flex items-center gap-3">
+                      <input type="checkbox" checked={filteredUsers.length > 0 && filteredUsers.every((user) => selectedUserIds.includes(user.id))} onChange={(event) => setSelectedUserIds(event.target.checked ? filteredUsers.map((user) => user.id) : [])} aria-label="Select all filtered students" className="h-4 w-4 shrink-0 accent-emerald-600" />
+                      <span>Student</span>
+                    </div>
+                  </th>
+                  <th className="min-w-[200px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">College</th>
+                  <th className="min-w-[180px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Department</th>
+                  <th className="min-w-[130px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Phone</th>
+                  <th className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Verified</th>
+                  <th title="Enforcement status" className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Status</th>
+                  <th className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Change status</th>
+                  <th className="sticky right-0 z-30 min-w-[170px] whitespace-nowrap bg-slate-50 px-4 py-3 text-xs font-bold uppercase tracking-wide text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedUsers.length === 0 ? (
+                  <tr><td colSpan={8} className="px-4 py-12 text-center text-sm font-semibold text-slate-500">No users found</td></tr>
+                ) : displayedUsers.map((student) => (
+                  <tr key={student.id} className="h-[72px] border-b border-slate-100 transition hover:bg-slate-50/60">
+                    <td className="min-w-[220px] px-4 py-3 align-middle">
+                      <div className="flex min-w-0 items-center gap-3">
+                        {renderUserAvatar(student)}
+                        <div className="min-w-0">
+                          <p title={student.name} className="truncate font-semibold text-slate-900">{student.name}</p>
+                          <p title={`${student.student_id || ''} · ${student.email || ''}`} className="max-w-[220px] truncate whitespace-nowrap text-xs text-slate-500">{student.student_id} · {student.email}</p>
                         </div>
-                      </th>
-                      <th className="min-w-[200px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">College</th>
-                      <th className="min-w-[180px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Department</th>
-                      <th className="min-w-[130px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Phone</th>
-                      <th className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Verified</th>
-                      <th title="Enforcement status" className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Status</th>
-                      <th className="min-w-[110px] text-xs font-bold uppercase tracking-wide whitespace-nowrap px-4 py-3 text-left">Change status</th>
-                      <th className="sticky right-0 z-30 min-w-[170px] whitespace-nowrap bg-slate-50 px-4 py-3 text-xs font-bold uppercase tracking-wide text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedUsers.length === 0 ? (
-                      <tr><td colSpan={8} className="px-4 py-12 text-center text-sm font-semibold text-slate-500">No users found</td></tr>
-                    ) : displayedUsers.map((student) => (
-                      <tr key={student.id} className="h-[72px] border-b border-slate-100 transition hover:bg-slate-50/60">
-                        <td className="min-w-[220px] px-4 py-3 align-middle">
-                          <div className="flex min-w-0 items-center gap-3">
-                            {renderUserAvatar(student)}
-                            <div className="min-w-0">
-                              <p title={student.name} className="truncate font-semibold text-slate-900">{student.name}</p>
-                              <p title={`${student.student_id || ''} · ${student.email || ''}`} className="max-w-[220px] truncate whitespace-nowrap text-xs text-slate-500">{student.student_id} · {student.email}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="min-w-[200px] px-4 py-3 align-middle"><p title={student.college || ''} className="line-clamp-2 font-semibold text-slate-700">{student.college || 'Not provided'}</p></td>
-                        <td className="min-w-[180px] px-4 py-3 align-middle"><p title={student.department || ''} className="line-clamp-2 font-semibold text-slate-700">{(student.department ?? '').replace('Department of ', '') || 'Not provided'}</p></td>
-                        <td className="min-w-[130px] px-4 py-3 align-middle"><p title={student.phone || 'No Phone'} className="truncate whitespace-nowrap font-semibold text-slate-700">{student.phone || 'No Phone'}</p></td>
-                        <td className="min-w-[110px] px-4 py-3 align-middle">{renderVerificationBadge(student)}</td>
-                        <td className="min-w-[110px] px-4 py-3 align-middle">{renderStatusBadge(student)}</td>
-                        <td className="min-w-[110px] px-4 py-3 align-middle">{renderStatusControl(student)}</td>
-                        <td className="sticky right-0 z-10 min-w-[170px] whitespace-nowrap bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
-                          <div className="flex flex-nowrap items-center justify-center gap-2">{renderUserActions(student)}</div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
+                      </div>
+                    </td>
+                    <td className="min-w-[200px] px-4 py-3 align-middle"><p title={student.college || ''} className="line-clamp-2 font-semibold text-slate-700">{student.college || 'Not provided'}</p></td>
+                    <td className="min-w-[180px] px-4 py-3 align-middle"><p title={student.department || ''} className="line-clamp-2 font-semibold text-slate-700">{(student.department ?? '').replace('Department of ', '') || 'Not provided'}</p></td>
+                    <td className="min-w-[130px] px-4 py-3 align-middle"><p title={student.phone || 'No Phone'} className="truncate whitespace-nowrap font-semibold text-slate-700">{student.phone || 'No Phone'}</p></td>
+                    <td className="min-w-[110px] px-4 py-3 align-middle">{renderVerificationBadge(student)}</td>
+                    <td className="min-w-[110px] px-4 py-3 align-middle">{renderStatusBadge(student)}</td>
+                    <td className="min-w-[110px] px-4 py-3 align-middle">{renderStatusControl(student)}</td>
+                    <td className="sticky right-0 z-10 min-w-[170px] whitespace-nowrap bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
+                      <div className="flex flex-nowrap items-center justify-center gap-2">{renderUserActions(student)}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
             </AdminTable>
             <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
               <button type="button" onClick={() => setUserPage((page) => Math.max(1, page - 1))} disabled={userPage === 1} className="h-9 shrink-0 whitespace-nowrap rounded-full border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
@@ -5633,25 +5532,25 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
 
               <AdminTable className="mt-6 hidden border border-slate-200 md:block">
-                  <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
-                    <tr>
-                      <th className="min-w-[190px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Transaction ID</th>
-                      <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Buyer ID</th>
-                      <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Seller ID</th>
-                      <th className="min-w-[100px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Order ID</th>
-                      <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Amount</th>
-                      <th className="min-w-[150px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Payment Type</th>
-                      <th className="min-w-[140px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Payment Method</th>
-                      <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Status</th>
-                      <th className="min-w-[170px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Date</th>
-                      <th className="sticky right-0 z-30 min-w-[140px] bg-slate-50 px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedPayments.map((payment) => {
-                      const amount = formatPaymentAmount(payment);
-                      const transactionDate = new Date(payment.created_date || payment.date);
-                      return (
+                <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="min-w-[190px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Transaction ID</th>
+                    <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Buyer ID</th>
+                    <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Seller ID</th>
+                    <th className="min-w-[100px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Order ID</th>
+                    <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Amount</th>
+                    <th className="min-w-[150px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Payment Type</th>
+                    <th className="min-w-[140px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Payment Method</th>
+                    <th className="min-w-[130px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Status</th>
+                    <th className="min-w-[170px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Date</th>
+                    <th className="sticky right-0 z-30 min-w-[140px] bg-slate-50 px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedPayments.map((payment) => {
+                    const amount = formatPaymentAmount(payment);
+                    const transactionDate = new Date(payment.created_date || payment.date);
+                    return (
                       <tr key={payment.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="min-w-[190px] px-4 py-3 align-middle">{renderPaymentId(payment.transaction_id, 'Transaction ID')}</td>
                         <td className="min-w-[130px] px-4 py-3 align-middle">{renderPaymentId(payment.buyer_id, 'Buyer ID')}</td>
@@ -5669,9 +5568,9 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                           <ActionButton type="button" onClick={() => setSelectedPaymentDetail(payment)} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
                         </td>
                       </tr>
-                      );
-                    })}
-                  </tbody>
+                    );
+                  })}
+                </tbody>
               </AdminTable>
 
               <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
@@ -5908,40 +5807,40 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                 ))}
               </div>
               <AdminTable className="hidden border border-slate-200 md:block">
-                  <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
-                    <tr>
-                      <th className="min-w-[110px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Report ID</th>
-                      <th className="min-w-[140px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Type</th>
-                      <th className="min-w-[260px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Issue / Details</th>
-                      <th className="min-w-[170px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Reporter</th>
-                      <th className="min-w-[110px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Priority</th>
-                      <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Status</th>
-                      <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Date</th>
-                      <th className="sticky right-0 z-30 min-w-[120px] bg-slate-50 px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Action</th>
+                <thead className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 text-slate-500">
+                  <tr>
+                    <th className="min-w-[110px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Report ID</th>
+                    <th className="min-w-[140px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Type</th>
+                    <th className="min-w-[260px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Issue / Details</th>
+                    <th className="min-w-[170px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Reporter</th>
+                    <th className="min-w-[110px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Priority</th>
+                    <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Status</th>
+                    <th className="min-w-[120px] px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left">Date</th>
+                    <th className="sticky right-0 z-30 min-w-[120px] bg-slate-50 px-4 py-3 text-xs uppercase tracking-wide whitespace-nowrap text-left shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedReports.map((rep) => (
+                    <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
+                      <td className="min-w-[110px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{rep.report_id}</span></td>
+                      <td className="min-w-[140px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-semibold text-slate-700">{rep.inferredType}</span></td>
+                      <td className="min-w-[260px] px-4 py-3 align-middle text-slate-700">
+                        <p title={rep.product_name} className="font-semibold text-slate-900">{rep.product_name || 'Report details'}</p>
+                        <p title={rep.issue} className="mt-1 line-clamp-2 break-words text-xs leading-5 text-slate-600">{rep.issue}</p>
+                      </td>
+                      <td className="min-w-[170px] px-4 py-3 align-middle font-semibold text-slate-600">
+                        <div className="text-sm font-semibold text-slate-900">{rep.student}</div>
+                        <div className="text-xs text-slate-500 mt-0.5">{rep.student_id}</div>
+                      </td>
+                      <td className="min-w-[110px] px-4 py-3 align-middle"><StatusBadge status={rep.priority.label} /></td>
+                      <td className="min-w-[120px] px-4 py-3 align-middle"><StatusBadge status={rep.status === 'Review' ? 'In Review' : rep.status} /></td>
+                      <td className="min-w-[120px] px-4 py-3 align-middle"><time className="whitespace-nowrap text-xs text-slate-500">{new Date(rep.date).toLocaleDateString()}</time></td>
+                      <td className="sticky right-0 z-10 min-w-[120px] bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
+                        <ActionButton type="button" onClick={() => handleOpenReportModal(rep)} className="border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-50">Review</ActionButton>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {displayedReports.map((rep) => (
-                      <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
-                        <td className="min-w-[110px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{rep.report_id}</span></td>
-                        <td className="min-w-[140px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-semibold text-slate-700">{rep.inferredType}</span></td>
-                        <td className="min-w-[260px] px-4 py-3 align-middle text-slate-700">
-                          <p title={rep.product_name} className="font-semibold text-slate-900">{rep.product_name || 'Report details'}</p>
-                          <p title={rep.issue} className="mt-1 line-clamp-2 break-words text-xs leading-5 text-slate-600">{rep.issue}</p>
-                        </td>
-                        <td className="min-w-[170px] px-4 py-3 align-middle font-semibold text-slate-600">
-                          <div className="text-sm font-semibold text-slate-900">{rep.student}</div>
-                          <div className="text-xs text-slate-500 mt-0.5">{rep.student_id}</div>
-                        </td>
-                        <td className="min-w-[110px] px-4 py-3 align-middle"><StatusBadge status={rep.priority.label} /></td>
-                        <td className="min-w-[120px] px-4 py-3 align-middle"><StatusBadge status={rep.status === 'Review' ? 'In Review' : rep.status} /></td>
-                        <td className="min-w-[120px] px-4 py-3 align-middle"><time className="whitespace-nowrap text-xs text-slate-500">{new Date(rep.date).toLocaleDateString()}</time></td>
-                        <td className="sticky right-0 z-10 min-w-[120px] bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
-                          <ActionButton type="button" onClick={() => handleOpenReportModal(rep)} className="border border-slate-300 bg-white text-slate-700 transition hover:bg-slate-50">Review</ActionButton>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
+                  ))}
+                </tbody>
               </AdminTable>
               <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-200 pt-4">
                 <button type="button" onClick={() => setReportPage((page) => Math.max(1, page - 1))} disabled={reportPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
@@ -6652,49 +6551,21 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
           </div>
         );
       case 'audit-logs':
-        var filteredAuditLogs = auditLogs.filter((log) => {
-          const logDate = new Date(log.date_time);
-          const now = new Date();
-          const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-          const dateStarts = {
-            Today: startOfToday,
-            Yesterday: new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000),
-            'Last 7 Days': new Date(startOfToday.getTime() - 6 * 24 * 60 * 60 * 1000),
-          };
-          const selectedDateStart = dateStarts[auditLogFilterDate];
-          const matchesDate = auditLogFilterDate === 'All' || (
-            !Number.isNaN(logDate.getTime()) && logDate >= selectedDateStart && logDate < now
-          );
-          const matchesSearch = !auditLogSearch.trim() ||
-            `${log.action} ${log.description} ${log.performed_by} ${log.entity_type} ${log.entity_id}`
-              .toLowerCase()
-              .includes(auditLogSearch.trim().toLowerCase());
-
-          const matchesAction = auditLogFilterAction === 'All' || log.actionType === auditLogFilterAction;
-          const normalizedStatus = String(log.status || '').trim().toUpperCase();
-          const matchesStatus = auditLogFilterStatus === 'All' || normalizedStatus === auditLogFilterStatus.toUpperCase();
-
-          return matchesSearch && matchesAction && matchesStatus && matchesDate;
-        });
-
-        var auditLogMetrics = auditLogs.reduce((metrics, log) => {
-          const normalizedAction = String(log.action || '').toLowerCase();
-          const normalizedStatus = String(log.status || '').trim().toUpperCase();
-          const severity = normalizedStatus === 'FAILED'
-            ? 'critical'
-            : String(log.severity || '').toLowerCase() === 'warning'
-              ? 'warning'
-              : 'informational';
-
-          metrics.total += 1;
-          if (normalizedAction.includes('login') && normalizedStatus === 'SUCCESS') metrics.successfulLogins += 1;
-          if (normalizedAction.includes('login') && normalizedStatus === 'FAILED') metrics.failedLogins += 1;
-          metrics.alerts[severity] += 1;
-          return metrics;
-        }, { total: 0, successfulLogins: 0, failedLogins: 0, alerts: { critical: 0, warning: 0, informational: 0 } });
-        var totalAuditPages = Math.max(1, Math.ceil(filteredAuditLogs.length / LOGS_PER_PAGE));
-        var displayedAuditLogs = filteredAuditLogs.slice((auditPage - 1) * LOGS_PER_PAGE, auditPage * LOGS_PER_PAGE);
-        var selectedAuditContext = selectedLogDetails ? parseAuditDescription(selectedLogDetails.description) : null;
+        var filteredAuditLogs = auditLogs;
+        var auditLogMetrics = {
+          total: auditLogSummary?.total_events || 0,
+          successfulLogins: auditLogSummary?.logins?.success || 0,
+          failedLogins: auditLogSummary?.logins?.failed || 0,
+          adminActions: auditLogSummary?.admin_actions || 0,
+          alerts: {
+            critical: auditLogSummary?.alerts?.critical || 0,
+            warning: auditLogSummary?.alerts?.warning || 0,
+            informational: auditLogSummary?.alerts?.informational || 0,
+          },
+        };
+        var totalAuditPages = Math.max(1, Math.ceil(auditLogTotal / auditLogPageSize));
+        var displayedAuditLogs = auditLogs;
+        var selectedAuditContext = selectedLogDetails ? parseAuditDescription(selectedLogDetails.rawDescription) : null;
         var selectedAuditChanges = selectedLogDetails ? getAuditChanges(selectedLogDetails) : [];
         const handleExportAuditLogsPDF = () => exportPDFFile(
           `audit-logs-${new Date().toISOString().slice(0, 10)}.pdf`,
@@ -6729,7 +6600,7 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               {[
                 { label: 'Total Events', value: auditLogMetrics.total, accent: 'bg-slate-100 text-slate-800', icon: '📊' },
                 { label: 'Logins', value: auditLogMetrics.successfulLogins + auditLogMetrics.failedLogins, detail: `${auditLogMetrics.successfulLogins} successful · ${auditLogMetrics.failedLogins} failed`, accent: 'bg-sky-50 text-sky-700', icon: '🔐' },
-                { label: 'Admin Actions', value: Math.max(auditLogMetrics.total - auditLogMetrics.successfulLogins - auditLogMetrics.failedLogins, 0), accent: 'bg-violet-50 text-violet-700', icon: '🛡️' },
+                { label: 'Admin Actions', value: auditLogMetrics.adminActions, accent: 'bg-violet-50 text-violet-700', icon: '🛡️' },
                 { label: 'Security Alerts', value: auditLogMetrics.alerts.critical + auditLogMetrics.alerts.warning + auditLogMetrics.alerts.informational, detail: `${auditLogMetrics.alerts.critical} critical · ${auditLogMetrics.alerts.warning} warning · ${auditLogMetrics.alerts.informational} informational`, accent: 'bg-rose-50 text-rose-700', icon: '🚨' }
               ].map((card) => (
                 <div key={card.label} className={`rounded-[28px] border border-slate-200 p-5 shadow-sm ${card.accent}`}>
@@ -6755,13 +6626,13 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   <input
                     type="text"
                     value={auditLogSearch}
-                    onChange={(e) => setAuditLogSearch(e.target.value)}
+                    onChange={(e) => { setAuditLogPage(1); setAuditLogSearch(e.target.value); }}
                     placeholder="Search logs..."
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
                   />
                   <select
                     value={auditLogFilterAction}
-                    onChange={(e) => setAuditLogFilterAction(e.target.value)}
+                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterAction(e.target.value); }}
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
                   >
                     <option value="All">Action: All</option>
@@ -6772,16 +6643,16 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                   </select>
                   <select
                     value={auditLogFilterStatus}
-                    onChange={(e) => setAuditLogFilterStatus(e.target.value)}
+                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterStatus(e.target.value); }}
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
                   >
                     <option value="All">Status: All</option>
-                    <option value="Success">Success</option>
-                    <option value="Failed">Failed</option>
+                    <option value="SUCCESS">Success</option>
+                    <option value="FAILED">Failed</option>
                   </select>
                   <select
                     value={auditLogFilterDate}
-                    onChange={(e) => setAuditLogFilterDate(e.target.value)}
+                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterDate(e.target.value); }}
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
                   >
                     <option value="All">Date: All</option>
@@ -6793,9 +6664,24 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
               </div>
 
               <div className="mt-5 space-y-4">
-                {filteredAuditLogs.length === 0 ? (
+                {auditLogsLoading ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-sm font-medium text-slate-500" role="status">
+                    Loading audit events...
+                  </div>
+                ) : auditLogsError ? (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center" role="alert">
+                    <p className="text-sm font-semibold text-rose-800">{auditLogsError}</p>
+                    <button
+                      type="button"
+                      onClick={() => setAuditLogsRetry((retry) => retry + 1)}
+                      className="mt-3 rounded-full border border-rose-300 bg-white px-4 py-2 text-sm font-bold text-rose-700 hover:bg-rose-100"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : filteredAuditLogs.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-medium text-slate-500">
-                    No audit logs match the current search and filters.
+                    No audit events yet.
                   </div>
                 ) : (
                   displayedAuditLogs.map((log) => {
@@ -6871,15 +6757,15 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
             </div>
 
             <nav className="flex items-center justify-between gap-3 border-t border-slate-200 pt-5" aria-label="Audit log pagination">
-              <button type="button" onClick={() => setAuditPage((page) => Math.max(1, page - 1))} disabled={auditPage === 1} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
-              <span className="text-sm font-semibold text-slate-500">Page {auditPage} of {totalAuditPages}</span>
-              <button type="button" onClick={() => setAuditPage((page) => Math.min(totalAuditPages, page + 1))} disabled={auditPage === totalAuditPages} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
+              <button type="button" onClick={() => setAuditLogPage((page) => Math.max(1, page - 1))} disabled={auditLogPage === 1 || auditLogsLoading} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Previous</button>
+              <span className="text-sm font-semibold text-slate-500">Page {auditLogPage} of {totalAuditPages}</span>
+              <button type="button" onClick={() => setAuditLogPage((page) => Math.min(totalAuditPages, page + 1))} disabled={auditLogPage === totalAuditPages || auditLogsLoading} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">Next</button>
             </nav>
 
             {selectedLogDetails && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-                <div className="w-full max-w-xl rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+                <div className="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-[32px] border border-slate-200 bg-white p-6 shadow-2xl">
+                  <div className="flex shrink-0 items-center justify-between border-b border-slate-200 pb-4">
                     <div>
                       <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-sky-600">Diagnostic</p>
                       <h3 className="mt-1 text-2xl font-black text-slate-950">Technical Log Details</h3>
@@ -6887,88 +6773,97 @@ function AdminDashboard({ onLogout, user, onUserUpdate, initialTab = 'dashboard'
                     <button
                       type="button"
                       onClick={() => setSelectedLogDetails(null)}
-                      className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-sm font-bold text-slate-600"
+                      aria-label="Close audit log details"
+                      title="Close"
+                      className="rounded-full border border-slate-200 bg-slate-100 p-2 text-slate-600 transition hover:bg-slate-200"
                     >
-                      ✕
+                      <X size={18} aria-hidden="true" />
                     </button>
                   </div>
 
-                  <div className="mt-5 space-y-3">
-                    {[
-                      ['Event ID', selectedLogDetails.id],
-                      ['Action', selectedLogDetails.action],
-                      ['Performed By', selectedLogDetails.performed_by],
-                      ['Entity Type', selectedLogDetails.entity_type],
-                      ['Entity ID', selectedLogDetails.entity_id],
-                      ['IP Address', selectedLogDetails.ip_address],
-                      ['Date & Time', new Date(selectedLogDetails.date_time).toLocaleString()],
-                      ['Status', selectedLogDetails.status]
-                    ].map(([label, value]) => (
-                      <div key={label} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                        <span className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">{label}</span>
-                        <span className="text-sm font-semibold text-slate-800 text-right">{value}</span>
+                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1">
+                    <div className="mt-5 space-y-3">
+                      {[
+                        ['Event ID', selectedLogDetails.id],
+                        ['Action', selectedLogDetails.action],
+                        ['Performed By', selectedLogDetails.performed_by],
+                        ['Entity Type', selectedLogDetails.entity_type],
+                        ['Entity ID', selectedLogDetails.entity_id],
+                        ['IP Address', selectedLogDetails.ip_address],
+                        ['Date & Time', new Date(selectedLogDetails.date_time).toLocaleString()],
+                        ['Status', selectedLogDetails.status]
+                      ].map(([label, value]) => (
+                        <div key={label} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                          <span className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">{label}</span>
+                          <span className="text-sm font-semibold text-slate-800 text-right">{value}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Full Description</p>
+                      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-slate-800">{selectedLogDetails.rawDescription}</pre>
+                    </div>
+
+                    {selectedAuditContext && (
+                      <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Change Context</p>
+                        <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Field Changed</p>
+                            <p className="mt-1 break-words text-sm font-bold text-slate-900">{selectedAuditContext.field}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Previous Value</p>
+                            <p className="mt-1 break-words text-sm font-semibold text-slate-700">{selectedAuditContext.previousValue}</p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">New Value</p>
+                            <p className="mt-1 break-words text-sm font-semibold text-emerald-700">{selectedAuditContext.newValue}</p>
+                          </div>
+                        </div>
                       </div>
-                    ))}
+                    )}
+
+                    {selectedAuditChanges.length > 0 && (
+                      <div className="mt-5 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50">
+                        <div className="border-b border-amber-200 px-4 py-3">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Detected Changes</p>
+                          <p className="mt-1 text-xs text-amber-800">Review the values changed by this event.</p>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full min-w-[520px] text-left text-sm">
+                            <thead className="bg-amber-100/70 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-800">
+                              <tr>
+                                <th className="px-4 py-3">Field</th>
+                                <th className="px-4 py-3">Previous</th>
+                                <th className="px-4 py-3">New</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-amber-200">
+                              {selectedAuditChanges.map((change, index) => {
+                                const previousValue = formatAuditValue(change.previousValue);
+                                const newValue = formatAuditValue(change.newValue);
+                                const isRemoved = newValue === 'empty' || newValue === 'Unknown';
+
+                                return (
+                                  <tr key={`${change.field}-${index}`} className={isRemoved ? 'bg-rose-50' : 'bg-yellow-50/60'}>
+                                    <td className="px-4 py-3 align-top font-bold text-slate-900">{change.field}</td>
+                                    <td className="max-w-[180px] break-words px-4 py-3 align-top font-medium text-slate-600">{previousValue}</td>
+                                    <td className={`max-w-[180px] break-words px-4 py-3 align-top font-bold ${isRemoved ? 'text-rose-700' : 'text-amber-800'}`}>
+                                      {change.field} changed from {previousValue} to {newValue}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {selectedAuditContext && (
-                    <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-700">Change Context</p>
-                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Field Changed</p>
-                          <p className="mt-1 break-words text-sm font-bold text-slate-900">{selectedAuditContext.field}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Previous Value</p>
-                          <p className="mt-1 break-words text-sm font-semibold text-slate-700">{selectedAuditContext.previousValue}</p>
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">New Value</p>
-                          <p className="mt-1 break-words text-sm font-semibold text-emerald-700">{selectedAuditContext.newValue}</p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedAuditChanges.length > 0 && (
-                    <div className="mt-5 overflow-hidden rounded-2xl border border-amber-200 bg-amber-50">
-                      <div className="border-b border-amber-200 px-4 py-3">
-                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Detected Changes</p>
-                        <p className="mt-1 text-xs text-amber-800">Review the values changed by this event.</p>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full min-w-[520px] text-left text-sm">
-                          <thead className="bg-amber-100/70 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-800">
-                            <tr>
-                              <th className="px-4 py-3">Field</th>
-                              <th className="px-4 py-3">Previous</th>
-                              <th className="px-4 py-3">New</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-amber-200">
-                            {selectedAuditChanges.map((change, index) => {
-                              const previousValue = formatAuditValue(change.previousValue);
-                              const newValue = formatAuditValue(change.newValue);
-                              const isRemoved = newValue === 'empty' || newValue === 'Unknown';
-
-                              return (
-                                <tr key={`${change.field}-${index}`} className={isRemoved ? 'bg-rose-50' : 'bg-yellow-50/60'}>
-                                  <td className="px-4 py-3 align-top font-bold text-slate-900">{change.field}</td>
-                                  <td className="max-w-[180px] break-words px-4 py-3 align-top font-medium text-slate-600">{previousValue}</td>
-                                  <td className={`max-w-[180px] break-words px-4 py-3 align-top font-bold ${isRemoved ? 'text-rose-700' : 'text-amber-800'}`}>
-                                    {change.field} changed from {previousValue} to {newValue}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="mt-5 flex justify-end">
+                  <div className="mt-4 flex shrink-0 justify-end border-t border-slate-200 pt-4">
                     <button
                       type="button"
                       onClick={() => setSelectedLogDetails(null)}

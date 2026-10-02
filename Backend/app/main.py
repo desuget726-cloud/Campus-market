@@ -168,16 +168,18 @@ origins = [
 ]
 configured_origins = os.getenv("CORS_ORIGINS", "")
 if configured_origins:
-    origins = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
-    if DEPLOYED_FRONTEND_ORIGIN not in origins:
-        origins.append(DEPLOYED_FRONTEND_ORIGIN)
+    configured_origin_list = [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
+    if "*" in configured_origin_list:
+        logging.getLogger("app.startup").warning("Ignoring wildcard CORS origin because credentialed requests require explicit origins.")
+    origins.extend(origin for origin in configured_origin_list if origin != "*")
+origins = list(dict.fromkeys(origins))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,        #  Uses origins list
     allow_credentials=True,       #  Allow cookies/auth
-    allow_methods=["*"],          # All HTTP methods
-    allow_headers=["*"],          #  All headers
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With", "Idempotency-Key"],
 )
 
 
@@ -2455,7 +2457,8 @@ def _check_login_lock(db: Session, identifier: str, settings: SecuritySettings) 
     attempt = db.query(LoginAttempt).filter(LoginAttempt.identifier == identifier).first()
     locked_until = _as_utc_datetime(attempt.locked_until) if attempt else None
     if locked_until and locked_until > datetime.now(timezone.utc):
-        raise HTTPException(status_code=429, detail="Too many failed login attempts. Try again later or wait for 15 sec.")
+        retry_at = locked_until.strftime("%Y-%m-%d %H:%M:%S UTC")
+        raise HTTPException(status_code=429, detail=f"Too many failed login attempts. Try again at {retry_at}.")
 
 
 def _record_failed_login(db: Session, identifier: str, settings: SecuritySettings) -> None:
@@ -3130,6 +3133,12 @@ async def on_startup():
         try:
             ensure_database_compatibility(db)
             _seed_default_system_settings(db)
+            database_name = (
+                db.execute(text("SELECT DATABASE()")).scalar()
+                if engine.dialect.name == "mysql"
+                else engine.url.database
+            )
+            startup_logger.info("Connected database: name=%s audit_table=audit_logs", database_name)
         finally:
             db.close()
     except Exception:
@@ -3290,7 +3299,8 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     if admin_locked_until and admin_locked_until > datetime.now(timezone.utc):
         _record_admin_login_event(db, admin.id, "login_locked", request)
         db.commit()
-        raise HTTPException(status_code=429, detail="Administrator account is temporarily locked. Try again later.")
+        retry_at = admin_locked_until.strftime("%Y-%m-%d %H:%M:%S UTC")
+        raise HTTPException(status_code=429, detail=f"Administrator account is temporarily locked. Try again at {retry_at}.")
     
     if admin and verify_password(data.password, admin.password_hash):
         admin.failed_login_attempts = 0
@@ -4441,10 +4451,12 @@ def _extract_admin_token(authorization: Optional[str], session_token: Optional[s
     if authorization:
         scheme, separator, credentials = authorization.partition(" ")
         if not separator or scheme.lower() != "bearer" or not credentials.strip():
+            logging.getLogger("app.auth").warning("Admin auth rejected: authorization_header_invalid.")
             raise HTTPException(status_code=401, detail="Authorization header must use the Bearer scheme.")
         return credentials.strip()
     if session_token and session_token.strip():
         return session_token.strip()
+    logging.getLogger("app.auth").warning("Admin auth rejected: token_missing.")
     raise HTTPException(status_code=401, detail="Provide an admin token using Authorization Bearer or session_token.")
 
 
@@ -4456,12 +4468,18 @@ def _decode_admin_jwt(session_token: str) -> dict:
         payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode())
         provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
     except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_malformed.")
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
 
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_claims_invalid.")
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
     if header.get("alg") != "HS256" or header.get("typ") != "JWT":
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_type_or_algorithm_mismatch.")
         raise HTTPException(status_code=401, detail="Unsupported JWT token.")
     session_secret = os.getenv("SESSION_SECRET", "").strip()
     if not session_secret:
+        logging.getLogger("app.auth").error("Admin auth rejected: session_secret_missing.")
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
     unsigned_token = f"{encoded_header}.{encoded_payload}"
     expected_signature = hmac.new(
@@ -4470,10 +4488,13 @@ def _decode_admin_jwt(session_token: str) -> dict:
         hashlib.sha256,
     ).digest()
     if not hmac.compare_digest(provided_signature, expected_signature):
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_signature_invalid.")
         raise HTTPException(status_code=401, detail="Invalid JWT signature.")
     if not payload.get("sub") or payload.get("role") != "admin":
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_subject_or_role_claim_invalid.")
         raise HTTPException(status_code=401, detail="JWT does not identify an administrator.")
     if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_expired_or_exp_missing.")
         raise HTTPException(status_code=401, detail="JWT token has expired.")
     return payload
 
@@ -4514,22 +4535,22 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
 
 def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin, AdminSession]:
     if not session_token:
+        logging.getLogger("app.auth").warning("Admin auth rejected: session_token_missing.")
         raise HTTPException(status_code=401, detail="An admin session token is required.")
     claims = _decode_admin_jwt(session_token)
-    sessions = db.query(AdminSession).filter(
-        AdminSession.is_active.is_(True),
-    ).all()
-    session = None
-    for s in sessions:
-        if secrets.compare_digest(s.session_token, session_token):
-            session = s
-            break
+    session = db.query(AdminSession).filter(AdminSession.session_token == session_token).first()
     if not session:
-        raise HTTPException(status_code=401, detail="Invalid or inactive admin session.")
+        logging.getLogger("app.auth").warning("Admin auth rejected: admin_session_not_found.")
+        raise HTTPException(status_code=401, detail="Invalid admin session.")
+    if not session.is_active:
+        logging.getLogger("app.auth").warning("Admin auth rejected: admin_session_revoked.")
+        raise HTTPException(status_code=401, detail="Admin session is inactive.")
     admin = db.query(Admin).filter(Admin.id == session.admin_id).first()
     if not admin:
+        logging.getLogger("app.auth").warning("Admin auth rejected: session_admin_record_missing.")
         raise HTTPException(status_code=404, detail="Admin profile not found.")
     if admin.username != claims["sub"]:
+        logging.getLogger("app.auth").warning("Admin auth rejected: jwt_subject_session_mismatch.")
         raise HTTPException(status_code=401, detail="JWT subject does not match the admin session.")
     session.last_active = datetime.now(timezone.utc)
     return admin, session
@@ -5319,108 +5340,119 @@ def block_raw_audit_log_mutations(connection, cursor, statement, parameters, con
 @app.get("/api/admin/audit-logs")
 def get_admin_audit_logs(
     search: Optional[str] = None,
-    action_type: Optional[str] = None,
+    action: Optional[str] = None,
     status: Optional[str] = None,
-    admin_username: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    limit: int = 50,
-    offset: int = 0,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    try:
-        limit = max(1, min(limit, 100))
-        offset = max(0, offset)
-        query = db.query(AuditLog).outerjoin(Admin, AuditLog.admin_id == Admin.id)
+    _require_audit_log_reader(authorization, session_token, db)
+    query = db.query(
+        AuditLog.id,
+        AuditLog.admin_id,
+        AuditLog.action,
+        AuditLog.entity_type,
+        AuditLog.entity_id,
+        AuditLog.description,
+        AuditLog.status,
+        AuditLog.ip_address,
+        AuditLog.created_at,
+        AuditLog.severity,
+        Admin.username,
+        Admin.full_name,
+        Admin.role,
+    ).outerjoin(Admin, AuditLog.admin_id == Admin.id)
 
-        if search and search.strip():
-            like_value = f"%{search.strip()}%"
-            query = query.filter(
-                or_(
-                    AuditLog.action.ilike(like_value),
-                    AuditLog.description.ilike(like_value),
-                    Admin.username.ilike(like_value),
-                )
-            )
+    if search and search.strip():
+        like_value = f"%{search.strip()}%"
+        search_filters = [
+            AuditLog.action.ilike(like_value),
+            AuditLog.description.ilike(like_value),
+            AuditLog.entity_type.ilike(like_value),
+            Admin.username.ilike(like_value),
+            Admin.full_name.ilike(like_value),
+        ]
+        if search.strip().isdigit():
+            search_filters.append(AuditLog.entity_id == int(search.strip()))
+        query = query.filter(or_(*search_filters))
 
-        if action_type and action_type.strip().lower() != "all":
-            normalized = action_type.strip().lower()
-            if normalized in {"login", "logins"}:
-                query = query.filter(AuditLog.action.ilike("%login%"))
-            elif normalized in {"approval", "approvals"}:
-                query = query.filter(AuditLog.action.ilike("%approved%") | AuditLog.action.ilike("%approval%") | AuditLog.action.ilike("%approve%"))
-            elif normalized in {"suspension", "suspensions"}:
-                query = query.filter(AuditLog.action.ilike("%suspend%") | AuditLog.action.ilike("%suspension%"))
-            elif normalized in {"deletion", "deletions"}:
-                query = query.filter(AuditLog.action.ilike("%delete%") | AuditLog.action.ilike("%deletion%"))
-            else:
-                query = query.filter(AuditLog.action.ilike(f"%{normalized}%"))
+    if action and action.strip().lower() != "all":
+        normalized_action = action.strip().lower()
+        category_terms = {
+            "logins": ("login",),
+            "approvals": ("approve", "approval"),
+            "suspensions": ("suspend",),
+            "deletions": ("delete",),
+        }.get(normalized_action, (normalized_action,))
+        query = query.filter(or_(*(AuditLog.action.ilike(f"%{term}%") for term in category_terms)))
 
-        if status and status.strip().lower() != "all":
-            query = query.filter(AuditLog.status.ilike(f"%{status.strip()}%"))
+    if status and status.strip().lower() != "all":
+        query = query.filter(func.upper(AuditLog.status) == status.strip().upper())
+    if start_date:
+        query = query.filter(AuditLog.created_at >= start_date)
+    if end_date:
+        query = query.filter(AuditLog.created_at <= end_date)
 
-        if admin_username and admin_username.strip():
-            query = query.filter(Admin.username.ilike(admin_username.strip()))
-        if start_date:
-            query = query.filter(AuditLog.created_at >= start_date)
-        if end_date:
-            query = query.filter(AuditLog.created_at <= end_date)
+    total = query.count()
+    rows = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = [{
+        "id": row.id,
+        "admin_id": row.admin_id,
+        "action": row.action,
+        "entity_type": row.entity_type,
+        "entity_id": row.entity_id,
+        "description": row.description,
+        "status": row.status,
+        "ip_address": row.ip_address,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "severity": row.severity,
+        "username": row.username,
+        "full_name": row.full_name,
+        "role": row.role,
+    } for row in rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-        total = query.count()
-        logs = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset(offset).limit(limit).all()
 
-        results = []
-        for log in logs:
-            action_label = log.action or "System Event"
-            status_value = (log.status or "SUCCESS").upper()
-            severity = log.severity or ("success" if status_value == "SUCCESS" else "warning" if status_value in {"WARNING", "PENDING"} else "critical")
-            performed_by = "System"
-            if log.admin_id:
-                admin_query = db.query(Admin.username).filter(Admin.id == log.admin_id).first()
-                if admin_query:
-                    performed_by = admin_query[0]
-
-            results.append({
-                "id": log.id,
-                "action": action_label,
-                "actionType": (
-                    "Logins" if "login" in action_label.lower()
-                    else "Approvals" if "approve" in action_label.lower() or "approval" in action_label.lower()
-                    else "Suspensions" if "suspend" in action_label.lower() or "suspension" in action_label.lower()
-                    else "Deletions" if "delete" in action_label.lower() or "deletion" in action_label.lower()
-                    else "System"
-                ),
-                "description": log.description or "No additional description provided.",
-                "performed_by": performed_by,
-                "entity_type": log.entity_type,
-                "entity_id": log.entity_id,
-                "ip_address": log.ip_address or "Unknown",
-                "date_time": log.created_at.isoformat() if log.created_at else None,
-                "status": status_value,
-                "severity": severity,
-            })
-
-        return {"items": results, "total": total, "limit": limit, "offset": offset}
-    except (OperationalError, SQLAlchemyError):
-        logging.getLogger("app.audit").exception("Failed to load audit logs.")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Failed to load audit logs",
-                "detail": "An internal error occurred while loading audit logs.",
-                "table": "audit_logs",
-                "expected_columns": ["admin_id", "action", "description", "status", "ip_address", "created_at"],
-            },
-        )
-    except Exception:
-        logging.getLogger("app.audit").exception("Unexpected error while loading audit logs.")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Unexpected error while loading audit logs",
-                "detail": "An unexpected internal error occurred.",
-            },
-        )
+@app.get("/api/admin/audit-logs/summary")
+def get_admin_audit_logs_summary(
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_audit_log_reader(authorization, session_token, db)
+    total_events = db.query(func.count(AuditLog.id)).scalar() or 0
+    admin_actions = db.query(func.count(AuditLog.id)).scalar() or 0
+    successful_logins = db.query(func.count(AdminLoginHistory.id)).filter(
+        func.lower(AdminLoginHistory.event_type).like("login_success%")
+    ).scalar() or 0
+    failed_logins = db.query(func.count(AdminLoginHistory.id)).filter(
+        func.lower(AdminLoginHistory.event_type).like("login_failed%")
+    ).scalar() or 0
+    severity_rows = db.query(
+        func.lower(AuditLog.severity),
+        func.count(AuditLog.id),
+    ).group_by(func.lower(AuditLog.severity)).all()
+    alerts = {"critical": 0, "warning": 0, "informational": 0}
+    for severity, count in severity_rows:
+        normalized_severity = severity or "informational"
+        if normalized_severity in alerts:
+            alerts[normalized_severity] += count
+        else:
+            alerts["informational"] += count
+    return {
+        "total_events": total_events,
+        "logins": {
+            "success": successful_logins,
+            "failed": failed_logins,
+            "total": successful_logins + failed_logins,
+        },
+        "admin_actions": admin_actions,
+        "alerts": {**alerts, "total": sum(alerts.values())},
+    }
 
 
 # ==========================================
@@ -10527,6 +10559,16 @@ def _require_admin(authorization: Optional[str], session_token: Optional[str], d
     token = _extract_admin_token(authorization, session_token)
     admin, _ = _admin_for_session(db, token)
     return admin
+
+
+def _require_audit_log_reader(authorization: Optional[str], session_token: Optional[str], db: Session) -> Admin:
+    admin = _require_admin(authorization, session_token, db)
+    if admin.role == "Admin":
+        return admin
+    if admin.role == "sub_admin" and _admin_permissions(admin).get("audit_logs", False):
+        return admin
+    logging.getLogger("app.auth").warning("Admin auth rejected: audit_log_role_or_permission_denied.")
+    raise HTTPException(status_code=403, detail="Audit-log read permission is required.")
 
 
 SUPPORT_TICKET_CATEGORIES = {
