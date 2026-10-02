@@ -490,8 +490,8 @@ function AppContent() {
       <PaymentSuccessToast />
       <Navbar
         variant={isDashboardView ? 'dashboard' : 'public'}
-        isHomeView={isHomeView}
         onNavigate={handleNavigate}
+        onDashboardMenuClick={() => window.dispatchEvent(new Event('campace:open-dashboard-sidebar'))}
         user={user}
         userRole={userRole}
         onLogout={handleLogout}
@@ -507,12 +507,12 @@ function AppContent() {
         }}
       />
 
-      <div className={`flex flex-1 flex-col pt-[89px] md:pt-20 lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
+      <div className={`flex flex-1 flex-col pt-16 lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
         <main className={isStudentMessagesView
-          ? 'min-h-0 min-w-0 w-full flex-1 overflow-hidden px-4 pb-0 sm:px-6 lg:px-8'
+          ? 'min-h-0 min-w-0 w-full flex-1 overflow-hidden pb-0'
           : isHomeView
             ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8'
-            : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow px-4 pb-6 sm:px-6 lg:px-8 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
+            : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'} pb-6 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm

@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import toast from 'react-hot-toast';
+import { LockKeyhole } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
@@ -10,6 +12,53 @@ const settingsSections = [
     ['security', 'Security'],
     ['notifications', 'Notifications'],
 ];
+
+const DEFAULT_NOTIFICATION_PREFERENCES = {
+    messagesInApp: true,
+    messagesEmail: true,
+    ordersInApp: true,
+    ordersEmail: true,
+    paymentsInApp: true,
+    paymentsEmail: true,
+};
+
+const notificationPreferencesFromApi = (preferences) => ({
+    messagesInApp: Boolean(preferences?.new_messages?.in_app ?? DEFAULT_NOTIFICATION_PREFERENCES.messagesInApp),
+    messagesEmail: Boolean(preferences?.new_messages?.email ?? DEFAULT_NOTIFICATION_PREFERENCES.messagesEmail),
+    ordersInApp: Boolean(preferences?.order_updates?.in_app ?? DEFAULT_NOTIFICATION_PREFERENCES.ordersInApp),
+    ordersEmail: Boolean(preferences?.order_updates?.email ?? DEFAULT_NOTIFICATION_PREFERENCES.ordersEmail),
+    paymentsInApp: true,
+    paymentsEmail: Boolean(preferences?.payment_success?.email ?? DEFAULT_NOTIFICATION_PREFERENCES.paymentsEmail),
+});
+
+function NotificationChannelToggle({ label, ariaLabel, checked, onChange, disabled = false, title }) {
+    return (
+        <button
+            type="button"
+            role="switch"
+            aria-label={ariaLabel}
+            aria-checked={checked}
+            disabled={disabled}
+            title={title}
+            onClick={onChange}
+            onKeyDown={(event) => {
+                if (event.key === ' ' || event.key === 'Enter') {
+                    event.preventDefault();
+                    onChange();
+                }
+            }}
+            className="inline-flex min-h-11 min-w-[96px] items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-80"
+        >
+            <span className="flex items-center gap-1.5 whitespace-nowrap">
+                {label}
+                {disabled && <LockKeyhole className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />}
+            </span>
+            <span className={`relative h-5 w-9 shrink-0 rounded-full transition ${checked ? 'bg-emerald-500' : 'bg-slate-300'}`} aria-hidden="true">
+                <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition ${checked ? 'left-[18px]' : 'left-0.5'}`} />
+            </span>
+        </button>
+    );
+}
 
 const inputClass = 'mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:bg-white';
 
@@ -33,6 +82,7 @@ function SettingsCenter({
     settingsTab,
     isSidebarOpen,
     onToggleSidebar,
+    onNotificationPrefsDirtyChange,
     setSettingsTab,
     profileForm,
     handleProfileFieldChange,
@@ -54,16 +104,12 @@ function SettingsCenter({
     const studentToast = (key) => t(`studentToast.${key}`);
     const safeUniversityStructure = universityStructure || {};
     const studentIdEditable = String(user?.studentId || user?.student_id || '').toUpperCase().startsWith('OAUTH-');
-    const [notificationPrefs, setNotificationPrefs] = useState({
-        messagesInApp: true,
-        messagesEmail: true,
-        ordersInApp: true,
-        ordersEmail: true,
-        paymentsInApp: true,
-        paymentsEmail: false,
-    });
+    const [notificationPrefs, setNotificationPrefs] = useState(DEFAULT_NOTIFICATION_PREFERENCES);
+    const [savedNotificationPrefs, setSavedNotificationPrefs] = useState(DEFAULT_NOTIFICATION_PREFERENCES);
+    const [notificationPrefsLoadState, setNotificationPrefsLoadState] = useState('idle');
+    const [notificationPrefsLoadError, setNotificationPrefsLoadError] = useState('');
+    const [notificationPrefsRetryKey, setNotificationPrefsRetryKey] = useState(0);
     const [twoFactor, setTwoFactor] = useState(Boolean(user?.two_factor_enabled));
-    const [notificationToast, setNotificationToast] = useState('');
     const [isSavingNotificationPrefs, setIsSavingNotificationPrefs] = useState(false);
     const [securityForm, setSecurityForm] = useState({
         currentPassword: '',
@@ -162,6 +208,13 @@ function SettingsCenter({
 
     const updatePref = (key) => setNotificationPrefs((previous) => ({ ...previous, [key]: !previous[key] }));
 
+    const handleSettingsTabChange = (nextTab) => {
+        if (settingsTab === 'notifications' && notificationPrefsDirty && nextTab !== 'notifications') {
+            if (!window.confirm(t('studentToast.discardUnsavedPreferences'))) return;
+        }
+        setSettingsTab(nextTab);
+    };
+
     const handlePayoutSubmit = async (event) => {
         event.preventDefault();
         setPayoutMessage('');
@@ -246,6 +299,64 @@ function SettingsCenter({
             return user?.access_token || '';
         }
     };
+
+    const notificationPrefsDirty = Object.keys(notificationPrefs).some((key) => (
+        notificationPrefs[key] !== savedNotificationPrefs[key]
+    ));
+
+    useEffect(() => {
+        if (settingsTab !== 'notifications') return undefined;
+
+        let active = true;
+        const controller = new AbortController();
+        const loadNotificationPreferences = async () => {
+            setNotificationPrefsLoadState('loading');
+            setNotificationPrefsLoadError('');
+            try {
+                const token = getStudentSessionToken();
+                if (!token) throw new Error('Your authenticated student session is required.');
+                const response = await fetch(`${API_BASE_URL}/api/notification-preferences`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                    signal: controller.signal,
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data?.detail || 'Unable to load notification preferences.');
+
+                const savedPreferences = notificationPreferencesFromApi(data?.preferences);
+                if (active) {
+                    setNotificationPrefs(savedPreferences);
+                    setSavedNotificationPrefs(savedPreferences);
+                    setNotificationPrefsLoadState('ready');
+                }
+            } catch (error) {
+                if (!active || error.name === 'AbortError') return;
+                setNotificationPrefsLoadError(error.message || 'Unable to load notification preferences.');
+                setNotificationPrefsLoadState('error');
+            }
+        };
+
+        loadNotificationPreferences();
+        return () => {
+            active = false;
+            controller.abort();
+        };
+    }, [settingsTab, notificationPrefsRetryKey, user]);
+
+    useEffect(() => {
+        if (!notificationPrefsDirty) return undefined;
+        const warnBeforeLeaving = (event) => {
+            event.preventDefault();
+            event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', warnBeforeLeaving);
+        return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
+    }, [notificationPrefsDirty]);
+
+    useEffect(() => {
+        onNotificationPrefsDirtyChange?.(notificationPrefsDirty);
+    }, [notificationPrefsDirty, onNotificationPrefsDirtyChange]);
+
+    useEffect(() => () => onNotificationPrefsDirtyChange?.(false), [onNotificationPrefsDirtyChange]);
 
     useEffect(() => {
         if (!studentIdEditable) {
@@ -385,21 +496,18 @@ function SettingsCenter({
     };
 
     const handleSaveNotificationPreferences = async () => {
+        if (!notificationPrefsDirty || isSavingNotificationPrefs) return;
         setIsSavingNotificationPrefs(true);
 
         try {
             const payload = {
-                notif_msg_inapp: Boolean(notificationPrefs.messagesInApp),
-                notif_msg_email: Boolean(notificationPrefs.messagesEmail),
-                notif_order_inapp: Boolean(notificationPrefs.ordersInApp),
-                notif_order_email: Boolean(notificationPrefs.ordersEmail),
-                notif_pay_inapp: Boolean(notificationPrefs.paymentsInApp),
-                notif_pay_email: Boolean(notificationPrefs.paymentsEmail),
-                notif_browser_enabled: true,
+                new_messages: { in_app: notificationPrefs.messagesInApp, email: notificationPrefs.messagesEmail },
+                order_updates: { in_app: notificationPrefs.ordersInApp, email: notificationPrefs.ordersEmail },
+                payment_success: { in_app: true, email: notificationPrefs.paymentsEmail },
             };
 
             const token = getStudentSessionToken();
-            const response = await fetch(`${API_BASE_URL}/api/student/profile/notification-settings`, {
+            const response = await fetch(`${API_BASE_URL}/api/notification-preferences`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
@@ -414,14 +522,27 @@ function SettingsCenter({
                 throw new Error(data?.detail || data?.message || 'Unable to save notification preferences.');
             }
 
-            setNotificationToast('Notification preferences updated successfully!');
-            notifySuccess(studentToast('profileSaved'), 'student-notification-preferences');
-            window.setTimeout(() => setNotificationToast(''), 3000);
+            const savedPreferences = notificationPreferencesFromApi(data?.preferences);
+            setNotificationPrefs(savedPreferences);
+            setSavedNotificationPrefs(savedPreferences);
+            notifySuccess(studentToast('preferencesSaved'), 'student-notification-preferences');
         } catch (error) {
             console.error('Notification preferences update failed:', error);
-            setNotificationToast(error.message || 'Unable to save notification preferences.');
-            notifyError(error, 'student-notification-preferences');
-            window.setTimeout(() => setNotificationToast(''), 3000);
+            toast.custom((toastItem) => (
+                <div role="alert" className="flex items-center gap-3 rounded-xl border border-rose-200 bg-white px-4 py-3 text-sm text-rose-700 shadow-lg">
+                    <span className="min-w-0 flex-1">{error.message || studentToast('preferencesSaveFailed')}</span>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            toast.dismiss(toastItem.id);
+                            handleSaveNotificationPreferences();
+                        }}
+                        className="shrink-0 font-bold underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                    >
+                        {t('home.tryAgain')}
+                    </button>
+                </div>
+            ), { id: 'student-notification-preferences-error', duration: 8000 });
         } finally {
             setIsSavingNotificationPrefs(false);
         }
@@ -432,7 +553,7 @@ function SettingsCenter({
             return (
                 <>
                     <PanelHeader eyebrow="Account" title="Your verified student profile" text="Keep your contact details current while protected academic identity fields remain read-only." />
-                    <div className="mt-6 grid gap-6 xl:grid-cols-[260px_1fr]">
+                    <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
                         <div className="space-y-5 rounded-3xl border border-slate-200 bg-slate-50 p-5">
                             <div className="flex flex-col items-center gap-4 text-center">
                                 <img src={resolveImageUrl(avatarUrl || (user?.studentId ? `/static/uploads/avatars/${user.studentId}.jpg` : IMAGE_PLACEHOLDER))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt="Profile avatar" className="h-32 w-32 rounded-full border border-slate-200 object-cover" />
@@ -727,47 +848,82 @@ function SettingsCenter({
         return (
             <>
                 <PanelHeader eyebrow="Notifications" title="Choose what reaches you" text="Control the alerts you receive for messages, order progress, and payment confirmations." />
-                <div className="mt-6 space-y-5">
-                    {[
-                        ['New Messages', 'messagesInApp', 'messagesEmail'],
-                        ['Order Updates', 'ordersInApp', 'ordersEmail'],
-                        ['Payment Success', 'paymentsInApp', 'paymentsEmail'],
-                    ].map(([label, inApp, email]) => (
-                        <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
-                                <div>
-                                    <span className="block font-bold text-slate-800">{label}</span>
-                                    <span className="mt-1 block text-[11px] leading-5 text-slate-500">{notificationDetails[label]}</span>
-                                </div>
-                                <label className="flex items-center gap-2 text-sm text-slate-600">
-                                    <input type="checkbox" checked={notificationPrefs[inApp]} onChange={() => updatePref(inApp)} />
-                                    In-app
-                                </label>
-                                <label className="flex items-center gap-2 text-sm text-slate-600">
-                                    <input type="checkbox" checked={notificationPrefs[email]} onChange={() => updatePref(email)} />
-                                    Email
-                                </label>
-                            </div>
-                        </div>
-                    ))}
-
-                    <div className="pt-2">
-                        <button
-                            type="button"
-                            onClick={handleSaveNotificationPreferences}
-                            disabled={isSavingNotificationPrefs}
-                            className="btn-primary inline-flex w-full items-center justify-center rounded-full px-5 py-3 text-sm font-bold shadow-sm transition"
-                        >
-                            {isSavingNotificationPrefs ? 'Saving...' : 'Save Preferences'}
+                {notificationPrefsLoadState === 'loading' && (
+                    <div className="mt-6 space-y-5" aria-label="Loading notification preferences" aria-busy="true">
+                        {[0, 1, 2].map((row) => (
+                            <div key={row} className="h-24 animate-pulse rounded-2xl border border-slate-200 bg-slate-50" />
+                        ))}
+                    </div>
+                )}
+                {notificationPrefsLoadState === 'error' && (
+                    <div role="alert" className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                        <span>{notificationPrefsLoadError || studentToast('preferencesLoadFailed')}</span>
+                        <button type="button" onClick={() => setNotificationPrefsRetryKey((key) => key + 1)} className="font-bold underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500">
+                            {t('home.tryAgain')}
                         </button>
                     </div>
+                )}
+                {notificationPrefsLoadState === 'ready' && (
+                    <div className="mt-6 space-y-5">
+                        {[
+                            { label: 'New Messages', inApp: 'messagesInApp', email: 'messagesEmail' },
+                            { label: 'Order Updates', inApp: 'ordersInApp', email: 'ordersEmail' },
+                            { label: 'Payment Success', inApp: 'paymentsInApp', email: 'paymentsEmail', lockedInApp: true },
+                        ].map((preference) => (
+                            <div key={preference.label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="min-w-0 flex-1">
+                                        <span className="block break-words font-bold text-slate-800">{preference.label}</span>
+                                        <span className="mt-1 block break-words text-[11px] leading-5 text-slate-500">{notificationDetails[preference.label]}</span>
+                                    </div>
+                                    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">
+                                        <NotificationChannelToggle
+                                            label="In-app"
+                                            ariaLabel={`${preference.label}: In-app`}
+                                            checked={notificationPrefs[preference.inApp]}
+                                            onChange={() => updatePref(preference.inApp)}
+                                            disabled={preference.lockedInApp}
+                                            title={preference.lockedInApp ? 'Required for your account security' : undefined}
+                                        />
+                                        <NotificationChannelToggle
+                                            label="Email"
+                                            ariaLabel={`${preference.label}: Email`}
+                                            checked={notificationPrefs[preference.email]}
+                                            onChange={() => updatePref(preference.email)}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
 
-                    {notificationToast && (
-                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700 shadow-sm">
-                            {notificationToast}
+                        <div className="flex flex-col-reverse gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-end">
+                            {notificationPrefsDirty && (
+                                <span className="text-xs font-semibold text-amber-700 sm:mr-auto" aria-live="polite">
+                                    {studentToast('unsavedPreferences')}
+                                </span>
+                            )}
+                            <div className="flex flex-col-reverse gap-3 sm:flex-row">
+                                <button
+                                    type="button"
+                                    onClick={() => setNotificationPrefs(savedNotificationPrefs)}
+                                    disabled={!notificationPrefsDirty || isSavingNotificationPrefs}
+                                    className="inline-flex h-11 w-full items-center justify-center rounded-full border border-slate-300 bg-white px-6 text-sm font-bold text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                                >
+                                    {studentToast('resetPreferences')}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleSaveNotificationPreferences}
+                                    disabled={!notificationPrefsDirty || isSavingNotificationPrefs || notificationPrefsLoadState !== 'ready'}
+                                    className="btn-primary inline-flex h-11 w-full items-center justify-center gap-2 rounded-full px-6 text-sm font-bold whitespace-nowrap shadow-sm transition disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                                >
+                                    {isSavingNotificationPrefs && <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/40 border-t-current" aria-hidden="true" />}
+                                    {isSavingNotificationPrefs ? studentToast('savingPreferences') : studentToast('savePreferences')}
+                                </button>
+                            </div>
                         </div>
-                    )}
-                </div>
+                    </div>
+                )}
             </>
         );
     };
@@ -779,24 +935,24 @@ function SettingsCenter({
     }, [settingsTab, user]);
 
     return (
-        <div data-dashboard-view="settings" className="min-h-screen w-full min-w-0 max-w-full bg-slate-50 px-2 pb-10 pt-16 text-slate-900 sm:px-4 lg:px-8 lg:pt-10">
-            <div className="mx-auto w-full min-w-0 max-w-7xl">
+        <div data-dashboard-view="settings" className="min-h-screen w-full min-w-0 max-w-none bg-slate-50 px-0 pb-10 pt-16 text-slate-900 lg:pt-10">
+            <div className="w-full min-w-0 max-w-none">
                 <div className="mb-6">
                     <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Student Control Center</p>
-                    <div className="mt-2 flex min-w-0 items-center gap-3">
-                        <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
+                    <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
                         <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 sm:text-3xl">Account Settings</h2>
+                        <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
                     </div>
                 </div>
 
                 <div className="flex flex-col gap-6">
-                    <nav className="settings-tabs flex w-full min-w-0 max-w-md flex-wrap items-center gap-2 rounded-3xl border border-slate-200 bg-white p-1.5">
+                    <nav className="settings-tabs flex w-full min-w-0 flex-wrap items-center gap-2 rounded-3xl border border-slate-200 bg-white p-1.5">
                         {settingsSections.map(([id, label]) => (
                             <button
                                 key={id}
                                 type="button"
                                 data-settings-tab={id}
-                                onClick={() => setSettingsTab(id)}
+                                onClick={() => handleSettingsTabChange(id)}
                                 className={`shrink-0 rounded-2xl px-3 py-2 text-center text-xs font-semibold transition sm:text-sm ${settingsTab === id ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-50'}`}
                             >
                                 {label}
@@ -804,7 +960,7 @@ function SettingsCenter({
                         ))}
                     </nav>
 
-                    <section className="min-w-0 max-w-full rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
+                    <section className="w-full min-w-0 max-w-none rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
                         {renderPanel()}
                     </section>
                 </div>

@@ -177,6 +177,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const verifiedStudent = isVerifiedStudent(user);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
+  useEffect(() => {
+    const openSidebar = () => setIsSidebarOpen(true);
+    window.addEventListener('campace:open-dashboard-sidebar', openSidebar);
+    return () => window.removeEventListener('campace:open-dashboard-sidebar', openSidebar);
+  }, []);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [clockNow, setClockNow] = useState(Date.now());
   const [activeTab, setActiveTab] = useState(() => getConversationIdFromUrl() ? 'messages' : initialTab); // የጎን መቆጣጠሪያ ታብ
@@ -184,6 +189,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [messagesViewHeight, setMessagesViewHeight] = useState(null);
   const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
   const [settingsTab, setSettingsTab] = useState('account');
+  const [isNotificationPrefsDirty, setIsNotificationPrefsDirty] = useState(false);
 
   const [notifications, setNotifications] = useState([]);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
@@ -3838,13 +3844,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   return (
-    <div className={`min-h-0 w-full bg-slate-100 pt-10 text-slate-900 lg:pt-0 ${activeTab === 'messages' ? 'h-full overflow-hidden' : ''}`}>
-      <div className={`flex min-h-0 w-full flex-col gap-3 lg:flex-row lg:items-stretch lg:gap-3 lg:overflow-hidden ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'lg:h-[calc(100dvh-5rem)]'}`}>
+    <div className={`min-h-0 w-full bg-slate-100 text-slate-900 ${activeTab === 'messages' ? 'h-full overflow-hidden' : ''}`}>
+      <div className={`flex min-h-0 w-full flex-col gap-4 px-3 sm:px-4 lg:flex-row lg:items-stretch lg:gap-6 lg:overflow-hidden lg:px-6 ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'lg:h-[calc(100dvh-4rem)]'}`}>
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside id="student-mobile-navigation" data-open={isSidebarOpen} style={{ transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }} className={`student-mobile-sidebar
-          fixed top-20 bottom-0 left-0 z-40 flex h-[calc(100vh-5rem)] w-72 flex-col overflow-y-auto overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          lg:sticky lg:top-20 lg:h-[calc(100dvh-5rem)] lg:w-72 lg:shrink-0 lg:rounded-[32px] lg:p-6 lg:shadow-none
+          fixed top-16 bottom-0 left-0 z-40 flex h-[calc(100vh-4rem)] w-72 flex-col overflow-y-auto overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
+          lg:sticky lg:top-16 lg:h-[calc(100dvh-4rem)] lg:w-72 lg:shrink-0 lg:rounded-[32px] lg:p-6 lg:shadow-none
           ${isSidebarCollapsed ? 'lg:w-24 lg:p-3' : 'lg:w-72 lg:p-6'}
         `}>
           <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
@@ -3904,6 +3910,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   key={item.key}
                   onClick={() => {
+                    if (activeTab === 'settings' && isNotificationPrefsDirty && item.key !== 'settings' && !window.confirm(t('studentToast.discardUnsavedPreferences'))) return;
                     setActiveTab(item.key);
                     setIsSidebarOpen(false);
                     if (onTabChange) {
@@ -3987,7 +3994,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className={`min-h-0 min-w-0 w-full max-w-full flex-1 px-2 transition-all duration-300 sm:px-3 lg:h-full lg:pr-2 lg:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'lg:overflow-y-auto lg:overscroll-y-contain'}`}>
+        <main className={`student-dashboard-content min-h-0 min-w-0 w-full max-w-none flex-1 transition-all duration-300 lg:h-full lg:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'lg:overflow-y-auto lg:overscroll-y-contain'}`}>
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
@@ -4047,7 +4054,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             </div>
           )}
 
-          <section className={`grid min-w-0 w-full max-w-full grid-cols-[minmax(0,1fr)] gap-6 px-2 animate-fade-in [&>*]:min-w-0 [&>*]:max-w-full sm:px-4 ${activeTab === 'messages' ? 'min-h-0 flex-1' : ''}`}>
+          <section className={`grid min-w-0 w-full max-w-full grid-cols-[minmax(0,1fr)] gap-6 animate-fade-in [&>*]:min-w-0 [&>*]:max-w-full ${activeTab === 'messages' ? 'min-h-0 flex-1' : ''}`}>
 
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
@@ -5844,6 +5851,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 settingsTab={settingsTab}
                 isSidebarOpen={isSidebarOpen}
                 onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+                onNotificationPrefsDirtyChange={setIsNotificationPrefsDirty}
                 setSettingsTab={setSettingsTab}
                 profileForm={profileForm}
                 handleProfileFieldChange={handleProfileFieldChange}

@@ -4,7 +4,7 @@ import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public', isHomeView = false }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, onDashboardMenuClick, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -74,35 +74,34 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
 
   return (
-    <header className="site-navbar fixed top-0 left-0 right-0 z-50 min-h-[88px] text-white border-b border-blue-900 md:h-20 md:min-h-20">
-      <div className={`${isHomeView ? 'w-full px-2 sm:px-6 lg:px-10' : 'mx-auto max-w-7xl px-2 sm:px-6 lg:px-8'} flex min-h-[88px] min-w-0 items-center justify-between gap-1 py-2 md:h-20 md:min-h-20 md:gap-2 md:py-0`}>
+    <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-16 text-white border-b border-blue-900">
+      <div className="flex h-16 w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
-        <div className="flex shrink-0 items-center gap-1 md:gap-3">
-          <div className="flex shrink-0 cursor-pointer flex-col items-center justify-center gap-0.5 md:flex-row md:gap-3" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
-            <img src={logs} alt="UniXchange logo" className="notranslate h-11 w-11 shrink-0 rounded-full object-cover md:h-20 md:w-20" />
+        <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">
+          <button
+            type="button"
+            aria-label={isDashboardLayout ? 'Open dashboard navigation' : 'Open mobile navigation'}
+            aria-expanded={isDashboardLayout ? undefined : isMobileMenuOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isDashboardLayout) onDashboardMenuClick?.();
+              else setIsMobileMenuOpen(true);
+            }}
+            className="block shrink-0 rounded-lg p-1 text-white transition hover:bg-white/10 md:hidden"
+          >
+            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div className="flex shrink-0 cursor-pointer items-center gap-2 max-[400px]:gap-1" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
+            <img src={logs} alt="UniXchange logo" className="notranslate h-10 w-10 shrink-0 rounded-full object-contain sm:h-12 sm:w-12" />
             <span className="notranslate whitespace-nowrap text-[13px] font-black text-white max-[359px]:hidden md:text-2xl">UniXchange</span>
           </div>
-          {!isDashboardLayout && (
-            <button
-              type="button"
-              aria-label="Open mobile navigation"
-              aria-expanded={isMobileMenuOpen}
-              onClick={(event) => {
-                event.stopPropagation();
-                setIsMobileMenuOpen(true);
-              }}
-              className="block shrink-0 rounded-lg p-1 text-white transition hover:bg-white/10 md:hidden"
-            >
-              <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                <path d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-          )}
         </div>
 
         {/* Navigation Links */}
         {!isDashboardLayout && (
-          <nav className="hidden min-w-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
+          <nav className="hidden min-w-0 flex-1 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
             <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Home</button>
             <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">About</button>
             <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Services</button>
@@ -121,7 +120,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         )}
 
         {/* Right side: Login/Register OR Profile Dropdown */}
-        <div className="relative flex min-w-0 max-w-full shrink-0 items-center gap-1 md:gap-4">
+        <div className="relative ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-2 sm:gap-3 max-[400px]:gap-1">
           <div className="notranslate relative shrink-0" ref={languageMenuRef}>
             <button
               type="button"
@@ -130,7 +129,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               aria-expanded={isLanguageMenuOpen}
               aria-controls="navbar-language-menu"
               onClick={() => setIsLanguageMenuOpen((isOpen) => !isOpen)}
-              className="inline-flex h-9 items-center gap-1 rounded-lg border border-white/30 bg-white/10 px-1.5 text-[11px] font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 md:h-10 md:gap-2 md:px-3 md:text-sm"
+              className="inline-flex h-9 items-center gap-1 rounded-lg border border-white/30 bg-white/10 px-1.5 text-[11px] font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 max-[400px]:px-1 md:h-10 md:gap-2 md:px-3 md:text-sm"
             >
               <span>{language === 'am' ? 'አማርኛ' : 'English'}</span>
               <ChevronDown className={`h-3.5 w-3.5 transition-transform md:h-4 md:w-4 ${isLanguageMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
@@ -161,12 +160,12 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           </div>
           {user ? (
             // Logged In Dropdown View
-            <div className="relative flex min-w-0 max-w-full items-center gap-1 md:gap-4">
+            <div className="relative flex min-w-0 max-w-full items-center gap-2 sm:gap-3 max-[400px]:gap-1">
               <button
                 type="button"
                 onClick={onNotificationClick}
                 aria-label="Open notifications"
-                className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10 hover:text-slate-200 focus:outline-none md:h-11 md:w-11"
+                className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10 hover:text-slate-200 focus:outline-none max-[400px]:h-8 max-[400px]:w-8 md:h-11 md:w-11"
                 title="Notifications"
               >
                 <svg className="h-6 w-6 text-white md:h-7 md:w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -183,10 +182,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 <button
                   type="button"
                   onClick={() => setIsDropdownOpen((prev) => !prev)}
-                  className="flex cursor-pointer items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-1 text-left shadow-sm transition hover:bg-slate-50 md:gap-3 md:px-2 md:py-1.5"
+                  className="flex cursor-pointer items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-1 text-left shadow-sm transition hover:bg-slate-50 max-[400px]:gap-0.5 max-[400px]:px-0.5 md:gap-3 md:px-2 md:py-1.5"
                   title="Account Menu"
                 >
-                  <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50 md:h-10 md:w-10">
+                  <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50 max-[400px]:h-7 max-[400px]:w-7 md:h-10 md:w-10">
                     {avatarSrc ? (
                       <img src={resolveImageUrl(avatarSrc)} alt={displayName} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
                     ) : (
@@ -195,13 +194,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                       </svg>
                     )}
                   </div>
-                  <div className="hidden sm:block leading-tight">
+                  <div className="hidden leading-tight md:block">
                     <div className="text-sm font-bold leading-tight text-slate-900">{displayName}</div>
                     <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{displayRole}</div>
                   </div>
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
-                    className={`h-3.5 w-3.5 text-slate-500 transition-transform duration-200 md:h-4 md:w-4 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                    className={`h-3.5 w-3.5 text-slate-500 transition-transform duration-200 max-[400px]:h-3 max-[400px]:w-3 md:h-4 md:w-4 ${isDropdownOpen ? 'rotate-180' : ''}`}
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"

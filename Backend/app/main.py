@@ -503,6 +503,7 @@ def _student_interest_text(student: Student, db: Session) -> str:
     return " ".join(weighted_terms)
 
 
+
 def _normalize_payment_type(raw_value: Optional[str]) -> str:
     if not raw_value:
         return "Product Purchase"
@@ -1770,6 +1771,21 @@ class StudentNotificationSettingsUpdate(BaseModel):
     notif_browser_enabled: bool
 
 
+class NotificationChannelPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    in_app: bool
+    email: bool
+
+
+class StudentNotificationPreferencesUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    new_messages: NotificationChannelPreferences
+    order_updates: NotificationChannelPreferences
+    payment_success: NotificationChannelPreferences
+
+
 class StudentPasswordUpdate(BaseModel):
     current_password: str
     new_password: str
@@ -2595,12 +2611,40 @@ NOTIFICATION_PREFERENCE_FIELDS = {
     "order": ("notif_order_inapp", "notif_order_email"),
     "payment": ("notif_pay_inapp", "notif_pay_email"),
     "payout": ("notif_pay_inapp", "notif_pay_email"),
+    "security": ("notif_pay_inapp", "notif_pay_email"),
 }
+LOCKED_IN_APP_NOTIFICATION_TYPES = {"payment", "payout", "security"}
+
+
+def _serialize_student_notification_preferences(student: Student) -> Dict[str, Dict[str, bool]]:
+    return {
+        "new_messages": {
+            "in_app": bool(student.notif_msg_inapp),
+            "email": bool(student.notif_msg_email),
+        },
+        "order_updates": {
+            "in_app": bool(student.notif_order_inapp),
+            "email": bool(student.notif_order_email),
+        },
+        "payment_success": {
+            "in_app": True,
+            "email": bool(student.notif_pay_email),
+        },
+    }
+
+
+def _student_notification_in_app_enabled(student: Student, notification_type: str) -> bool:
+    preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
+    if not preference_fields:
+        return False
+    if notification_type in LOCKED_IN_APP_NOTIFICATION_TYPES:
+        return True
+    return bool(getattr(student, preference_fields[0], True))
 
 
 def _add_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str, target: Optional[str] = None) -> bool:
     preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
-    if not preference_fields or not getattr(student, preference_fields[0], True):
+    if not preference_fields or not _student_notification_in_app_enabled(student, notification_type):
         return False
     duplicate_cutoff = datetime.now() - timedelta(seconds=10)
     duplicate_notification = db.query(Notification).filter(
@@ -5738,7 +5782,10 @@ def update_student_notification_settings(
 ):
     student = _student_from_authorization(authorization, db)
     for field in payload.model_fields:
+        if field == "notif_pay_inapp":
+            continue
         setattr(student, field, getattr(payload, field))
+    student.notif_pay_inapp = True
     db.commit()
     db.refresh(student)
     return {
@@ -5746,6 +5793,39 @@ def update_student_notification_settings(
         "notification_settings": {
             field: bool(getattr(student, field)) for field in payload.model_fields
         },
+    }
+
+
+@app.get("/api/notification-preferences")
+def get_notification_preferences(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    return {
+        "success": True,
+        "preferences": _serialize_student_notification_preferences(student),
+    }
+
+
+@app.put("/api/notification-preferences")
+def update_notification_preferences(
+    payload: StudentNotificationPreferencesUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    student.notif_msg_inapp = payload.new_messages.in_app
+    student.notif_msg_email = payload.new_messages.email
+    student.notif_order_inapp = payload.order_updates.in_app
+    student.notif_order_email = payload.order_updates.email
+    student.notif_pay_inapp = True
+    student.notif_pay_email = payload.payment_success.email
+    db.commit()
+    db.refresh(student)
+    return {
+        "success": True,
+        "preferences": _serialize_student_notification_preferences(student),
     }
 
 
@@ -8410,20 +8490,25 @@ def create_student_notification(request: NotificationCreate, db: Session = Depen
     if request.title and request.title.strip():
         notification_text = f"{request.title.strip()}: {notification_text}"
 
+    notification_type = request.type or "system"
     notification = Notification(
         student_id=request.student_id,
         title=request.title.strip() if request.title and request.title.strip() else None,
         message=notification_text,
-        type=request.type or "system",
+        type=notification_type,
         is_read=False,
     )
-    db.add(notification)
+    if notification_type not in NOTIFICATION_PREFERENCE_FIELDS or _student_notification_in_app_enabled(student, notification_type):
+        db.add(notification)
+    else:
+        notification = None
     db.commit()
-    db.refresh(notification)
+    if notification:
+        db.refresh(notification)
     return {
         "success": True,
-        "message": "Notification created successfully",
-        "notification": {
+        "message": "Notification created successfully" if notification else "Notification preference is disabled",
+        "notification": None if not notification else {
             "id": notification.id,
             "student_id": notification.student_id,
             "title": notification.title,

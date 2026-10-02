@@ -662,6 +662,11 @@ function AdminAccountsPanel({ user }) {
 function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(initialTab === 'ai-recommendations' ? 'dashboard' : initialTab);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  useEffect(() => {
+    const openSidebar = () => setIsSidebarOpen(true);
+    window.addEventListener('campace:open-dashboard-sidebar', openSidebar);
+    return () => window.removeEventListener('campace:open-dashboard-sidebar', openSidebar);
+  }, []);
   const [isReady, setIsReady] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -7253,7 +7258,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   };
 
   return (
-    <div className="admin-dashboard-shell flex min-h-screen flex-col bg-slate-50 pt-[88px] text-slate-900 lg:min-h-0 lg:overflow-hidden lg:pt-0">
+    <div className="admin-dashboard-shell flex min-h-[calc(100dvh-4rem)] flex-col bg-slate-50 text-slate-900 lg:min-h-0 lg:overflow-hidden">
       <div className="flex flex-1 flex-col gap-3 px-2 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:overflow-hidden lg:px-4 lg:py-0">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside className="relative hidden lg:flex lg:h-full lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
@@ -7303,7 +7308,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           </nav>
         </aside>
 
-        <aside id="admin-mobile-navigation" className={`fixed left-0 top-20 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <aside id="admin-mobile-navigation" className={`fixed left-0 top-16 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           {/* The mobile header uses the same relative/clipped containment as desktop. */}
           <div className="relative z-10 flex min-h-0 items-start gap-3 overflow-hidden">
             <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
@@ -7340,7 +7345,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         </aside>
         {
           isSidebarOpen && (
-            <div onClick={() => setIsSidebarOpen(false)} className="fixed top-20 bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
+            <div onClick={() => setIsSidebarOpen(false)} className="fixed top-16 bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
           )
         }
 

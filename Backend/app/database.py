@@ -208,8 +208,8 @@ def init_db() -> None:
             "notif_msg_email": "BOOLEAN NOT NULL DEFAULT TRUE",
             "notif_order_inapp": "BOOLEAN NOT NULL DEFAULT TRUE",
             "notif_order_email": "BOOLEAN NOT NULL DEFAULT TRUE",
-            "notif_pay_inapp": "BOOLEAN NOT NULL DEFAULT FALSE",
-            "notif_pay_email": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "notif_pay_inapp": "BOOLEAN NOT NULL DEFAULT TRUE",
+            "notif_pay_email": "BOOLEAN NOT NULL DEFAULT TRUE",
             "notif_browser_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
             "preferred_pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
             "missed_acceptance_count": "INT NOT NULL DEFAULT 0",
@@ -219,3 +219,9 @@ def init_db() -> None:
             if column_name not in student_columns:
                 with engine.begin() as connection:
                     connection.execute(text(f"ALTER TABLE students ADD COLUMN `{column_name}` {column_definition}"))
+        # Update existing records to set default values for notifications
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE students SET notif_pay_inapp = 1 "
+                "WHERE notif_pay_inapp IS NULL OR notif_pay_inapp = 0"
+            ))

@@ -20,8 +20,8 @@
 }
 
 .student-mobile-sidebar {
-  height: calc(100vh - 5rem);
-  height: calc(100dvh - 5rem);
+  height: calc(100vh - 4rem);
+  height: calc(100dvh - 4rem);
   overscroll-behavior: contain;
   scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
   scrollbar-width: thin;
@@ -39,6 +39,26 @@
 
 .dashboard-horizontal-scroll::-webkit-scrollbar {
   display: none;
+}
+
+html:has(.student-dashboard-content) {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+
+html:has(.student-dashboard-content) body {
+  width: auto;
+  min-width: 0;
+}
+
+@media (min-width: 1024px) {
+  .student-dashboard-content {
+    scrollbar-width: none;
+  }
+
+  .student-dashboard-content::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .student-mobile-sidebar::-webkit-scrollbar,
@@ -102,8 +122,8 @@
 
 @media (min-width: 1024px) {
   .admin-dashboard-shell {
-    height: calc(100vh - 80px);
-    height: calc(100dvh - 80px);
+    height: calc(100vh - 64px);
+    height: calc(100dvh - 64px);
   }
 
   .admin-sidebar-menu {

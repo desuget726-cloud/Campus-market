@@ -135,6 +135,14 @@ export const translations = {
         },
         studentToast: {
             profileSaved: 'Profile saved successfully.',
+            preferencesSaved: 'Preferences saved',
+            preferencesSaveFailed: 'Preferences could not be saved.',
+            preferencesLoadFailed: 'Unable to load notification preferences.',
+            savePreferences: 'Save Preferences',
+            resetPreferences: 'Reset',
+            savingPreferences: 'Saving…',
+            unsavedPreferences: 'Unsaved changes',
+            discardUnsavedPreferences: 'You have unsaved notification changes. Leave this tab without saving?',
             avatarUploaded: 'Profile photo updated successfully.',
             supportSubmitted: 'Support request submitted successfully.',
             wishlistAdded: 'Added to favorites.',
@@ -195,6 +203,14 @@ export const translations = {
             backToOverview: 'ወደ አጠቃላይ እይታ ተመለስ'
         },
         studentToast: {
+            preferencesSaved: 'ምርጫዎች ተቀምጠዋል',
+            preferencesSaveFailed: 'ምርጫዎችን ማስቀመጥ አልተቻለም።',
+            preferencesLoadFailed: 'የማሳወቂያ ምርጫዎችን መጫን አልተቻለም።',
+            savePreferences: 'ምርጫዎችን አስቀምጥ',
+            resetPreferences: 'ዳግም አስጀምር',
+            savingPreferences: 'በማስቀመጥ ላይ…',
+            unsavedPreferences: 'ያልተቀመጡ ለውጦች',
+            discardUnsavedPreferences: 'ያልተቀመጡ የማሳወቂያ ለውጦች አሉ። ሳያስቀምጡ ከዚህ ትር መውጣት ይፈልጋሉ?',
             ownProductAction: 'የራስዎን ምርት መግዛት ወይም ወደ ተወዳጆች ማስቀመጥ አይችሉም።'
         },
         auth: {

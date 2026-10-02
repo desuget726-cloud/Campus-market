@@ -2226,3 +2226,25 @@ Traceback (most recent call last):
     raise SMTPServerDisconnected("Connection unexpectedly closed: "
                                  + str(e))
 smtplib.SMTPServerDisconnected: Connection unexpectedly closed: [WinError 10054] An existing connection was forcibly closed by the remote host
+2026-10-02 16:08:33,721 ERROR Failed to send student notification email: timed out
+Traceback (most recent call last):
+  File "C:\Users\Lab 3\Documents\Campus-market\backend\app\main.py", line 2635, in _send_student_notification_email
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+         ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 263, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 350, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 320, in _get_socket
+    return socket.create_connection((host, port), timeout,
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+                                    self.source_address)
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 868, in create_connection
+    raise exceptions[0]
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 853, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out
