@@ -4,6 +4,8 @@ import AuthInfoModal from './AuthInfoModal';
 import { useLanguage } from '../../context/LanguageContext';
 import { apiUrl } from '../../api/config';
 import { API_BASE_URL } from '../../config';
+import logs from '../../assets/logs.png';
+import './LoginForm.css';
 
 const microsoftClientId = import.meta.env.VITE_MICROSOFT_CLIENT_ID || '';
 const microsoftRedirectUri = import.meta.env.VITE_MICROSOFT_REDIRECT_URI || `${window.location.origin}/login`;
@@ -335,165 +337,175 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
 
   return (
     <>
-      <div className="flex min-h-screen flex-col bg-slate-50 px-4 py-10 sm:px-6">
-        <main className="my-auto w-full max-w-md self-center animate-fade-in rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
-          <header className="mb-8">
-            <h1 className="text-3xl font-bold tracking-tight text-slate-900">Welcome Back</h1>
-            <p className="mt-2 text-sm text-slate-500">Sign in to your Campus Marketplace account.</p>
-          </header>
+      <div className="login-page-shell">
+        <div className="login-decor login-shape-top" />
+        <div className="login-decor login-shape-left" />
+        <div className="login-decor login-shape-right" />
+        <div className="login-decor login-shape-bottom" />
 
-          {error && (
-            <div className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
-              {error}
-            </div>
-          )}
+        <header className="login-brand" aria-label="UniXchange logo and brand">
+          <img src={logs} alt="UniXchange logo" className="login-brand-logo" />
+          <span className="login-brand-name">UniXchange</span>
+        </header>
 
-          {isSuccess && (
-            <div className="mb-5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-              <p className="font-semibold">{t('auth.loginSuccessful')}</p>
-              <p className="mt-1">
-                {t('auth.studentId')}: <span className="font-medium">{formData.studentId.trim()}</span>
-              </p>
-              <p>
-                {t('auth.password')}: <span className="font-medium">{formData.password.trim()}</span>
-              </p>
-            </div>
-          )}
+        <main className="login-card-shell">
+          <div className="login-card">
+            <header className="login-header">
+              <h1>Welcome Back,</h1>
+              <p>Sign in to your Campus Marketplace account.</p>
+            </header>
 
-          {showOtpModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-              <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-600">Two-step verification</p>
-                    <h2 className="mt-2 text-xl font-bold text-slate-900">Verify your login code</h2>
-                  </div>
-                  <button type="button" onClick={() => setShowOtpModal(false)} className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600">✕</button>
-                </div>
-
-                <p className="mb-4 text-sm leading-6 text-slate-600">
-                  {otpMode === 'backup'
-                    ? 'Enter one unused backup code for this administrator account.'
-                    : otpMode === 'email'
-                      ? <>Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.</>
-                      : 'Enter the 6-digit code from your authenticator app.'}
-                </p>
-
-                {remainingBackupCodes !== null && remainingBackupCodes <= 2 && (
-                  <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                    Only {remainingBackupCodes} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining. Consider regenerating them after signing in.
-                  </p>
-                )}
-
-                <form onSubmit={handleOtpSubmit} className="space-y-4">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={otpMode === 'backup' ? 32 : 6}
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(otpMode === 'backup' ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ''))}
-                    placeholder={otpMode === 'backup' ? 'BACKUP-CODE' : '000000'}
-                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
-                  <button type="submit" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold">{t('auth.verifyCode')}</button>
-                </form>
-                {otpRole === 'admin' && otpMode !== 'email' && <button type="button" onClick={() => { setOtpMode(otpMode === 'backup' ? 'authenticator' : 'backup'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">{otpMode === 'backup' ? 'Use authenticator code instead' : 'Use a backup code instead'}</button>}
+            {error && (
+              <div className="login-status login-status-error">
+                {error}
               </div>
-            </div>
-          )}
+            )}
 
-          {!showOtpModal && (
-            <>
-              <form onSubmit={handleSubmit} className="space-y-5">
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="studentId">{t('auth.studentIdOrEmail')}</label>
-                  <input
-                    id="studentId"
-                    name="studentId"
-                    type="text"
-                    value={formData.studentId}
-                    onChange={handleChange}
-                    placeholder={t('auth.enterStudentIdOrEmail')}
-                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
+            {isSuccess && (
+              <div className="login-status login-status-success">
+                <p className="login-status-title">{t('auth.loginSuccessful')}</p>
+                <p className="login-status-line">
+                  {t('auth.studentId')}: <span>{formData.studentId.trim()}</span>
+                </p>
+                <p className="login-status-line">
+                  {t('auth.password')}: <span>{formData.password.trim()}</span>
+                </p>
+              </div>
+            )}
+
+            {showOtpModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+                <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-600">Two-step verification</p>
+                      <h2 className="mt-2 text-xl font-bold text-slate-900">Verify your login code</h2>
+                    </div>
+                    <button type="button" onClick={() => setShowOtpModal(false)} className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600">✕</button>
+                  </div>
+
+                  <p className="mb-4 text-sm leading-6 text-slate-600">
+                    {otpMode === 'backup'
+                      ? 'Enter one unused backup code for this administrator account.'
+                      : otpMode === 'email'
+                        ? <>Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.</>
+                        : 'Enter the 6-digit code from your authenticator app.'}
+                  </p>
+
+                  {remainingBackupCodes !== null && remainingBackupCodes <= 2 && (
+                    <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                      Only {remainingBackupCodes} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining. Consider regenerating them after signing in.
+                    </p>
+                  )}
+
+                  <form onSubmit={handleOtpSubmit} className="space-y-4">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={otpMode === 'backup' ? 32 : 6}
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(otpMode === 'backup' ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ''))}
+                      placeholder={otpMode === 'backup' ? 'BACKUP-CODE' : '000000'}
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                    />
+                    <button type="submit" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold">{t('auth.verifyCode')}</button>
+                  </form>
+                  {otpRole === 'admin' && otpMode !== 'email' && <button type="button" onClick={() => { setOtpMode(otpMode === 'backup' ? 'authenticator' : 'backup'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">{otpMode === 'backup' ? 'Use authenticator code instead' : 'Use a backup code instead'}</button>}
                 </div>
+              </div>
+            )}
 
-                <div>
-                  <label className="mb-2 block text-sm font-medium text-slate-700" htmlFor="password">Password</label>
-                  <div className="relative">
+            {!showOtpModal && (
+              <>
+                <form onSubmit={handleSubmit} className="login-form">
+                  <div className="login-field-group">
+                    <input
+                      id="studentId"
+                      name="studentId"
+                      type="text"
+                      value={formData.studentId}
+                      onChange={handleChange}
+                      placeholder="Student ID or Email"
+                      className="login-input"
+                    />
+                  </div>
+
+                  <div className="login-field-group login-password-row">
                     <input
                       id="password"
                       name="password"
                       type={showPasswordLogin ? 'text' : 'password'}
                       value={formData.password}
                       onChange={handleChange}
-                      placeholder="Enter your password"
-                      className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 pr-20 text-sm text-slate-800 placeholder:text-slate-400 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                      placeholder="Password"
+                      className="login-input login-input-password"
                     />
                     <button
                       type="button"
                       onClick={() => setShowPasswordLogin((s) => !s)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-sm font-medium text-slate-500 hover:text-slate-800"
+                      className="login-password-toggle"
                     >
                       {showPasswordLogin ? 'Hide' : 'Show'}
                     </button>
                   </div>
+
+                  <div className="login-meta-row">
+                    <label className="login-checkbox">
+                      <input type="checkbox" />
+                      <span>Stay signed in for a week.</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowForgotPasswordModal(true)}
+                      className="login-link login-link-muted"
+                    >
+                      Forgot password?
+                    </button>
+                  </div>
+
+                  <button type="submit" className="login-submit">
+                    Login
+                  </button>
+                </form>
+
+                <div className="login-divider">
+                  <span>OR</span>
                 </div>
 
-                <button
-                  type="submit"
-                  className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-blue-200"
-                >
-                  Login
-                </button>
-              </form>
-              <div className="my-7 flex items-center gap-3 text-xs font-medium text-slate-400">
-                <span className="h-px flex-1 bg-slate-200" />
-                <span>OR</span>
-                <span className="h-px flex-1 bg-slate-200" />
-              </div>
+                <div className="login-socials">
+                  <button type="button" onClick={handleGoogleLogin} className="login-social-btn">
+                    <svg viewBox="0 0 24 24" className="login-social-icon" aria-hidden="true">
+                      <path fill="#4285F4" d="M21.35 12.23c0-.72-.06-1.42-.18-2.09H12v3.96h5.24a4.48 4.48 0 0 1-1.94 2.94v2.45h3.14c1.84-1.7 2.91-4.2 2.91-7.26Z" />
+                      <path fill="#34A853" d="M12 21.6c2.63 0 4.84-.87 6.45-2.36l-3.14-2.45c-.87.58-1.98.93-3.31.93-2.54 0-4.7-1.72-5.47-4.03H3.29v2.53A9.74 9.74 0 0 0 12 21.6Z" />
+                      <path fill="#FBBC05" d="M6.53 13.69a5.86 5.86 0 0 1 0-3.38V7.78H3.29a9.75 9.75 0 0 0 0 8.44l3.24-2.53Z" />
+                      <path fill="#EA4335" d="M12 6.28c1.43 0 2.71.49 3.72 1.45l2.79-2.79C16.83 3.38 14.63 2.4 12 2.4a9.74 9.74 0 0 0-8.71 5.38l3.24 2.53C7.3 8 9.46 6.28 12 6.28Z" />
+                    </svg>
+                    Continue with Google
+                  </button>
+                  <button type="button" onClick={handleMicrosoftLogin} className="login-social-btn">
+                    <svg viewBox="0 0 24 24" className="login-social-icon" aria-hidden="true">
+                      <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
+                      <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
+                      <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
+                      <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
+                    </svg>
+                    Continue with Microsoft
+                  </button>
+                </div>
 
-              <div className="space-y-3">
-                <button type="button" onClick={handleGoogleLogin} className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
-                    <path fill="#4285F4" d="M21.35 12.23c0-.72-.06-1.42-.18-2.09H12v3.96h5.24a4.48 4.48 0 0 1-1.94 2.94v2.45h3.14c1.84-1.7 2.91-4.2 2.91-7.26Z" />
-                    <path fill="#34A853" d="M12 21.6c2.63 0 4.84-.87 6.45-2.36l-3.14-2.45c-.87.58-1.98.93-3.31.93-2.54 0-4.7-1.72-5.47-4.03H3.29v2.53A9.74 9.74 0 0 0 12 21.6Z" />
-                    <path fill="#FBBC05" d="M6.53 13.69a5.86 5.86 0 0 1 0-3.38V7.78H3.29a9.75 9.75 0 0 0 0 8.44l3.24-2.53Z" />
-                    <path fill="#EA4335" d="M12 6.28c1.43 0 2.71.49 3.72 1.45l2.79-2.79C16.83 3.38 14.63 2.4 12 2.4a9.74 9.74 0 0 0-8.71 5.38l3.24 2.53C7.3 8 9.46 6.28 12 6.28Z" />
-                  </svg>
-                  Continue with Google
-                </button>
-                <button type="button" onClick={handleMicrosoftLogin} className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-                  <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
-                    <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
-                    <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
-                    <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
-                    <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
-                  </svg>
-                  Continue with Microsoft
-                </button>
-              </div>
-
-              <div className="mt-7 flex flex-col items-center justify-center gap-3 text-sm sm:flex-row sm:gap-6">
-                <button type="button" onClick={() => setShowForgotPasswordModal(true)} className="bg-transparent font-medium text-slate-600 transition hover:bg-transparent hover:text-emerald-700 focus:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 active:bg-transparent">
-                  Forgot password?
-                </button>
-                <button type="button" onClick={onToggleRegister} className="bg-transparent font-medium text-emerald-700 transition hover:bg-transparent hover:text-emerald-800 focus:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-200 active:bg-transparent">
-                  Create account
-                </button>
-              </div>
-            </>
-          )}
+                <div className="login-register-row">
+                  <span>Don't have an account?</span>
+                  <button type="button" onClick={onToggleRegister} className="login-link">
+                    Create account
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </main>
-      </div>
 
-      <footer className="mt-6 text-center text-xs text-slate-400">
-        <button type="button" onClick={() => setShowTerms(true)} className="transition hover:text-slate-600">{t('auth.terms')}</button>
-        <span className="mx-2">•</span>
-        <button type="button" onClick={() => setShowPrivacy(true)} className="transition hover:text-slate-600">{t('auth.privacy')}</button>
-        <span className="mx-2">•</span>
-        <button type="button" onClick={() => setShowHelp(true)} className="transition hover:text-slate-600">{t('auth.needHelp')}</button>
-      </footer>
+        <footer className="login-footer">© All rights reserved by UniXchange</footer>
+      </div>
 
       {(showTerms || showPrivacy || showHelp) && (
         <AuthInfoModal

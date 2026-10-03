@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 from dotenv import load_dotenv
 
 # Load configuration before importing modules that may initialize database state.
@@ -26,14 +28,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import case, event, func, inspect, or_, text
+from sqlalchemy import String, case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 from app.password_security import hash_password, verify_password
-from typing import Optional, List, Dict, Tuple, Any, Literal, cast
+from typing import Optional, List, Dict, Tuple, Any, Callable, Literal, cast
 from dataclasses import dataclass
 import shutil
 import logging
+import binascii
 import httpx
 from openai import OpenAI
 import uuid
@@ -90,6 +93,7 @@ from .wallet_service import apply_transaction
 from .commission_service import DEFAULT_COMMISSION_SETTINGS, as_decimal, commission_fee_from_settings, validate_commission_settings
 from .storage import save_attachment, save_upload
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
 
@@ -221,11 +225,6 @@ app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
-
 @app.get("/")
 def root_check():
     return {"status": "ok", "service": "campace-market-backend"}
@@ -261,13 +260,12 @@ class ConnectionManager:
 
     async def disconnect(self, student_id: str, websocket: Optional[WebSocket] = None) -> bool:
         """Unregister a student connection and log session end."""
-        session_info = None
         async with self._lock:
             current_connection = self.active_connections.get(student_id)
             if websocket is not None and current_connection is not websocket:
                 return False
             session_info = self.student_sessions.pop(student_id, {})
-            self.active_connections.pop(student_id, None)
+            removed_connection = self.active_connections.pop(student_id, None)
         
         if session_info:
             duration = datetime.now() - session_info.get("connected_at", datetime.now())
@@ -275,7 +273,7 @@ class ConnectionManager:
             self.logger.info(
                 f"[CHAT] Student {student_id} disconnected. Duration: {duration.total_seconds():.2f}s, Messages: {msg_count}"
             )
-            return session_info is not None
+        return removed_connection is not None or bool(session_info)
 
     async def send_personal_message(self, student_id: str, payload: dict) -> bool:
         """Send message to online student. Returns True if delivered."""
@@ -2441,9 +2439,9 @@ class StudentVerificationSettingsModel(BaseModel):
 def _normalize_student_verification_settings(values: dict) -> dict:
     defaults = DEFAULT_SETTINGS_BLOCKS["studentVerification"]
     normalized = StudentVerificationSettingsModel(
-        allowed_email_domain=values.get("allowedEmailDomain", values.get("allowed_email_domain", defaults["allowedEmailDomain"])),
-        require_university_email=values.get("requireUniversityEmail", values.get("require_university_email", defaults["requireUniversityEmail"])),
-        auto_approve_students=values.get("autoApproveStudents", values.get("auto_approve_students", defaults["autoApproveStudents"])),
+        allowedEmailDomain=values.get("allowedEmailDomain", values.get("allowed_email_domain", defaults["allowedEmailDomain"])),
+        requireUniversityEmail=values.get("requireUniversityEmail", values.get("require_university_email", defaults["requireUniversityEmail"])),
+        autoApproveStudents=values.get("autoApproveStudents", values.get("auto_approve_students", defaults["autoApproveStudents"])),
     )
     result = normalized.model_dump(by_alias=True)
     result["allowedEmailDomain"] = str(result["allowedEmailDomain"] or "").strip().lstrip("@").lower()
@@ -2690,6 +2688,33 @@ def _student_notification_in_app_enabled(student: Student, notification_type: st
     if notification_type in LOCKED_IN_APP_NOTIFICATION_TYPES:
         return True
     return bool(getattr(student, preference_fields[0], True))
+
+
+def notify_id_verified(db: Session, user_id: str) -> bool:
+    notification = Notification(
+        student_id=user_id,
+        title="ID Verification Approved",
+        message=(
+            "Your student identity has been successfully verified. You can now access full "
+            "marketplace features and complete transactions without restrictions."
+        ),
+        type="SYSTEM",
+        reference_id="id-verification-approved",
+        action_label="Go to Marketplace",
+        action_url="buyer",
+        is_read=False,
+    )
+    try:
+        with db.begin_nested():
+            db.add(notification)
+            db.flush()
+    except IntegrityError:
+        logger.info(
+            "Skipped duplicate ID verification notification for student %s.",
+            user_id,
+        )
+        return False
+    return True
 
 
 def _add_student_notification(db: Session, student: Student, title: str, message: str, notification_type: str, target: Optional[str] = None) -> bool:
@@ -3105,10 +3130,11 @@ def ensure_database_compatibility(db: Session) -> None:
         if student_created_at.fetchone() is None:
             db.execute(text("ALTER TABLE students ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"))
 
-        report_foreign_keys = inspect(db.bind).get_foreign_keys("reports")
+        report_foreign_keys = inspect(db.get_bind()).get_foreign_keys("reports")
         for foreign_key in report_foreign_keys:
-            if foreign_key.get("constrained_columns") == ["student_id"] and foreign_key.get("name"):
-                constraint_name = foreign_key["name"].replace("`", "")
+            constraint_name = foreign_key.get("name")
+            if foreign_key.get("constrained_columns") == ["student_id"] and constraint_name:
+                constraint_name = constraint_name.replace("`", "")
                 if constraint_name == "fk_reports_student_id":
                     db.execute(text("ALTER TABLE reports DROP FOREIGN KEY `fk_reports_student_id`"))
                 elif constraint_name == "fk_reports_student_id_1":
@@ -3416,7 +3442,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     ).first()
 
     admin_locked_until = _as_utc_datetime(admin.locked_until) if admin else None
-    if admin_locked_until and admin_locked_until > datetime.now(timezone.utc):
+    if admin is not None and admin_locked_until and admin_locked_until > datetime.now(timezone.utc):
         _record_admin_login_event(db, admin.id, "login_locked", request)
         db.commit()
         retry_at = admin_locked_until.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -3539,7 +3565,7 @@ async def _exchange_oauth_code(token_url: str, payload: dict) -> dict:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(token_url, data=payload)
-    except httpx.RequestError:
+    except httpx.RequestError as error:
         logging.getLogger("app.auth").error("OAuth token exchange failed: reason=provider_unavailable")
         raise HTTPException(
             status_code=502,
@@ -3859,9 +3885,9 @@ async def google_callback(
 
     try:
         student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
-    except GoogleOAuthPolicyError as error:
-        _log_google_oauth_failure(error.code)
-        return _google_oauth_frontend_redirect(error.code, error.domain)
+    except GoogleOAuthPolicyError as policy_error:
+        _log_google_oauth_failure(policy_error.code)
+        return _google_oauth_frontend_redirect(policy_error.code, policy_error.domain)
     except HTTPException:
         _log_google_oauth_failure("account_unavailable")
         return _google_oauth_frontend_redirect("account_unavailable")
@@ -4040,10 +4066,13 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     if admin.two_factor_enabled:
         admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+        if not admin:
+            raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
         second_factor_code = request.otp_code.strip()
+        configured_secret = _decrypt_totp_secret(admin.two_factor_secret)
         valid_totp = bool(
-            _decrypt_totp_secret(admin.two_factor_secret)
-            and pyotp.TOTP(_decrypt_totp_secret(admin.two_factor_secret)).verify(second_factor_code, valid_window=1)
+            configured_secret
+            and pyotp.TOTP(configured_secret).verify(second_factor_code, valid_window=1)
         )
         if valid_totp or _consume_admin_backup_code(db, admin, second_factor_code):
             token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
@@ -4518,7 +4547,7 @@ def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Sess
             raise HTTPException(status_code=400, detail="Current password is required to update the password.")
         if not verify_password(current_password, admin.password_hash):
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
-        if not secrets.compare_digest(new_password, payload.confirm_password):
+        if not payload.confirm_password or not secrets.compare_digest(new_password, payload.confirm_password):
             raise HTTPException(status_code=400, detail="New password and confirm password do not match.")
         _validate_admin_password(new_password)
         admin.password_hash = hash_password(new_password)
@@ -4587,7 +4616,7 @@ def _decode_admin_jwt(session_token: str) -> dict:
         header = json.loads(base64.urlsafe_b64decode(padding(encoded_header)).decode())
         payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode())
         provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
-    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error):
         logging.getLogger("app.auth").warning("Admin auth rejected: jwt_malformed.")
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
 
@@ -4632,7 +4661,7 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
         header = json.loads(base64.urlsafe_b64decode(padding(encoded_header)).decode())
         payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode())
         provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
-    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, base64.binascii.Error):
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error):
         raise HTTPException(status_code=401, detail="Invalid JWT token.")
 
     session_secret = _get_session_secret()
@@ -4738,7 +4767,7 @@ def setup_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db:
         issuer_name="Campus Market",
     )
     qr_buffer = io.BytesIO()
-    qrcode.make(provisioning_uri).save(qr_buffer, format="PNG")
+    qrcode.make(provisioning_uri).save(qr_buffer, kind="PNG")
     qr_code = base64.b64encode(qr_buffer.getvalue()).decode("ascii")
     return {
         "enabled": _admin_two_factor_configured(admin),
@@ -4752,6 +4781,8 @@ def setup_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db:
 def verify_admin_two_factor_setup(payload: AdminTwoFactorVerifyRequest, request: Request, db: Session = Depends(get_db)):
     admin, _ = _admin_for_session(db, payload.session_token)
     admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Administrator account not found.")
     secret = _decrypt_totp_secret(admin.two_factor_pending_secret)
     if not secret or not pyotp.TOTP(secret).verify(payload.code.strip(), valid_window=1):
         raise HTTPException(status_code=400, detail="Invalid authenticator code.")
@@ -4837,6 +4868,8 @@ def _verify_admin_reauthentication(db: Session, admin: Admin, current_password: 
 def generate_admin_backup_codes(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
     admin, _ = _admin_for_session(db, payload.session_token)
     admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Administrator account not found.")
     if not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
         raise HTTPException(status_code=400, detail="Enable authenticator-based 2FA before generating backup codes.")
     if not _verify_admin_reauthentication(db, admin, payload.current_password, payload.otp_code):
@@ -4855,6 +4888,8 @@ def generate_admin_backup_codes(payload: AdminTwoFactorRequest, request: Request
 def disable_admin_two_factor(payload: AdminTwoFactorRequest, request: Request, db: Session = Depends(get_db)):
     admin, _ = _admin_for_session(db, payload.session_token)
     admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Administrator account not found.")
     if not _verify_admin_reauthentication(db, admin, payload.current_password, payload.otp_code):
         raise HTTPException(status_code=403, detail="Re-authentication is required to disable two-factor authentication.")
     admin.two_factor_enabled = False
@@ -5084,9 +5119,6 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         db.commit()
 
         return {"success": True, "message": "Settings saved successfully", "settings": normalized, "changes": changes}
-    except HTTPException:
-        db.rollback()
-        raise
     except HTTPException:
         db.rollback()
         raise
@@ -7768,7 +7800,7 @@ def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tup
         return [(p, 0.5) for p in products]
 
 
-def search_products_by_intent(db: Session, message: str, intent: str, department: str = None) -> List[Product]:
+def search_products_by_intent(db: Session, message: str, intent: str, department: Optional[str] = None) -> List[Product]:
     try:
         keywords = extract_search_keywords(message)
         query = _public_marketplace_product_query(db)
@@ -8764,6 +8796,9 @@ def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
             "message": item.message,
             "type": item.type,
             "target": _notification_target(db, item),
+            "reference_id": item.reference_id,
+            "action_label": item.action_label,
+            "action_url": item.action_url,
             "order_id": _notification_order_id(db, item),
             "is_read": item.is_read,
             "created_at": item.created_at,
@@ -8779,6 +8814,9 @@ def get_student_notifications(student_id: str, db: Session = Depends(get_db)):
             "message": item.message,
             "type": item.type,
             "target": _notification_target(db, item),
+            "reference_id": item.reference_id,
+            "action_label": item.action_label,
+            "action_url": item.action_url,
             "order_id": _notification_order_id(db, item),
             "is_read": item.is_read,
             "created_at": item.created_at,
@@ -10018,6 +10056,8 @@ def checkout_student_cart(
         raise HTTPException(status_code=403, detail="You can only check out your own cart.")
     data.student_id = student.student_id
     student = db.query(Student).filter(Student.student_id == data.student_id).with_for_update().first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student account not found.")
     require_student_verification = get_security_settings(db).require_student_verification
     if require_student_verification and not student.is_verified:
         raise HTTPException(
@@ -11396,7 +11436,11 @@ def resolve_dispute(
                     raise HTTPException(status_code=502, detail="The timeout refund could not be completed.")
                 db.expire_all()
                 dispute = db.query(Dispute).filter(Dispute.id == dispute_id).first()
+                if not dispute:
+                    raise HTTPException(status_code=404, detail="Dispute not found after refund.")
                 order = db.query(Order).filter(Order.id == dispute.order_id).first()
+                if not order:
+                    raise HTTPException(status_code=404, detail="Order not found after refund.")
                 refund_transaction = db.query(Transaction).filter(
                     Transaction.tx_id == f"REFUND-SELLER-TIMEOUT-{order.id}",
                     Transaction.status == "Successful",
@@ -12015,7 +12059,7 @@ def _submit_chapa_withdrawal(db: Session, payout_id: int):
         SellerPaymentAccount.id == payout.payout_account_id,
     ).first()
     adapter = get_payout_adapter(provider.code) if provider else None
-    if adapter is None or account is None:
+    if adapter is None or account is None or provider is None:
         _resolve_pending_payout(
             db,
             payout_id,
@@ -13729,7 +13773,9 @@ def bulk_approve_verifications(student_ids: List[int], db: Session = Depends(get
 
     try:
         unique_ids = list(dict.fromkeys(student_ids))
-        students = db.query(Student).filter(Student.id.in_(unique_ids)).all()
+        students = db.query(Student).filter(
+            Student.id.in_(unique_ids)
+        ).with_for_update().all()
         students_by_id = {student.id: student for student in students}
         missing_ids = [student_id for student_id in unique_ids if student_id not in students_by_id]
         if missing_ids:
@@ -13739,17 +13785,12 @@ def bulk_approve_verifications(student_ids: List[int], db: Session = Depends(get
         approved_ids = []
         approved_students = []
         for student in students:
-            student.is_verified = True
+            if not student.is_verified:
+                student.is_verified = True
+                notify_id_verified(db, student.student_id)
             student.verification_reason = None
             approved_ids.append(student.id)
             approved_students.append(f"{student.name} ({student.student_id})")
-            db.add(Notification(
-                student_id=student.student_id,
-                title="Identity verification approved",
-                message="Your student identity has been successfully verified. You can now access full marketplace features.",
-                type="system",
-                is_read=False,
-            ))
 
         db.add(AuditLog(
             admin_id=admin.id if admin else None,
@@ -13858,7 +13899,7 @@ def update_student_verification(
     payload: VerificationDecisionRequest,
     db: Session = Depends(get_db),
 ):
-    student = db.query(Student).filter(Student.id == id).first()
+    student = db.query(Student).filter(Student.id == id).with_for_update().first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
@@ -13868,6 +13909,16 @@ def update_student_verification(
 
     approved = normalized_status in {"approved", "verified"}
     rejection_reason = (payload.reason or "").strip() if not approved else None
+    if approved and student.is_verified:
+        return {
+            "message": "Student is already verified.",
+            "student_id": student.student_id,
+            "status": "Approved",
+            "reason": None,
+            "is_verified": True,
+            "email_sent": False,
+            "email_detail": "No status change was made.",
+        }
 
     admin = db.query(Admin).order_by(Admin.id.asc()).first()
 
@@ -13875,11 +13926,7 @@ def update_student_verification(
         if approved:
             student.is_verified = True
             student.verification_reason = None
-            notification_message = (
-                f"Your student identity has been successfully verified. "
-                "You can now access full marketplace features and complete transactions without restrictions."
-            )
-            notification_title = "Identity verification approved"
+            notify_id_verified(db, student.student_id)
             log_action = "Student Verification Approved"
             description = f"Admin approved student verification for {student.name} ({student.student_id})."
         else:
@@ -13896,13 +13943,13 @@ def update_student_verification(
                 f"with reason: {rejection_reason}."
             )
 
-        db.add(Notification(
-            student_id=student.student_id,
-            title=notification_title,
-            message=notification_message,
-            type="system",
-            is_read=False,
-        ))
+            db.add(Notification(
+                student_id=student.student_id,
+                title=notification_title,
+                message=notification_message,
+                type="system",
+                is_read=False,
+            ))
 
         db.add(AuditLog(
             admin_id=admin.id if admin else None,

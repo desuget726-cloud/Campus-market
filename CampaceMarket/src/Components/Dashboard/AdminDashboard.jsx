@@ -2382,22 +2382,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       ));
       refreshAuditLogs();
 
-      try {
-        await fetch(`${API_BASE_URL}/api/student/notifications`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            student_id: target.student_id,
-            title: actionStatus === 'Verified' ? 'ID Verification Approved' : 'ID Verification Rejected',
-            message: actionStatus === 'Verified'
-              ? 'Your student identity has been successfully verified. You can now access full marketplace features.'
-              : `Your verification request was rejected. Reason: ${reason || 'Verification failed'}. Please resubmit a clear ID card.`
-          })
-        });
-      } catch (notificationError) {
-        console.warn('Notification endpoint unavailable; continuing without it.', notificationError);
-      }
-
       if (payload && payload.message) {
         console.info(payload.message);
       }

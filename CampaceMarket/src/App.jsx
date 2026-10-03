@@ -451,7 +451,7 @@ function AppContent() {
   };
 
   return (
-    <div className={`flex min-h-screen flex-col bg-slate-50 text-slate-800 ${currentView === 'admin-dashboard' ? 'lg:h-screen lg:overflow-hidden' : ''}`}>
+    <div className={`flex min-h-screen flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-screen lg:overflow-hidden' : ''}`}>
       <Toaster
         position="top-right"
         containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
@@ -488,31 +488,35 @@ function AppContent() {
         }}
       />
       <PaymentSuccessToast />
-      <Navbar
-        variant={isDashboardView ? 'dashboard' : 'public'}
-        onNavigate={handleNavigate}
-        onDashboardMenuClick={() => window.dispatchEvent(new Event('campace:open-dashboard-sidebar'))}
-        user={user}
-        userRole={userRole}
-        onLogout={handleLogout}
-        unreadCount={unreadCount}
-        onNotificationClick={handleNotificationClick}
-        onAdminProfileClick={() => {
-          setAdminTab('profile');
-          setCurrentView('admin-dashboard');
-        }}
-        onStudentProfileClick={() => {
-          setStudentTab('profile');
-          setCurrentView('student-dashboard');
-        }}
-      />
+      {!['login', 'register'].includes(currentView) && (
+        <Navbar
+          variant={isDashboardView ? 'dashboard' : 'public'}
+          onNavigate={handleNavigate}
+          onDashboardMenuClick={() => window.dispatchEvent(new Event('campace:open-dashboard-sidebar'))}
+          user={user}
+          userRole={userRole}
+          onLogout={handleLogout}
+          unreadCount={unreadCount}
+          onNotificationClick={handleNotificationClick}
+          onAdminProfileClick={() => {
+            setAdminTab('profile');
+            setCurrentView('admin-dashboard');
+          }}
+          onStudentProfileClick={() => {
+            setStudentTab('profile');
+            setCurrentView('student-dashboard');
+          }}
+        />
+      )}
 
-      <div className={`flex flex-1 flex-col pt-16 lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
+      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'pt-16'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
         <main className={isStudentMessagesView
           ? 'min-h-0 min-w-0 w-full flex-1 overflow-hidden pb-0'
-          : isHomeView
-            ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8'
-            : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'} pb-6 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
+          : ['login', 'register'].includes(currentView)
+            ? 'w-full min-w-0 flex-1'
+            : isHomeView
+              ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8'
+              : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'} pb-6 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
@@ -524,7 +528,7 @@ function AppContent() {
           )}
 
           {currentView === 'register' && (
-            <div className="py-8">
+            <div className="min-h-full">
               <RegisterForm
                 onRegisterSuccess={handleRegisterSuccess}
                 onCancel={() => setCurrentView('home')}
@@ -613,7 +617,7 @@ function AppContent() {
         </main>
       </div>
 
-      {!isDashboardView && <Footer onNavigate={handleNavigate} />}
+      {!isDashboardView && !['login', 'register'].includes(currentView) && <Footer onNavigate={handleNavigate} />}
 
       {(showFooterPrivacy || showFooterTerms) && (
         <AuthInfoModal

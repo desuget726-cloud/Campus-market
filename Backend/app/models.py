@@ -547,12 +547,24 @@ class SupportTicket(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
+    __table_args__ = (
+        Index(
+            "uq_notifications_user_type_reference",
+            "student_id",
+            "type",
+            "reference_id",
+            unique=True,
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     title = Column(String(200), nullable=True)
     message = Column(String(500), nullable=False)
     target = Column(String(150), nullable=True)
+    reference_id = Column(String(75), nullable=True)
+    action_label = Column(String(150), nullable=True)
+    action_url = Column(String(500), nullable=True)
     is_read = Column(Boolean, default=False, nullable=False)
     type = Column(String(50), nullable=False, default="system")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

@@ -4,10 +4,11 @@ import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 const filters = ["All", "Orders", "Payments", "System"];
 
 const getCategory = (notification) => {
-    const type = String(notification.type || "").toLowerCase();
+    const type = String(notification.type || "").toUpperCase();
     const value =
         `${notification.type || ""} ${notification.category || ""} ${notification.title || ""} ${notification.message || ""}`.toLowerCase();
-    if (["product", "approval", "announcement"].includes(type)) return "System";
+    if (["SYSTEM", "PRODUCT", "APPROVAL", "ANNOUNCEMENT", "MODERATION"].includes(type)) return "System";
+    if (["PAYMENT", "PAYMENTS", "PAYOUT"].includes(type)) return "Payments";
     if (/order|purchase|delivery|pickup/.test(value)) return "Orders";
     if (/payment|wallet|chapa|transaction|refund|payout|withdraw/.test(value)) return "Payments";
     return "System";
@@ -102,6 +103,25 @@ const getOrderId = (notification) => {
     }
 };
 
+const getNotificationAction = (notification, category) => {
+    const type = String(notification.type || "").toUpperCase();
+    const paymentId = notification.paymentId ?? notification.payment_id;
+    if (type === "PAYMENT" && paymentId !== undefined && paymentId !== null && paymentId !== "") {
+        return { label: "View Payment →", url: null };
+    }
+
+    const actionLabel = notification.actionLabel ?? notification.action_label;
+    const actionUrl = notification.actionUrl ?? notification.action_url;
+    if (actionLabel && actionUrl) return { label: actionLabel, url: actionUrl };
+    if (category === "Orders") {
+        return {
+            label: getDisputeTarget(notification) ? "View Dispute →" : "View Order →",
+            url: null,
+        };
+    }
+    return null;
+};
+
 function NotificationCenter({
     notifications,
     isSidebarOpen,
@@ -153,6 +173,11 @@ function NotificationCenter({
         .filter((group) => group.items.length > 0);
 
     const handleAction = (notification) => {
+        const actionUrl = notification.actionUrl ?? notification.action_url;
+        if (actionUrl) {
+            onNavigate?.(actionUrl);
+            return;
+        }
         const disputeTarget = getDisputeTarget(notification);
         if (disputeTarget) {
             onDispute?.(disputeTarget);
@@ -304,15 +329,13 @@ function NotificationCenter({
                                                     <span className={`text-xs font-bold uppercase tracking-wider ${isRead ? "text-slate-400" : "text-slate-500"}`}>
                                                         {category}
                                                     </span>
-                                                    {category !== "System" && (
+                                                    {getNotificationAction(notification, category) && (
                                                         <button
                                                             type="button"
                                                             onClick={() => handleAction(notification)}
                                                             className="text-sm font-black text-[var(--brand-primary)] hover:text-[var(--brand-primary-hover)]"
                                                         >
-                                                            {category === "Orders"
-                                                                ? (getDisputeTarget(notification) ? "View Dispute →" : "View Order →")
-                                                                : "View Payment →"}
+                                                            {getNotificationAction(notification, category).label}
                                                         </button>
                                                     )}
                                                 </div>

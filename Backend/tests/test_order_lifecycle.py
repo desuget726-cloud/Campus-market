@@ -131,12 +131,12 @@ class OrderLifecycleTests(unittest.TestCase):
         finally:
             main_module._student_from_authorization = original_resolver
 
-        bound_values = {
+        bound_values = [
             element.value
             for condition in captured_filters
             for element in visitors.iterate(condition)
             if hasattr(element, "value")
-        }
+        ]
         self.assertIn("seller-1", bound_values)
         self.assertIn("Seller One", bound_values)
 

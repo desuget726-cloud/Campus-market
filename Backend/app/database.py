@@ -110,6 +110,30 @@ def init_db() -> None:
                     "ALTER TABLE reviews ADD CONSTRAINT uq_reviews_order_student "
                     "UNIQUE (order_id, student_id)"
                 ))
+    if "notifications" in inspector.get_table_names():
+        notification_columns = {
+            column["name"] for column in inspector.get_columns("notifications")
+        }
+        missing_notification_columns = {
+            "reference_id": "VARCHAR(75) NULL",
+            "action_label": "VARCHAR(150) NULL",
+            "action_url": "VARCHAR(500) NULL",
+        }
+        for column_name, column_definition in missing_notification_columns.items():
+            if column_name not in notification_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        f"ALTER TABLE notifications ADD COLUMN `{column_name}` {column_definition}"
+                    ))
+        notification_indexes = {
+            index["name"] for index in inspect(engine).get_indexes("notifications")
+        }
+        if "uq_notifications_user_type_reference" not in notification_indexes:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX uq_notifications_user_type_reference "
+                    "ON notifications (student_id, type, reference_id)"
+                ))
     if "products" in inspector.get_table_names() and "condition" not in {
         column["name"] for column in inspector.get_columns("products")
     }:
