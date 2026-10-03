@@ -75,7 +75,7 @@ from .models import (
     Student, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_webhook_secret, get_payout_adapter
@@ -179,7 +179,14 @@ app.add_middleware(
     allow_origins=origins,        #  Uses origins list
     allow_credentials=True,       #  Allow cookies/auth
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With", "Idempotency-Key"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "X-Requested-With",
+        "Idempotency-Key",
+        "X-Reauth-Password",
+    ],
 )
 
 
@@ -1647,8 +1654,51 @@ class SellerPayoutSetupRequest(BaseModel):
     provider_id: Optional[int] = None
     provider_name: Optional[str] = None
     bank_code: str
-    account_number: str
+    account_number: Optional[str] = None
     account_name: str
+
+
+def normalize_student_id(value: Optional[str]) -> str:
+    return str(value or "").strip().upper()
+
+
+def _mask_account_value(value: Optional[str], keep_last: int = 4) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    digits_only = re.sub(r"\D", "", text)
+    if not digits_only:
+        return "••••"
+    if len(digits_only) <= keep_last:
+        return "••••" + digits_only
+    return "••••" + digits_only[-keep_last:]
+
+
+def _seller_payment_account_by_student(db: Session, student_id: str) -> Optional[SellerPaymentAccount]:
+    normalized_student_id = normalize_student_id(student_id)
+    if not normalized_student_id:
+        return None
+    return db.query(SellerPaymentAccount).filter(
+        func.upper(func.trim(SellerPaymentAccount.student_id)) == normalized_student_id,
+    ).first()
+
+
+def _student_payout_payload(db: Session, account: SellerPaymentAccount) -> dict:
+    provider = db.query(PayoutProvider).filter(PayoutProvider.id == account.provider_id).first()
+    account_value = str((account.phone_number if account.payout_type == "mobile_wallet" else account.account_number) or "").strip()
+    return {
+        "exists": True,
+        "payout_type": account.payout_type,
+        "provider": provider.name if provider else (account.bank_code or "bank"),
+        "bank_code": account.bank_code,
+        "business_name": account.business_name,
+        "account_name": account.account_name,
+        "account_number_masked": _mask_account_value(account_value),
+        "phone_number_masked": _mask_account_value(account.phone_number or ""),
+        "account_status": account.account_status,
+        "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+        "payout_hold_until": account.payout_hold_until.isoformat() if account.payout_hold_until else None,
+    }
 
 
 class PayoutProviderUpsertRequest(BaseModel):
@@ -2903,11 +2953,37 @@ def ensure_database_compatibility(db: Session) -> None:
             "provider_id": "ALTER TABLE seller_payment_accounts ADD COLUMN provider_id INT NULL",
             "payout_type": "ALTER TABLE seller_payment_accounts ADD COLUMN payout_type VARCHAR(30) NOT NULL DEFAULT 'bank'",
             "phone_number": "ALTER TABLE seller_payment_accounts ADD COLUMN phone_number VARCHAR(30) NULL",
+            "updated_at": "ALTER TABLE seller_payment_accounts ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+            "payout_hold_until": "ALTER TABLE seller_payment_accounts ADD COLUMN payout_hold_until DATETIME NULL",
         }
         for column_name, statement in payout_account_columns.items():
             column = db.execute(text("SHOW COLUMNS FROM seller_payment_accounts LIKE :column_name"), {"column_name": column_name})
             if column.fetchone() is None:
                 db.execute(text(statement))
+
+        seller_history_table = db.execute(text("SHOW TABLES LIKE 'seller_payment_account_history'"))
+        if seller_history_table.fetchone() is None:
+            db.execute(text("""
+                CREATE TABLE seller_payment_account_history (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    student_id VARCHAR(50) NOT NULL,
+                    changed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    changed_fields JSON NOT NULL,
+                    old_last4 VARCHAR(10) NULL,
+                    new_last4 VARCHAR(10) NULL,
+                    ip_address VARCHAR(50) NULL,
+                    user_agent VARCHAR(255) NULL,
+                    INDEX ix_seller_payment_account_history_student_id (student_id),
+                    INDEX ix_seller_payment_account_history_changed_at (changed_at)
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+            """))
+
+        db.execute(text("UPDATE seller_payment_accounts SET student_id = UPPER(TRIM(student_id)) WHERE student_id <> UPPER(TRIM(student_id))"))
+        duplicate_check = db.execute(text("SELECT student_id, COUNT(*) FROM seller_payment_accounts GROUP BY student_id HAVING COUNT(*) > 1")).fetchall()
+        if not duplicate_check:
+            duplicate_index = db.execute(text("SHOW INDEX FROM seller_payment_accounts WHERE Key_name = 'student_id'"))
+            if duplicate_index.fetchone() is None:
+                db.execute(text("CREATE UNIQUE INDEX uq_seller_payment_accounts_student_id ON seller_payment_accounts (student_id)"))
 
         for table_name, column_name, statement in [
             ("seller_payment_accounts", "chapa_sub_account_id", "ALTER TABLE seller_payment_accounts MODIFY COLUMN chapa_sub_account_id VARCHAR(100) NULL"),
@@ -5929,6 +6005,313 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
     }
 
 
+@app.get("/api/seller/payout-account")
+def get_authenticated_seller_payout_account(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    account = _seller_payment_account_by_student(db, student.student_id)
+    if not account:
+        return {"exists": False}
+    return _student_payout_payload(db, account)
+
+
+def _sanitize_chapa_diagnostic(value: Any, sensitive_values: List[str]) -> str:
+    diagnostic = str(value or "")
+    for sensitive_value in sorted((str(item) for item in sensitive_values if item), key=len, reverse=True):
+        diagnostic = diagnostic.replace(sensitive_value, "[redacted]")
+    diagnostic = re.sub(r"(?i)\bbearer\s+\S+", "Bearer [redacted]", diagnostic)
+    diagnostic = re.sub(r"(?<![A-Za-z0-9])(?:\+?\d[\s().-]*){7,}\d(?![A-Za-z0-9])", "[redacted]", diagnostic)
+    diagnostic = re.sub(r"\d{4,}", "[redacted]", diagnostic)
+    return diagnostic[:500]
+
+
+def _chapa_response_diagnostics(
+    response_data: Any,
+    sensitive_values: List[str],
+) -> Tuple[str, List[str], str]:
+    if not isinstance(response_data, dict):
+        return "", [], ""
+
+    data = response_data.get("data")
+    message = response_data.get("message")
+    if not message and isinstance(data, dict):
+        message = data.get("message")
+
+    errors = response_data.get("errors")
+    if errors is None and isinstance(data, dict):
+        errors = data.get("errors")
+
+    field_names = set()
+    error_texts = []
+
+    def collect_errors(value: Any, field_name: str = "") -> None:
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                raw_key = str(key)
+                safe_key = raw_key[:80] if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,79}", raw_key) else ""
+                if safe_key:
+                    field_names.add(safe_key)
+                collect_errors(nested_value, safe_key)
+        elif isinstance(value, list):
+            for nested_value in value:
+                collect_errors(nested_value, field_name)
+        elif value is not None:
+            error_texts.append(_sanitize_chapa_diagnostic(value, sensitive_values))
+
+    collect_errors(errors)
+    return (
+        _sanitize_chapa_diagnostic(message, sensitive_values),
+        sorted(field_names),
+        "; ".join(error_texts)[:1000],
+    )
+
+
+async def _create_chapa_subaccount(
+    db: Session,
+    chapa_payload: Dict[str, Any],
+    secret: str,
+) -> str:
+    method = "POST"
+    path = "/v1/subaccount"
+    request_payload = dict(chapa_payload)
+    commission_settings = _get_commission_settings(db)
+    if commission_settings["commission_enabled"] and commission_settings["commission_type"] == "percentage":
+        commission_percent = as_decimal(commission_settings["commission_rate"], field_name="commission_rate")
+        if commission_percent < 0 or commission_percent >= 100:
+            raise HTTPException(status_code=500, detail="Commission rate must be between 0 and 100 for percentage mode.")
+        commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
+        request_payload.update({"split_type": "percentage", "split_value": str(commission_fraction)})
+
+    logger = logging.getLogger("app.payments")
+    request_fields = sorted(request_payload)
+    sensitive_values = [secret, *[str(value) for value in request_payload.values() if value is not None]]
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                f"https://api.chapa.co{path}",
+                headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+                json=request_payload,
+            )
+    except httpx.TimeoutException as error:
+        logger.warning(
+            "Chapa subaccount request timed out method=%s path=%s status=unavailable fields=%s error_type=%s",
+            method, path, request_fields, type(error).__name__,
+        )
+        raise HTTPException(status_code=503, detail="Payout provider timed out; payout details were not changed. Please try again.") from error
+    except httpx.HTTPError as error:
+        logger.warning(
+            "Chapa subaccount request failed method=%s path=%s status=unavailable fields=%s error_type=%s",
+            method, path, request_fields, type(error).__name__,
+        )
+        raise HTTPException(status_code=502, detail="Unable to reach the payout provider; payout details were not changed.") from error
+
+    try:
+        response_data = response.json()
+    except ValueError:
+        response_data = None
+
+    message, validation_fields, validation_errors = _chapa_response_diagnostics(
+        response_data,
+        sensitive_values,
+    )
+    response_data = response_data if isinstance(response_data, dict) else {}
+    chapa_data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
+    subaccount_id = chapa_data.get("subaccount_id") if isinstance(chapa_data, dict) else None
+    chapa_status = str(response_data.get("status") or "").strip().lower()
+    failed_status = bool(chapa_status and chapa_status not in {"success", "successful", "updated"})
+
+    if response.is_error or failed_status or not subaccount_id:
+        logger.warning(
+            "Chapa subaccount request rejected method=%s path=%s status=%s fields=%s message=%s validation_fields=%s validation_errors=%s",
+            method, path, response.status_code, request_fields, message,
+            validation_fields, validation_errors,
+        )
+        if response.status_code in {401, 403, 429}:
+            raise HTTPException(
+                status_code=503,
+                detail="Payout provider is unavailable or could not authorize the request; payout details were not changed.",
+            )
+        if 400 <= response.status_code < 500:
+            raise HTTPException(
+                status_code=422,
+                detail="Chapa could not verify these payout details. Check the account name, account number, and selected provider.",
+            )
+        if response.status_code >= 500:
+            raise HTTPException(
+                status_code=502,
+                detail="Payout provider could not process the request; payout details were not changed. Please try again.",
+            )
+        if failed_status:
+            raise HTTPException(
+                status_code=422,
+                detail="Chapa could not verify these payout details. Check the account name, account number, and selected provider.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail="Payout provider returned an unexpected response; payout details were not changed.",
+        )
+
+    return str(subaccount_id)
+
+
+@app.post("/api/seller/payout-account")
+def create_seller_payout_account(
+    payload: SellerPayoutSetupRequest,
+    authorization: Optional[str] = Header(None),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    existing = _seller_payment_account_by_student(db, student.student_id)
+    if existing:
+        raise HTTPException(status_code=409, detail="Payout account already exists, use edit.")
+
+    normalized_student_id = normalize_student_id(student.student_id)
+    account_number = str(payload.account_number or "").strip()
+    if not account_number:
+        raise HTTPException(status_code=400, detail="Account number is required to create a payout account.")
+    payout_type = _normalize_payout_type(payload.payout_type)
+    account = SellerPaymentAccount(
+        student_id=normalized_student_id,
+        business_name=(payload.business_name or '').strip(),
+        payout_type=payout_type,
+        bank_code=(payload.bank_code or '').strip(),
+        account_number=account_number if payout_type == 'bank' else None,
+        phone_number=account_number if payout_type == 'mobile_wallet' else None,
+        account_name=(payload.account_name or '').strip(),
+        account_status='Active',
+    )
+    db.add(account)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Payout account already exists, use edit.") from error
+    db.refresh(account)
+    return {
+        "success": True,
+        "exists": True,
+        "payout_type": account.payout_type,
+        "account_status": account.account_status,
+        "provider": account.bank_code,
+    }
+
+
+@app.patch("/api/seller/payout-account")
+async def update_seller_payout_account(
+    payload: SellerPayoutSetupRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    account = _seller_payment_account_by_student(db, student.student_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="No payout account found to edit.")
+
+    reauth_password = request.headers.get("x-reauth-password")
+    if not reauth_password or not verify_password(reauth_password, student.password):
+        raise HTTPException(status_code=401, detail="Recent re-authentication is required before changing payout details.")
+
+    normalized_student_id = normalize_student_id(student.student_id)
+    has_pending_payout = db.query(PayoutTransaction.id).filter(
+        func.upper(func.trim(PayoutTransaction.student_id)) == normalized_student_id,
+        func.lower(PayoutTransaction.status).in_(['pending', 'processing', 'pending_approval']),
+    ).first()
+    if has_pending_payout:
+        raise HTTPException(status_code=409, detail="Cannot change payout details while a payout is pending or processing.")
+
+    payout_type = _normalize_payout_type(payload.payout_type or account.payout_type)
+    provider = _resolve_selected_provider(db, payload)
+    if str(provider.integration_status or "").strip().lower() != "available":
+        raise HTTPException(status_code=400, detail="This payout provider is not yet available. Please choose another option.")
+
+    current_number = str((account.phone_number if account.payout_type == 'mobile_wallet' else account.account_number) or '').strip()
+    submitted_number = str(payload.account_number or '').strip()
+    provider_changed = provider.code != account.bank_code or payout_type != account.payout_type
+    if provider_changed and not submitted_number:
+        raise HTTPException(status_code=400, detail="Enter the account number for the new payout provider.")
+    target_number = submitted_number or current_number
+    if not target_number:
+        raise HTTPException(status_code=400, detail="Account number is required.")
+    if not target_number.isdigit():
+        raise HTTPException(status_code=400, detail="Account number must contain digits only.")
+    if payout_type == "mobile_wallet" and len(target_number) != 10:
+        raise HTTPException(status_code=400, detail="Mobile wallet numbers must be exactly 10 digits.")
+    if payout_type == "bank" and provider.code.lower() == "comari" and len(target_number) != 13:
+        raise HTTPException(status_code=400, detail="Commercial Bank of Ethiopia accounts must be exactly 13 digits.")
+    if payout_type == "bank" and provider.code.lower() != "comari" and not 10 <= len(target_number) <= 15:
+        raise HTTPException(status_code=400, detail="Account number must be between 10 and 15 digits for this bank.")
+
+    next_values = {
+        "business_name": str(payload.business_name or '').strip(),
+        "account_name": str(payload.account_name or '').strip(),
+        "bank_code": provider.code,
+        "provider_id": provider.id,
+        "payout_type": payout_type,
+        "account_number": target_number if payout_type == 'bank' else None,
+        "phone_number": target_number if payout_type == 'mobile_wallet' else None,
+    }
+    changed_fields = [
+        field for field, value in next_values.items()
+        if getattr(account, field) != value
+    ]
+    if not changed_fields:
+        return {"success": True, **_student_payout_payload(db, account)}
+
+    replacement_subaccount_id = None
+    if account.chapa_sub_account_id:
+        secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
+        if not secret:
+            raise HTTPException(status_code=503, detail="Payout provider is unavailable; payout details were not changed.")
+        chapa_payload = {
+            "business_name": next_values["business_name"],
+            "bank_code": next_values["bank_code"],
+            "account_number": target_number,
+            "account_name": next_values["account_name"],
+        }
+        replacement_subaccount_id = await _create_chapa_subaccount(db, chapa_payload, secret)
+
+    old_last4 = _mask_account_value(current_number)
+    for field, value in next_values.items():
+        setattr(account, field, value)
+    if replacement_subaccount_id:
+        account.chapa_sub_account_id = replacement_subaccount_id
+    now = datetime.now(timezone.utc)
+    account.updated_at = now
+    account.payout_hold_until = now + timedelta(hours=24)
+    new_last4 = _mask_account_value(target_number)
+    db.add(SellerPaymentAccountHistory(
+        student_id=normalized_student_id,
+        changed_fields=changed_fields,
+        old_last4=old_last4,
+        new_last4=new_last4,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get('user-agent'),
+    ))
+    db.add(AuditLog(
+        admin_id=None,
+        action='Payout Account Updated',
+        entity_type='SellerPaymentAccount',
+        entity_id=account.id,
+        description='Payout account updated: ' + ', '.join(changed_fields) + '; ' + new_last4,
+        status='SUCCESS',
+        severity='warning',
+        ip_address=request.client.host if request.client else None,
+    ))
+    try:
+        db.commit()
+        db.refresh(account)
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.payments").exception("Unable to save seller payout account update.")
+        raise HTTPException(status_code=500, detail="Unable to save payout account changes.")
+
+    return {"success": True, "message": "Payout account updated", **_student_payout_payload(db, account)}
+
+
 @app.post("/api/student/seller/setup-payout")
 async def setup_seller_payout_account(
     payload: SellerPayoutSetupRequest,
@@ -5943,21 +6326,15 @@ async def setup_seller_payout_account(
     if not student.is_verified:
         raise HTTPException(status_code=403, detail="Student verification is required before setting up payouts.")
 
-    existing_account = db.query(SellerPaymentAccount).filter(
-        SellerPaymentAccount.student_id == student.student_id,
-    ).first()
-    if existing_account and existing_account.account_status == "Active":
-        return {
-            "success": True,
-            "message": "Seller payout account is already active.",
-            "account_status": existing_account.account_status,
-            "subaccount_id": existing_account.chapa_sub_account_id,
-        }
+    existing_account = _seller_payment_account_by_student(db, student.student_id)
+    if existing_account:
+        raise HTTPException(status_code=409, detail="Payout account already exists, use edit.")
 
+    account_number = str(payload.account_number or "").strip()
     chapa_payload = {
         "business_name": payload.business_name.strip(),
         "bank_code": payload.bank_code.strip(),
-        "account_number": payload.account_number.strip(),
+        "account_number": account_number,
         "account_name": payload.account_name.strip(),
     }
     if not all(chapa_payload.values()):
@@ -5983,38 +6360,13 @@ async def setup_seller_payout_account(
     account_status = "Pending"
     secret = os.getenv("CHAPA_SECRET_KEY", "").strip()
     if selected_provider.is_active and selected_provider.code.isdigit() and secret:
-        commission_settings = _get_commission_settings(db)
-        if commission_settings["commission_enabled"] and commission_settings["commission_type"] == "percentage":
-            commission_percent = as_decimal(commission_settings["commission_rate"], field_name="commission_rate")
-            if commission_percent < 0 or commission_percent >= 100:
-                raise HTTPException(status_code=500, detail="Commission rate must be between 0 and 100 for percentage mode.")
-            commission_fraction = (commission_percent / Decimal("100")).quantize(Decimal("0.0001"))
-            chapa_payload.update({"split_type": "percentage", "split_value": str(commission_fraction)})
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(
-                    "https://api.chapa.co/v1/subaccount",
-                    headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
-                    json=chapa_payload,
-                )
-                response_data = response.json()
-        except (httpx.HTTPError, ValueError):
-            logging.getLogger("app.payments").exception("Unable to create seller payout account with Chapa.")
-            raise HTTPException(status_code=502, detail="Unable to create seller payout account with Chapa.")
-
-        response_data = response_data if isinstance(response_data, dict) else {}
-        chapa_data = response_data.get("data") if isinstance(response_data.get("data"), dict) else response_data
-        subaccount_id = chapa_data.get("subaccount_id") if isinstance(chapa_data, dict) else None
-        if response.is_error or not subaccount_id:
-            chapa_message = response_data.get("message") if isinstance(response_data, dict) else None
-            detail = str(chapa_message).strip() if chapa_message else "Chapa did not create the seller payout account."
-            raise HTTPException(status_code=502, detail=f"Unable to create seller payout account with Chapa: {detail}")
+        subaccount_id = await _create_chapa_subaccount(db, chapa_payload, secret)
         account_status = "Active"
 
     if existing_account:
         seller_account = existing_account
     else:
-        seller_account = SellerPaymentAccount(student_id=student.student_id)
+        seller_account = SellerPaymentAccount(student_id=normalize_student_id(student.student_id))
         db.add(seller_account)
 
     seller_account.provider_id = selected_provider.id
@@ -7133,13 +7485,27 @@ def get_seller_dashboard_data(
 @app.get("/api/seller/analytics")
 @app.get("/seller/analytics")
 def get_seller_sales_analytics(
-    request: Request,
+    request: Request = None,
     range_value: str = Query("3m", alias="range"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     """Return range-scoped seller KPIs, comparisons, and revenue series."""
-    session_token = request.cookies.get("session_token", "").strip()
+    if isinstance(request, str):
+        # Compatibility for direct helper-style calls in tests and older callers.
+        legacy_range = request
+        legacy_authorization = range_value
+        legacy_db = authorization
+        request = None
+        range_value = legacy_range
+        authorization = legacy_authorization
+        db = legacy_db
+
+    if request is not None:
+        session_token = request.cookies.get("session_token", "").strip()
+    else:
+        session_token = ""
+
     student = _student_from_authorization(
         authorization or (f"Bearer {session_token}" if session_token else None),
         db,

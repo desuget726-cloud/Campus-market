@@ -107,9 +107,24 @@ class SellerPaymentAccount(Base):
     phone_number = Column(String(30), nullable=True)
     account_name = Column(String(150), nullable=False)
     account_status = Column(String(30), default="Pending", nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    payout_hold_until = Column(DateTime, nullable=True)
 
     student = relationship("Student", back_populates="seller_payment_account")
     provider = relationship("PayoutProvider", back_populates="seller_payment_accounts")
+
+
+class SellerPaymentAccountHistory(Base):
+    __tablename__ = "seller_payment_account_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), nullable=False, index=True)
+    changed_at = Column(DateTime, server_default=func.now(), nullable=False)
+    changed_fields = Column(JSON, nullable=False)
+    old_last4 = Column(String(10), nullable=True)
+    new_last4 = Column(String(10), nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    user_agent = Column(String(255), nullable=True)
 
 
 class PayoutTransaction(Base):

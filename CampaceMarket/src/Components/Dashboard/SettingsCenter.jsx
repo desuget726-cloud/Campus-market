@@ -4,6 +4,7 @@ import { LockKeyhole } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
+import PayoutAccountPanel from './PayoutAccountPanel';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
 const settingsSections = [
@@ -106,6 +107,7 @@ function SettingsCenter({
     const studentIdEditable = String(user?.studentId || user?.student_id || '').toUpperCase().startsWith('OAUTH-');
     const [notificationPrefs, setNotificationPrefs] = useState(DEFAULT_NOTIFICATION_PREFERENCES);
     const [savedNotificationPrefs, setSavedNotificationPrefs] = useState(DEFAULT_NOTIFICATION_PREFERENCES);
+    const notificationPrefsDirty = Object.keys(notificationPrefs).some((key) => notificationPrefs[key] !== savedNotificationPrefs[key]);
     const [notificationPrefsLoadState, setNotificationPrefsLoadState] = useState('idle');
     const [notificationPrefsLoadError, setNotificationPrefsLoadError] = useState('');
     const [notificationPrefsRetryKey, setNotificationPrefsRetryKey] = useState(0);
@@ -128,83 +130,12 @@ function SettingsCenter({
         browser: 'Loading...',
         operating_system: 'Loading...',
     });
-    const [formData, setFormData] = useState({
-        business_name: '',
-        account_name: '',
-        bankCode: '',
-        provider_id: '',
-        account_number: '',
-    });
-    const [payoutMessage, setPayoutMessage] = useState('');
-    const [payoutError, setPayoutError] = useState('');
-    const [isSubmitting, setIsSubmitting] = useState(false);
-    const [accountNumberError, setAccountNumberError] = useState('');
-    const [payoutType, setPayoutType] = useState('bank');
-    const [providers, setProviders] = useState([]);
-    const [loadingProviders, setLoadingProviders] = useState(true);
-    const [payoutProvidersError, setPayoutProvidersError] = useState('');
-    const [providerReloadKey, setProviderReloadKey] = useState(0);
     const [idChangeRequest, setIdChangeRequest] = useState(null);
     const [showIdChangeForm, setShowIdChangeForm] = useState(false);
     const [requestedStudentId, setRequestedStudentId] = useState('');
     const [idEvidence, setIdEvidence] = useState(null);
     const [idChangeMessage, setIdChangeMessage] = useState('');
     const [idChangeSaving, setIdChangeSaving] = useState(false);
-
-    useEffect(() => {
-        let active = true;
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 12000);
-
-        const loadPayoutProviders = async () => {
-            setLoadingProviders(true);
-            setPayoutProvidersError('');
-            try {
-                const providerPath = `/api/payout-providers?type=${encodeURIComponent(payoutType)}`;
-                const [providerResponse, chapaResponse] = await Promise.all([
-                    fetch(`${API_BASE_URL}${providerPath}`, { signal: controller.signal }),
-                    fetch(`${API_BASE_URL}/api/payment/banks`, { signal: controller.signal }),
-                ]);
-                const data = await providerResponse.json().catch(() => ({}));
-                const chapaData = await chapaResponse.json().catch(() => ([]));
-                if (!providerResponse.ok) throw new Error(data?.detail || 'Unable to load payout provider list.');
-                const providerList = data?.providers;
-                if (!Array.isArray(providerList)) throw new Error('Payout provider service returned an invalid list.');
-                const chapaProviders = Array.isArray(chapaData)
-                    ? chapaData.map((provider) => [String(provider?.code || ''), String(provider?.name || '')])
-                    : [];
-                const chapaNamesByCode = new Map(chapaProviders.filter(([code, name]) => code && name));
-                const liveProviders = providerList
-                    .filter((provider) => provider?.code && provider?.name && String(provider.type || '').toLowerCase() === payoutType && String(provider.integration_status || '').toLowerCase() === 'available')
-                    .filter((provider) => !chapaNamesByCode.size || chapaNamesByCode.has(String(provider.code)))
-                    .map((provider) => ({
-                        code: String(provider.code),
-                        name: chapaNamesByCode.get(String(provider.code)) || String(provider.name),
-                        type: String(provider.type).toLowerCase(),
-                        integration_status: String(provider.integration_status).toLowerCase(),
-                    }));
-                if (active) {
-                    setProviders(liveProviders);
-                }
-            } catch (error) {
-                if (!active) return;
-                setProviders([]);
-                setPayoutProvidersError(error.message || 'Payout providers are unavailable right now.');
-            } finally {
-                window.clearTimeout(timeoutId);
-                if (active) setLoadingProviders(false);
-            }
-        };
-
-        loadPayoutProviders();
-        return () => {
-            active = false;
-            controller.abort();
-            window.clearTimeout(timeoutId);
-        };
-    }, [payoutType, providerReloadKey]);
-
-    const selectedProvider = providers.find((provider) => provider.code === formData.bankCode);
 
     const updatePref = (key) => setNotificationPrefs((previous) => ({ ...previous, [key]: !previous[key] }));
 
@@ -213,81 +144,6 @@ function SettingsCenter({
             if (!window.confirm(t('studentToast.discardUnsavedPreferences'))) return;
         }
         setSettingsTab(nextTab);
-    };
-
-    const handlePayoutSubmit = async (event) => {
-        event.preventDefault();
-        setPayoutMessage('');
-        setPayoutError('');
-        setAccountNumberError('');
-        const businessName = String(formData.business_name || '').trim();
-        const accountNumber = String(formData.account_number || '').trim();
-        const bankCode = String(formData.bankCode || '').trim();
-        if (!businessName || !accountNumber || !bankCode) {
-            setPayoutError('Business name, bank, and account number are required.');
-            return;
-        }
-        const studentId = user?.studentId || user?.student_id || '';
-        const token = getStudentSessionToken();
-        if (!studentId || !token) {
-            setPayoutError('Your authenticated student session is required. Please sign in again.');
-            return;
-        }
-        const accountNumberIsDigits = /^\d+$/.test(accountNumber);
-        const accountNumberIsValid = bankCode.toLowerCase() === 'comari'
-            ? /^\d{13}$/.test(accountNumber)
-            : payoutType === 'mobile_wallet'
-                ? /^\d{10}$/.test(accountNumber)
-                : /^\d{10,15}$/.test(accountNumber);
-        if (!accountNumberIsDigits || !accountNumberIsValid) {
-            const validationMessage = !accountNumberIsDigits
-                ? 'Account number must contain digits only.'
-                : bankCode.toLowerCase() === 'comari'
-                    ? 'CBE account numbers must be exactly 13 digits.'
-                    : payoutType === 'mobile_wallet'
-                        ? 'Enter a valid 10-digit phone number for the mobile wallet.'
-                        : 'Account number must be between 10 and 15 digits.';
-            setAccountNumberError(validationMessage);
-            return;
-        }
-
-        setIsSubmitting(true);
-        try {
-            const response = await fetch(`${API_BASE_URL}/api/student/seller/setup-payout`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
-                },
-                body: JSON.stringify({
-                    business_name: businessName,
-                    account_name: formData.account_name,
-                    bank_code: bankCode,
-                    payout_type: payoutType,
-                    provider_id: null,
-                    provider_name: selectedProvider?.name || '',
-                    account_number: accountNumber,
-                    student_id: studentId,
-                }),
-            });
-            if (response.status === 401) {
-                setPayoutError('Your session is unauthorized or expired. Please log out and log back in, then try again.');
-                setIsSubmitting(false);
-                return;
-            }
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(data?.detail || 'Unable to configure payout account.');
-
-            setPayoutMessage(data?.message || 'Payout account configured successfully.');
-            notifySuccess(data?.message || studentToast('payoutAccountSaved'), 'student-payout-account-save');
-            setSellerData?.((previous) => ({ ...previous, account_status: data?.account_status || 'Active' }));
-            onPayoutAccountUpdated?.(data);
-        } catch (error) {
-            setPayoutError(error.message || 'Unable to configure payout account.');
-            notifyError(error, 'student-payout-account-save');
-        } finally {
-            setIsSubmitting(false);
-        }
     };
 
     const getStudentSessionToken = () => {
@@ -300,13 +156,8 @@ function SettingsCenter({
         }
     };
 
-    const notificationPrefsDirty = Object.keys(notificationPrefs).some((key) => (
-        notificationPrefs[key] !== savedNotificationPrefs[key]
-    ));
-
     useEffect(() => {
         if (settingsTab !== 'notifications') return undefined;
-
         let active = true;
         const controller = new AbortController();
         const loadNotificationPreferences = async () => {
@@ -791,53 +642,7 @@ function SettingsCenter({
             );
         }
         if (settingsTab === 'payout') {
-            return (
-                <>
-                    <PanelHeader eyebrow="Seller Payouts" title="Get paid directly from campus sales" text="Connect your Ethiopian bank account before publishing products for split payments." />
-                    <form onSubmit={handlePayoutSubmit} className="mt-6 grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                        <div className="sm:col-span-2 flex flex-wrap gap-2 rounded-2xl bg-slate-100 p-1" role="tablist" aria-label="Payout type">
-                            {[
-                                ['bank', 'Traditional Banks'],
-                                ['mobile_wallet', 'Mobile Wallets'],
-                            ].map(([type, label]) => (
-                                <button
-                                    key={type}
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={payoutType === type}
-                                    onClick={() => {
-                                        setPayoutType(type);
-                                        setAccountNumberError('');
-                                        setFormData((previous) => ({ ...previous, bankCode: '', provider_id: '', account_number: '' }));
-                                    }}
-                                    className={`min-w-0 flex-1 basis-[calc(50%-0.25rem)] rounded-xl px-3 py-2 text-xs font-bold transition sm:px-4 sm:py-3 sm:text-sm ${payoutType === type ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-                        <Field label="Business Name"><input required value={formData.business_name} onChange={(event) => setFormData((previous) => ({ ...previous, business_name: event.target.value }))} className={inputClass} placeholder="Your seller or business name" /></Field>
-                        <Field label="Account Name"><input required value={formData.account_name} onChange={(event) => setFormData((previous) => ({ ...previous, account_name: event.target.value }))} className={inputClass} placeholder="Name on bank account" /></Field>
-                        <Field label={payoutType === 'mobile_wallet' ? 'Mobile Wallet' : 'Ethiopian Bank'}>
-                            <div className="relative">
-                                <select required value={formData.bankCode} onChange={(event) => { const provider = providers.find((item) => item.code === event.target.value); setFormData((previous) => ({ ...previous, provider_id: '', bankCode: provider?.code || '' })); }} className={inputClass}>
-                                    <option value="">{loadingProviders ? 'Loading live provider list...' : payoutProvidersError ? 'Unable to load provider list' : providers.length ? (payoutType === 'mobile_wallet' ? 'Select your wallet' : 'Select your bank') : 'No supported providers returned'}</option>
-                                    {providers.map((provider) => (
-                                        <option key={`${provider.code}-${provider.name}`} value={provider.code}>
-                                            {provider.name}
-                                        </option>
-                                    ))}
-                                </select>
-                                {loadingProviders && <span className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-slate-300 border-t-emerald-500" aria-label="Loading providers" />}
-                            </div>
-                        </Field>
-                        {payoutProvidersError && <div className="sm:col-span-2 flex items-center gap-3 text-sm font-semibold text-rose-600"><p>{payoutProvidersError}</p><button type="button" onClick={() => setProviderReloadKey((value) => value + 1)} className="underline underline-offset-2">Retry</button></div>}
-                        <Field label={payoutType === 'mobile_wallet' ? 'Phone Number' : 'Account Number'}><input required inputMode="numeric" pattern={payoutType === 'mobile_wallet' ? '\\d{10}' : undefined} minLength={10} maxLength={payoutType === 'mobile_wallet' ? 10 : 15} value={formData.account_number} onChange={(event) => { setAccountNumberError(''); setFormData((previous) => ({ ...previous, account_number: event.target.value })); }} className={inputClass} placeholder={payoutType === 'mobile_wallet' ? 'Enter a valid 10-digit phone number' : 'Enter a 10-15 digit account number (CBE: 13 digits)'} /></Field>
-                        {accountNumberError && <p className="sm:col-span-2 -mt-2 text-sm font-semibold text-rose-600">{accountNumberError}</p>}
-                        <div className="sm:col-span-2 flex flex-wrap items-center gap-4 pt-2"><button type="submit" disabled={isSubmitting} className="btn-primary inline-flex items-center gap-2 rounded-full px-5 py-3 text-sm font-bold">{isSubmitting && <span className="h-4 w-4 animate-spin rounded-full border-2 border-current/40 border-t-current" aria-hidden="true" />}{isSubmitting ? 'Connecting...' : 'Save Payout Account'}</button>{payoutMessage && <p className="text-sm font-semibold text-emerald-600">{payoutMessage}</p>}{payoutError && <p className="text-sm font-semibold text-rose-600">{payoutError}</p>}</div>
-                    </form>
-                </>
-            );
+            return <PayoutAccountPanel user={user} setSellerData={setSellerData} onPayoutAccountUpdated={onPayoutAccountUpdated} />;
         }
         const notificationDetails = {
             'New Messages': 'Receive live alerts on the sidebar when a classmate messages you.',

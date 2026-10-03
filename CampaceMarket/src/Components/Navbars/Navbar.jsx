@@ -74,8 +74,8 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
 
   return (
-    <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-16 text-white border-b border-blue-900">
-      <div className="flex h-16 w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
+    <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-[72px] border-b border-blue-900 text-white sm:h-[80px]">
+      <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
         <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">
           <button
@@ -93,9 +93,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               <path d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <div className="flex shrink-0 cursor-pointer items-center gap-2 max-[400px]:gap-1" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
-            <img src={logs} alt="UniXchange logo" className="notranslate h-10 w-10 shrink-0 rounded-full object-contain sm:h-12 sm:w-12" />
-            <span className="notranslate whitespace-nowrap text-[13px] font-black text-white max-[359px]:hidden md:text-2xl">UniXchange</span>
+          <div className="flex shrink-0 cursor-pointer items-center gap-2 max-[500px]:gap-1" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
+            <img
+              src={logs}
+              alt="UniXchange logo"
+              className="notranslate h-11 w-11 shrink-0 rounded-full border-2 border-white/80 bg-white/90 object-cover p-1 shadow-md sm:h-14 sm:w-14"
+            />
+            <span className="notranslate whitespace-nowrap text-[15px] font-black tracking-tight text-white max-[359px]:hidden sm:text-[18px] md:text-[2rem]">UniXchange</span>
           </div>
         </div>
 
