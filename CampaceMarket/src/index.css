@@ -4,6 +4,9 @@
   --brand-primary: #06a1fa;
   --brand-primary-light: #3399D6;
   --brand-primary-hover: #006BA8;
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.10);
+  --sidebar-active-bg: #0284C7;
+  --sidebar-focus-ring: #7DD3FC;
   font-family: Inter, 'Segoe UI', 'Noto Sans Ethiopic', sans-serif;
   line-height: 1.5;
   font-weight: 400;
@@ -31,6 +34,34 @@
   overscroll-behavior: contain;
   scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
   scrollbar-width: thin;
+}
+
+.sidebar-nav-item {
+  background-color: transparent;
+  color: #e2e8f0;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sidebar-nav-item:not(.active):hover {
+  background: var(--sidebar-hover-bg);
+  color: #ffffff;
+}
+
+.sidebar-nav-item.active,
+.sidebar-nav-item:active {
+  background: var(--sidebar-active-bg);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 8px 20px rgba(2, 132, 199, 0.35);
+}
+
+.sidebar-nav-item:not(.active):hover:active {
+  background: var(--sidebar-active-bg);
+}
+
+.sidebar-nav-item:focus-visible {
+  outline: 2px solid var(--sidebar-focus-ring);
+  outline-offset: 2px;
 }
 
 .dashboard-horizontal-scroll {
@@ -155,13 +186,14 @@ html:has(.student-dashboard-content) body {
 
 html {
   scroll-behavior: smooth;
+  background: #ffffff;
 }
 
 body {
   margin: 0;
   width: 100%;
   min-width: 320px;
-  background: linear-gradient(135deg, #f8fbff 0%, #eef8ff 100%);
+  background: #ffffff;
   overflow-wrap: anywhere;
 }
 
@@ -191,6 +223,7 @@ body>.skiptranslate,
 #root {
   width: 100%;
   min-height: 100vh;
+  background: #ffffff;
 }
 
 @media print {

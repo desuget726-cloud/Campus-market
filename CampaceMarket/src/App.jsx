@@ -457,32 +457,59 @@ function AppContent() {
         containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
         toastOptions={{
           duration: 7000,
+          pauseOnHover: true,
           style: {
-            background: '#047857',
-            color: '#ffffff',
-            border: '2px solid #34d399',
-            borderRadius: '14px',
-            boxShadow: '0 16px 40px rgba(4, 120, 87, 0.35)',
+            borderRadius: '10px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+            padding: '12px 18px',
             fontSize: '16px',
-            fontWeight: 800,
+            fontWeight: 600,
             maxWidth: 'min(92vw, 560px)',
-            padding: '16px 20px',
+            color: '#FFFFFF',
           },
           success: {
+            style: {
+              background: '#16A34A',
+              color: '#FFFFFF',
+              border: '1px solid rgba(255,255,255,0.16)',
+              borderRadius: '10px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+              padding: '12px 18px',
+              fontWeight: 600,
+            },
             iconTheme: {
               primary: '#ffffff',
-              secondary: '#047857',
+              secondary: '#16A34A',
             },
           },
           error: {
             style: {
-              background: '#b91c1c',
-              border: '2px solid #f87171',
-              boxShadow: '0 16px 40px rgba(185, 28, 28, 0.35)',
+              background: '#DC2626',
+              color: '#FFFFFF',
+              border: '1px solid rgba(255,255,255,0.16)',
+              borderRadius: '10px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+              padding: '12px 18px',
+              fontWeight: 600,
             },
             iconTheme: {
               primary: '#ffffff',
-              secondary: '#b91c1c',
+              secondary: '#DC2626',
+            },
+          },
+          info: {
+            style: {
+              background: '#0284C7',
+              color: '#FFFFFF',
+              border: '1px solid rgba(255,255,255,0.16)',
+              borderRadius: '10px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+              padding: '12px 18px',
+              fontWeight: 600,
+            },
+            iconTheme: {
+              primary: '#ffffff',
+              secondary: '#0284C7',
             },
           },
         }}

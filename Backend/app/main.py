@@ -75,7 +75,7 @@ except (ImportError, OSError):
 
 # ßêüßêëßèòßê¥ ßï¿ßï│ßë│ßëñßï¥ ßê░ßèòßîáßê¿ßïªßë╜ (Models) ßèÑßèô ßê¢ßîêßèôßè¢ßïÄßë╜ßèò ßè¿ßêîßêÄßë╣ ßìïßï¡ßêÄßë╜ ßèÑßèòßîáßê½ßêêßèò
 from .models import (
-    Student, Category, SubCategory, Product, Admin, AuditLog, Report,
+    Student, StudentSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
     AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
@@ -3541,6 +3541,8 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "dev_mode": not email_sent,
             }
         token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
+        _create_student_session(db, student, token, request)
+        db.commit()
         return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified), "two_factor_enabled": bool(student.two_factor_enabled)}}
 
     if admin:
@@ -3690,9 +3692,10 @@ def _oauth_cookie_secure() -> bool:
     return urlsplit(_oauth_frontend_url()).scheme.lower() == "https"
 
 
-def _create_secure_session_for_student(student: Student, response: Response, db: Session) -> dict:
+def _create_secure_session_for_student(student: Student, response: Response, db: Session, request: Optional[Request] = None) -> dict:
     security = get_security_settings(db)
     token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
+    _create_student_session(db, student, token, request)
     response.set_cookie(
         key="session_token",
         value=token,
@@ -3822,6 +3825,7 @@ def google_login(db: Session = Depends(get_db)):
 
 @app.get("/auth/google/callback")
 async def google_callback(
+    request: Request = None,
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
@@ -3893,7 +3897,7 @@ async def google_callback(
         return _google_oauth_frontend_redirect("account_unavailable")
 
     response = _google_oauth_frontend_redirect()
-    _create_secure_session_for_student(student, response, db)
+    _create_secure_session_for_student(student, response, db, request)
     return response
 
 
@@ -3924,13 +3928,25 @@ def get_oauth_session(
 
 
 @app.post("/api/auth/logout")
-def logout_session(response: Response):
+def logout_session(request: Request, response: Response, authorization: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    _ensure_student_session_table(db)
+    session_token = request.cookies.get("session_token", "").strip()
+    if not session_token and authorization:
+        scheme, separator, token = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer" and token.strip():
+            session_token = token.strip()
+    if session_token:
+        session = db.query(StudentSession).filter(StudentSession.session_token == session_token).first()
+        if session:
+            session.is_active = False
+            session.last_active = datetime.now(timezone.utc)
     response.delete_cookie(key="session_token", path="/")
+    db.commit()
     return {"success": True}
 
 
 @app.post("/api/auth/google-callback")
-async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, db: Session = Depends(get_db)):
+async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     try:
         client_id, client_secret, configured_redirect_uri = _google_oauth_settings()
     except RuntimeError as error:
@@ -3970,11 +3986,11 @@ async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, 
         raise HTTPException(status_code=400, detail="Google did not return a verified email address.")
 
     student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
-    return _create_secure_session_for_student(student, response, db)
+    return _create_secure_session_for_student(student, response, db, request)
 
 
 @app.post("/api/auth/microsoft-callback")
-async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Response, db: Session = Depends(get_db)):
+async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Response, request: Request, db: Session = Depends(get_db)):
     client_id = os.getenv("MICROSOFT_CLIENT_ID", "").strip()
     client_secret = os.getenv("MICROSOFT_CLIENT_SECRET", "").strip()
     configured_redirect_uri = os.getenv("MICROSOFT_REDIRECT_URI", "").strip()
@@ -4015,7 +4031,7 @@ async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Respons
         raise HTTPException(status_code=400, detail="Microsoft did not return an email address.")
 
     student = _get_or_create_oauth_student(email, profile.get("displayName"), db)
-    return _create_secure_session_for_student(student, response, db)
+    return _create_secure_session_for_student(student, response, db, request)
 
 
 @app.post("/api/auth/verify-login-otp")
@@ -4044,6 +4060,7 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
 
     otp_record.is_used = True
     token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), _get_session_secret())
+    _create_student_session(db, student, token, http_request)
     db.commit()
     return {
         "role": "student",
@@ -4648,6 +4665,109 @@ def _decode_admin_jwt(session_token: str) -> dict:
     return payload
 
 
+def _decode_student_jwt(token: str) -> dict:
+    try:
+        encoded_header, encoded_payload, encoded_signature = token.strip().split(".")
+        padding = lambda value: value + "=" * (-len(value) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padding(encoded_header)).decode())
+        payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode())
+        provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error):
+        raise HTTPException(status_code=401, detail="Invalid JWT token.")
+
+    session_secret = _get_session_secret()
+    if header.get("alg") != "HS256" or header.get("typ") != "JWT":
+        raise HTTPException(status_code=401, detail="Unsupported JWT token.")
+    unsigned_token = f"{encoded_header}.{encoded_payload}"
+    expected_signature = hmac.new(
+        session_secret.encode(),
+        unsigned_token.encode(),
+        hashlib.sha256,
+    ).digest()
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        raise HTTPException(status_code=401, detail="Invalid JWT signature.")
+    if payload.get("role") != "student" or not payload.get("sub"):
+        raise HTTPException(status_code=401, detail="JWT does not identify a student.")
+    if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
+        raise HTTPException(status_code=401, detail="JWT token has expired.")
+    return payload
+
+
+def _ensure_student_session_table(db: Session) -> None:
+    bind = db.bind or getattr(db, "get_bind", lambda: None)()
+    if bind is None:
+        return
+    try:
+        StudentSession.__table__.create(bind=bind, checkfirst=True)
+    except Exception:
+        pass
+
+
+def _student_session_from_token(db: Session, token: str) -> StudentSession:
+    _ensure_student_session_table(db)
+    session = db.query(StudentSession).filter(StudentSession.session_token == token).first()
+    if not session:
+        jwt_payload = _decode_student_jwt(token)
+        student_id = jwt_payload.get("sub")
+        student = db.query(Student).filter(Student.student_id == student_id).first() if student_id else None
+        if not student:
+            raise HTTPException(status_code=401, detail="Student session is no longer valid.")
+        session = StudentSession(
+            student_id=student.student_id,
+            session_token=token,
+            is_active=True,
+            last_active=datetime.now(timezone.utc),
+        )
+        db.add(session)
+        db.flush()
+    if not session.is_active:
+        raise HTTPException(status_code=401, detail="Student session has been revoked.")
+    session.last_active = datetime.now(timezone.utc)
+    return session
+
+
+def _create_student_session(db: Session, student: Student, token: str, request: Optional[Request]) -> StudentSession:
+    _ensure_student_session_table(db)
+    user_agent = request.headers.get("user-agent") if request else None
+    ip_address = request.client.host if request and request.client else None
+
+    existing = db.query(StudentSession).filter(StudentSession.session_token == token).first()
+    if existing:
+        existing.student_id = student.student_id
+        existing.ip_address = ip_address
+        existing.device_browser = user_agent
+        existing.is_active = True
+        existing.last_active = datetime.now(timezone.utc)
+        db.flush()
+        return existing
+
+    session = StudentSession(
+        student_id=student.student_id,
+        session_token=token,
+        ip_address=ip_address,
+        device_browser=user_agent,
+        is_active=True,
+        last_active=datetime.now(timezone.utc),
+    )
+    db.add(session)
+    db.flush()
+    return session
+
+
+def _serialize_student_session(session: StudentSession, current_token: Optional[str] = None) -> Dict[str, Any]:
+    current_value = bool(current_token and session.session_token == current_token)
+    return {
+        "id": session.id,
+        "session_id": session.id,
+        "session_token": session.session_token,
+        "is_current": current_value,
+        "ip_address": session.ip_address,
+        "device_browser": session.device_browser,
+        "last_active": session.last_active.isoformat() if session.last_active else None,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+    }
+
+
 def _student_from_authorization(authorization: Optional[str], db: Session) -> Student:
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization Bearer token is required.")
@@ -4676,9 +4796,15 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
     if payload.get("role") != "student" or not payload.get("sub") or not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
         raise HTTPException(status_code=401, detail="Invalid or expired student session.")
 
-    student = db.query(Student).filter(func.lower(Student.student_id) == str(payload["sub"]).strip().lower()).first()
+    session = _student_session_from_token(db, token.strip())
+    student_id = str(payload["sub"]).strip().lower()
+    if str(session.student_id).strip().lower() != student_id:
+        raise HTTPException(status_code=401, detail="Student session does not match the bearer token.")
+
+    student = db.query(Student).filter(func.lower(Student.student_id) == student_id).first()
     if not student:
         raise HTTPException(status_code=401, detail="Student session is no longer valid.")
+    session.last_active = datetime.now(timezone.utc)
     return student
 
 
@@ -5990,16 +6116,107 @@ def update_student_two_factor(
     return {"success": True, "two_factor_enabled": bool(student.two_factor_enabled)}
 
 
+@app.get("/api/student/sessions")
+def get_student_sessions(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    _ensure_student_session_table(db)
+    session_token = ""
+    if request is not None:
+        session_token = request.cookies.get("session_token", "").strip()
+    if not session_token and authorization and authorization.lower().startswith("bearer "):
+        session_token = authorization.split(" ", 1)[-1].strip()
+    elif not session_token and authorization:
+        session_token = authorization.strip()
+    if not session_token:
+        raise HTTPException(status_code=401, detail="No active student session.")
+    student = _student_from_authorization(f"Bearer {session_token}", db)
+    sessions = db.query(StudentSession).filter(StudentSession.student_id == student.student_id, StudentSession.is_active.is_(True)).order_by(StudentSession.last_active.desc()).all()
+    return [_serialize_student_session(item, session_token) for item in sessions] if sessions else []
+
+
 @app.get("/api/student/session-info")
-def get_student_session_info(request: Request):
-    client_ip = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
+def get_student_session_info(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    _ensure_student_session_table(db)
+    session_token = ""
+    if request is not None:
+        session_token = request.cookies.get("session_token", "").strip()
+    if not session_token and authorization and authorization.lower().startswith("bearer "):
+        session_token = authorization.split(" ", 1)[-1].strip()
+    elif not session_token and authorization:
+        session_token = authorization.strip()
+    if not session_token:
+        raise HTTPException(status_code=401, detail="No active student session.")
+    student = _student_from_authorization(f"Bearer {session_token}", db)
+    current = db.query(StudentSession).filter(StudentSession.student_id == student.student_id, StudentSession.session_token == session_token).first()
+    sessions = db.query(StudentSession).filter(StudentSession.student_id == student.student_id, StudentSession.is_active.is_(True)).order_by(StudentSession.last_active.desc()).all()
     return {
-        "ip_address": client_ip,
-        "user_agent": user_agent,
-        "client_ip": client_ip,
-        "browser": user_agent,
+        "current_session": _serialize_student_session(current, session_token) if current else None,
+        "sessions": [_serialize_student_session(item, session_token) for item in sessions],
+        "ip_address": current.ip_address if current else None,
+        "user_agent": current.device_browser if current else None,
+        "client_ip": current.ip_address if current else None,
+        "browser": current.device_browser if current else None,
     }
+
+
+@app.post("/api/student/sessions/{session_id}/logout")
+def revoke_student_session(
+    session_id: int,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    _ensure_student_session_table(db)
+    session_token = ""
+    if request is not None:
+        session_token = request.cookies.get("session_token", "").strip()
+    if not session_token and authorization and authorization.lower().startswith("bearer "):
+        session_token = authorization.split(" ", 1)[-1].strip()
+    elif not session_token and authorization:
+        session_token = authorization.strip()
+    if not session_token:
+        raise HTTPException(status_code=401, detail="No active student session.")
+    student = _student_from_authorization(f"Bearer {session_token}", db)
+    session = db.query(StudentSession).filter(StudentSession.id == session_id, StudentSession.student_id == student.student_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Student session not found.")
+    session.is_active = False
+    session.last_active = datetime.now(timezone.utc)
+    db.commit()
+    return {"success": True, "session_id": session.id, "message": "Student session revoked."}
+
+
+@app.post("/api/student/sessions/logout-others")
+def logout_other_student_sessions(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    _ensure_student_session_table(db)
+    session_token = ""
+    if request is not None:
+        session_token = request.cookies.get("session_token", "").strip()
+    if not session_token and authorization and authorization.lower().startswith("bearer "):
+        session_token = authorization.split(" ", 1)[-1].strip()
+    elif not session_token and authorization:
+        session_token = authorization.strip()
+    if not session_token:
+        raise HTTPException(status_code=401, detail="No active student session.")
+    student = _student_from_authorization(f"Bearer {session_token}", db)
+    revoked = db.query(StudentSession).filter(
+        StudentSession.student_id == student.student_id,
+        StudentSession.is_active.is_(True),
+        StudentSession.session_token != session_token,
+    ).update({"is_active": False, "last_active": datetime.now(timezone.utc)}, synchronize_session=False)
+    db.commit()
+    return {"success": True, "revoked": revoked, "message": "Other active sessions were logged out."}
 
 
 @app.put("/api/student/profile")

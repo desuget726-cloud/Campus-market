@@ -166,6 +166,7 @@ export const translations = {
             messageDeleted: 'Message deleted successfully.',
             reportSubmitted: 'Report submitted successfully.',
             notificationsRead: 'Notifications marked as read.',
+            notificationsDeleted: 'Notification deleted.',
             checkoutCompleted: 'Order placed successfully.',
             aiResponseReady: 'AI response received.',
             attachmentUploaded: 'Attachment sent successfully.',
@@ -211,7 +212,9 @@ export const translations = {
             savingPreferences: 'በማስቀመጥ ላይ…',
             unsavedPreferences: 'ያልተቀመጡ ለውጦች',
             discardUnsavedPreferences: 'ያልተቀመጡ የማሳወቂያ ለውጦች አሉ። ሳያስቀምጡ ከዚህ ትር መውጣት ይፈልጋሉ?',
-            ownProductAction: 'የራስዎን ምርት መግዛት ወይም ወደ ተወዳጆች ማስቀመጥ አይችሉም።'
+            ownProductAction: 'የራስዎን ምርት መግዛት ወይም ወደ ተወዳጆች ማስቀመጥ አይችሉም።',
+            notificationsRead: 'ማሳወቂያዎች እንደተነበቡ ተመልክተዋል።',
+            notificationsDeleted: 'ማሳወቂያ ተሰርዟል።'
         },
         auth: {
             oauthErrors: {

@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import toast from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Check, Pencil, X } from 'lucide-react';
@@ -11,6 +12,7 @@ import SettingsCenter from './SettingsCenter';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '../../config';
 import { isOrderRefunded } from '../../utils/orderReceiptState';
+import { shouldReduceUnreadNotificationCount } from '../../utils/notificationState';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
@@ -1541,7 +1543,55 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     fetchNotificationsData();
   }, [activeTab, studentId]);
 
+  const handleMarkNotificationRead = async (notificationId) => {
+    if (!user?.studentId) return;
+
+    const previousNotifications = notifications;
+    const unreadBeforeUpdate = previousNotifications.filter((notification) => String(notification.id) === String(notificationId) && !notification.read).length;
+
+    setNotifications((previousNotificationsState) => previousNotificationsState.map((notification) => (
+      String(notification.id) === String(notificationId)
+        ? { ...notification, read: true }
+        : notification
+    )));
+
+    if (unreadBeforeUpdate > 0) {
+      setUnreadNotificationCount((count) => Math.max(0, count - unreadBeforeUpdate));
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/student/notifications/mark-read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id: user.studentId }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Failed to mark notification as read.');
+      }
+    } catch (err) {
+      console.error('Error marking notification as read:', err);
+      setNotifications(previousNotifications);
+      if (unreadBeforeUpdate > 0) {
+        setUnreadNotificationCount((count) => count + unreadBeforeUpdate);
+      }
+      notifyError(err, `student-notification-read-${notificationId || 'all'}`);
+    }
+  };
+
   const handleDeleteNotification = async (id) => {
+    const notificationToDelete = notifications.find((notification) => String(notification.id) === String(id));
+    const wasUnread = shouldReduceUnreadNotificationCount(notificationToDelete);
+    const previousNotifications = notifications;
+
+    setNotifications((previousNotificationsState) => previousNotificationsState.filter((notification) => String(notification.id) !== String(id)));
+    if (wasUnread) {
+      setUnreadNotificationCount((count) => Math.max(0, count - 1));
+    }
+
+    const toastId = `student-notification-delete-${id}`;
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/student/notifications/${id}?student_id=${encodeURIComponent(studentId)}`, {
         method: 'DELETE',
@@ -1551,17 +1601,31 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         throw new Error(data.detail || 'Failed to delete notification.');
       }
 
-      setNotifications((previousNotifications) => {
-        const deletedNotification = previousNotifications.find((notification) => String(notification.id) === String(id));
-        if (deletedNotification && !deletedNotification.read) {
-          setUnreadNotificationCount((count) => Math.max(0, count - 1));
-        }
-        return previousNotifications.filter((notification) => String(notification.id) !== String(id));
-      });
-      notifySuccess(studentToast('notificationsRead'), `student-notification-delete-${id}`);
+      toast.custom((toastItem) => (
+        <div className="flex items-center gap-3 rounded-xl border border-emerald-300 bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-900/25">
+          <span className="min-w-0 flex-1">{studentToast('notificationsDeleted')}</span>
+          <button
+            type="button"
+            onClick={() => {
+              toast.dismiss(toastItem.id);
+              setNotifications(previousNotifications);
+              if (wasUnread) {
+                setUnreadNotificationCount((count) => count + 1);
+              }
+            }}
+            className="shrink-0 font-bold underline underline-offset-2 text-white"
+          >
+            Undo
+          </button>
+        </div>
+      ), { id: toastId, duration: 5000 });
     } catch (err) {
       console.error('Error deleting notification:', err);
-      notifyError(err, `student-notification-delete-${id}`);
+      setNotifications(previousNotifications);
+      if (wasUnread) {
+        setUnreadNotificationCount((count) => count + 1);
+      }
+      notifyError(err, toastId);
     }
   };
 
@@ -3916,9 +3980,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     if (onTabChange) {
                       onTabChange(item.key);
                     }
-                  }}
+                  }} 
                   data-dashboard-target={item.key}
-                  className={`group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold transition-colors duration-200 ease-out ${isActive ? 'bg-[#1d4ed8] text-white shadow-lg shadow-blue-900/20' : 'text-slate-200 hover:bg-white/15 hover:text-white focus-visible:bg-white/15 focus-visible:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/70'} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
+                  className={`sidebar-nav-item group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold ${isActive ? 'active' : ''} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
                   title={item.label}
                 >
                   <span className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
@@ -5842,6 +5906,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   setActiveTab('buyer');
                 }}
                 onDispute={handleDisputeNotification}
+                onMarkRead={handleMarkNotificationRead}
                 onDeleteNotification={handleDeleteNotification}
               />
             )}

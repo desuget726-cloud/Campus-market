@@ -76,6 +76,22 @@ class Student(Base):
     wallet = relationship("Wallet", uselist=False, back_populates="student", cascade="all, delete-orphan")
     seller_payment_account = relationship("SellerPaymentAccount", uselist=False, back_populates="student", cascade="all, delete-orphan")
     id_change_requests = relationship("StudentIdChangeRequest", back_populates="student", cascade="all, delete-orphan")
+    sessions = relationship("StudentSession", primaryjoin="Student.student_id == StudentSession.student_id", back_populates="student", cascade="all, delete-orphan")
+
+
+class StudentSession(Base):
+    __tablename__ = "student_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    session_token = Column(String(500), unique=True, nullable=False, index=True)
+    ip_address = Column(String(50), nullable=True)
+    device_browser = Column(String(255), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_active = Column(DateTime, server_default=func.now(), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    student = relationship("Student", primaryjoin="Student.student_id == StudentSession.student_id", back_populates="sessions")
 
 
 class PayoutProvider(Base):

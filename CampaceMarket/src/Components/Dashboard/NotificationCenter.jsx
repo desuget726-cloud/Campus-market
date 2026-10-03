@@ -134,6 +134,7 @@ function NotificationCenter({
     onOrder,
     onBuyerPayments,
     onDispute,
+    onMarkRead,
     onDeleteNotification,
 }) {
     const [activeFilter, setActiveFilter] = useState("All");
@@ -173,6 +174,10 @@ function NotificationCenter({
         .filter((group) => group.items.length > 0);
 
     const handleAction = (notification) => {
+        if (!notification.read) {
+            onMarkRead?.(notification.id);
+        }
+
         const actionUrl = notification.actionUrl ?? notification.action_url;
         if (actionUrl) {
             onNavigate?.(actionUrl);
@@ -281,6 +286,7 @@ function NotificationCenter({
                                                     notification.id ??
                                                     `${notification.created_at}-${notification.title}`
                                                 }
+                                                onClick={() => handleAction(notification)}
                                                 className={`border-l-4 ${priority.border} rounded-r-2xl border-y border-r border-slate-200 p-5 transition-all duration-200 hover:shadow-md ${isRead ? "bg-slate-50/50 text-slate-500" : "bg-slate-50/70 text-slate-700 hover:bg-slate-100"}`}
                                             >
                                                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -314,7 +320,10 @@ function NotificationCenter({
                                                             </span>
                                                             <button
                                                                 type="button"
-                                                                onClick={() => onDeleteNotification(notification.id)}
+                                                                onClick={(event) => {
+                                                                    event.stopPropagation();
+                                                                    onDeleteNotification(notification.id);
+                                                                }}
                                                                 className="rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold text-rose-700 hover:bg-rose-100"
                                                             >
                                                                 Delete
@@ -332,7 +341,10 @@ function NotificationCenter({
                                                     {getNotificationAction(notification, category) && (
                                                         <button
                                                             type="button"
-                                                            onClick={() => handleAction(notification)}
+                                                            onClick={(event) => {
+                                                                event.stopPropagation();
+                                                                handleAction(notification);
+                                                            }}
                                                             className="text-sm font-black text-[var(--brand-primary)] hover:text-[var(--brand-primary-hover)]"
                                                         >
                                                             {getNotificationAction(notification, category).label}
