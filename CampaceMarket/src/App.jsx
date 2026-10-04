@@ -15,7 +15,7 @@ import SuccessModal from './Components/Authontication/SuccessModal';
 import AuthInfoModal from './Components/Authontication/AuthInfoModal';
 import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
 import { LanguageProvider } from './context/LanguageContext';
-import { Toaster } from 'react-hot-toast';
+import toast, { Toaster } from 'react-hot-toast';
 import { API_BASE_URL } from './config';
 import { clearPendingProductAction, getPendingProductAction } from './utils/productActionState';
 import './App.css';
@@ -150,6 +150,47 @@ function AppContent() {
     }
   };
 
+  const handleSessionRevoked = () => {
+    setUser(null);
+    setUserRole(null);
+    setUnreadCount(0);
+    setShowSuccessModal(false);
+    setCurrentView('login');
+    setDashboardTab('home');
+    setStudentTab('home');
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    }
+    toast.error('You were logged out from another device.', { id: 'student-session-revoked' });
+  };
+
+  useEffect(() => {
+    const originalFetch = window.fetch;
+    const wrappedFetch = async (...args) => {
+      const response = await originalFetch.apply(window, args);
+      const requestUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+      let isApiRequest;
+      try {
+        const requestedUrl = new URL(requestUrl, window.location.href);
+        const apiOrigin = new URL(API_BASE_URL, window.location.href).origin;
+        isApiRequest = requestedUrl.origin === apiOrigin && requestedUrl.pathname.startsWith('/api/');
+      } catch {
+        isApiRequest = false;
+      }
+      if (response.status === 401 && activeRole === 'student' && isApiRequest) {
+        window.dispatchEvent(new Event('campace:student-session-revoked'));
+      }
+      return response;
+    };
+    const onSessionRevoked = () => handleSessionRevoked();
+    window.fetch = wrappedFetch;
+    window.addEventListener('campace:student-session-revoked', onSessionRevoked);
+    return () => {
+      if (window.fetch === wrappedFetch) window.fetch = originalFetch;
+      window.removeEventListener('campace:student-session-revoked', onSessionRevoked);
+    };
+  }, [activeRole]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -176,7 +217,7 @@ function AppContent() {
       .then(async (response) => {
         if (cancelled) return;
         if (response.status === 401) {
-          handleLogout();
+          handleSessionRevoked();
           return;
         }
         if (!response.ok) return;

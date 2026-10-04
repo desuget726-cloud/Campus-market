@@ -25,6 +25,7 @@ from app.models import (
     Student,
     SystemSetting,
     Transaction,
+    UserSession,
     Wallet,
 )
 
@@ -171,11 +172,18 @@ class CommissionCheckoutTests(unittest.TestCase):
         self.db.flush()
 
     def _student_token(self):
+        user_session = UserSession(
+            user_id=self.buyer.student_id,
+            device_name="Test device",
+        )
+        self.db.add(user_session)
+        self.db.flush()
         return main_module._create_session_token(
             self.buyer.student_id,
             "student",
             60,
             os.environ["SESSION_SECRET"],
+            session_id=user_session.id,
         )
 
     def _checkout(self):

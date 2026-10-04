@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import main as main_module
-from app.models import GoogleOAuthState, Student, Wallet
+from app.models import GoogleOAuthState, Notification, Student, UserSession, Wallet
 
 
 class GoogleOAuthTests(unittest.TestCase):
@@ -26,6 +26,8 @@ class GoogleOAuthTests(unittest.TestCase):
         Student.__table__.create(bind=self.engine)
         Wallet.__table__.create(bind=self.engine)
         GoogleOAuthState.__table__.create(bind=self.engine)
+        UserSession.__table__.create(bind=self.engine)
+        Notification.__table__.create(bind=self.engine)
         self.db = sessionmaker(bind=self.engine, autoflush=False, autocommit=False)()
 
     def tearDown(self):
@@ -221,6 +223,10 @@ class GoogleOAuthTests(unittest.TestCase):
         self.assertIn("session_token=mock-session-token", response.headers["set-cookie"])
         self.assertIn("SameSite=none", response.headers["set-cookie"])
         self.assertIn("; Secure", response.headers["set-cookie"])
+        self.assertEqual(
+            self.db.query(UserSession).filter_by(user_id=student.student_id).count(),
+            1,
+        )
 
     def test_new_allowed_user_is_created_using_auto_approval_setting(self):
         response, _ = self._run_callback({
@@ -234,6 +240,7 @@ class GoogleOAuthTests(unittest.TestCase):
         self.assertEqual(student.status, "Pending Verification")
         self.assertEqual(response.headers["location"], "https://frontend.example.test/login?oauth=success")
         self.assertEqual(self.db.query(Wallet).filter_by(student_id=student.student_id).count(), 1)
+        self.assertEqual(self.db.query(UserSession).filter_by(user_id=student.student_id).count(), 1)
 
     def test_blocked_gmail_domain_redirects_with_domain_and_logs_reason(self):
         with self.assertLogs("app.auth", level="WARNING") as logs:

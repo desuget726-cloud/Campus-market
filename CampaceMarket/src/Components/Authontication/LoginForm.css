@@ -57,6 +57,37 @@
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
 }
 
+.login-back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 22px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #475569;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.login-back-button:hover {
+  color: #0284c7;
+}
+
+.login-back-button:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid #0ea5e9;
+  outline-offset: 4px;
+}
+
+.login-back-button svg {
+  width: 17px;
+  height: 17px;
+}
+
 .login-header {
   margin-bottom: 20px;
 }

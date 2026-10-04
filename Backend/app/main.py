@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import String, case, event, func, inspect, or_, text
+from sqlalchemy import String, and_, case, event, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 from app.password_security import hash_password, verify_password
@@ -58,10 +58,15 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
 import socket
+import ipaddress
 import io
 import warnings
 import pyotp
 import qrcode
+from user_agents import parse as parse_user_agent
+from geoip2.database import Reader as GeoIP2Reader
+from geoip2.errors import GeoIP2Error
+from maxminddb.errors import InvalidDatabaseError
 from PIL import Image, ImageOps, UnidentifiedImageError
 from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -75,7 +80,7 @@ except (ImportError, OSError):
 
 # ßêüßêëßèòßê¥ ßï¿ßï│ßë│ßëñßï¥ ßê░ßèòßîáßê¿ßïªßë╜ (Models) ßèÑßèô ßê¢ßîêßèôßè¢ßïÄßë╜ßèò ßè¿ßêîßêÄßë╣ ßìïßï¡ßêÄßë╜ ßèÑßèòßîáßê½ßêêßèò
 from .models import (
-    Student, StudentSession, Category, SubCategory, Product, Admin, AuditLog, Report,
+    Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
     AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
@@ -2543,13 +2548,21 @@ def _reset_login_attempts(db: Session, identifier: str) -> None:
         db.commit()
 
 
-def _create_session_token(subject: str, role: str, timeout_minutes: int, secret: str) -> str:
+def _create_session_token(
+    subject: str,
+    role: str,
+    timeout_minutes: int,
+    secret: str,
+    session_id: Optional[str] = None,
+) -> str:
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
         "sub": subject,
         "role": role,
         "exp": int((datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)).timestamp()),
     }
+    if session_id:
+        payload["session_id"] = session_id
 
     def encode(value):
         return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=").decode()
@@ -3328,6 +3341,15 @@ async def on_startup():
         max_instances=1,
         coalesce=True,
     )
+    payment_scheduler.add_job(
+        _cleanup_inactive_user_sessions,
+        "interval",
+        days=1,
+        id="cleanup-user-sessions",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     payment_scheduler.start()
     logging.getLogger("app.payments").info(
         "Started payout reconciliation scheduler job id=pending-payout-reconciliation interval_minutes=10 max_instances=1 coalesce=True timeout_hours=%s.",
@@ -3540,8 +3562,14 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "email_sent": email_sent,
                 "dev_mode": not email_sent,
             }
-        token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
-        _create_student_session(db, student, token, request)
+        user_session = _create_user_session(db, student, request)
+        token = _create_session_token(
+            student.student_id,
+            "student",
+            security.session_timeout,
+            _get_session_secret(),
+            session_id=user_session.id,
+        )
         db.commit()
         return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified), "two_factor_enabled": bool(student.two_factor_enabled)}}
 
@@ -3694,8 +3722,15 @@ def _oauth_cookie_secure() -> bool:
 
 def _create_secure_session_for_student(student: Student, response: Response, db: Session, request: Optional[Request] = None) -> dict:
     security = get_security_settings(db)
-    token = _create_session_token(student.student_id, "student", security.session_timeout, _get_session_secret())
-    _create_student_session(db, student, token, request)
+    user_session = _create_user_session(db, student, request)
+    token = _create_session_token(
+        student.student_id,
+        "student",
+        security.session_timeout,
+        _get_session_secret(),
+        session_id=user_session.id,
+    )
+    db.commit()
     response.set_cookie(
         key="session_token",
         value=token,
@@ -3908,15 +3943,16 @@ def get_oauth_session(
     db: Session = Depends(get_db),
 ):
     session_token = request.cookies.get("session_token", "").strip()
-    if session_token:
-        student = _student_from_authorization(f"Bearer {session_token}", db)
-    elif authorization:
+    if authorization:
         student = _student_from_authorization(authorization, db)
+        session_token = authorization.partition(" ")[-1].strip()
+    elif session_token:
+        student = _student_from_authorization(f"Bearer {session_token}", db)
     else:
         raise HTTPException(status_code=401, detail="No active student session.")
     return {
         "role": "student",
-        "access_token": session_token or (authorization.split(" ", 1)[-1] if authorization else ""),
+        "access_token": session_token,
         "user": {
             "name": student.name,
             "studentId": student.student_id,
@@ -3936,6 +3972,15 @@ def logout_session(request: Request, response: Response, authorization: Optional
         if separator and scheme.lower() == "bearer" and token.strip():
             session_token = token.strip()
     if session_token:
+        try:
+            claims = _decode_student_jwt(session_token)
+        except HTTPException:
+            claims = {}
+        claimed_session_id = claims.get("session_id")
+        if claimed_session_id:
+            user_session = db.query(UserSession).filter(UserSession.id == str(claimed_session_id)).first()
+            if user_session and user_session.revoked_at is None:
+                user_session.revoked_at = datetime.now(timezone.utc)
         session = db.query(StudentSession).filter(StudentSession.session_token == session_token).first()
         if session:
             session.is_active = False
@@ -4059,8 +4104,14 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
 
     otp_record.is_used = True
-    token = _create_session_token(student.student_id, "student", _session_timeout_minutes(db), _get_session_secret())
-    _create_student_session(db, student, token, http_request)
+    user_session = _create_user_session(db, student, http_request)
+    token = _create_session_token(
+        student.student_id,
+        "student",
+        _session_timeout_minutes(db),
+        _get_session_secret(),
+        session_id=user_session.id,
+    )
     db.commit()
     return {
         "role": "student",
@@ -4220,6 +4271,7 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
 
     try:
         student.password = hash_password(new_password)
+        _revoke_user_sessions(db, student.student_id)
         reset_record.is_used = True
         db.commit()
     except SQLAlchemyError:
@@ -4754,6 +4806,195 @@ def _create_student_session(db: Session, student: Student, token: str, request: 
     return session
 
 
+def _trusted_proxy_networks() -> List[Any]:
+    configured = os.getenv("TRUSTED_PROXY_IPS", "").strip()
+    networks = []
+    for entry in configured.split(","):
+        value = entry.strip()
+        if value:
+            try:
+                networks.append(ipaddress.ip_network(value, strict=False))
+            except ValueError as error:
+                raise RuntimeError(f"Invalid TRUSTED_PROXY_IPS entry: {value}") from error
+    return networks
+
+
+def _request_client_ip(request: Optional[Request]) -> Optional[str]:
+    if not request or not request.client:
+        return None
+    remote_host = request.client.host
+    try:
+        remote_ip = ipaddress.ip_address(remote_host)
+    except ValueError:
+        return remote_host or None
+
+    if any(remote_ip in network for network in _trusted_proxy_networks()):
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        first_forwarded_ip = forwarded_for.split(",", 1)[0].strip()
+        if first_forwarded_ip:
+            try:
+                return str(ipaddress.ip_address(first_forwarded_ip))
+            except ValueError:
+                logging.getLogger("app.auth").warning(
+                    "Ignoring invalid first X-Forwarded-For value from a trusted proxy."
+                )
+    return str(remote_ip)
+
+
+def _session_device_name(user_agent: Optional[str]) -> str:
+    parsed_agent = parse_user_agent(user_agent or "")
+    operating_system = parsed_agent.os.family
+    browser = parsed_agent.browser.family
+    parts = [part for part in (operating_system, browser) if part and part != "Other"]
+    return " / ".join(parts) if parts else "Unknown device"
+
+
+def _session_location(ip_address: Optional[str]) -> Optional[str]:
+    if not ip_address:
+        return None
+    try:
+        parsed_ip = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return None
+    if parsed_ip.is_private or parsed_ip.is_loopback:
+        return "Local network"
+
+    database_path = os.getenv("GEOIP_DATABASE_PATH", "").strip()
+    if not database_path:
+        return None
+    try:
+        with GeoIP2Reader(database_path) as reader:
+            result = reader.city(str(parsed_ip))
+    except (OSError, ValueError, GeoIP2Error, InvalidDatabaseError) as error:
+        logging.getLogger("app.auth").warning("Local GeoIP lookup failed: %s", error)
+        return None
+    city = result.city.name
+    country = result.country.name
+    location_parts = [part for part in (city, country) if part]
+    return ", ".join(location_parts) or None
+
+
+def _create_user_session(db: Session, student: Student, request: Optional[Request]) -> UserSession:
+    user_agent = request.headers.get("user-agent") if request else None
+    ip_address = _request_client_ip(request)
+    device_name = _session_device_name(user_agent)
+    known_combination = db.query(UserSession.id).filter(
+        UserSession.user_id == student.student_id,
+        UserSession.ip_address == ip_address,
+        UserSession.device_name == device_name,
+    ).first()
+    now = datetime.now(timezone.utc)
+    user_session = UserSession(
+        user_id=student.student_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        device_name=device_name,
+        location=_session_location(ip_address),
+        created_at=now,
+        last_active_at=now,
+    )
+    db.add(user_session)
+    db.flush()
+    if not known_combination:
+        location = user_session.location or "Unknown location"
+        _add_student_notification(
+            db,
+            student,
+            "New login",
+            f"New login from {device_name} ({location})",
+            "security",
+        )
+    return user_session
+
+
+def _revoke_user_sessions(
+    db: Session,
+    user_id: str,
+    except_session_id: Optional[str] = None,
+) -> int:
+    query = db.query(UserSession).filter(
+        UserSession.user_id == user_id,
+        UserSession.revoked_at.is_(None),
+    )
+    if except_session_id is not None:
+        query = query.filter(UserSession.id != except_session_id)
+    return query.update(
+        {"revoked_at": datetime.now(timezone.utc)},
+        synchronize_session=False,
+    )
+
+
+def _cleanup_inactive_user_sessions() -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    db = SessionLocal()
+    try:
+        deleted = db.query(UserSession).filter(
+            or_(
+                and_(UserSession.revoked_at.isnot(None), UserSession.revoked_at < cutoff),
+                and_(UserSession.revoked_at.is_(None), UserSession.last_active_at < cutoff),
+            )
+        ).delete(synchronize_session=False)
+        db.commit()
+        logging.getLogger("app.auth").info("Removed %s expired user sessions.", deleted)
+        return deleted
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.auth").exception("User session cleanup failed.")
+        raise
+    finally:
+        db.close()
+
+
+def _student_session_from_authorization(
+    authorization: Optional[str],
+    db: Session,
+) -> Tuple[Student, UserSession, str]:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header is required.")
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Authorization header must use the Bearer scheme.")
+
+    token = token.strip()
+    payload = _decode_student_jwt(token)
+    session_id = payload.get("session_id")
+    try:
+        session_id = str(uuid.UUID(str(session_id)))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=401, detail="Student session is no longer valid.")
+
+    user_id = str(payload["sub"]).strip()
+    user_session = db.query(UserSession).filter(
+        UserSession.id == session_id,
+        UserSession.user_id == user_id,
+    ).first()
+    if not user_session or user_session.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Student session has been revoked or is no longer valid.")
+
+    student = db.query(Student).filter(func.lower(Student.student_id) == user_id.lower()).first()
+    if not student:
+        raise HTTPException(status_code=401, detail="Student session is no longer valid.")
+
+    now = datetime.now(timezone.utc)
+    last_active = _as_utc_datetime(user_session.last_active_at)
+    if last_active is None or now - last_active >= timedelta(minutes=5):
+        user_session.last_active_at = now
+        db.commit()
+    return student, user_session, token
+
+
+def _serialize_user_session(user_session: UserSession, current_session_id: str) -> Dict[str, Any]:
+    return {
+        "id": user_session.id,
+        "is_current": user_session.id == current_session_id,
+        "ip_address": user_session.ip_address,
+        "device_name": user_session.device_name,
+        "location": user_session.location,
+        "created_at": user_session.created_at.isoformat() if user_session.created_at else None,
+        "last_active_at": user_session.last_active_at.isoformat() if user_session.last_active_at else None,
+    }
+
+
 def _serialize_student_session(session: StudentSession, current_token: Optional[str] = None) -> Dict[str, Any]:
     current_value = bool(current_token and session.session_token == current_token)
     return {
@@ -4768,7 +5009,7 @@ def _serialize_student_session(session: StudentSession, current_token: Optional[
     }
 
 
-def _student_from_authorization(authorization: Optional[str], db: Session) -> Student:
+def _legacy_student_from_authorization(authorization: Optional[str], db: Session) -> Student:
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization Bearer token is required.")
     scheme, separator, token = authorization.partition(" ")
@@ -4805,6 +5046,11 @@ def _student_from_authorization(authorization: Optional[str], db: Session) -> St
     if not student:
         raise HTTPException(status_code=401, detail="Student session is no longer valid.")
     session.last_active = datetime.now(timezone.utc)
+    return student
+
+
+def _student_from_authorization(authorization: Optional[str], db: Session) -> Student:
+    student, _, _ = _student_session_from_authorization(authorization, db)
     return student
 
 
@@ -5829,11 +6075,14 @@ def update_student_me(
         raise HTTPException(status_code=409, detail="That student ID is already in use.") from error
     db.refresh(student)
 
+    token = authorization.partition(" ")[-1].strip()
+    session_id = _decode_student_jwt(token).get("session_id")
     access_token = _create_session_token(
         student.student_id,
         "student",
         _session_timeout_minutes(db),
         _get_session_secret(),
+        session_id=session_id,
     )
     return {
         "success": True,
@@ -6070,7 +6319,7 @@ def update_student_password(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
-    student = _student_from_authorization(authorization, db)
+    student, current_session, _ = _student_session_from_authorization(authorization, db)
 
     if not verify_password(payload.current_password, student.password):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
@@ -6080,6 +6329,7 @@ def update_student_password(
         raise HTTPException(status_code=400, detail="New password and confirmation do not match.")
 
     student.password = hash_password(payload.new_password)
+    _revoke_user_sessions(db, student.student_id, except_session_id=current_session.id)
     db.add(AuditLog(
         admin_id=None,
         action="Student Password Changed",
@@ -6116,8 +6366,8 @@ def update_student_two_factor(
     return {"success": True, "two_factor_enabled": bool(student.two_factor_enabled)}
 
 
-@app.get("/api/student/sessions")
-def get_student_sessions(
+@app.get("/api/student/sessions/legacy")
+def _legacy_get_student_sessions(
     request: Request = None,
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
@@ -6137,8 +6387,8 @@ def get_student_sessions(
     return [_serialize_student_session(item, session_token) for item in sessions] if sessions else []
 
 
-@app.get("/api/student/session-info")
-def get_student_session_info(
+@app.get("/api/student/session-info/legacy")
+def _legacy_get_student_session_info(
     request: Request = None,
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
@@ -6219,6 +6469,92 @@ def logout_other_student_sessions(
     return {"success": True, "revoked": revoked, "message": "Other active sessions were logged out."}
 
 
+def _student_authorization_from_request(
+    authorization: Optional[str],
+    request: Optional[Request],
+) -> Optional[str]:
+    if authorization:
+        return authorization
+    cookie_token = request.cookies.get("session_token", "").strip() if request else ""
+    return f"Bearer {cookie_token}" if cookie_token else None
+
+
+@app.get("/api/student/sessions")
+def get_student_sessions(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    effective_authorization = _student_authorization_from_request(authorization, request)
+    student, current_session, _ = _student_session_from_authorization(effective_authorization, db)
+    sessions = db.query(UserSession).filter(
+        UserSession.user_id == student.student_id,
+        UserSession.revoked_at.is_(None),
+    ).order_by(UserSession.last_active_at.desc()).all()
+    return [_serialize_user_session(item, current_session.id) for item in sessions]
+
+
+@app.get("/api/student/session-info")
+def get_student_session_info(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    effective_authorization = _student_authorization_from_request(authorization, request)
+    student, current_session, _ = _student_session_from_authorization(effective_authorization, db)
+    sessions = db.query(UserSession).filter(
+        UserSession.user_id == student.student_id,
+        UserSession.revoked_at.is_(None),
+    ).order_by(UserSession.last_active_at.desc()).all()
+    current_data = _serialize_user_session(current_session, current_session.id)
+    return {
+        "current_session": current_data,
+        "sessions": [_serialize_user_session(item, current_session.id) for item in sessions],
+        "ip_address": current_session.ip_address,
+        "user_agent": current_session.user_agent,
+        "client_ip": current_session.ip_address,
+        "browser": current_session.device_name,
+    }
+
+
+@app.delete("/api/student/sessions/{session_id}")
+def revoke_student_session(
+    session_id: str,
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    effective_authorization = _student_authorization_from_request(authorization, request)
+    student, _, _ = _student_session_from_authorization(effective_authorization, db)
+    try:
+        normalized_session_id = str(uuid.UUID(session_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail="Student session not found.")
+    user_session = db.query(UserSession).filter(
+        UserSession.id == normalized_session_id,
+        UserSession.user_id == student.student_id,
+    ).first()
+    if not user_session:
+        raise HTTPException(status_code=404, detail="Student session not found.")
+    if user_session.revoked_at is None:
+        user_session.revoked_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"success": True, "session_id": user_session.id, "message": "Student session revoked."}
+
+
+@app.post("/api/student/sessions/revoke-others")
+def revoke_other_student_sessions(
+    request: Request = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    effective_authorization = _student_authorization_from_request(authorization, request)
+    student, current_session, _ = _student_session_from_authorization(effective_authorization, db)
+    revoked = _revoke_user_sessions(db, student.student_id, except_session_id=current_session.id)
+    db.commit()
+    return {"success": True, "revoked": revoked, "message": "Other active sessions were logged out."}
+
+
 @app.put("/api/student/profile")
 def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == profile.student_id).first()
@@ -6234,6 +6570,7 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
 
     if profile.password:
         student.password = hash_password(profile.password)
+        _revoke_user_sessions(db, student.student_id)
 
     db.commit()
     db.refresh(student)

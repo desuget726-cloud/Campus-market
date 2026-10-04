@@ -137,7 +137,7 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '', user = null }) {
                             </div>
 
                             <div>
-                                <h3 className="font-semibold text-slate-900">
+                                <h3 className="font-semibold text-slate-900">     
                                     Buyer and seller responsibility
                                 </h3>
                                 <p>

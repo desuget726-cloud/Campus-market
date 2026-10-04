@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import ForgotPasswordModal from './ForgotPasswordModal';
 import AuthInfoModal from './AuthInfoModal';
 import { useLanguage } from '../../context/LanguageContext';
@@ -26,7 +27,7 @@ const createPkcePair = async () => {
   return { verifier, challenge: toBase64Url(new Uint8Array(digest)) };
 };
 
-function LoginForm({ onLoginSuccess, onToggleRegister }) {
+function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
   const { t } = useLanguage();
   const [formData, setFormData] = useState({ studentId: '', password: '' });
   const [error, setError] = useState('');
@@ -350,6 +351,10 @@ function LoginForm({ onLoginSuccess, onToggleRegister }) {
 
         <main className="login-card-shell">
           <div className="login-card">
+            <button type="button" className="login-back-button" onClick={onCancel}>
+              <ArrowLeft aria-hidden="true" />
+              <span>Back</span>
+            </button>
             <header className="login-header">
               <h1>Welcome Back,</h1>
               <p>Sign in to your Campus Marketplace account.</p>

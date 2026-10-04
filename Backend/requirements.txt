@@ -18,3 +18,5 @@ scikit-learn
 sqlalchemy<2.1
 uvicorn[standard]
 cloudinary
+user-agents
+geoip2

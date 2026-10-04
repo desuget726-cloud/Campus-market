@@ -1,6 +1,7 @@
 ﻿# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
 from datetime import datetime, timezone
+import uuid
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -77,6 +78,7 @@ class Student(Base):
     seller_payment_account = relationship("SellerPaymentAccount", uselist=False, back_populates="student", cascade="all, delete-orphan")
     id_change_requests = relationship("StudentIdChangeRequest", back_populates="student", cascade="all, delete-orphan")
     sessions = relationship("StudentSession", primaryjoin="Student.student_id == StudentSession.student_id", back_populates="student", cascade="all, delete-orphan")
+    user_sessions = relationship("UserSession", primaryjoin="Student.student_id == UserSession.user_id", back_populates="student", cascade="all, delete-orphan")
 
 
 class StudentSession(Base):
@@ -92,6 +94,23 @@ class StudentSession(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Student.student_id == StudentSession.student_id", back_populates="sessions")
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    __table_args__ = (Index("ix_user_sessions_user_id_revoked_at", "user_id", "revoked_at"),)
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(Text, nullable=True)
+    device_name = Column(String(255), nullable=False)
+    location = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_active_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    student = relationship("Student", primaryjoin="Student.student_id == UserSession.user_id", back_populates="user_sessions")
 
 
 class PayoutProvider(Base):

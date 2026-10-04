@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
-import { LockKeyhole } from 'lucide-react';
+import { LockKeyhole, LogOut, Monitor, Smartphone, Tablet } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
@@ -70,6 +70,24 @@ const Field = ({ label, children }) => (
     </label>
 );
 
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+const formatRelativeTime = (value) => {
+    if (!value) return 'Unavailable';
+    const timestamp = new Date(value).getTime();
+    if (Number.isNaN(timestamp)) return 'Unavailable';
+    const seconds = Math.round((timestamp - Date.now()) / 1000);
+    const units = [
+        ['year', 60 * 60 * 24 * 365],
+        ['month', 60 * 60 * 24 * 30],
+        ['day', 60 * 60 * 24],
+        ['hour', 60 * 60],
+        ['minute', 60],
+        ['second', 1],
+    ];
+    const [unit, unitSeconds] = units.find(([, secondsPerUnit]) => Math.abs(seconds) >= secondsPerUnit) || units[units.length - 1];
+    return relativeTimeFormatter.format(Math.round(seconds / unitSeconds), unit);
+};
+
 const Toggle = ({ label, checked, onChange }) => (
     <button type="button" onClick={onChange} className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm font-semibold text-slate-700">
         <span>{label}</span>
@@ -124,11 +142,16 @@ function SettingsCenter({
     const [showConfirmPasswordModal, setShowConfirmPasswordModal] = useState(false);
     const [confirmPassword, setConfirmPassword] = useState('');
     const [confirmPasswordError, setConfirmPasswordError] = useState('');
+    const [activeSessions, setActiveSessions] = useState([]);
+    const [activeSessionsLoadState, setActiveSessionsLoadState] = useState('idle');
+    const [activeSessionsError, setActiveSessionsError] = useState('');
+    const [sessionActionId, setSessionActionId] = useState('');
+    const [isRevokingOtherSessions, setIsRevokingOtherSessions] = useState(false);
     const [sessionInfo, setSessionInfo] = useState({
-        ip_address: 'Loading...',
-        user_agent: 'Loading...',
-        browser: 'Loading...',
-        operating_system: 'Loading...',
+        ip_address: 'Unavailable',
+        user_agent: 'Unavailable',
+        browser: 'Unavailable',
+        operating_system: 'Unavailable',
     });
     const [idChangeRequest, setIdChangeRequest] = useState(null);
     const [showIdChangeForm, setShowIdChangeForm] = useState(false);
@@ -153,6 +176,88 @@ function SettingsCenter({
             return storedToken || user?.access_token || '';
         } catch (error) {
             return user?.access_token || '';
+        }
+    };
+
+    const loadActiveSessions = async ({ showLoading = true, notifyFailure = true } = {}) => {
+        if (showLoading) setActiveSessionsLoadState('loading');
+        setActiveSessionsError('');
+        try {
+            const token = getStudentSessionToken();
+            if (!token) throw new Error('Your authenticated student session is required.');
+            const response = await fetch(`${API_BASE_URL}/api/student/sessions`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const error = new Error(data?.detail || 'Unable to load active sessions.');
+                error.status = response.status;
+                throw error;
+            }
+            setActiveSessions(Array.isArray(data) ? data : []);
+            setActiveSessionsLoadState('ready');
+            return true;
+        } catch (error) {
+            setActiveSessionsLoadState('error');
+            setActiveSessionsError(error.message || 'Unable to load active sessions.');
+            if (notifyFailure && error.status !== 401) {
+                toast.error(error.message || 'Unable to load active sessions.');
+            }
+            return false;
+        }
+    };
+
+    const revokeSession = async (session) => {
+        if (!window.confirm(`Log out ${session.device_name || 'this device'}?`)) return;
+        setSessionActionId(session.id);
+        try {
+            const token = getStudentSessionToken();
+            if (!token) throw new Error('Your authenticated student session is required.');
+            const response = await fetch(`${API_BASE_URL}/api/student/sessions/${encodeURIComponent(session.id)}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const error = new Error(data?.detail || 'Unable to log out this session.');
+                error.status = response.status;
+                throw error;
+            }
+            if (!(await loadActiveSessions({ showLoading: false, notifyFailure: false }))) {
+                throw new Error('Session was logged out, but the active-session list could not be refreshed.');
+            }
+            toast.success('Session logged out.');
+        } catch (error) {
+            if (error.status !== 401) toast.error(error.message || 'Unable to log out this session.');
+        } finally {
+            setSessionActionId('');
+        }
+    };
+
+    const revokeOtherSessions = async () => {
+        if (!window.confirm('This will sign you out on all other devices.')) return;
+        setIsRevokingOtherSessions(true);
+        try {
+            const token = getStudentSessionToken();
+            if (!token) throw new Error('Your authenticated student session is required.');
+            const response = await fetch(`${API_BASE_URL}/api/student/sessions/revoke-others`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const error = new Error(data?.detail || 'Unable to log out other sessions.');
+                error.status = response.status;
+                throw error;
+            }
+            if (!(await loadActiveSessions({ showLoading: false, notifyFailure: false }))) {
+                throw new Error('Other sessions were logged out, but the active-session list could not be refreshed.');
+            }
+            toast.success('Other sessions logged out.');
+        } catch (error) {
+            if (error.status !== 401) toast.error(error.message || 'Unable to log out other sessions.');
+        } finally {
+            setIsRevokingOtherSessions(false);
         }
     };
 
@@ -574,7 +679,7 @@ function SettingsCenter({
 
             return (
                 <>
-                    <PanelHeader eyebrow="Security" title="Protect your account" text="Review password access, two-factor protection, and the current device session." />
+                    <PanelHeader eyebrow="Security" title="Protect your account" text="Review password access, two-factor protection, and all devices signed in to your account." />
                     <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
                         <form onSubmit={handlePasswordSubmit} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                             <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Password</p>
@@ -599,17 +704,96 @@ function SettingsCenter({
                         <div className="space-y-4">
                             <Toggle label="Two-Factor Authentication" checked={twoFactor} onChange={handle2FAToggle} />
                             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                                <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Active session</p>
-                                <div className="mt-4 space-y-3 text-sm text-slate-700">
-                                    <div className="flex items-start justify-between gap-4">
-                                        <span className="font-medium text-slate-500">IP Address</span>
-                                        <span className="text-right font-semibold text-slate-900 break-all">{sessionInfo.ip_address}</span>
-                                    </div>
-                                    <div className="flex items-start justify-between gap-4">
-                                        <span className="font-medium text-slate-500">Device / Browser</span>
-                                        <span className="text-right font-semibold text-slate-900">{sessionInfo.operating_system} / {sessionInfo.browser}</span>
-                                    </div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Active Sessions</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => loadActiveSessions()}
+                                        disabled={activeSessionsLoadState === 'loading'}
+                                        className="rounded-full px-3 py-1.5 text-xs font-bold text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-50"
+                                    >
+                                        Refresh
+                                    </button>
                                 </div>
+                                {activeSessionsLoadState === 'loading' && (
+                                    <div className="mt-4 space-y-3" aria-label="Loading active sessions" aria-busy="true">
+                                        {[0, 1].map((row) => <div key={row} className="h-36 animate-pulse rounded-2xl border border-emerald-100 bg-white/80" />)}
+                                    </div>
+                                )}
+                                {activeSessionsLoadState === 'error' && (
+                                    <div role="alert" className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+                                        <p>{activeSessionsError || 'Unable to load active sessions.'}</p>
+                                        <button type="button" onClick={() => loadActiveSessions()} className="mt-2 font-bold underline">Try again</button>
+                                    </div>
+                                )}
+                                {activeSessionsLoadState === 'ready' && activeSessions.length === 0 && (
+                                    <div className="mt-4 rounded-2xl border border-emerald-100 bg-white/80 p-4">
+                                        <p className="text-sm text-slate-600">No active sessions found.</p>
+                                        <button type="button" disabled className="btn-primary mt-4 w-full rounded-full py-3 text-sm font-bold opacity-50">Log out other sessions</button>
+                                    </div>
+                                )}
+                                {activeSessionsLoadState === 'ready' && activeSessions.length > 0 && (
+                                    <div className="mt-4 space-y-3">
+                                        {activeSessions.map((session) => {
+                                            const DeviceIcon = /tablet|ipad/i.test(session.device_name || '')
+                                                ? Tablet
+                                                : /mobile|phone|android|iphone|ios/i.test(session.device_name || '')
+                                                    ? Smartphone
+                                                    : Monitor;
+                                            return (
+                                                <article key={session.id} className="rounded-2xl border border-emerald-100 bg-white/90 p-4">
+                                                    <div className="flex items-start gap-3">
+                                                        <span className="rounded-xl bg-emerald-100 p-2 text-emerald-800" aria-hidden="true"><DeviceIcon className="h-5 w-5" /></span>
+                                                        <div className="min-w-0 flex-1">
+                                                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                <h3 className="break-words text-sm font-bold text-slate-900">{session.device_name || 'Unknown device'}</h3>
+                                                                {session.is_current
+                                                                    ? <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-800">This device</span>
+                                                                    : (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => revokeSession(session)}
+                                                                            disabled={Boolean(sessionActionId) || isRevokingOtherSessions}
+                                                                            className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                                                        >
+                                                                            <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                                                                            {sessionActionId === session.id ? 'Logging out...' : 'Log out'}
+                                                                        </button>
+                                                                    )}
+                                                            </div>
+                                                            <div className="mt-3 space-y-2 text-sm text-slate-700">
+                                                                <div className="flex items-start justify-between gap-4">
+                                                                    <span className="shrink-0 font-medium text-slate-500">IP Address</span>
+                                                                    <span className="break-all text-right font-semibold text-slate-900">{session.ip_address || (session.is_current ? sessionInfo.ip_address : 'Unavailable')}</span>
+                                                                </div>
+                                                                <div className="flex items-start justify-between gap-4">
+                                                                    <span className="shrink-0 font-medium text-slate-500">Location</span>
+                                                                    <span className="text-right font-semibold text-slate-900">{session.location || 'Unavailable'}</span>
+                                                                </div>
+                                                                <div className="flex items-start justify-between gap-4">
+                                                                    <span className="shrink-0 font-medium text-slate-500">Signed in</span>
+                                                                    <span className="text-right font-semibold text-slate-900">{formatRelativeTime(session.created_at)}</span>
+                                                                </div>
+                                                                <div className="flex items-start justify-between gap-4">
+                                                                    <span className="shrink-0 font-medium text-slate-500">Last active</span>
+                                                                    <span className="text-right font-semibold text-slate-900">{formatRelativeTime(session.last_active_at)}</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </article>
+                                            );
+                                        })}
+                                        <button
+                                            type="button"
+                                            onClick={revokeOtherSessions}
+                                            disabled={activeSessions.filter((session) => !session.is_current).length === 0 || Boolean(sessionActionId) || isRevokingOtherSessions}
+                                            className="btn-primary w-full rounded-full py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                            {isRevokingOtherSessions ? 'Logging out other sessions...' : 'Log out other sessions'}
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -736,6 +920,7 @@ function SettingsCenter({
     useEffect(() => {
         if (settingsTab === 'security') {
             loadSessionInfo();
+            loadActiveSessions();
         }
     }, [settingsTab, user]);
 

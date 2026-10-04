@@ -28,6 +28,7 @@ from app.models import (
     Student,
     SystemSetting,
     Transaction,
+    UserSession,
     Wallet,
 )
 
@@ -127,11 +128,18 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         self.db.close()
 
     def _student_token(self, student_id):
+        user_session = UserSession(
+            user_id=student_id,
+            device_name="Test device",
+        )
+        self.db.add(user_session)
+        self.db.flush()
         return main_module._create_session_token(
             student_id,
             "student",
             60,
             os.environ["SESSION_SECRET"],
+            session_id=user_session.id,
         )
 
     def _admin_token(self):
