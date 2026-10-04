@@ -2270,3 +2270,20 @@ Traceback (most recent call last):
     sock.connect(sa)
     ~~~~~~~~~~~~^^^^
 TimeoutError: timed out
+2026-10-04 12:06:13,617 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\Lab 3\Documents\Campus-market\backend\app\main.py", line 2769, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 726, in login
+    self.ehlo_or_helo_if_needed()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 620, in ehlo_or_helo_if_needed
+    if not (200 <= self.ehlo()[0] <= 299):
+                   ~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 461, in ehlo
+    (code, msg) = self.getreply()
+                  ~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
