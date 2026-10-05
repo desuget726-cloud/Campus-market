@@ -6,6 +6,7 @@ import AdminDisputeReview from './AdminDisputeReview';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { adminApiGet, getStoredAccessToken } from '../../api/apiClient';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { getAdminSettings } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
 import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
@@ -1483,6 +1484,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const savedSettingsRef = useRef(null);
+  const settingsLoadRequestedRef = useRef(false);
   const updateSetting = (key, value) => {
     const [section, ...fieldPath] = key.split('.');
     const updateSection = {
@@ -1749,10 +1751,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const loadSystemSettings = async () => {
     setSettingsLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/settings`);
-      if (!response.ok) throw new Error('Settings endpoint unavailable');
-
-      const responseData = await response.json();
+      const responseData = await getAdminSettings();
       const data = responseData.settings || responseData;
       const marketplaceSettings = data.marketplace || {};
       const studentVerification = data.studentVerification || {};
@@ -1783,16 +1782,19 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       };
       savedSettingsRef.current = loadedSettings;
 
-      setGeneralSettings(loadedSettings.general);
-      setProductSettings(loadedSettings.marketplace);
-      setModerationSettings(loadedSettings.moderation);
-      setAiSettings(loadedSettings.ai);
-      setPaymentSettings(loadedSettings.payment);
-      setNotificationSettings(loadedSettings.notifications);
-      setSecuritySettings(loadedSettings.security);
-      setStudentVerificationSettings(normalizedStudentVerification);
-      setChatSettings(loadedSettings.chat);
-      setMaintenanceSettings(loadedSettings.maintenance);
+      const setIfChanged = (setter, nextValue) => setter((current) => (
+        JSON.stringify(current) === JSON.stringify(nextValue) ? current : nextValue
+      ));
+      setIfChanged(setGeneralSettings, loadedSettings.general);
+      setIfChanged(setProductSettings, loadedSettings.marketplace);
+      setIfChanged(setModerationSettings, loadedSettings.moderation);
+      setIfChanged(setAiSettings, loadedSettings.ai);
+      setIfChanged(setPaymentSettings, loadedSettings.payment);
+      setIfChanged(setNotificationSettings, loadedSettings.notifications);
+      setIfChanged(setSecuritySettings, loadedSettings.security);
+      setIfChanged(setStudentVerificationSettings, normalizedStudentVerification);
+      setIfChanged(setChatSettings, loadedSettings.chat);
+      setIfChanged(setMaintenanceSettings, loadedSettings.maintenance);
     } catch (error) {
       console.error('Failed to fetch system settings:', error);
       notifyError(error, 'admin-settings-load');
@@ -1801,8 +1803,14 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     }
   };
 
+  const loadSystemSettingsRef = useRef(loadSystemSettings);
+  loadSystemSettingsRef.current = loadSystemSettings;
+
   useEffect(() => {
-    if (activeTab === 'settings') loadSystemSettings();
+    if (activeTab === 'settings' && !settingsLoadRequestedRef.current) {
+      settingsLoadRequestedRef.current = true;
+      loadSystemSettingsRef.current();
+    }
   }, [activeTab]);
 
   // Fetch reports when reports tab is active

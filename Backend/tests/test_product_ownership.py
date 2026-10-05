@@ -101,6 +101,25 @@ class ProductOwnershipTests(unittest.TestCase):
             self.sellers_product.id,
         })
 
+    def test_products_remain_public_when_optional_authorization_is_expired(self):
+        with patch.object(
+            main_module,
+            "_student_from_authorization",
+            side_effect=HTTPException(status_code=401, detail="JWT token has expired."),
+        ):
+            products = main_module.get_products(
+                authorization="Bearer expired-token",
+                product_ids=None,
+                db=self.db,
+            )
+
+        product_ids = {product["id"] for product in products}
+        self.assertEqual(product_ids, {
+            self.buyers_product.id,
+            self.legacy_name_product.id,
+            self.sellers_product.id,
+        })
+
     def test_seller_cannot_add_own_product_to_cart(self):
         payload = main_module.CartItemCreate(
             student_id=self.buyer.student_id,

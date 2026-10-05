@@ -74,7 +74,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
 
   return (
-    <header className="site-navbar fixed top-0 left-0 right-0 z-50 h-[72px] border-b border-blue-900 text-white sm:h-[80px]">
+    <header className="site-navbar fixed top-0 left-0 right-0 z-[100] h-[var(--header-h)] border-b border-blue-900 text-white">
       <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
         <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">

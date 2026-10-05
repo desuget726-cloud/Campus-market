@@ -17,51 +17,52 @@ import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast'
 import { LanguageProvider } from './context/LanguageContext';
 import toast, { Toaster } from 'react-hot-toast';
 import { API_BASE_URL } from './config';
+import { getAdminSettings } from './api/adminSettings';
 import { clearPendingProductAction, getPendingProductAction } from './utils/productActionState';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
 
-function AppContent() {
-  const persistSession = (nextUser = user, nextRole = activeRole, nextCurrentView = currentView, nextDashboardTab = dashboardTab, nextStudentTab = studentTab) => {
-    if (typeof window === 'undefined') return;
+const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, nextStudentTab) => {
+  if (typeof window === 'undefined') return;
 
-    try {
-      const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
-      const existingSession = saved ? JSON.parse(saved) : {};
-      const sessionUser = nextUser || existingSession.user || null;
-      const accessToken = sessionUser?.access_token || sessionUser?.accessToken || sessionUser?.token || existingSession.access_token || existingSession.accessToken || existingSession.token || '';
+  try {
+    const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    const existingSession = saved ? JSON.parse(saved) : {};
+    const sessionUser = nextUser || existingSession.user || null;
+    const accessToken = sessionUser?.access_token || sessionUser?.accessToken || sessionUser?.token || existingSession.access_token || existingSession.accessToken || existingSession.token || '';
 
-      const session = {
-        ...existingSession,
-        user: sessionUser,
-        userRole: nextRole || existingSession.userRole || sessionUser?.role || null,
+    const session = {
+      ...existingSession,
+      user: sessionUser,
+      userRole: nextRole || existingSession.userRole || sessionUser?.role || null,
+      access_token: accessToken,
+      accessToken,
+      currentView: nextCurrentView,
+      dashboardTab: nextDashboardTab,
+      studentTab: nextStudentTab,
+    };
+
+    if (session.user) {
+      const normalizedUser = {
+        ...session.user,
         access_token: accessToken,
         accessToken,
-        currentView: nextCurrentView,
-        dashboardTab: nextDashboardTab,
-        studentTab: nextStudentTab,
+        token: accessToken || session.user.token || '',
       };
-
-      if (session.user) {
-        const normalizedUser = {
-          ...session.user,
-          access_token: accessToken,
-          accessToken,
-          token: accessToken || session.user.token || '',
-        };
-        window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-          ...session,
-          user: normalizedUser,
-        }));
-      } else {
-        window.localStorage.removeItem(SESSION_STORAGE_KEY);
-      }
-    } catch (error) {
-      console.error('Failed to persist session:', error);
+      window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+        ...session,
+        user: normalizedUser,
+      }));
+    } else {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
     }
-  };
+  } catch (error) {
+    console.error('Failed to persist session:', error);
+  }
+};
 
+function AppContent() {
   const [currentView, setCurrentView] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     try {
@@ -130,23 +131,30 @@ function AppContent() {
   });
 
   const activeRole = userRole || user?.role || null;
+  const hasUser = Boolean(user);
+  const serializedUser = user ? JSON.stringify(user) : '';
+  const studentId = userRole === 'student' ? user?.studentId : null;
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
 
-  const handleLogout = () => {
-    fetch(`${API_BASE_URL}/api/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    }).catch(() => { });
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } catch (error) {
+      console.error('Logout request failed:', error);
+    } finally {
+      setUser(null);
+      setUserRole(null);
+      setUnreadCount(0);
+      setCurrentView('home');
+      setDashboardTab('home');
+      setStudentTab('home');
 
-    setUser(null);
-    setUserRole(null);
-    setUnreadCount(0);
-    setCurrentView('home');
-    setDashboardTab('home');
-    setStudentTab('home');
-
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      }
     }
   };
 
@@ -227,7 +235,13 @@ function AppContent() {
 
         setUser((currentUser) => {
           const nextUser = { ...data.user, ...(currentUser || {}) };
-          persistSession(nextUser, 'student', 'student-dashboard', dashboardTab, studentTab);
+          persistSession(
+            nextUser,
+            'student',
+            'student-dashboard',
+            storedSession?.dashboardTab || 'home',
+            storedSession?.studentTab || 'home',
+          );
           return nextUser;
         });
         setUserRole('student');
@@ -244,21 +258,17 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (!user || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
-    persistSession(user, activeRole, currentView, dashboardTab, studentTab);
-  }, [currentView, dashboardTab, adminTab, studentTab, user, activeRole]);
+    if (!serializedUser || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
+    persistSession(JSON.parse(serializedUser), activeRole, currentView, dashboardTab, studentTab);
+  }, [currentView, dashboardTab, adminTab, studentTab, serializedUser, activeRole]);
 
   useEffect(() => {
-    if (!user) return;
-
     const loadSessionTimeout = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/admin/settings`);
-        if (!response.ok) return;
-        const data = await response.json();
+        const data = await getAdminSettings();
         const configuredTimeout = Number(data?.security?.sessionTimeout);
         if (Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
-          setSessionTimeoutMinutes(configuredTimeout);
+          setSessionTimeoutMinutes((current) => current === configuredTimeout ? current : configuredTimeout);
         }
       } catch (error) {
         console.error('Failed to load session timeout:', error);
@@ -266,7 +276,7 @@ function AppContent() {
     };
 
     loadSessionTimeout();
-  }, [user]);
+  }, []);
 
   useEffect(() => {
     const syncUserFromSession = () => {
@@ -284,44 +294,61 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
-    if (!user || !activeRole || !expectedDashboardView) return;
+    if (!hasUser || !activeRole || !expectedDashboardView) return;
 
     const dashboardViews = new Set(['student-dashboard', 'admin-dashboard', 'student-dashboard-profile']);
 
     if (dashboardViews.has(currentView) && currentView !== expectedDashboardView) {
       setCurrentView(expectedDashboardView);
     }
-  }, [user, activeRole, currentView, expectedDashboardView]);
+  }, [hasUser, activeRole, currentView, expectedDashboardView]);
 
   useEffect(() => {
-    if (!user?.studentId || userRole !== 'student') {
-      setUnreadCount(0);
+    if (!studentId) {
+      setUnreadCount((current) => current === 0 ? current : 0);
       return;
     }
 
+    let cancelled = false;
+    let requestInFlight = false;
     const fetchUnreadCount = async () => {
+      if (cancelled || requestInFlight) return;
+      requestInFlight = true;
       try {
         const response = await fetch(
           `${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(
-            user.studentId,
+            studentId,
           )}`,
         );
 
         const data = await response.json();
+        if (cancelled) return;
         if (response.ok) {
-          setUnreadCount(data.unreadCount ?? 0);
+          const parsedCount = Number(data.unreadCount ?? 0);
+          const nextCount = Number.isFinite(parsedCount) ? parsedCount : 0;
+          setUnreadCount((current) => current === nextCount ? current : nextCount);
         } else {
-          setUnreadCount(0);
+          setUnreadCount((current) => current === 0 ? current : 0);
           console.error('Unread count fetch failed:', data);
         }
       } catch (error) {
-        setUnreadCount(0);
-        console.error('Unread count request failed:', error);
+        if (!cancelled) {
+          setUnreadCount((current) => current === 0 ? current : 0);
+          console.error('Unread count request failed:', error);
+        }
+      } finally {
+        requestInFlight = false;
       }
     };
 
-    fetchUnreadCount();
-  }, [user, userRole]);
+    void fetchUnreadCount();
+    const intervalId = window.setInterval(fetchUnreadCount, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [studentId]);
 
   const handleRegisterSuccess = (studentData) => {
     const nextUser = { ...studentData, access_token: studentData?.access_token || studentData?.accessToken || null };
@@ -358,20 +385,27 @@ function AppContent() {
   };
 
   useEffect(() => {
-    if (!user || !activeRole || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
+    if (!hasUser || !activeRole || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
 
     let timeoutId;
-    const expireSession = () => {
-      fetch(`${API_BASE_URL}/api/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      }).catch(() => { });
-      window.localStorage.clear();
-      setUser(null);
-      setUserRole(null);
-      setUnreadCount(0);
-      setShowSuccessModal(false);
-      setCurrentView('login');
+    const expireSession = async () => {
+      try {
+        await fetch(`${API_BASE_URL}/api/auth/logout`, {
+          method: 'POST',
+          credentials: 'include',
+        });
+      } catch (error) {
+        console.error('Session expiry logout request failed:', error);
+      } finally {
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        setUser(null);
+        setUserRole(null);
+        setUnreadCount(0);
+        setShowSuccessModal(false);
+        setCurrentView('login');
+        setDashboardTab('home');
+        setStudentTab('home');
+      }
     };
     const resetTimeout = () => {
       window.clearTimeout(timeoutId);
@@ -386,7 +420,7 @@ function AppContent() {
       window.clearTimeout(timeoutId);
       activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetTimeout));
     };
-  }, [activeRole, currentView, sessionTimeoutMinutes, user]);
+  }, [activeRole, currentView, sessionTimeoutMinutes, hasUser]);
 
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
   const isStudentMessagesView = currentView === 'student-dashboard' && studentTab === 'messages';
@@ -455,9 +489,9 @@ function AppContent() {
   };
 
   useEffect(() => {
-    if (!user || !['login', 'register'].includes(currentView)) return;
+    if (!hasUser || !['login', 'register'].includes(currentView)) return;
     setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
-  }, [activeRole, currentView, user]);
+  }, [activeRole, currentView, hasUser]);
 
   const handleNotificationClick = async () => {
     const effectiveRole = userRole || user?.role;
@@ -577,14 +611,14 @@ function AppContent() {
         />
       )}
 
-      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'pt-16'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
+      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
         <main className={isStudentMessagesView
-          ? 'min-h-0 min-w-0 w-full flex-1 overflow-hidden pb-0'
+          ? 'app-main-content app-main-content--messages min-h-0 min-w-0 w-full flex-1 overflow-hidden'
           : ['login', 'register'].includes(currentView)
-            ? 'w-full min-w-0 flex-1'
+            ? 'app-main-content w-full min-w-0 flex-1'
             : isHomeView
-              ? 'w-full min-w-0 flex-1 px-0 pb-6 lg:pb-8'
-              : `${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'} pb-6 ${currentView === 'admin-dashboard' ? 'lg:pb-0' : 'lg:pb-8'}`}>
+              ? 'app-main-content w-full min-w-0 flex-1 px-0'
+              : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
@@ -666,6 +700,7 @@ function AppContent() {
               onTabChange={setStudentTab}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}
+              appUnreadNotificationCount={unreadCount}
               onOpenPrivacy={() => setShowFooterPrivacy(true)}
               onOpenTerms={() => setShowFooterTerms(true)}
             />
@@ -678,6 +713,7 @@ function AppContent() {
               onTabChange={setStudentTab}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}
+              appUnreadNotificationCount={unreadCount}
               onOpenPrivacy={() => setShowFooterPrivacy(true)}
               onOpenTerms={() => setShowFooterTerms(true)}
             />

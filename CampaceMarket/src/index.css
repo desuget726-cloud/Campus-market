@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 
 :root {
+  --header-h: 72px;
   --brand-primary: #06a1fa;
   --brand-primary-light: #3399D6;
   --brand-primary-hover: #006BA8;
@@ -16,6 +17,24 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --header-h: 80px;
+  }
+}
+
+.app-page-shell {
+  padding-top: var(--header-h);
+}
+
+.app-main-content {
+  padding-bottom: 96px;
+}
+
+.app-main-content--messages {
+  padding-bottom: 0;
 }
 
 .site-navbar {

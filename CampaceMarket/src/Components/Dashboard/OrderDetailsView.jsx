@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ArrowLeft } from 'lucide-react';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { isOrderRefunded, shouldShowReceiptActions } from '../../utils/orderReceiptState';
@@ -302,28 +303,31 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
 
   return (
     <div className="space-y-5">
-      <button type="button" onClick={onBack} className="text-sm font-bold text-slate-600 hover:text-slate-950">Back to {isBuyer ? 'My Orders' : 'Seller Orders'}</button>
+      <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+        Back to {isBuyer ? 'My Orders' : 'Seller Orders'}
+      </button>
 
-      <section className="rounded-[30px] bg-[#16224f] p-6 text-white shadow-[0_20px_40px_rgba(10,14,35,0.22)] sm:p-8">
+      <section className="rounded-[30px] border border-[#e5e7eb] bg-white p-6 text-slate-900 shadow-[0_4px_16px_rgba(15,23,42,0.06)] sm:p-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.22em] text-emerald-300">Order Details</p>
+            <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#059669]">Order Details</p>
             <div className="mt-2 flex items-center gap-3">
-              <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} tone="dark" />
-              <h1 className="text-3xl font-black">Order #{order.id}</h1>
+              <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
+              <h1 className="text-3xl font-black text-[#0f172a]">Order #{order.id}</h1>
             </div>
-            <p className="mt-2 text-sm text-slate-300">Placed {formatDate(order.created_at)}</p>
+            <p className="mt-2 text-sm text-[#64748b]">Placed {formatDate(order.created_at)}</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <span className="rounded-full bg-[#0d1638] px-4 py-2 text-sm font-bold text-white">Order: {statusLabel}</span>
-            <span className="rounded-full bg-emerald-400/15 px-4 py-2 text-sm font-bold text-emerald-200">Payment: {paymentStatus}</span>
+            <span className="rounded-full border border-[#c7d2fe] bg-[#eef2ff] px-4 py-2 text-sm font-bold text-[#1e1b4b]">Order: {statusLabel}</span>
+            <span className="rounded-full border border-[#a7f3d0] bg-[#ecfdf5] px-4 py-2 text-sm font-bold text-[#047857]">Payment: {paymentStatus}</span>
           </div>
         </div>
       </section>
 
       <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
         <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Tracking</p><h2 className="mt-1 text-xl font-black text-slate-950">Order progress</h2></div><button type="button" onClick={onRefresh} className="inline-flex items-center gap-2 rounded-full border border-[var(--brand-primary)] px-3 py-2 text-sm font-bold text-[var(--brand-primary)] hover:bg-sky-50 hover:text-[var(--brand-primary-hover)]"><span aria-hidden="true" className="text-base">↻</span>Refresh</button></div>
-        <div className={`mt-7 grid gap-4 sm:grid-cols-2 ${isSellerRejected ? 'lg:grid-cols-4' : 'lg:grid-cols-6'}`}>
+        <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-7">
           {timeline.map((step, index) => {
             const complete = status === 'Disputed' ? index < currentIndex : index <= currentIndex;
             const current = index === currentIndex;
@@ -341,7 +345,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
                 : complete
                   ? 'text-emerald-700'
                   : 'text-slate-400';
-            return <div key={step.key} className="relative min-w-0"><div className="flex items-center gap-3 lg:block"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-black ${markerStyle}`}>{complete ? '✓' : index + 1}</span><p className={`mt-0 text-sm font-bold lg:mt-3 ${labelStyle}`}>{step.label}</p></div>{index < timeline.length - 1 && <div className={`ml-4 mt-2 h-1 lg:ml-0 lg:mr-3 ${index < currentIndex ? (isSellerRejected ? 'bg-rose-400' : 'bg-emerald-400') : 'bg-slate-100'}`} />}</div>;
+            return <div key={step.key} className="relative min-w-0"><div className="flex items-center gap-3 lg:block"><span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-black ${markerStyle}`}>{complete ? '✓' : index + 1}</span><p className={`mt-0 text-sm font-bold lg:mt-3 lg:min-h-[4.5rem] ${labelStyle}`}>{step.label}</p></div>{index < timeline.length - 1 && <div className={`ml-4 mt-2 h-1 lg:ml-0 lg:mr-3 ${index < currentIndex ? (isSellerRejected ? 'bg-rose-400' : 'bg-emerald-400') : 'bg-slate-100'}`} />}</div>;
           })}
         </div>
         {isRefunded && isBuyer && <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><p className="font-black">Refund confirmation</p><p className="mt-1 font-bold">{formatPrice(order.refund_amount ?? totalPaid)} refunded to your wallet.</p><p className="mt-1">Refunded on: {refundDate || 'Date unavailable'}</p><p className="mt-1 break-all">Refund reference: {refundReference}</p></div>}

@@ -6,7 +6,9 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
+from starlette.responses import Response
 from fastapi import HTTPException
 from unittest.mock import patch
 
@@ -15,7 +17,7 @@ os.environ["SESSION_SECRET"] = "student-session-test-secret"
 
 from app import main as main_module
 from app.database import Base
-from app.models import Notification, Student, UserSession
+from app.models import Notification, Student, StudentSession, UserSession
 from app.password_security import hash_password
 
 
@@ -51,6 +53,13 @@ class StudentSessionTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    def test_cors_allows_local_vite_credentials_methods_and_headers(self):
+        cors = next(item for item in main_module.app.user_middleware if item.cls is CORSMiddleware)
+        self.assertIn("http://localhost:5173", cors.kwargs["allow_origins"])
+        self.assertTrue(cors.kwargs["allow_credentials"])
+        self.assertEqual(cors.kwargs["allow_methods"], ["*"])
+        self.assertEqual(cors.kwargs["allow_headers"], ["*"])
 
     @staticmethod
     def _request(ip_address, user_agent, forwarded_for=None, cookie_token=None):
@@ -176,6 +185,81 @@ class StudentSessionTests(unittest.TestCase):
 
         self.assertEqual(response["access_token"], valid_token)
         self.assertEqual(response["user"]["studentId"], self.student.student_id)
+
+    def test_logout_without_token_succeeds_without_database_access(self):
+        response = Response()
+        with patch.object(main_module, "_ensure_student_session_table", side_effect=AssertionError):
+            result = main_module.logout_session(
+                self._request("127.0.0.1", "Mozilla/5.0"),
+                response,
+                authorization=None,
+                db=self.db,
+            )
+
+        self.assertEqual(result, {"success": True})
+        self.assertIn("session_token", response.headers["set-cookie"])
+
+    def test_logout_with_expired_token_succeeds_without_database_access(self):
+        expired_token = main_module._create_session_token(
+            self.student.student_id,
+            "student",
+            -1,
+            main_module._get_session_secret(),
+        )
+        response = Response()
+        with patch.object(main_module, "_ensure_student_session_table", side_effect=AssertionError):
+            result = main_module.logout_session(
+                self._request("127.0.0.1", "Mozilla/5.0"),
+                response,
+                authorization=f"Bearer {expired_token}",
+                db=self.db,
+            )
+
+        self.assertEqual(result, {"success": True})
+        self.assertIn("session_token", response.headers["set-cookie"])
+
+    def test_logout_revokes_a_valid_session(self):
+        token = main_module._create_session_token(
+            self.student.student_id,
+            "student",
+            30,
+            main_module._get_session_secret(),
+        )
+        session = StudentSession(
+            student_id=self.student.student_id,
+            session_token=token,
+            is_active=True,
+            last_active=datetime.now(timezone.utc),
+        )
+        self.db.add(session)
+        self.db.commit()
+
+        result = main_module.logout_session(
+            self._request("127.0.0.1", "Mozilla/5.0"),
+            Response(),
+            authorization=f"Bearer {token}",
+            db=self.db,
+        )
+
+        self.assertEqual(result, {"success": True})
+        self.assertFalse(session.is_active)
+
+    def test_logout_still_succeeds_when_session_storage_fails(self):
+        token = main_module._create_session_token(
+            self.student.student_id,
+            "student",
+            30,
+            main_module._get_session_secret(),
+        )
+        with patch.object(self.db, "query", side_effect=main_module.SQLAlchemyError("database unavailable")):
+            result = main_module.logout_session(
+                self._request("127.0.0.1", "Mozilla/5.0"),
+                Response(),
+                authorization=f"Bearer {token}",
+                db=self.db,
+            )
+
+        self.assertEqual(result, {"success": True})
 
     def test_student_cannot_revoke_another_users_session(self):
         other_student = Student(

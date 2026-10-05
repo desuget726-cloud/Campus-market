@@ -11,6 +11,7 @@ import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
 import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '../../config';
+import { getAdminSettings } from '../../api/adminSettings';
 import { isOrderRefunded } from '../../utils/orderReceiptState';
 import { shouldReduceUnreadNotificationCount } from '../../utils/notificationState';
 
@@ -152,7 +153,7 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 };
 
 
-function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate }) {
+function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, appUnreadNotificationCount = 0 }) {
   const { t, language } = useLanguage();
   const studentToast = (key) => t(`studentToast.${key}`);
   const getStudentSessionToken = () => {
@@ -196,6 +197,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [notifications, setNotifications] = useState([]);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  useEffect(() => {
+    setUnreadNotificationCount((current) => current === appUnreadNotificationCount ? current : appUnreadNotificationCount);
+  }, [appUnreadNotificationCount]);
   const initialConversations = [
     {
       id: 'conv-sara',
@@ -1495,15 +1499,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   useEffect(() => {
     const fetchMarketplaceSettings = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/admin/settings`);
-        if (!response.ok) return;
-
-        const settings = await response.json();
+        const settings = await getAdminSettings();
         const configuredSize = settings?.marketplace?.maxImageSize;
-        if (configuredSize) setMaxImageSize(String(configuredSize));
+        if (configuredSize) {
+          const nextSize = String(configuredSize);
+          setMaxImageSize((current) => current === nextSize ? current : nextSize);
+        }
         const configuredImageCount = Number(settings?.marketplace?.maxImagesPerProduct);
         if (Number.isFinite(configuredImageCount) && configuredImageCount >= 0) {
-          setMaxImagesPerProduct(configuredImageCount);
+          setMaxImagesPerProduct((current) => current === configuredImageCount ? current : configuredImageCount);
         }
       } catch (err) {
         console.error('Error fetching marketplace settings:', err);
@@ -1744,25 +1748,26 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!user?.studentId) return;
 
     let isMounted = true;
+    let unreadRequestInFlight = false;
+    const currentStudentId = user.studentId;
 
     const fetchUnreadCounts = async () => {
+      if (!isMounted || unreadRequestInFlight) return;
+      unreadRequestInFlight = true;
       try {
-        const [notificationResponse, messageResponse] = await Promise.all([
-          fetch(`${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
-          fetch(`${API_BASE_URL}/api/student/messages/unread-count?student_id=${encodeURIComponent(user.studentId)}`),
-        ]);
-        if (!notificationResponse.ok && !messageResponse.ok) return;
-        const notificationData = notificationResponse.ok ? await notificationResponse.json() : {};
+        const messageResponse = await fetch(`${API_BASE_URL}/api/student/messages/unread-count?student_id=${encodeURIComponent(currentStudentId)}`);
+        if (!messageResponse.ok) return;
         const messageData = messageResponse.ok ? await messageResponse.json() : {};
-        const totalUnreadNotifications = Number(notificationData.unreadCount ?? notificationData.unread_count ?? 0);
-        const totalUnreadMessages = Number(messageData.unreadCount ?? messageData.unread_count ?? 0);
+        const parsedMessageCount = Number(messageData.unreadCount ?? messageData.unread_count ?? 0);
+        const totalUnreadMessages = Number.isFinite(parsedMessageCount) ? parsedMessageCount : 0;
 
         if (isMounted) {
-          setUnreadNotificationCount(totalUnreadNotifications);
-          setUnreadMessageCount(totalUnreadMessages);
+          setUnreadMessageCount((current) => current === totalUnreadMessages ? current : totalUnreadMessages);
         }
       } catch (err) {
         console.error('Error fetching unread sidebar counts:', err);
+      } finally {
+        unreadRequestInFlight = false;
       }
     };
 
@@ -1779,14 +1784,19 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           const balanceChanged = normalizedBalance !== walletBalanceRef.current;
           if (balanceChanged) {
             walletBalanceRef.current = normalizedBalance;
-            setWalletBalance(normalizedBalance);
+            setWalletBalance((current) => current === normalizedBalance ? current : normalizedBalance);
           }
-          setPaymentInfo((prev) => ({
-            balance: normalizedBalance,
-            heldBalance: Number(data?.held_balance ?? prev?.heldBalance ?? 0),
-            recentTx: data?.recentTx || data?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : prev?.recentTx || 'No transactions yet'),
-            transactions: normalizedTransactions.length ? normalizedTransactions : prev?.transactions || [],
-          }));
+          setPaymentInfo((prev) => {
+            const nextPaymentInfo = {
+              balance: normalizedBalance,
+              heldBalance: Number(data?.held_balance ?? prev?.heldBalance ?? 0),
+              recentTx: data?.recentTx || data?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : prev?.recentTx || 'No transactions yet'),
+              transactions: normalizedTransactions.length ? normalizedTransactions : prev?.transactions || [],
+            };
+            return Object.keys(nextPaymentInfo).every((key) => Object.is(prev?.[key], nextPaymentInfo[key]))
+              ? prev
+              : nextPaymentInfo;
+          });
 
           if (balanceChanged && onUserUpdate) {
             onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
@@ -1799,6 +1809,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     fetchUnreadCounts();
     fetchWalletBalance();
+    const unreadIntervalId = window.setInterval(fetchUnreadCounts, 30000);
 
     const handleRefreshOnFocus = () => {
       fetchWalletBalance();
@@ -1808,6 +1819,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
     return () => {
       isMounted = false;
+      window.clearInterval(unreadIntervalId);
       window.removeEventListener('focus', handleRefreshOnFocus);
     };
     // onUserUpdate and getTransactionSummaryText are intentionally excluded from this
@@ -4395,13 +4407,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <h3 className="text-xl font-bold text-slate-900">Search & Browse Marketplace</h3>
                         <p className="text-sm text-slate-500 mt-1">Find student listings by name, category, or subcategory.</p>
                       </div>
-                      <div className="mt-4 grid w-full min-w-0 grid-cols-2 gap-2">
-                        <button onClick={handleSearchSubmit} className="btn-primary w-full min-w-0 rounded-full px-5 py-3 text-sm font-semibold shadow-sm transition cursor-pointer">Search</button>
-                        <button onClick={() => { resetSearchFilters(); fetchProducts(); }} className="w-full min-w-0 rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer">Reset</button>
-                      </div>
                     </div>
 
-                    <form onSubmit={handleSearchSubmit} className="mt-6 grid min-w-0 grid-cols-1 gap-4 md:grid-cols-3">
+                    <form onSubmit={handleSearchSubmit} className="mt-6 grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-3">
                       <div className="min-w-0">
                         <label className="block text-sm font-semibold text-slate-700">Search</label>
                         <input
@@ -4440,6 +4448,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             <option key={sub.name} value={sub.name}>{sub.name}</option>
                           ))}
                         </select>
+                      </div>
+                      <div className="flex min-w-0 flex-col justify-end gap-3 sm:flex-row sm:justify-end lg:col-span-3">
+                        <button type="submit" className="btn-primary inline-flex h-11 w-full min-w-[120px] items-center justify-center rounded-2xl px-5 text-sm font-semibold shadow-sm transition cursor-pointer sm:w-auto">Search</button>
+                        <button type="button" onClick={() => { resetSearchFilters(); fetchProducts(); }} className="inline-flex h-11 w-full min-w-[120px] items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer sm:w-auto">Reset</button>
                       </div>
                     </form>
 

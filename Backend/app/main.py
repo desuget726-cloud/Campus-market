@@ -187,15 +187,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,        #  Uses origins list
     allow_credentials=True,       #  Allow cookies/auth
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "X-Requested-With",
-        "Idempotency-Key",
-        "X-Reauth-Password",
-    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -3965,17 +3958,22 @@ def get_oauth_session(
 
 @app.post("/api/auth/logout")
 def logout_session(request: Request, response: Response, authorization: Optional[str] = Header(None), db: Session = Depends(get_db)):
-    _ensure_student_session_table(db)
     session_token = request.cookies.get("session_token", "").strip()
     if not session_token and authorization:
         scheme, separator, token = authorization.partition(" ")
         if separator and scheme.lower() == "bearer" and token.strip():
             session_token = token.strip()
-    if session_token:
-        try:
-            claims = _decode_student_jwt(session_token)
-        except HTTPException:
-            claims = {}
+    response.delete_cookie(key="session_token", path="/")
+    if not session_token:
+        return {"success": True}
+
+    try:
+        claims = _decode_student_jwt(session_token)
+    except HTTPException:
+        return {"success": True}
+
+    try:
+        _ensure_student_session_table(db)
         claimed_session_id = claims.get("session_id")
         if claimed_session_id:
             user_session = db.query(UserSession).filter(UserSession.id == str(claimed_session_id)).first()
@@ -3985,8 +3983,13 @@ def logout_session(request: Request, response: Response, authorization: Optional
         if session:
             session.is_active = False
             session.last_active = datetime.now(timezone.utc)
-    response.delete_cookie(key="session_token", path="/")
-    db.commit()
+        db.commit()
+    except SQLAlchemyError:
+        logger.exception("Failed to revoke session during logout.")
+        try:
+            db.rollback()
+        except SQLAlchemyError:
+            logger.exception("Failed to roll back the session during logout.")
     return {"success": True}
 
 
@@ -7225,7 +7228,13 @@ def get_products(
         )
 
     query = _public_marketplace_product_query(db)
-    authenticated_student = _student_from_authorization(authorization, db) if authorization else None
+    authenticated_student = None
+    if authorization:
+        try:
+            authenticated_student = _student_from_authorization(authorization, db)
+        except HTTPException as error:
+            if error.status_code != status.HTTP_401_UNAUTHORIZED:
+                raise
     if authenticated_student:
         seller_identifiers = {
             authenticated_student.student_id.strip().lower(),
