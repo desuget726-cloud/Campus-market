@@ -1,10 +1,13 @@
 import asyncio
+import logging
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import parse_qs, urlparse
+
+import httpx
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
@@ -126,13 +129,14 @@ class GoogleOAuthTests(unittest.TestCase):
 
         self.assertEqual(
             response.headers["location"],
-            "https://frontend.example.test/login?error=google_state",
+            "https://frontend.example.test/login?error=google_state_invalid",
         )
         self.assertIn(f"reason={reason}", " ".join(logs.output))
         exchange_code.assert_not_awaited()
 
     def test_valid_state_is_consumed_once_and_exchange_is_mocked(self):
         environment = self._environment()
+        environment["GOOGLE_REDIRECT_URI"] += "/"
         with patch.dict(os.environ, environment, clear=True), patch.object(
             main_module.secrets,
             "token_urlsafe",
@@ -296,11 +300,118 @@ class GoogleOAuthTests(unittest.TestCase):
 
         self.assertEqual(
             response.headers["location"],
-            "https://frontend.example.test/login?error=token_exchange_failed",
+            "https://frontend.example.test/login?error=google_token_exchange_failed",
         )
-        self.assertIn("reason=token_exchange_failed", " ".join(logs.output))
+        self.assertIn("reason=google_token_exchange_failed", " ".join(logs.output))
         self.assertNotIn("provider secret detail", response.headers["location"])
         exchange_code.assert_awaited_once()
+
+    def test_google_provider_errors_map_to_specific_frontend_codes(self):
+        provider_error_codes = {
+            "invalid_grant": "google_invalid_grant",
+            "redirect_uri_mismatch": "google_redirect_mismatch",
+            "invalid_client": "google_invalid_client",
+        }
+        for google_error, frontend_code in provider_error_codes.items():
+            with self.subTest(google_error=google_error):
+                self.db.query(GoogleOAuthState).delete()
+                self.db.commit()
+                error = main_module.OAuthTokenExchangeError(
+                    status_code=400,
+                    provider_error=google_error,
+                    error_description="safe diagnostic",
+                    detail="internal provider detail",
+                )
+                response, exchange_code = self._run_callback(
+                    {
+                        "email": "student@university.edu.et",
+                        "email_verified": True,
+                        "name": "Student",
+                    },
+                    exchange_error=error,
+                )
+                self.assertEqual(
+                    response.headers["location"],
+                    f"https://frontend.example.test/login?error={frontend_code}",
+                )
+                exchange_code.assert_awaited_once()
+
+    def test_duplicate_callback_rejects_consumed_state_without_exchanging_again(self):
+        self._assert_state_rejected(
+            supplied_state="callback-state",
+            stored_state="callback-state",
+            reason="reused",
+            used=True,
+        )
+
+    def test_token_exchange_logs_provider_error_and_redacts_credentials(self):
+        redirect_uri = "https://api.example.test/auth/google/callback"
+        payload = {
+            "code": "never-log-code",
+            "state": "never-log-state",
+            "client_secret": "never-log-secret",
+            "access_token": "never-log-token",
+            "redirect_uri": redirect_uri,
+        }
+        response = Mock(
+            headers={"content-type": "application/json"},
+            is_success=False,
+            status_code=400,
+        )
+        response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": (
+                "authorization code rejected never-log-code "
+                "state=never-log-state client secret never-log-secret"
+            ),
+        }
+        google_client = Mock()
+        google_client.post = AsyncMock(return_value=response)
+        client_context = Mock()
+        client_context.__aenter__ = AsyncMock(return_value=google_client)
+        client_context.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(
+            main_module.httpx,
+            "AsyncClient",
+            return_value=client_context,
+        ), self.assertLogs("app.auth", level="WARNING") as logs:
+            with self.assertRaises(main_module.OAuthTokenExchangeError) as raised:
+                asyncio.run(main_module._exchange_oauth_code(
+                    "https://oauth2.googleapis.com/token",
+                    payload,
+                    provider="Google",
+                    redirect_uri=redirect_uri,
+                ))
+
+        self.assertEqual(raised.exception.provider_error, "invalid_grant")
+        self.assertEqual(raised.exception.error_description, response.json.return_value["error_description"])
+        log_text = " ".join(logs.output)
+        self.assertIn("status=400", log_text)
+        self.assertIn("error=invalid_grant", log_text)
+        self.assertIn("error_description=", log_text)
+        self.assertIn(f"redirect_uri={redirect_uri}", log_text)
+        for secret in ("never-log-code", "never-log-state", "never-log-secret", "never-log-token"):
+            self.assertNotIn(secret, log_text)
+
+    def test_access_log_filter_redacts_code_and_state_query_values(self):
+        record = logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1", "GET", "/auth/google/callback?code=private-code&state=private-state", "1.1", 303),
+            None,
+        )
+
+        main_module.OAuthAccessLogRedactionFilter().filter(record)
+        formatted = record.getMessage()
+
+        self.assertIn("code=[REDACTED]", formatted)
+        self.assertIn("state=[REDACTED]", formatted)
+        self.assertNotIn("private-code", formatted)
+        self.assertNotIn("private-state", formatted)
 
     def test_cookie_session_endpoint_returns_validated_bearer_token(self):
         student = SimpleNamespace(

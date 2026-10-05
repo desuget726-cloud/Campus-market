@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
+import logging
+import re
 
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+logging.basicConfig(level=logging.INFO)
+logging.getLogger().setLevel(logging.INFO)
 from dotenv import load_dotenv
 
 # Load configuration before importing modules that may initialize database state.
@@ -15,12 +19,6 @@ try:
     MAX_TOTAL_ADMINS = max(1, int(os.getenv("MAX_TOTAL_ADMINS", "3").strip()))
 except ValueError:
     MAX_TOTAL_ADMINS = 3
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if OPENAI_API_KEY:
-    print("OpenAI Client initialized successfully")
-else:
-    print("OpenAI API Key is missing. Running in local-only mode")
 
 from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, File, Header, Request, Response, WebSocket, WebSocketDisconnect, Query
 
@@ -35,7 +33,6 @@ from app.password_security import hash_password, verify_password
 from typing import Optional, List, Dict, Tuple, Any, Callable, Literal, cast
 from dataclasses import dataclass
 import shutil
-import logging
 import binascii
 import httpx
 from openai import OpenAI
@@ -44,11 +41,11 @@ import json
 import traceback
 import hashlib
 import hmac
-import re
 import math
 import mimetypes
 import base64
 import secrets
+
 from decimal import Decimal, InvalidOperation
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -94,6 +91,15 @@ from .order_lifecycle import (
     payout_release_allowed,
 )
 from .ollama_service import OllamaServiceError, get_ollama_service
+from .ai_service import SYSTEM_PROMPT as AI_ADVISOR_SYSTEM_PROMPT
+from .ai_service import (
+    ask_ollama,
+    ask_openai,
+    log_provider_failure,
+    ollama_model_install_message,
+    ollama_model_missing,
+    provider_status,
+)
 from .wallet_service import apply_transaction
 from .commission_service import DEFAULT_COMMISSION_SETTINGS, as_decimal, commission_fee_from_settings, validate_commission_settings
 from .storage import save_attachment, save_upload
@@ -104,6 +110,48 @@ app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backe
 
 GOOGLE_REDIRECT_URI_DEFAULT = "http://localhost:8000/auth/google/callback"
 GOOGLE_OAUTH_STATE_TTL = timedelta(minutes=10)
+
+
+class OAuthAccessLogRedactionFilter(logging.Filter):
+    _SENSITIVE_QUERY_PARAM = re.compile(
+        r"([?&](?:code|state)=)[^&\s\"]*",
+        re.IGNORECASE,
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name == "uvicorn.access":
+            if isinstance(record.args, tuple):
+                args = list(record.args)
+                if len(args) > 2 and isinstance(args[2], str):
+                    args[2] = self._SENSITIVE_QUERY_PARAM.sub(
+                        r"\1[REDACTED]",
+                        args[2],
+                    )
+                    record.args = tuple(args)
+            elif isinstance(record.msg, str):
+                record.msg = self._SENSITIVE_QUERY_PARAM.sub(
+                    r"\1[REDACTED]",
+                    record.msg,
+                )
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogRedactionFilter())
+
+
+class OAuthTokenExchangeError(HTTPException):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        provider_error: Optional[str],
+        error_description: Optional[str],
+        detail: str,
+    ):
+        super().__init__(status_code=status_code, detail=detail)
+        self.provider_error = provider_error
+        self.error_description = error_description
+
 
 SELLER_TIMEOUT_WARNING_COUNT = 1
 SELLER_TIMEOUT_SUSPENSION_COUNT = 3
@@ -2242,7 +2290,7 @@ class AITranslateRequest(BaseModel):
 
 
 class AIAdvisorRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=500)
     student_id: Optional[str] = None
     department: Optional[str] = None
     context: Optional[str] = "general"
@@ -3160,6 +3208,15 @@ def ensure_database_compatibility(db: Session) -> None:
 async def on_startup():
     global payment_scheduler
     startup_logger = logging.getLogger("app.startup")
+    logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogRedactionFilter())
+    google_redirect_uri = (
+        os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+        or GOOGLE_REDIRECT_URI_DEFAULT
+    )
+    startup_logger.info(
+        "Google OAuth redirect URI: %s",
+        _redact_oauth_log_value(google_redirect_uri, {}),
+    )
     if DISABLE_ADMIN_2FA:
         startup_logger.warning("WARNING: Admin 2FA is DISABLED (development only)")
     ai_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
@@ -3584,35 +3641,118 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
 
 
-async def _exchange_oauth_code(token_url: str, payload: dict) -> dict:
+def _redact_oauth_log_value(value: Optional[str], payload: dict) -> str:
+    safe_value = str(value or "")
+    sensitive_values = (
+        payload.get("code"),
+        payload.get("state"),
+        payload.get("client_secret"),
+        payload.get("code_verifier"),
+        payload.get("access_token"),
+        payload.get("refresh_token"),
+        payload.get("id_token"),
+    )
+    for secret in sensitive_values:
+        if secret:
+            safe_value = safe_value.replace(str(secret), "[REDACTED]")
+    safe_value = re.sub(
+        r"([?&](?:code|state|access_token|refresh_token|id_token|client_secret|code_verifier)=)[^&\s]+",
+        r"\1[REDACTED]",
+        safe_value,
+        flags=re.IGNORECASE,
+    )
+    return " ".join(safe_value.split())[:500]
+
+
+async def _exchange_oauth_code(
+    token_url: str,
+    payload: dict,
+    *,
+    provider: str = "OAuth",
+    redirect_uri: Optional[str] = None,
+) -> dict:
+    auth_logger = logging.getLogger("app.auth")
+    safe_redirect_uri = _redact_oauth_log_value(redirect_uri, payload)
+    auth_logger.info(
+        "%s token exchange request: redirect_uri=%s",
+        provider,
+        safe_redirect_uri,
+    )
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(token_url, data=payload)
     except httpx.RequestError as error:
-        logging.getLogger("app.auth").error("OAuth token exchange failed: reason=provider_unavailable")
+        auth_logger.warning(
+            "%s token exchange failed: status=unavailable error=provider_unavailable "
+            "error_description=%s redirect_uri=%s exception_type=%s",
+            provider,
+            _redact_oauth_log_value(str(error), payload),
+            safe_redirect_uri,
+            type(error).__name__,
+        )
         raise HTTPException(
             status_code=502,
             detail="The server could not reach the OAuth provider. Check backend internet access and try again.",
         ) from error
 
-    token_data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-    if not response.is_success or not token_data.get("access_token"):
-        provider_error = token_data.get("error") if isinstance(token_data, dict) else None
-        logging.getLogger("app.auth").warning(
-            "OAuth token exchange rejected by provider: status=%s",
+    try:
+        token_data = (
+            response.json()
+            if response.headers.get("content-type", "").startswith("application/json")
+            else {}
+        )
+    except ValueError as error:
+        auth_logger.warning(
+            "%s token exchange returned invalid JSON: status=%s error=invalid_json "
+            "error_description=%s redirect_uri=%s",
+            provider,
             response.status_code,
+            "Provider response was not valid JSON.",
+            safe_redirect_uri,
+        )
+        raise OAuthTokenExchangeError(
+            status_code=502,
+            provider_error=None,
+            error_description="Provider response was not valid JSON.",
+            detail="The OAuth provider returned an invalid token response.",
+        ) from error
+    if not isinstance(token_data, dict):
+        token_data = {}
+    if not response.is_success or not token_data.get("access_token"):
+        provider_error_value = token_data.get("error")
+        description_value = token_data.get("error_description")
+        provider_error = str(provider_error_value) if provider_error_value else None
+        error_description = str(description_value) if description_value else None
+        safe_error = _redact_oauth_log_value(provider_error, payload)
+        safe_description = _redact_oauth_log_value(error_description, payload)
+        auth_logger.warning(
+            "%s token exchange rejected: status=%s error=%s error_description=%s redirect_uri=%s",
+            provider,
+            response.status_code,
+            safe_error or "unspecified",
+            safe_description or "unspecified",
+            safe_redirect_uri,
         )
         if provider_error == "invalid_client":
-            raise HTTPException(
+            raise OAuthTokenExchangeError(
                 status_code=503,
+                provider_error=provider_error,
+                error_description=error_description,
                 detail="Google OAuth client configuration is invalid. Check GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
             )
         if provider_error == "redirect_uri_mismatch":
-            raise HTTPException(
+            raise OAuthTokenExchangeError(
                 status_code=503,
+                provider_error=provider_error,
+                error_description=error_description,
                 detail="Google OAuth redirect URI configuration does not match Google Cloud Console.",
             )
-        raise HTTPException(status_code=400, detail="The OAuth authorization code is invalid or expired.")
+        raise OAuthTokenExchangeError(
+            status_code=400,
+            provider_error=provider_error,
+            error_description=error_description,
+            detail="The OAuth authorization code is invalid or expired.",
+        )
     return token_data
 
 
@@ -3859,6 +3999,11 @@ async def google_callback(
     error: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    verifier = _consume_google_oauth_state(db, state)
+    if verifier is None:
+        _log_google_oauth_failure("state_rejected")
+        return _google_oauth_frontend_redirect("google_state_invalid")
+
     if error:
         _log_google_oauth_failure("google_denied")
         return _google_oauth_frontend_redirect("google_cancelled")
@@ -3871,11 +4016,6 @@ async def google_callback(
         _log_google_oauth_failure("oauth_not_configured")
         return _google_oauth_frontend_redirect("oauth_not_configured")
 
-    verifier = _consume_google_oauth_state(db, state)
-    if verifier is None:
-        _log_google_oauth_failure("state_rejected")
-        return _google_oauth_frontend_redirect("google_state")
-
     try:
         token_data = await _exchange_oauth_code(
             "https://oauth2.googleapis.com/token",
@@ -3887,12 +4027,20 @@ async def google_callback(
                 "redirect_uri": redirect_uri,
                 "grant_type": "authorization_code",
             },
+            provider="Google",
+            redirect_uri=redirect_uri,
         )
     except HTTPException as exchange_error:
-        error_code = (
-            "oauth_configuration_error"
-            if exchange_error.status_code == 503
-            else "token_exchange_failed"
+        provider_error = getattr(exchange_error, "provider_error", None)
+        error_code = {
+            "invalid_grant": "google_invalid_grant",
+            "redirect_uri_mismatch": "google_redirect_mismatch",
+            "invalid_client": "google_invalid_client",
+        }.get(
+            provider_error,
+            "google_provider_unavailable"
+            if exchange_error.status_code == 502
+            else "google_token_exchange_failed",
         )
         _log_google_oauth_failure(error_code)
         return _google_oauth_frontend_redirect(error_code)
@@ -8532,6 +8680,10 @@ AI_ADVISOR_OFFLINE_MESSAGE = (
     "'I want to buy a laptop' or 'How much should I sell a book for?'"
 )
 
+AI_ADVISOR_RATE_LIMIT = 10
+AI_ADVISOR_RATE_WINDOW_SECONDS = 60
+_ai_advisor_request_history: Dict[str, List[float]] = {}
+
 
 def _openai_advisor_response(
     request: AIAdvisorRequest,
@@ -8695,28 +8847,40 @@ async def ai_health():
 
 
 @app.post("/api/ai/advisor")
-async def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
+async def ai_advisor(
+    request: AIAdvisorRequest,
+    http_request: Request,
+    db: Session = Depends(get_db),
+):
     """Return database-backed product search or pricing guidance for the AI Advisor."""
     message = request.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message is required.")
 
     logger = logging.getLogger("ai_advisor")
-    logger.info(f"[AI ADVISOR] Query from {request.student_id}: {message[:100]}")
+    student_key = (request.student_id or "").strip()[:128].casefold()
+    if not student_key:
+        student_key = http_request.client.host if http_request.client else "anonymous"
+    now = asyncio.get_running_loop().time()
+    recent_requests = [
+        timestamp
+        for timestamp in _ai_advisor_request_history.get(student_key, [])
+        if now - timestamp < AI_ADVISOR_RATE_WINDOW_SECONDS
+    ]
+    if len(recent_requests) >= AI_ADVISOR_RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="AI Advisor rate limit reached. Please try again in a minute.")
+    recent_requests.append(now)
+    _ai_advisor_request_history[student_key] = recent_requests
+    if len(_ai_advisor_request_history) > 1000:
+        active_request_history = {
+            key: [timestamp for timestamp in timestamps if now - timestamp < AI_ADVISOR_RATE_WINDOW_SECONDS]
+            for key, timestamps in _ai_advisor_request_history.items()
+            if any(now - timestamp < AI_ADVISOR_RATE_WINDOW_SECONDS for timestamp in timestamps)
+        }
+        _ai_advisor_request_history.clear()
+        _ai_advisor_request_history.update(active_request_history)
 
-    provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
-    openai_client = None
-    if provider in {"openai", "ollama"}:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if api_key and OpenAI is not None:
-            try:
-                openai_client = OpenAI(api_key=api_key)
-            except Exception as error:
-                logger.warning("OpenAI advisor client initialization failed; using local guidance: %s", error)
-        else:
-            logger.info("OpenAI fallback is unavailable because OPENAI_API_KEY or the OpenAI package is missing.")
-    elif provider != "ollama":
-        logger.warning("Unsupported AI_PROVIDER=%s; using local advisor guidance.", provider)
+    logger.info("[AI ADVISOR] Query from %s: %s", request.student_id, message[:100])
 
     try:
         intent = detect_intent(message)
@@ -8730,115 +8894,83 @@ async def ai_advisor(request: AIAdvisorRequest, db: Session = Depends(get_db)):
 
         cloud_products = search_products_by_intent(db, message, intent, request.department) if intent == "buy" else []
         local_price_data = calculate_price_recommendation(db, keywords) if intent == "sell" else None
+        model_context = (
+            f"Student department: {request.department or 'Not provided'}\n"
+            f"Student context: {request.context or 'general'}\n"
+            f"Detected intent: {intent}\n"
+            f"Student message: {message}\n\n"
+            f"Approved matching listings:\n"
+            f"{format_products_for_response(cloud_products[:10]) or 'No matching products were found.'}\n\n"
+            f"Approved marketplace data:\n{approved_database_context}\n\n"
+            f"Local pricing analysis:\n{json.dumps(local_price_data or {}, default=str)}\n\n"
+            f"Additional public information:\n{web_search_context}"
+        )
 
-        if provider == "ollama":
-            ollama_products = cloud_products[:10]
-            ollama_product_context = format_products_for_response(ollama_products)
-            if not ollama_product_context:
-                ollama_product_context = "No matching products were found in the catalog for this query."
-            logger.info(
-                "Calling Ollama advisor with %s product matches for intent=%s",
-                len(ollama_products),
-                intent,
-            )
-            ollama_response = await _ollama_advisor_response(
-                request,
-                message,
-                intent,
-                ollama_products,
-                local_price_data,
-                ollama_product_context,
-                web_search_context,
-            )
-            if ollama_response:
-                return ollama_response
-
-        if openai_client is not None and provider in {"openai", "ollama"}:
-            cloud_response = _openai_advisor_response(
-                request,
-                message,
-                intent,
-                cloud_products,
-                local_price_data,
-                approved_database_context,
-                web_search_context,
-            )
-            if cloud_response:
-                return cloud_response
-
-        if intent == 'sell':
-            price_data = calculate_price_recommendation(db, keywords)
-            
-            if price_data.get("status") == "success":
-                tips_list = "\n".join(f"- {tip}" for tip in price_data.get('tips', []))
-                reply = f"""💰 **AI Price Recommendation for Your Sale**
-
-Based on analysis of {price_data['similar_products_analyzed']} similar products in our marketplace:
-
-**📊 Recommended Price Range: {price_data['price_range']}**
-- Market Average: {price_data['average_market_price']:,} ETB
-- Market Range: {price_data['market_min']:,} - {price_data['market_max']:,} ETB
-
-**🎯 Seller Tips:**
-{tips_list}
-
-**Pro Tips for Your Listing:**
-✅ Take clear, well-lit photos from multiple angles
-✅ Write detailed description (condition, age, any defects)
-✅ Mention warranty if applicable
-✅ Respond quickly to inquiries - speeds up sales
-✅ Consider offering delivery options for extra convenience
-
-Ready to list? Head to Seller Hub to post your item! 📱"""
-                
-                return {
-                    "reply": reply,
-                    "price_recommendation": price_data,
-                    "intent": intent,
-                    "message_type": "price_advice"
-                }
-            else:
-                reply = """⚠️ **Unable to Calculate Price Recommendation**
-
-""" + price_data.get("message", "An error occurred.") + """
-
-🔍 **Here's what you can do:**
-
-1. **Check similar products manually** in our marketplace for current pricing
-2. **Consider product factors:**
-   - Condition (new, like-new, good, fair)
-   - Age and usage
-   - Market demand (high during semester start/exams)
-   - Brand and model popularity
-   
-3. **Competitive pricing tips:**
-   - Be 5-10% below market average to sell faster
-   - Price premium only if condition is excellent or brand is highly desired
-   - Leave room for negotiation
-
-Ready to list your item? Create a detailed listing in the Seller Hub!"""
-                
-                return {
-                    "reply": reply,
-                    "price_recommendation": None,
-                    "intent": intent,
-                    "message_type": "price_no_data"
-                }
-        
+        configured_provider = os.getenv("AI_PROVIDER", "auto").strip().lower() or "auto"
+        if configured_provider == "auto":
+            providers = ("openai", "ollama")
+        elif configured_provider in {"openai", "ollama"}:
+            providers = (configured_provider,)
         else:
+            logger.warning("Unsupported AI_PROVIDER=%s; trying OpenAI then Ollama.", configured_provider)
+            providers = ("openai", "ollama")
+
+        provider_failures: Dict[str, Dict[str, Any]] = {}
+        for selected_provider in providers:
+            try:
+                if selected_provider == "openai":
+                    reply = await ask_openai(AI_ADVISOR_SYSTEM_PROMPT, model_context)
+                else:
+                    reply = await ask_ollama(AI_ADVISOR_SYSTEM_PROMPT, model_context)
+            except Exception as error:
+                provider_failures[selected_provider] = log_provider_failure(selected_provider, error)
+                continue
+
+            if intent == "buy" and cloud_products and "[PRODUCT:" not in reply:
+                reply = f"{format_products_for_response(cloud_products[:10])}\n\n{reply}"
             return {
-                "reply": AI_ADVISOR_OFFLINE_MESSAGE,
+                "reply": reply,
+                "products": [
+                    {"id": product.id, "title": product.title, "price": product.price}
+                    for product in cloud_products[:10]
+                ],
                 "intent": intent,
-                "message_type": "offline_guidance"
+                "message_type": f"{selected_provider}_advisor",
+                "provider": selected_provider,
             }
+
+        ollama_error = provider_failures.get("ollama")
+        offline_message = AI_ADVISOR_OFFLINE_MESSAGE
+        if ollama_error and ollama_model_missing(ollama_error):
+            offline_message = ollama_model_install_message()
+        logger.warning(
+            "AI advisor exhausted providers=%s",
+            ",".join(providers),
+        )
+        return {
+            "reply": offline_message,
+            "intent": intent,
+            "message_type": "offline_guidance",
+            "provider": "local-search",
+        }
     
     except Exception as e:
         logger.error(f"[AI ADVISOR ERROR] {str(e)}", exc_info=True)
-        return {
-            "reply": f"⚠️ An error occurred while processing your request: {str(e)}. Please try again in a moment.",
-            "intent": "error",
-            "message_type": "error"
-        }
+        raise HTTPException(status_code=500, detail="Unable to process the AI Advisor request.") from e
+
+
+@app.get("/api/ai/status")
+async def ai_status():
+    """Report whether OpenAI and Ollama are reachable without exposing credentials."""
+    providers = await provider_status()
+    return {
+        "provider": os.getenv("AI_PROVIDER", "auto").strip().lower() or "auto",
+        "providers": providers,
+        "available": any(
+            provider["reachable"] and provider["last_error"] is None
+            for provider in providers.values()
+        ),
+    }
 
 
 # ==========================================

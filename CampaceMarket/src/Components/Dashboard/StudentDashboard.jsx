@@ -3168,7 +3168,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       if (res.ok && data.reply) {
         // AI response with optional product recommendations
-        setChatHistory((prev) => [...prev, { role: 'assistant', text: data.reply }]);
+        setChatHistory((prev) => [...prev, {
+          role: 'assistant',
+          text: data.reply,
+          provider: data.provider || 'AI Advisor'
+        }]);
 
         // If advisor included recommendations, update recommended products
         if (data.recommendations && Array.isArray(data.recommendations)) {
@@ -3177,7 +3181,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         notifySuccess(studentToast('aiResponseReady'), 'student-ai-advisor');
       } else {
         const errorMsg = data.detail || data.error || 'Sorry, I could not answer that right now.';
-        setChatHistory((prev) => [...prev, { role: 'assistant', text: errorMsg }]);
+        setChatHistory((prev) => [...prev, { role: 'assistant', text: errorMsg, isError: true }]);
         notifyError({ detail: errorMsg }, 'student-ai-advisor');
       }
     } catch (err) {
@@ -3188,7 +3192,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       console.error('AI advisor error:', err);
       setChatHistory((prev) => [...prev, {
         role: 'assistant',
-        text: `⚠️ Connection error. Please try again in a moment. Ensure the backend server is running at ${API_BASE_URL}`
+        text: `Connection error. Please try again in a moment. Ensure the backend server is running at ${API_BASE_URL}`,
+        isError: true
       }]);
       notifyError(err, 'student-ai-advisor');
     } finally {
@@ -5330,7 +5335,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {showAiAdvisorFab && (
               <div className="fixed bottom-6 right-6 z-50">
                 {isAiAdvisorOpen && (
-                  <div className="fixed bottom-24 right-6 z-50 flex h-[520px] w-96 flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl animate-fade-in">
+                  <div className="fixed bottom-24 right-6 z-50 flex max-h-[70vh] w-96 max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl animate-fade-in">
                     <div className="flex items-center justify-between border-b border-slate-200 bg-gradient-to-r from-sky-50 to-blue-50 px-4 py-3">
                       <div>
                         <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-sky-600">Academic Defense</p>
@@ -5362,8 +5367,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
                               return (
                                 <div key={`${message.role}-${index}`} className={`flex ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}>
-                                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-6 shadow-sm ${message.role === 'assistant' ? 'border border-slate-200 bg-white text-slate-800' : 'bg-blue-600 text-white'}`}>
+                                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-6 shadow-sm ${message.isError ? 'border border-red-200 bg-red-50 text-red-700' : message.role === 'assistant' ? 'border border-slate-200 bg-white text-slate-800' : 'bg-blue-600 text-white'}`}>
                                     {renderedText && <div className="whitespace-pre-wrap font-medium">{renderedText}</div>}
+                                    {message.provider && (
+                                      <p className="mt-1 text-[10px] font-medium capitalize text-slate-400">{message.provider}</p>
+                                    )}
                                     {productMatches.length > 0 && (
                                       <div className="mt-2 space-y-2">
                                         {productMatches.map((product, pIdx) => (
@@ -5401,6 +5409,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <input
                           type="text"
                           value={aiInput}
+                          maxLength={500}
                           onChange={(e) => setAiInput(e.target.value)}
                           placeholder="Ask the advisor..."
                           className="flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400"
