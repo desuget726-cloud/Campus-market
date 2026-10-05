@@ -33,7 +33,7 @@ const formatDateTime = (value) => {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 };
 
-function PrintableReceipt({ receipt }) {
+function PrintableReceipt({ receipt, includeBuyerEmail = false, supportEmail = 'support@campus.edu.et' }) {
   if (!receipt) return null;
 
   const money = (value) => formatPrice(value);
@@ -73,6 +73,7 @@ function PrintableReceipt({ receipt }) {
           {field('Payment method', receipt.payment_method)}
           {field('Seller', receipt.seller_name)}
           {field('Buyer', receipt.buyer_name)}
+          {includeBuyerEmail && field('Buyer Email', receipt.buyer_email || 'N/A')}
           {field('Escrow', String(receipt.escrow_status || '').toUpperCase())}
           {field('Order status', String(receipt.order_status || '').toUpperCase())}
         </dl>
@@ -84,14 +85,14 @@ function PrintableReceipt({ receipt }) {
 
       <footer className="printable-receipt__footer">
         <strong>Thank you for using UniXchange</strong>
-        <span>Questions or support: support@campuse.edu.et</span>
+        <span>Questions or support: <a href={`mailto:${supportEmail}`} className="underline">{supportEmail}</a></span>
         <span>Keep this receipt for your records.</span>
       </footer>
     </article>
   );
 }
 
-function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt, isSidebarOpen, onToggleSidebar }) {
+function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt, isSidebarOpen, onToggleSidebar, supportEmail = 'support@campus.edu.et' }) {
   const [sellerPickupCode, setSellerPickupCode] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
   const [rejectionNote, setRejectionNote] = useState('');
@@ -388,7 +389,9 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
                 <p>Fees: <strong className="text-slate-900">{formatPrice(paymentReceipt.fees)}</strong></p><p>Total paid: <strong className="text-slate-900">{formatPrice(paymentReceipt.total_paid)}</strong></p>
                 <p>Payment method: <strong className="text-slate-900">{paymentReceipt.payment_method}</strong></p>
                 <p className="flex items-center gap-2">Reference: <strong className="break-all text-slate-900">{paymentReceipt.transaction_reference}</strong><button type="button" onClick={copyPaymentReference} className="shrink-0 rounded border border-slate-300 px-2 py-1 text-[10px] font-bold text-slate-700">{referenceCopied ? 'Copied' : 'Copy'}</button></p>
-                <p>Buyer: <strong className="text-slate-900">{paymentReceipt.buyer_name}</strong></p><p>Seller: <strong className="text-slate-900">{paymentReceipt.seller_name}</strong></p>
+                <p>Buyer: <strong className="text-slate-900">{paymentReceipt.buyer_name}</strong></p>
+                {isBuyer && <p>Buyer Email: <strong className="text-slate-900">{paymentReceipt.buyer_email || 'N/A'}</strong></p>}
+                <p>Seller: <strong className="text-slate-900">{paymentReceipt.seller_name}</strong></p>
                 <p>Order status: <strong className="text-slate-900">{String(paymentReceipt.order_status || '').toUpperCase()}</strong></p><p>Escrow: <strong className="text-slate-900">{String(paymentReceipt.escrow_status || '').toUpperCase()}</strong></p>
                 {paymentReceipt.dispute_status && <p>Dispute: <strong className="text-slate-900">{paymentReceipt.dispute_status}</strong></p>}
               </div>
@@ -482,7 +485,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
           {!isBuyer && hasActiveDispute && !dispute.seller_response && onDisputeResponse && <form onSubmit={submitSellerResponse} className="mt-4"><label htmlFor="seller-dispute-response" className="text-sm font-bold text-slate-700">Your response</label><textarea id="seller-dispute-response" rows="4" value={sellerResponse} onChange={(event) => setSellerResponse(event.target.value)} placeholder="Explain your side of the order dispute..." className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400" /><div className="mt-4"><label className="text-sm font-bold text-slate-700">Evidence images <span className="font-normal text-slate-400">(optional)</span></label><input type="file" multiple accept="image/*" onChange={(event) => setSellerEvidenceFiles(Array.from(event.target.files || []))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 file:mr-3 file:rounded-full file:border-0 file:bg-slate-200 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-slate-700" /><div className="mt-3 grid grid-cols-3 gap-2">{sellerEvidenceFiles.map((file, index) => <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-50"><img src={URL.createObjectURL(file)} alt={`Seller evidence preview ${index + 1}`} className="h-20 w-full object-cover" /><button type="button" onClick={() => setSellerEvidenceFiles((previous) => previous.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-1 top-1 rounded-full bg-rose-600 px-2 py-1 text-[10px] font-bold text-white">Remove</button></div>)}</div></div><div className="mt-3 flex flex-wrap items-center gap-3"><button type="submit" disabled={sellerResponseLoading || sellerResponse.trim().length < 20} className="rounded-full bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50">{sellerResponseLoading ? 'Submitting...' : 'Submit Response'}</button>{sellerResponseError && <p className="text-sm font-bold text-rose-700">{sellerResponseError}</p>}</div></form>}
         </>}
       </section>)}
-      <PrintableReceipt receipt={showReceiptActions ? paymentReceipt : null} />
+      <PrintableReceipt receipt={showReceiptActions ? paymentReceipt : null} includeBuyerEmail={isBuyer} supportEmail={supportEmail} />
     </div>
   );
 }

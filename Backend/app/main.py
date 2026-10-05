@@ -2264,7 +2264,7 @@ DEFAULT_SETTINGS_BLOCKS = {
     "general": {
         "marketplaceName": "Campace Market",
         "description": "A secure campus marketplace for buying and selling university essentials.",
-        "supportEmail": "support@gmail.com",
+        "supportEmail": "support@campus.edu.et",
         "currency": "ETB",
         "timezone": "Africa/Addis_Ababa",
     },
@@ -5372,6 +5372,9 @@ def get_admin_settings(db: Session = Depends(get_db)):
     response["studentVerification"] = _normalize_student_verification_settings(
         response.get("studentVerification", {})
     )
+    response["support_email"] = str(
+        response.get("general", {}).get("supportEmail") or "support@campus.edu.et"
+    ).strip() or "support@campus.edu.et"
     response["payment"] = get_payment_settings(db)
     public_key = os.getenv("CHAPA_PUBLIC_KEY", "")
     secret_key = os.getenv("CHAPA_SECRET_KEY", "")
@@ -11098,6 +11101,7 @@ def get_student_order_receipt(
         "payment_method": _normalize_payment_type(payment_transaction.type),
         "transaction_reference": payment_transaction.tx_id,
         "buyer_name": buyer_name,
+        "buyer_email": buyer.email or "",
         "seller_name": seller_name,
         "order_status": _normalize_order_status(order.status),
         "escrow_status": escrow_status,

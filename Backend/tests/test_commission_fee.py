@@ -196,6 +196,17 @@ class CommissionCheckoutTests(unittest.TestCase):
         self.db.expire_all()
         return response.json(), self.db.query(Order).order_by(Order.id.desc()).first()
 
+    def test_admin_settings_expose_configured_support_email(self):
+        self.db.add(SystemSetting(
+            key="general",
+            value=json.dumps({"supportEmail": "help@campus.example"}),
+        ))
+        self.db.commit()
+
+        settings = main_module.get_admin_settings(self.db)
+
+        self.assertEqual(settings["support_email"], "help@campus.example")
+
     def test_receipt_accepts_released_escrow_hold_for_successful_order(self):
         _, order = self._checkout()
         hold = self.db.query(Transaction).filter(
@@ -214,6 +225,7 @@ class CommissionCheckoutTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["total_paid"], 1261.5)
+        self.assertEqual(response.json()["buyer_email"], self.buyer.email)
         self.assertEqual(
             response.json()["platform_commission_label"],
             "Platform commission (1%, deducted from seller payout)",

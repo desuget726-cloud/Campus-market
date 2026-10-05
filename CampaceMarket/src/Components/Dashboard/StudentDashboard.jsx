@@ -197,9 +197,29 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [notifications, setNotifications] = useState([]);
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [receiptSupportEmail, setReceiptSupportEmail] = useState('support@campus.edu.et');
   useEffect(() => {
     setUnreadNotificationCount((current) => current === appUnreadNotificationCount ? current : appUnreadNotificationCount);
   }, [appUnreadNotificationCount]);
+  useEffect(() => {
+    let isMounted = true;
+    getAdminSettings()
+      .then((settingsResponse) => {
+        const settings = settingsResponse?.settings || settingsResponse;
+        const configuredEmail = settings?.support_email
+          || settings?.general?.supportEmail
+          || settings?.general?.support_email;
+        const nextEmail = String(configuredEmail || '').trim() || 'support@campus.edu.et';
+        if (isMounted) setReceiptSupportEmail((current) => current === nextEmail ? current : nextEmail);
+      })
+      .catch((error) => {
+        console.error('Failed to load receipt support email:', error);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
   const initialConversations = [
     {
       id: 'conv-sara',
@@ -948,7 +968,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return undefined;
   }, [printingReceiptOrderId, paymentReceiptState]);
 
-  const buildReceiptPdf = (receipt) => {
+  const buildReceiptPdf = (receipt, includeBuyerEmail = false) => {
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const money = (value) => `${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
     const date = receipt.payment_date || receipt.order_date;
@@ -966,6 +986,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       ['Payment method', receipt.payment_method],
       ['Reference', receipt.transaction_reference],
       ['Buyer', receipt.buyer_name],
+      ...(includeBuyerEmail ? [['Buyer Email', receipt.buyer_email || 'N/A']] : []),
       ['Seller', receipt.seller_name],
       ['Order status', String(receipt.order_status || '').toUpperCase()],
       ['Escrow', String(receipt.escrow_status || '').toUpperCase()],
@@ -1059,7 +1080,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(100, 116, 139);
-    pdf.text('Questions or support: support@campuse.edu.et', 105, y + 11, { align: 'center' });
+    const supportLine = `Questions or support: ${receiptSupportEmail}`;
+    pdf.text(supportLine, 105, y + 11, { align: 'center' });
+    const supportLineWidth = pdf.getTextWidth(supportLine);
+    pdf.link(105 - supportLineWidth / 2, y + 7, supportLineWidth, 5, {
+      url: `mailto:${encodeURIComponent(receiptSupportEmail)}`,
+    });
     return pdf;
   };
 
@@ -1071,7 +1097,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const handleDownloadPaymentReceipt = async (orderId) => {
     if (isReceiptUnavailable(orderId)) return;
     const receipt = paymentReceiptState[orderId]?.data || await fetchPaymentReceipt(orderId);
-    buildReceiptPdf(receipt).save(`UniXchange-Order-${receipt.order_number}-Receipt.pdf`);
+    buildReceiptPdf(receipt, true).save(`UniXchange-Order-${receipt.order_number}-Receipt.pdf`);
   };
 
   const handlePrintPaymentReceipt = async (orderId) => {
@@ -4300,6 +4326,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   }}
                   onConfirmReceived={handleConfirmItemReceived}
                   paymentReceipt={paymentReceiptState[selectedOrder.id]?.data}
+                  supportEmail={receiptSupportEmail}
                   paymentReceiptLoading={paymentReceiptState[selectedOrder.id]?.loading}
                   paymentReceiptError={paymentReceiptState[selectedOrder.id]?.error}
                   onViewReceipt={handleViewPaymentReceipt}

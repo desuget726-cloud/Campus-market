@@ -1397,7 +1397,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const [generalSettings, setGeneralSettings] = useState({
     marketplaceName: 'Campuse Market',
     description: 'A secure campus marketplace for buying and selling university essentials.',
-    supportEmail: 'support@campuse.edu.et',
+    supportEmail: 'support@campus.edu.et',
     currency: 'ETB',
     timezone: 'Africa/Addis_Ababa'
   });
