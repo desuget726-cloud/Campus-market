@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef, useCallback } from 'react';
 import { Search, X } from 'lucide-react';
 import ProductDetails from './ProductDetails';
 import { apiUrl } from '../../api/config';
@@ -118,7 +118,7 @@ const getStudentAccessToken = (user) => {
   }
 };
 
-function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onUserUpdate, onNavigate, onNavigateToMessages }) {
+function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages }) {
   const { t, language } = useLanguage();
   const contentContainerClass = 'mx-auto w-full max-w-[1920px] px-4 sm:px-6 lg:px-10 2xl:px-16';
   const [categories, setCategories] = useState([]);
@@ -199,7 +199,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     }
   };
 
-  const fetchProducts = async ({ search, category, subcategory, department } = {}, signal) => {
+  const fetchProducts = useCallback(async ({ search, category, subcategory, department } = {}, signal) => {
     const requestId = latestProductsRequestRef.current + 1;
     latestProductsRequestRef.current = requestId;
     lastProductRequestRef.current = { search, category, subcategory, department };
@@ -232,7 +232,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     } finally {
       if (requestId === latestProductsRequestRef.current) setLoading(false);
     }
-  };
+  }, [user]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -247,7 +247,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
       window.clearTimeout(startTimeoutId);
       controller.abort();
     };
-  }, [user?.department, user?.college, user?.departmentName]);
+  }, [fetchProducts, user?.department, user?.college, user?.departmentName]);
 
   useEffect(() => {
     if (!loading) window.dispatchEvent(new Event('campace:content-rendered'));
@@ -258,6 +258,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
 
     const productFromResults = searchResults.find((item) => String(item.id) === String(initialProductId));
     if (productFromResults) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedProduct(productFromResults);
       return;
     }

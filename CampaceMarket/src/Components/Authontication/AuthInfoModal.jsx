@@ -21,7 +21,7 @@ function AuthInfoModal({ type, onClose, defaultStudentId = '', user = null }) {
         setEvidenceImage(null);
         setTicketReference('');
         setStatus({ error: '', success: '', submitting: false });
-    }, [defaultStudentId, initialStudentId, user?.email, user?.name]);
+    }, [initialStudentId, user?.email, user?.name]);
 
     const handleClose = useCallback(() => {
         resetSupportForm();

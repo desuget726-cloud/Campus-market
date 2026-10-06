@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import String, and_, case, event, func, inspect, or_, text
+from sqlalchemy import Numeric as SQLNumeric, String, and_, case, cast as sql_cast, event, extract, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 from app.password_security import hash_password, verify_password
@@ -13709,6 +13709,92 @@ def get_payment_gateway_status():
     }
 
 
+def _completed_order_revenue_expression():
+    normalized_price = func.lower(Order.price)
+    clean_price = func.replace(
+        func.replace(
+            func.replace(
+                func.replace(normalized_price, "etb", ""),
+                "birr",
+                "",
+            ),
+            "usd",
+            "",
+        ),
+        "$",
+        "",
+    )
+    clean_price = func.replace(clean_price, ",", "")
+    currency_multiplier = case(
+        (
+            or_(
+                Order.price.ilike("%$%"),
+                Order.price.ilike("%usd%"),
+            ),
+            56,
+        ),
+        else_=1,
+    )
+    return sql_cast(clean_price, SQLNumeric(12, 2)) * Order.quantity * currency_multiplier
+
+
+def _completed_paid_order_filters():
+    return (
+        func.lower(Order.status) == "completed",
+        func.lower(Order.payment_status).in_(("successful", "success", "paid", "completed")),
+    )
+
+
+@app.get("/api/admin/analytics/sales-trend")
+def get_admin_sales_trend(
+    months: int = Query(6, ge=1, le=12),
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    _require_admin(authorization, None, db)
+
+    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_rows = []
+    for month_offset in range(months - 1, -1, -1):
+        absolute_month = current_month.year * 12 + current_month.month - 1 - month_offset
+        year, zero_based_month = divmod(absolute_month, 12)
+        month_rows.append(datetime(year, zero_based_month + 1, 1))
+
+    range_start = month_rows[0]
+    range_end = datetime(
+        current_month.year + (current_month.month == 12),
+        current_month.month % 12 + 1,
+        1,
+    )
+    sales_date = func.coalesce(Order.paid_at, Order.created_at)
+    sales_year = extract("year", sales_date)
+    sales_month = extract("month", sales_date)
+    grouped_sales = db.query(
+        sales_year,
+        sales_month,
+        func.coalesce(func.sum(_completed_order_revenue_expression()), 0),
+        func.count(Order.id),
+    ).filter(
+        *_completed_paid_order_filters(),
+        sales_date >= range_start,
+        sales_date < range_end,
+    ).group_by(sales_year, sales_month).all()
+
+    sales_by_month = {
+        (int(year), int(month)): (round(float(revenue or 0), 2), int(order_count))
+        for year, month, revenue, order_count in grouped_sales
+    }
+    return [
+        {
+            "month": month_start.strftime("%Y-%m"),
+            "label": month_start.strftime("%b %y"),
+            "revenue": sales_by_month.get((month_start.year, month_start.month), (0, 0))[0],
+            "orders": sales_by_month.get((month_start.year, month_start.month), (0, 0))[1],
+        }
+        for month_start in month_rows
+    ]
+
+
 @app.get("/api/admin/analytics")
 def get_admin_analytics(db: Session = Depends(get_db)):
     total_students = db.query(Student).count()
@@ -13717,8 +13803,8 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     pending_products = db.query(Product).filter(Product.status.ilike("Pending")).count()
     total_orders = db.query(Order).count()
     completed_orders = db.query(Order).filter(Order.status.ilike("Completed")).count()
-    revenue_total = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-        Transaction.status.ilike("Successful")
+    revenue_total = db.query(func.coalesce(func.sum(_completed_order_revenue_expression()), 0)).filter(
+        *_completed_paid_order_filters(),
     ).scalar() or 0
     revenue_total = float(revenue_total)
     pending_reports = db.query(Report).filter(Report.status.ilike("Open")).count()
@@ -13855,21 +13941,33 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         ),
     }
 
-    status_counts = {
-        "Completed": completed_orders,
-        "Processing": db.query(Order).filter(Order.status.ilike("Processing")).count(),
-        "Pending": db.query(Order).filter(Order.status.ilike("Pending")).count(),
-    }
+    order_status_rows = db.query(
+        Order.status,
+        func.count(Order.id),
+    ).group_by(Order.status).order_by(Order.status).all()
+    status_counts = {}
+    for status_value, count in order_status_rows:
+        label = (status_value or "").strip().title() or "Unknown"
+        status_counts[label] = status_counts.get(label, 0) + int(count)
     status_total = sum(status_counts.values())
-    status_colors = {"Completed": "#10b981", "Processing": "#3b82f6", "Pending": "#f59e0b"}
+    status_colors = {
+        "Completed": "#10b981",
+        "Processing": "#3b82f6",
+        "Pending": "#f59e0b",
+        "Ready For Pickup": "#8b5cf6",
+        "Cancelled": "#ef4444",
+        "Expired": "#64748b",
+        "Disputed": "#f97316",
+    }
+    fallback_status_colors = ["#06b6d4", "#a855f7", "#ec4899", "#84cc16"]
     status_distribution = [
         {
             "label": label,
             "count": count,
             "value": round((count / status_total) * 100, 1) if status_total else 0,
-            "color": status_colors[label],
+            "color": status_colors.get(label, fallback_status_colors[index % len(fallback_status_colors)]),
         }
-        for label, count in status_counts.items()
+        for index, (label, count) in enumerate(status_counts.items())
     ]
 
     seven_day_start = datetime.now().date() - timedelta(days=6)

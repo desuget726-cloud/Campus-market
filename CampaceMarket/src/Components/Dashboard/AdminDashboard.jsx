@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps, no-unused-vars */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -10,21 +11,6 @@ import { getAdminSettings } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
 import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
-
-const generateLinePath = (data, maxVal) => {
-  if (!Array.isArray(data) || data.length === 0) return '';
-
-  const safeMax = Math.max(Number(maxVal) || 0, 1);
-  const isEmpty = data.every((value) => Number(value) === 0);
-
-  return data
-    .map((value, idx) => {
-      const x = 40 + idx * 104;
-      const y = isEmpty ? 130 : 130 - ((Number(value) || 0) / safeMax) * 100;
-      return `${idx === 0 ? 'M' : 'L'} ${x},${Math.max(30, Math.min(130, y)).toFixed(2)}`;
-    })
-    .join(' ');
-};
 
 const generateSvgPath = (values, maxValue, width = 100, height = 100, padding = 8) => {
   if (!Array.isArray(values) || values.length === 0) return '';
@@ -382,11 +368,10 @@ const adminTabs = [
   { id: 'dashboard', label: 'Dashboard', icon: 'M4 6h16M4 12h16M4 18h16' },
   { id: 'user-management', label: 'User Management', icon: 'M12 14l9-5-9-5-9 5 9 5z M12 14l6.16-3.422M12 14L5.84 10.578' },
   { id: 'student-verification', label: 'Student Verification', icon: 'M12 11c2.761 0 5-2.238 5-5S14.761 1 12 1 7 3.238 7 6s2.239 5 5 5z M4 23c0-4.418 3.582-8 8-8s8 3.582 8 8' },
-  { id: 'id-change-requests', label: 'ID Verification Requests', icon: 'M4 5h16v14H4z M8 9h8 M8 13h5' },
   { id: 'product-management', label: 'Product Management', icon: 'M4 7h16v13H4z M8 7v-3h8v3' },
   { id: 'categories', label: 'Categories', icon: 'M5 5h14v4H5z M5 15h14v4H5z' },
   { id: 'orders', label: 'Orders', icon: 'M6 6h12l2 10H4z M8 22h8' },
-  { id: 'disputes', label: 'Dispute Review', icon: 'M4 5h16v12H8l-4 4V5z' },
+  // { id: 'disputes', label: 'Dispute Review', icon: 'M4 5h16v12H8l-4 4V5z' },
   { id: 'payments', label: 'Payments', icon: 'M6 7h12v10H6z M9 12h6 M12 16v2' },
   { id: 'reports', label: 'Reports', icon: 'M6 5h12v14H6z M9 9h6 M9 13h4' },
   { id: 'analytics', label: 'Analytics', icon: 'M5 19h14M9 15v-4M15 15V9' },
@@ -394,6 +379,13 @@ const adminTabs = [
   { id: 'audit-logs', label: 'Audit Logs', icon: 'M6 4h12v4H6z M6 12h12v4H6z M10 20h4' },
   { id: 'settings', label: 'Settings', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8z M4.93 4.93l2.12 2.12 M17.95 17.95l2.12 2.12 M4.93 19.07l2.12-2.12 M17.95 6.05l2.12-2.12' }
 ];
+
+const normalizeAdminTab = (tab) => {
+  const normalizedTab = tab || 'dashboard';
+  return ['ai-recommendations', 'id-change-requests', 'id-verification', 'id-verification-requests'].includes(normalizedTab)
+    ? 'dashboard'
+    : normalizedTab;
+};
 
 function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' }) {
   const [section, setSection] = useState(initialSection);
@@ -417,7 +409,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const [permissionsSaving, setPermissionsSaving] = useState(false);
   const { language } = useLanguage();
   const token = () => {
-    try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || ''; } catch { return user?.access_token || ''; }
+    try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || user?.accessToken || user?.token || ''; } catch { return user?.access_token || user?.accessToken || user?.token || ''; }
   };
   const request = async (url, options = {}) => {
     const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
@@ -661,7 +653,7 @@ function AdminAccountsPanel({ user }) {
 }
 
 function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
-  const [activeTab, setActiveTab] = useState(initialTab === 'ai-recommendations' ? 'dashboard' : initialTab);
+  const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   useEffect(() => {
     const openSidebar = () => setIsSidebarOpen(true);
@@ -669,7 +661,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     return () => window.removeEventListener('campace:open-dashboard-sidebar', openSidebar);
   }, []);
   const [isReady, setIsReady] = useState(false);
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
     fullName: '',
@@ -763,9 +754,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const [verifications, setVerifications] = useState([]);
   const [verificationMetrics, setVerificationMetrics] = useState({ pending: 0, verified: 0, rejected: 0 });
   const [selectedVerificationIds, setSelectedVerificationIds] = useState([]);
-  const [idChangeRequests, setIdChangeRequests] = useState([]);
-  const [idChangeRequestNotes, setIdChangeRequestNotes] = useState({});
-  const [idChangeRequestsLoading, setIdChangeRequestsLoading] = useState(false);
 
   // 3. Product Management States
   const [prodSearch, setProdSearch] = useState('');
@@ -1213,52 +1201,9 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       setVerifications([]);
     }
   };
-
-  const fetchIdChangeRequests = async () => {
-    setIdChangeRequestsLoading(true);
-    try {
-      const token = getAdminSessionToken();
-      const response = await fetch(`${API_BASE_URL}/admin/id-change-requests`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || 'ID verification request endpoint unavailable.');
-      setIdChangeRequests(Array.isArray(data.requests) ? data.requests : []);
-    } catch (error) {
-      console.error('Failed to fetch ID change requests:', error);
-      setIdChangeRequests([]);
-    } finally {
-      setIdChangeRequestsLoading(false);
-    }
-  };
-
-  const reviewIdChangeRequest = async (requestId, status) => {
-    try {
-      const token = getAdminSessionToken();
-      const response = await fetch(`${API_BASE_URL}/admin/id-change-requests/${requestId}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ status, admin_note: idChangeRequestNotes[requestId] || '' }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || 'Unable to review ID change request.');
-      setIdChangeRequests((requests) => requests.filter((request) => request.id !== requestId));
-      notifySuccess(`ID change request ${status.toLowerCase()} successfully.`, `admin-id-change-${requestId}`);
-    } catch (error) {
-      notifyError(error, `admin-id-change-${requestId}`);
-    }
-  };
-
   useEffect(() => {
     fetchFilteredVerifications();
   }, [verificationSearchTerm, verificationFilterCollege, verificationFilterDept]);
-
-  useEffect(() => {
-    if (activeTab === 'id-change-requests') fetchIdChangeRequests();
-  }, [activeTab]);
 
   useEffect(() => {
     const visibleIds = new Set(verifications.filter((request) => request.status === 'Pending').map((request) => request.id));
@@ -1559,6 +1504,50 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   });
   const [dashboardMetricsLoading, setDashboardMetricsLoading] = useState(true);
   const [dashboardMetricsError, setDashboardMetricsError] = useState('');
+  const [salesTrendRange, setSalesTrendRange] = useState(6);
+  const [salesTrendData, setSalesTrendData] = useState([]);
+  const [salesTrendLoading, setSalesTrendLoading] = useState(true);
+  const [salesTrendError, setSalesTrendError] = useState('');
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const fetchSalesTrend = async () => {
+      setSalesTrendLoading(true);
+      setSalesTrendError('');
+      try {
+        const token = getAdminSessionToken();
+        if (!token) {
+          throw new Error('An admin session is required to load sales data.');
+        }
+        const response = await fetch(
+          `${API_BASE_URL}/api/admin/analytics/sales-trend?months=${salesTrendRange}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal,
+          },
+        );
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(data?.detail || 'Unable to load sales data.');
+        }
+        if (!Array.isArray(data)) {
+          throw new Error('The sales data response was invalid.');
+        }
+        setSalesTrendData(data);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error('Failed to fetch admin sales trend:', error);
+        setSalesTrendData([]);
+        setSalesTrendError(error.message || 'Unable to load sales data.');
+      } finally {
+        if (!controller.signal.aborted) setSalesTrendLoading(false);
+      }
+    };
+
+    fetchSalesTrend();
+    return () => controller.abort();
+  }, [salesTrendRange]);
+
   const fetchDashboardOverview = async () => {
     setDashboardMetricsLoading(true);
     setDashboardMetricsError('');
@@ -1709,8 +1698,17 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const userGrowthSvgPath = generateSvgPath(userGrowthTrend, lineMaxValue);
   const productUploadsSvgPath = generateSvgPath(productUploadsTrend, lineMaxValue);
   const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, lineMaxValue);
-  const maxRevenue = Math.max(...revenueTrend, 1);
-  const totalRevenueTrend = revenueTrend.reduce((total, value) => total + (Number(value) || 0), 0);
+  const salesTrendMaxRevenue = Math.max(
+    ...salesTrendData.map((item) => Number(item.revenue) || 0),
+    1,
+  );
+  const salesTrendMaxOrders = Math.max(
+    ...salesTrendData.map((item) => Number(item.orders) || 0),
+    1,
+  );
+  const hasSalesTrendData = salesTrendData.some(
+    (item) => Number(item.revenue) > 0 || Number(item.orders) > 0,
+  );
   const overviewOrderStatus = metrics.order_status_breakdown ?? [];
   const overviewCategories = metrics.popular_categories ?? [];
   const collegeActivity = metrics.college_activity ?? [];
@@ -1725,10 +1723,22 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     || (metrics.recent_activity ?? []).length,
   );
 
+  const fetchCollegesData = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/colleges`);
+      const colleges = await response.json();
+      setDbCollegesList(colleges || []);
+    } catch (err) {
+      console.error('Failed to fetch colleges:', err);
+      setDbCollegesList([]);
+    }
+  };
+
   useEffect(() => {
-    const nextTab = initialTab === 'ai-recommendations' ? 'dashboard' : initialTab;
+    const nextTab = normalizeAdminTab(initialTab);
     setActiveTab(nextTab);
-  }, [initialTab]);
+    if (nextTab !== initialTab) onTabChange?.(nextTab);
+  }, [initialTab, onTabChange]);
 
   useEffect(() => {
     fetchDashboardOverview();
@@ -1803,13 +1813,16 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     }
   };
 
-  const loadSystemSettingsRef = useRef(loadSystemSettings);
-  loadSystemSettingsRef.current = loadSystemSettings;
+  const loadSystemSettingsRef = useRef(null);
+
+  useEffect(() => {
+    loadSystemSettingsRef.current = loadSystemSettings;
+  }, [loadSystemSettings]);
 
   useEffect(() => {
     if (activeTab === 'settings' && !settingsLoadRequestedRef.current) {
       settingsLoadRequestedRef.current = true;
-      loadSystemSettingsRef.current();
+      loadSystemSettingsRef.current?.();
     }
   }, [activeTab]);
 
@@ -1834,7 +1847,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     }
   }, [activeTab]);
 
-  const fetchCategories = async () => {
+  async function fetchCategories() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/categories/all`);
       if (!response.ok) throw new Error('Categories endpoint unavailable');
@@ -1866,20 +1879,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     }
   }, [userCollegeFilter, activeTab]);
 
-  // Fetch colleges from backend
-  const fetchCollegesData = async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/colleges`);
-      const colleges = await response.json();
-      setDbCollegesList(colleges || []);
-    } catch (err) {
-      console.error('Failed to fetch colleges:', err);
-      setDbCollegesList([]);
-    }
-  };
-
   // Fetch departments from backend (optionally filtered by college)
-  const fetchDepartmentsData = async (selectedCollege = null) => {
+  async function fetchDepartmentsData(selectedCollege = null) {
     try {
       const url = selectedCollege
         ? `${API_BASE_URL}/api/admin/departments?college=${encodeURIComponent(selectedCollege)}`
@@ -1895,7 +1896,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   };
 
   // Fetch reports from backend
-  const fetchReportsData = async () => {
+  async function fetchReportsData() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/reports`);
       const reports = await response.json();
@@ -1918,7 +1919,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   };
 
   // Fetch payments from backend
-  const fetchPaymentsData = async () => {
+  async function fetchPaymentsData() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/payments?limit=1000`);
       const payments = await response.json();
@@ -2005,7 +2006,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   };
 
   // Fetch orders from backend
-  const fetchOrdersData = async () => {
+  async function fetchOrdersData() {
     try {
       const token = getAdminSessionToken();
       const response = await fetch(`${API_BASE_URL}/api/admin/orders`, {
@@ -3464,22 +3465,113 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               </div>
 
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
-                <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">Sales & Revenue Trend</h3>
-                {totalRevenueTrend === 0 ? (
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b pb-2">
+                  <h3 className="text-md font-bold text-slate-900">Sales & Revenue Trend</h3>
+                  <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-1" aria-label="Sales trend range">
+                    {[6, 12].map((months) => (
+                      <button
+                        key={months}
+                        type="button"
+                        aria-pressed={salesTrendRange === months}
+                        onClick={() => setSalesTrendRange(months)}
+                        className={`rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${
+                          salesTrendRange === months
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'text-slate-600 hover:bg-white'
+                        }`}
+                      >
+                        {months} months
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {salesTrendLoading ? (
+                  <div className="flex h-44 items-center justify-center text-center text-sm font-semibold text-slate-500" role="status">
+                    Loading sales data...
+                  </div>
+                ) : salesTrendError ? (
+                  <div className="flex h-44 items-center justify-center px-4 text-center text-sm font-semibold text-rose-600" role="alert">
+                    Unable to load sales data: {salesTrendError}
+                  </div>
+                ) : !hasSalesTrendData ? (
                   <div className="flex h-44 items-center justify-center text-center text-sm font-semibold text-slate-500">
-                    No sales data recorded
+                    No sales data
                   </div>
                 ) : (
-                  <div className="h-44 w-full flex items-end justify-between gap-3 px-2 mt-2">
-                    {revenueTrend.map((value, index) => {
-                      const height = (value / maxRevenue) * 100;
-                      return (
-                        <div key={`revenue-${index}`} className="flex-1 flex flex-col items-center gap-2 h-full justify-end">
-                          <div className="w-full rounded-t-lg bg-blue-600 hover:bg-blue-500 cursor-pointer transition-all duration-300" style={{ height: `${height}%` }} />
-                          <span className="text-[10px] text-slate-500 font-bold">{trendMonths[index]}</span>
-                        </div>
-                      );
-                    })}
+                  <div className="w-full">
+                    <svg
+                      className="h-44 w-full overflow-visible"
+                      viewBox="0 0 660 190"
+                      role="img"
+                      aria-label={`Sales revenue and order count for the last ${salesTrendRange} months`}
+                    >
+                      {[0, 1, 2, 3, 4].map((tick) => {
+                        const y = 20 + tick * 35;
+                        const revenueTick = salesTrendMaxRevenue * (1 - tick / 4);
+                        const ordersTick = Math.round(salesTrendMaxOrders * (1 - tick / 4));
+                        const revenueLabel = revenueTick >= 1000
+                          ? `ETB ${(revenueTick / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}K`
+                          : `ETB ${Math.round(revenueTick).toLocaleString()}`;
+                        return (
+                          <g key={`sales-tick-${tick}`}>
+                            <line x1="58" y1={y} x2="612" y2={y} stroke="#e2e8f0" strokeWidth="1" />
+                            <text x="52" y={y + 3} textAnchor="end" fill="#64748b" fontSize="9">{revenueLabel}</text>
+                            <text x="618" y={y + 3} fill="#64748b" fontSize="9">{ordersTick}</text>
+                          </g>
+                        );
+                      })}
+                      {salesTrendData.map((item, index) => {
+                        const step = 554 / salesTrendData.length;
+                        const x = 58 + (index + 0.5) * step;
+                        const revenue = Number(item.revenue) || 0;
+                        const orders = Number(item.orders) || 0;
+                        const barHeight = (revenue / salesTrendMaxRevenue) * 140;
+                        const orderY = 160 - (orders / salesTrendMaxOrders) * 140;
+                        const exactRevenue = revenue.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        });
+                        return (
+                          <g key={item.month} aria-label={`${item.label}: ETB ${exactRevenue} revenue, ${orders} orders`}>
+                            <title>{`${item.label}: ETB ${exactRevenue} revenue; ${orders} orders`}</title>
+                            <rect
+                              x={x - Math.min(26, step * 0.45) / 2}
+                              y={160 - barHeight}
+                              width={Math.min(26, step * 0.45)}
+                              height={barHeight}
+                              rx="3"
+                              fill="#2563eb"
+                              className="transition-colors hover:fill-blue-500"
+                            />
+                            <circle cx={x} cy={orderY} r="3.5" fill="#10b981" stroke="white" strokeWidth="1.5" />
+                            <text x={x} y="179" textAnchor="middle" fill="#64748b" fontSize="9" fontWeight="600">
+                              {item.label}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {salesTrendData.length > 0 && (
+                        <polyline
+                          points={salesTrendData.map((item, index) => {
+                            const step = 554 / salesTrendData.length;
+                            const x = 58 + (index + 0.5) * step;
+                            const orders = Number(item.orders) || 0;
+                            const y = 160 - (orders / salesTrendMaxOrders) * 140;
+                            return `${x},${y}`;
+                          }).join(' ')}
+                          fill="none"
+                          stroke="#10b981"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          pointerEvents="none"
+                        />
+                      )}
+                    </svg>
+                    <div className="mt-1 flex justify-center gap-5 text-xs font-semibold text-slate-600">
+                      <span className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-sm bg-blue-600" /> Revenue</span>
+                      <span className="flex items-center gap-2"><span className="h-0.5 w-4 bg-emerald-500" /> Orders</span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -4135,19 +4227,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           </div>
         );
       }
-      case 'id-change-requests': {
-        return (
-          <div className="space-y-6 animate-fade-in text-slate-900">
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-2xl font-black text-slate-950">ID Verification Requests</h2>
-              <p className="mt-1 text-sm font-semibold text-slate-500">Review real university IDs submitted by Google OAuth users before changing their account identity.</p>
-            </div>
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              {idChangeRequestsLoading ? <p className="py-10 text-center text-sm font-semibold text-slate-500">Loading requests...</p> : idChangeRequests.length === 0 ? <p className="py-10 text-center text-sm font-semibold text-slate-500">No pending ID verification requests.</p> : <div className="overflow-x-auto"><table className="min-w-full text-left text-sm text-slate-700"><thead className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><tr><th className="px-3 py-3">Student</th><th className="px-3 py-3">Current ID</th><th className="px-3 py-3">Requested ID</th><th className="px-3 py-3">Evidence</th><th className="px-3 py-3">Submitted</th><th className="px-3 py-3">Review</th></tr></thead><tbody>{idChangeRequests.map((request) => <tr key={request.id} className="border-b border-slate-100 align-top"><td className="px-3 py-4 font-bold text-slate-900">{request.student_name || 'Unknown student'}</td><td className="px-3 py-4 font-mono text-xs">{request.student_id}</td><td className="px-3 py-4 font-mono font-bold">{request.requested_student_id}</td><td className="px-3 py-4">{request.evidence_url ? <a href={resolveImageUrl(request.evidence_url)} target="_blank" rel="noreferrer" className="text-emerald-700 underline">View photo</a> : <span className="text-slate-400">Not provided</span>}</td><td className="px-3 py-4 text-xs">{request.created_at ? new Date(request.created_at).toLocaleString() : '-'}</td><td className="min-w-[260px] px-3 py-4"><textarea value={idChangeRequestNotes[request.id] || ''} onChange={(event) => setIdChangeRequestNotes((notes) => ({ ...notes, [request.id]: event.target.value }))} placeholder="Optional admin note" rows={2} className="mb-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-emerald-500" /><div className="flex gap-2"><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'approved')} className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white">Approve</button><button type="button" onClick={() => reviewIdChangeRequest(request.id, 'rejected')} className="rounded-full bg-rose-500 px-3 py-1.5 text-xs font-bold text-white">Reject</button></div></td></tr>)}</tbody></table></div>}
-            </div>
-          </div>
-        );
-      }
       case 'student-verification': {
         const pendingVerifications = verifications.filter(v => v.status === 'Pending');
         const filtersActive = Boolean(verificationSearchTerm.trim() || verificationFilterCollege !== 'All' || verificationFilterDept !== 'All');
@@ -4372,7 +4451,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               </div>
             )}
 
-            {false && showRejectReasonModal && selectedVerificationRequest && (
+            {showRejectReasonModal && selectedVerificationRequest && (
               <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1001] flex items-center justify-center p-4">
                 <div className="bg-white rounded-[28px] p-6 max-w-md w-full shadow-2xl border border-slate-100 animate-fade-in">
                   <div className="flex items-center justify-between border-b pb-3 mb-4">
@@ -5348,7 +5427,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           </div>
         );
       }
-      case 'payments':
+      case 'payments': {
         const filteredPayments = paymentsList.filter((payment) => {
           const searchValue = paymentSearchTerm.toLowerCase();
           const searchMatch = !searchValue ||
@@ -5666,6 +5745,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
             )}
           </div>
         );
+      }
       case 'reports': {
         const enrichedReports = reportsList.map((report) => ({
           ...report,
@@ -6242,7 +6322,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           </div>
         );
       }
-      case 'notifications':
+      case 'notifications': {
         var broadcastTotals = announcementLog.reduce((totals, campaign) => ({
           sent: totals.sent + 1,
           delivered: totals.delivered + Number(campaign.delivered || 0),
@@ -6547,7 +6627,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
           </div>
         );
-      case 'audit-logs':
+      }
+      case 'audit-logs': {
         var filteredAuditLogs = auditLogs;
         var auditLogMetrics = {
           total: auditLogSummary?.total_events || 0,
@@ -6875,7 +6956,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
           </div>
         );
-      case 'settings':
+      }
+      case 'settings': {
         var toggleCard = (label, checked, description = '') => {
           const settingKey = SETTINGS_TOGGLE_PATHS[label];
           return <SettingsToggle
@@ -7242,6 +7324,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
             </div>
           </div>
         );
+      }
       case 'disputes':
         return <AdminDisputeReview user={user} onCountChange={setOpenDisputeCount} />;
       default:
@@ -7251,9 +7334,9 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
   return (
     <div className="admin-dashboard-shell flex min-h-[calc(100dvh-4rem)] flex-col bg-slate-50 text-slate-900 lg:min-h-0 lg:overflow-hidden">
-      <div className="flex flex-1 flex-col gap-3 px-2 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:overflow-hidden lg:px-4 lg:py-0">
+      <div className="flex flex-1 flex-col gap-3 px-3 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:overflow-hidden lg:px-4 lg:py-4">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
-        <aside className="relative hidden lg:flex lg:h-full lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
+        <aside className="relative hidden lg:flex lg:h-200 lg:min-h-0 lg:w-72 lg:shrink-5 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
           <div className="relative z-10 flex shrink-0 items-start gap-3 overflow-hidden">
             {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}

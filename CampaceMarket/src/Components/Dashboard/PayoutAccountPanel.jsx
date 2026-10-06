@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useCallback, useEffect, useState } from 'react';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { API_BASE_URL } from '../../config';
 
@@ -44,8 +45,16 @@ function PayoutAccountPanel({ user, setSellerData, onPayoutAccountUpdated }) {
     const [showReauth, setShowReauth] = useState(false);
     const [reauthPassword, setReauthPassword] = useState('');
     const [reauthError, setReauthError] = useState('');
+    const [currentTime, setCurrentTime] = useState(0);
 
-    const loadAccount = async () => {
+    useEffect(() => {
+        const updateTime = () => setCurrentTime(Date.now());
+        updateTime();
+        const timerId = window.setInterval(updateTime, 60000);
+        return () => window.clearInterval(timerId);
+    }, []);
+
+    const loadAccount = useCallback(async () => {
         const token = getSessionToken(user);
         if (!token) {
             setAccount(null);
@@ -81,7 +90,7 @@ function PayoutAccountPanel({ user, setSellerData, onPayoutAccountUpdated }) {
         } finally {
             setLoadingAccount(false);
         }
-    };
+    }, [user]);
 
     useEffect(() => {
         let active = true;
@@ -133,7 +142,7 @@ function PayoutAccountPanel({ user, setSellerData, onPayoutAccountUpdated }) {
 
     useEffect(() => {
         loadAccount();
-    }, [user?.access_token, user?.studentId]);
+    }, [loadAccount]);
 
     const dirty = Object.keys(form).some((key) => form[key] !== savedForm[key]);
     const selectedProvider = providers.find((provider) => provider.code === form.bank_code);
@@ -259,7 +268,7 @@ function PayoutAccountPanel({ user, setSellerData, onPayoutAccountUpdated }) {
         ? account?.phone_number_masked || account?.account_number_masked
         : account?.account_number_masked;
     const holdDate = account?.payout_hold_until ? new Date(account.payout_hold_until) : null;
-    const holdActive = holdDate && !Number.isNaN(holdDate.getTime()) && holdDate.getTime() > Date.now();
+    const holdActive = holdDate && !Number.isNaN(holdDate.getTime()) && holdDate.getTime() > currentTime;
     const updatedDate = account?.updated_at ? new Date(account.updated_at) : null;
 
     return (

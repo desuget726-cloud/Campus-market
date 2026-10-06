@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { LockKeyhole, LogOut, Monitor, Smartphone, Tablet } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
@@ -169,17 +169,17 @@ function SettingsCenter({
         setSettingsTab(nextTab);
     };
 
-    const getStudentSessionToken = () => {
+    const getStudentSessionToken = useCallback(() => {
         try {
             const savedSession = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
             const storedToken = savedSession?.user?.access_token || savedSession?.access_token || '';
             return storedToken || user?.access_token || '';
-        } catch (error) {
+        } catch {
             return user?.access_token || '';
         }
-    };
+    }, [user?.access_token]);
 
-    const loadActiveSessions = async ({ showLoading = true, notifyFailure = true } = {}) => {
+    const loadActiveSessions = useCallback(async ({ showLoading = true, notifyFailure = true } = {}) => {
         if (showLoading) setActiveSessionsLoadState('loading');
         setActiveSessionsError('');
         try {
@@ -205,7 +205,7 @@ function SettingsCenter({
             }
             return false;
         }
-    };
+    }, [getStudentSessionToken]);
 
     const revokeSession = async (session) => {
         if (!window.confirm(`Log out ${session.device_name || 'this device'}?`)) return;
@@ -296,7 +296,7 @@ function SettingsCenter({
             active = false;
             controller.abort();
         };
-    }, [settingsTab, notificationPrefsRetryKey, user]);
+    }, [settingsTab, notificationPrefsRetryKey, user, getStudentSessionToken]);
 
     useEffect(() => {
         if (!notificationPrefsDirty) return undefined;
@@ -335,7 +335,7 @@ function SettingsCenter({
         };
         loadIdChangeStatus();
         return () => { active = false; };
-    }, [studentIdEditable, user?.studentId, user?.access_token]);
+    }, [studentIdEditable, user?.studentId, user?.access_token, getStudentSessionToken]);
 
     const handleIdChangeRequestSubmit = async (event) => {
         event.preventDefault();
@@ -408,7 +408,7 @@ function SettingsCenter({
         return { browser, os };
     };
 
-    const loadSessionInfo = async () => {
+    const loadSessionInfo = useCallback(async () => {
         const token = getStudentSessionToken();
         if (!token) {
             setSessionInfo({
@@ -449,7 +449,7 @@ function SettingsCenter({
                 operating_system: 'Unavailable',
             });
         }
-    };
+    }, [getStudentSessionToken]);
 
     const handleSaveNotificationPreferences = async () => {
         if (!notificationPrefsDirty || isSavingNotificationPrefs) return;
@@ -922,7 +922,7 @@ function SettingsCenter({
             loadSessionInfo();
             loadActiveSessions();
         }
-    }, [settingsTab, user]);
+    }, [settingsTab, user, loadSessionInfo, loadActiveSessions]);
 
     return (
         <div data-dashboard-view="settings" className="min-h-screen w-full min-w-0 max-w-none bg-slate-50 px-0 pb-10 pt-16 text-slate-900 lg:pt-10">

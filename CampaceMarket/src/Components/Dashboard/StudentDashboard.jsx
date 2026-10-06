@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -156,7 +156,7 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, appUnreadNotificationCount = 0 }) {
   const { t, language } = useLanguage();
   const studentToast = (key) => t(`studentToast.${key}`);
-  const getStudentSessionToken = () => {
+  const getStudentSessionToken = useCallback(() => {
     const userToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
     if (userToken) return userToken;
 
@@ -176,7 +176,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } catch {
       return '';
     }
-  };
+  }, [user?.access_token, user?.accessToken, user?.token, user?.session_token, user?.sessionToken]);
 
   const verifiedStudent = isVerifiedStudent(user);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
@@ -1314,7 +1314,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return { label: 'Approved', tone: 'emerald', details: `${statuses.length} listing(s) approved` };
   })();
 
-  const fetchProducts = async ({ search, category, subcategory, limit, department } = {}) => {
+  const fetchProducts = useCallback(async ({ search, category, subcategory, limit, department } = {}) => {
     setSearchLoading(true);
     try {
       const params = new URLSearchParams();
@@ -1337,7 +1337,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     } finally {
       setSearchLoading(false);
     }
-  };
+  }, [getStudentSessionToken]);
 
   const fetchSellerDashboardData = async () => {
     if (!user?.studentId) {
@@ -1700,17 +1700,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     fetchRecentActivity();
   }, [studentId, user?.avatarUrl, user?.department]);
 
-  const loadSearchDefaults = async () => {
+  const loadSearchDefaults = useCallback(async () => {
     if (activeTab !== 'buyer' || buyerTab !== 'search') return;
     await fetchProducts({ limit: 10, department: user?.department });
-  };
+  }, [activeTab, buyerTab, fetchProducts, user?.department]);
 
   useEffect(() => {
     if (activeTab !== 'buyer' || buyerTab !== 'search') return;
     loadSearchDefaults();
-    // loadSearchDefaults is recreated on render; these state values control when it runs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, buyerTab, user?.department]);
+  }, [activeTab, buyerTab, loadSearchDefaults]);
 
   // Load personalized recommendations for AI Advisor tab
   useEffect(() => {
@@ -1726,7 +1724,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
 
     loadAiRecommendations();
-  }, [activeTab, user?.department]);
+  }, [activeTab, fetchProducts, user?.department]);
 
   useEffect(() => {
     const requestedTab = getConversationIdFromUrl() ? 'messages' : initialTab === 'profile' ? 'settings' : initialTab;
@@ -3952,13 +3950,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   return (
     <div className={`min-h-0 w-full bg-slate-100 text-slate-900 ${activeTab === 'messages' ? 'h-full overflow-hidden' : ''}`}>
-      <div className={`flex min-h-0 w-full flex-col gap-4 px-3 sm:px-4 lg:flex-row lg:items-stretch lg:gap-6 lg:overflow-hidden lg:px-6 ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'lg:h-[calc(100dvh-4rem)]'}`}>
+      <div className={`flex min-h-0 w-full flex-col gap-4 px-3 sm:px-4 min-[901px]:flex-row min-[901px]:items-stretch min-[901px]:gap-6 min-[901px]:overflow-hidden min-[901px]:px-6 ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'min-[901px]:h-[calc(100dvh-2rem)]'}`}>
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside id="student-mobile-navigation" data-open={isSidebarOpen} style={{ transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }} className={`student-mobile-sidebar
-          fixed top-16 bottom-0 left-0 z-40 flex h-[calc(100vh-4rem)] w-72 flex-col overflow-y-auto overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          lg:sticky lg:top-16 lg:h-[calc(100dvh-4rem)] lg:w-72 lg:shrink-0 lg:rounded-[32px] lg:p-6 lg:shadow-none
-          ${isSidebarCollapsed ? 'lg:w-24 lg:p-3' : 'lg:w-72 lg:p-6'}
+          fixed top-[var(--header-h)] bottom-0 left-0 z-40 flex h-[calc(100dvh-var(--header-h))] w-72 flex-col overflow-hidden overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
+          min-[901px]:sticky min-[901px]:top-[var(--header-h)] min-[901px]:h-[calc(100dvh-var(--header-h))] min-[901px]:w-72 min-[901px]:shrink-0 min-[901px]:rounded-[32px] min-[901px]:p-6 min-[901px]:shadow-none
+          ${isSidebarCollapsed ? 'min-[901px]:w-24 min-[901px]:p-3' : 'min-[901px]:w-72 min-[901px]:p-6'}
         `}>
           <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
@@ -3967,7 +3965,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   type="button"
                   onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer lg:hidden"
+                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer min-[901px]:hidden"
                   title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -3993,7 +3991,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {!isSidebarCollapsed && (
               <button
                 onClick={() => setIsSidebarOpen(false)}
-                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer lg:hidden"
+                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer min-[901px]:hidden"
                 title="Close sidebar"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -4046,7 +4044,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             })}
           </nav>
 
-          <div className="mt-auto flex shrink-0 flex-col gap-4 pt-5 transition-all duration-300">
+          <div className="student-sidebar-wallet mt-auto flex flex-[0_0_auto] flex-col gap-4 pt-5 transition-all duration-300">
             <div className={`rounded-2xl border border-slate-700/80 bg-slate-900/60 p-4 shadow-inner shadow-slate-950/20 backdrop-blur-sm ${isSidebarCollapsed ? 'p-3' : ''}`}>
               {!isSidebarCollapsed ? (
                 <>
@@ -4096,12 +4094,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         {isSidebarOpen && (
           <div
             onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm lg:hidden"
+            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm min-[901px]:hidden"
           />
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className={`student-dashboard-content min-h-0 min-w-0 w-full max-w-none flex-1 transition-all duration-300 lg:h-full lg:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'lg:overflow-y-auto lg:overscroll-y-contain'}`}>
+        <main className={`student-dashboard-content min-h-0 min-w-0 w-full max-w-none flex-1 transition-all duration-300 min-[901px]:h-full min-[901px]:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'min-[901px]:overflow-y-auto min-[901px]:overscroll-y-contain'}`}>
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (

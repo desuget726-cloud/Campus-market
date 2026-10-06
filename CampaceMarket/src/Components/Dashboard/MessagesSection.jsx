@@ -1,9 +1,8 @@
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 
 const MessagesSection = () => {
   const [activeTab, setActiveTab] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [messages] = useState([]); // Empty state for demo
   const [messageText, setMessageText] = useState('');
   const textareaRef = useRef(null);
 

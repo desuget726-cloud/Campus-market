@@ -42,17 +42,27 @@
 }
 
 .student-mobile-sidebar {
-  height: calc(100vh - 4rem);
-  height: calc(100dvh - 4rem);
+  top: var(--header-h);
+  bottom: 0;
+  height: calc(100dvh - var(--header-h));
+  overflow: hidden;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  scrollbar-width: thin;
+  user-select: none;
+}
+
+.student-sidebar-menu {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
   scrollbar-width: thin;
 }
 
-.student-sidebar-menu {
-  overscroll-behavior: contain;
-  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
-  scrollbar-width: thin;
+.student-sidebar-wallet {
+  flex: 0 0 auto;
 }
 
 .sidebar-nav-item {
@@ -101,7 +111,7 @@ html:has(.student-dashboard-content) body {
   min-width: 0;
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 901px) {
   .student-dashboard-content {
     scrollbar-width: none;
   }
@@ -181,8 +191,11 @@ html:has(.student-dashboard-content) body {
   }
 }
 
-@media (min-width: 1024px) {
+@media (min-width: 901px) {
   .student-mobile-sidebar {
+    position: sticky;
+    top: var(--header-h);
+    height: calc(100dvh - var(--header-h));
     transform: none !important;
   }
 }

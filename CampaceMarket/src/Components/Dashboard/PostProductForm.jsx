@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 const PostProductForm = () => {
   const [formData, setFormData] = useState({
@@ -16,7 +16,11 @@ const PostProductForm = () => {
     'Services', 'Jobs', 'Real Estate', 'Vehicles',
     'Food & Beverages', 'Other'
   ];
-
+  const universities = [
+    'Addis Ababa University', 'Bahir Dar University', 'Hawassa University',
+    'Jimma University', 'Mekelle University', 'University of Gondar',
+    'Adama Science and Technology University', 'Aksum University'
+  ];
 
 
   const handleInputChange = (e) => {

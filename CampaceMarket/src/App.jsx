@@ -23,7 +23,14 @@ import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
 
-const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, nextStudentTab) => {
+const normalizeLegacyAdminTab = (tab) => {
+  const normalizedTab = tab || 'dashboard';
+  return ['ai-recommendations', 'id-change-requests', 'id-verification', 'id-verification-requests'].includes(normalizedTab)
+    ? 'dashboard'
+    : normalizedTab;
+};
+
+const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, nextStudentTab, nextAdminTab) => {
   if (typeof window === 'undefined') return;
 
   try {
@@ -41,6 +48,7 @@ const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, n
       currentView: nextCurrentView,
       dashboardTab: nextDashboardTab,
       studentTab: nextStudentTab,
+      adminTab: normalizeLegacyAdminTab(nextAdminTab ?? existingSession.adminTab ?? 'dashboard'),
     };
 
     if (session.user) {
@@ -92,7 +100,7 @@ function AppContent() {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
       return session?.userRole || null;
-    } catch (error) {
+    } catch {
       return null;
     }
   });
@@ -103,15 +111,25 @@ function AppContent() {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
       return session?.dashboardTab || 'home';
-    } catch (error) {
+    } catch {
       return 'home';
     }
   });
-  const [adminTab, setAdminTab] = useState('dashboard');
+  const [adminTab, setAdminTab] = useState(() => {
+    if (typeof window === 'undefined') return 'dashboard';
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+      const session = saved ? JSON.parse(saved) : null;
+      const storedTab = params.get('tab') || session?.adminTab || 'dashboard';
+      return normalizeLegacyAdminTab(storedTab);
+    } catch {
+      return 'dashboard';
+    }
+  });
   const [studentTab, setStudentTab] = useState('home');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
-  const [pendingView, setPendingView] = useState('home');
-  const [pendingUsername, setPendingUsername] = useState('');
+  const [pendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
   const [pendingProductAction, setPendingProductAction] = useState(null);
   const [pendingSellerId, setPendingSellerId] = useState(null);
@@ -206,7 +224,7 @@ function AppContent() {
     try {
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       storedSession = saved ? JSON.parse(saved) : null;
-    } catch (error) {
+    } catch {
       storedSession = null;
     }
 
@@ -241,6 +259,7 @@ function AppContent() {
             'student-dashboard',
             storedSession?.dashboardTab || 'home',
             storedSession?.studentTab || 'home',
+            storedSession?.adminTab || 'dashboard',
           );
           return nextUser;
         });
@@ -259,7 +278,7 @@ function AppContent() {
 
   useEffect(() => {
     if (!serializedUser || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
-    persistSession(JSON.parse(serializedUser), activeRole, currentView, dashboardTab, studentTab);
+    persistSession(JSON.parse(serializedUser), activeRole, currentView, dashboardTab, studentTab, adminTab);
   }, [currentView, dashboardTab, adminTab, studentTab, serializedUser, activeRole]);
 
   useEffect(() => {
@@ -294,6 +313,7 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!hasUser || !activeRole || !expectedDashboardView) return;
 
     const dashboardViews = new Set(['student-dashboard', 'admin-dashboard', 'student-dashboard-profile']);
@@ -301,9 +321,11 @@ function AppContent() {
     if (dashboardViews.has(currentView) && currentView !== expectedDashboardView) {
       setCurrentView(expectedDashboardView);
     }
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [hasUser, activeRole, currentView, expectedDashboardView]);
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     if (!studentId) {
       setUnreadCount((current) => current === 0 ? current : 0);
       return;
@@ -357,7 +379,7 @@ function AppContent() {
     setDashboardTab('home');
     setStudentTab('home');
     setCurrentView('student-dashboard');
-    persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home');
+    persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home', 'dashboard');
   };
 
   const handleLoginSuccess = (userData, role) => {
@@ -375,13 +397,13 @@ function AppContent() {
     setStudentTab('home');
     setCurrentView(nextView);
     setShowSuccessModal(false);
-    persistSession(nextUser, role, nextView, 'home', 'home');
+    persistSession(nextUser, role, nextView, 'home', 'home', 'dashboard');
   };
 
   const handleContinueToDashboard = () => {
     setShowSuccessModal(false);
     setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
-    persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab);
+    persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab, adminTab);
   };
 
   useEffect(() => {
@@ -394,7 +416,7 @@ function AppContent() {
           method: 'POST',
           credentials: 'include',
         });
-      } catch (error) {
+    } catch (error) {
         console.error('Session expiry logout request failed:', error);
       } finally {
         window.localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -454,6 +476,9 @@ function AppContent() {
         return;
       }
       if (view === 'admin-dashboard') {
+        if (params.tab) {
+          setAdminTab(normalizeLegacyAdminTab(params.tab));
+        }
         setCurrentView('admin-dashboard');
         return;
       }
