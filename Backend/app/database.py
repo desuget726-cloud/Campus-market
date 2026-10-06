@@ -72,6 +72,21 @@ def init_db() -> None:
     dispute_table = Base.metadata.tables.get("disputes")
     tables = [table for table in Base.metadata.sorted_tables if table is not dispute_table]
     Base.metadata.create_all(bind=engine, tables=tables)
+    if "admin_login_history" in inspect(engine).get_table_names():
+        login_history_columns = {
+            column["name"] for column in inspect(engine).get_columns("admin_login_history")
+        }
+        missing_login_history_columns = {
+            "admin_session_id": "INTEGER NULL",
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "deleted_at": "DATETIME NULL",
+        }
+        for column_name, column_definition in missing_login_history_columns.items():
+            if column_name not in login_history_columns:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        f"ALTER TABLE admin_login_history ADD COLUMN `{column_name}` {column_definition}"
+                    ))
     if dispute_table is not None:
         with engine.begin() as connection:
             connection.execute(text("""

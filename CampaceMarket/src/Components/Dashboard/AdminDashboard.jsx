@@ -53,6 +53,25 @@ const UNIVERSITY_STRUCTURE = {
 
 const ADMIN_AVATAR_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='64' fill='%230f766e'/%3E%3Ccircle cx='64' cy='48' r='22' fill='white'/%3E%3Cpath d='M25 108c4-24 19-36 39-36s35 12 39 36' fill='white'/%3E%3C/svg%3E";
 
+const formatHistoryDevice = (device = '') => {
+  const browser = device.match(/(Edg(?:e|A|iOS)?|OPR)\/([\d.]+)/i)
+    || device.match(/(Chrome|Firefox|Version|Safari)\/([\d.]+)/i);
+  const os = /Windows/i.test(device) ? 'Windows'
+    : /Android/i.test(device) ? 'Android'
+      : /iPhone|iPad|iPod/i.test(device) ? 'iOS'
+        : /Mac OS X|macOS/i.test(device) ? 'macOS'
+          : /Linux/i.test(device) ? 'Linux'
+            : '';
+  let browserName = browser?.[1] || '';
+  if (/^Edg/i.test(browserName)) browserName = 'Edge';
+  else if (browserName === 'OPR') browserName = 'Opera';
+  else if (browserName === 'Version') browserName = /Safari/i.test(device) ? 'Safari' : 'Browser';
+  else if (/^Chrome$/i.test(browserName)) browserName = 'Chrome';
+  const browserVersion = browser?.[2]?.split('.')[0];
+  const browserLabel = browserName ? `${browserName}${browserVersion ? ` ${browserVersion}` : ''}` : '';
+  return [browserLabel, os].filter(Boolean).join(' · ') || device || '-';
+};
+
 const SETTINGS_TOGGLE_PATHS = {
   'Require Approval': 'productSettings.requireApproval',
   'Allow Editing': 'productSettings.allowEditing',
@@ -392,7 +411,15 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const [profile, setProfile] = useState({ id: null, full_name: '', username: '', email: '', phone: '', role: '', two_factor_enabled: false, permissions: {}, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
   const [form, setForm] = useState({ full_name: '', username: '', email: '', phone: '', current_password: '', new_password: '', confirm_password: '', logout_all_sessions: false });
   const [sessions, setSessions] = useState([]);
-  const [history, setHistory] = useState([]);
+  const [history, setHistoryState] = useState([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState([]);
+  const [historyDeleteAction, setHistoryDeleteAction] = useState(null);
+  const [historyDeleteConfirm, setHistoryDeleteConfirm] = useState('');
+  const [historyDeleteAge, setHistoryDeleteAge] = useState('all');
+  const [historyDeleting, setHistoryDeleting] = useState(false);
+  const historyPageRef = useRef(1);
   const [backupCodes, setBackupCodes] = useState([]);
   const [busy, setBusy] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
@@ -411,7 +438,14 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const token = () => {
     try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || user?.accessToken || user?.token || ''; } catch { return user?.access_token || user?.accessToken || user?.token || ''; }
   };
+  const setHistory = (data) => {
+    setHistoryState(Array.isArray(data) ? data : data?.items || []);
+    if (!Array.isArray(data) && Number.isFinite(data?.total)) setHistoryTotal(data.total);
+  };
   const request = async (url, options = {}) => {
+    if (url.endsWith('/api/admin/login-history')) {
+      url = `${url}?page=${historyPageRef.current}&page_size=25`;
+    }
     const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || 'Security request failed.');
@@ -421,6 +455,67 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
     const sessionToken = token(); if (!sessionToken) return;
     const headers = { Authorization: `Bearer ${sessionToken}` };
     try { const [sessionData, historyData] = await Promise.all([request(`${API_BASE_URL}/api/admin/sessions`, { headers }), request(`${API_BASE_URL}/api/admin/login-history`, { headers })]); setSessions(sessionData); setHistory(historyData); } catch (error) { notifyError(error, 'admin-security-data'); }
+  };
+  const changeHistoryPage = (page) => {
+    historyPageRef.current = page;
+    setHistoryPage(page);
+    refreshSecurityData();
+  };
+  const toggleHistorySelection = (id) => {
+    setSelectedHistoryIds((current) => current.includes(id)
+      ? current.filter((selectedId) => selectedId !== id)
+      : [...current, id]);
+  };
+  const toggleVisibleHistorySelection = () => {
+    const visibleIds = history.filter((item) => !item.is_current_session).map((item) => item.id);
+    const allVisibleSelected = visibleIds.length > 0
+      && visibleIds.every((id) => selectedHistoryIds.includes(id));
+    setSelectedHistoryIds((current) => allVisibleSelected
+      ? current.filter((id) => !visibleIds.includes(id))
+      : [...new Set([...current, ...visibleIds])]);
+  };
+  const openHistoryDeleteConfirmation = (type, ids = []) => {
+    setHistoryDeleteAction({ type, ids });
+    setHistoryDeleteConfirm('');
+    setHistoryDeleteAge('all');
+  };
+  const confirmHistoryDelete = async () => {
+    if (!historyDeleteAction || historyDeleting) return;
+    if (historyDeleteAction.type === 'all' && historyDeleteConfirm !== 'DELETE') return;
+    setHistoryDeleting(true);
+    const headers = { Authorization: `Bearer ${token()}` };
+    try {
+      let result;
+      if (historyDeleteAction.type === 'single') {
+        result = await request(`${API_BASE_URL}/api/admin/login-history/${historyDeleteAction.ids[0]}`, {
+          method: 'DELETE',
+          headers,
+        });
+      } else if (historyDeleteAction.type === 'selected') {
+        result = await request(`${API_BASE_URL}/api/admin/login-history/bulk-delete`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ ids: historyDeleteAction.ids }),
+        });
+      } else {
+        const body = { confirm: historyDeleteConfirm };
+        if (historyDeleteAge !== 'all') body.older_than_days = Number(historyDeleteAge);
+        result = await request(`${API_BASE_URL}/api/admin/login-history/delete-all`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        });
+      }
+      notifySuccess(`${result.deleted} login history record(s) deleted.`, 'admin-login-history-delete');
+      setHistoryDeleteAction(null);
+      setHistoryDeleteConfirm('');
+      setSelectedHistoryIds([]);
+      await refreshSecurityData();
+    } catch (error) {
+      notifyError(error, 'admin-login-history-delete');
+    } finally {
+      setHistoryDeleting(false);
+    }
   };
   useEffect(() => {
     const load = async () => {
@@ -527,7 +622,68 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
     {reauthAction && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={confirmReauthentication} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Confirm security action</h3><p className="mt-2 text-sm text-slate-600">Re-authenticate with your current password or a valid authenticator/backup code before continuing.</p><input type="password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} placeholder="Current password" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3" /><div className="my-3 text-center text-xs font-bold uppercase text-slate-400">or</div><input inputMode="numeric" value={reauthCode} onChange={(event) => setReauthCode(event.target.value.trim())} placeholder="Authenticator or backup code" className="w-full rounded-xl border border-slate-300 px-4 py-3" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setReauthAction(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">Confirm</button></div></form></div>}
     {backupCodes.length > 0 && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><div role="dialog" aria-modal="true" aria-labelledby="backup-codes-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 id="backup-codes-title" className="text-xl font-black">Backup codes generated</h3><p className="mt-2 text-sm font-semibold text-amber-700">These codes will only be shown once. Store them somewhere secure before closing this dialog.</p><div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 font-mono text-sm">{backupCodes.map((code) => <span key={code}>{code}</span>)}</div><div className="mt-5 flex flex-wrap justify-end gap-3"><button type="button" onClick={copyBackupCodes} className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 hover:bg-amber-100">{backupCodesCopied ? 'Copied!' : 'Copy All Codes'}</button><button type="button" onClick={downloadBackupCodes} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Download as .txt</button><button type="button" onClick={() => setBackupCodes([])} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white">Close</button></div></div></div>}
     {section === 'sessions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-black">Active Sessions</h3><button disabled={busy} onClick={() => securityAction('sessions/logout-others')} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white">Logout Other Sessions</button></div><div className="mt-5 space-y-3">{sessions.map((item) => <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-4 text-sm md:grid-cols-4"><span className="font-bold">{item.is_current ? 'Current session' : 'Active session'}</span><span>{item.device_browser || 'Unknown browser'}</span><span>{item.ip_address || 'Unknown IP'}</span><span>{item.last_active ? new Date(item.last_active).toLocaleString() : 'Unknown activity'}</span></div>)}{sessions.length === 0 && <p className="text-sm text-slate-500">No active sessions were found for this account.</p>}</div></div>}
-    {section === 'history' && <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Login History</h3><table className="mt-5 w-full min-w-[680px] text-left text-sm"><thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500"><th className="pb-3">Date & Time</th><th className="pb-3">Event</th><th className="pb-3">IP Address</th><th className="pb-3">Browser / Device</th></tr></thead><tbody>{history.map((item) => <tr key={item.id} className="border-b border-slate-100"><td className="py-3">{item.created_at ? new Date(item.created_at).toLocaleString() : '-'}</td><td className="py-3 font-semibold">{item.event_type}</td><td className="py-3">{item.ip_address || '-'}</td><td className="py-3">{item.device_browser || '-'}</td></tr>)}</tbody></table></div>}
+    {section === 'history' && <>
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-xl font-black">Login History</h3>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" disabled={selectedHistoryIds.length === 0 || historyDeleting} onClick={() => openHistoryDeleteConfirmation('selected', selectedHistoryIds)} className="rounded-xl border border-rose-200 px-4 py-2 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">Delete selected ({selectedHistoryIds.length})</button>
+            <button type="button" disabled={historyTotal === 0 || historyDeleting} onClick={() => openHistoryDeleteConfirmation('all')} className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Delete All</button>
+          </div>
+        </div>
+        <table className="mt-5 w-full min-w-[680px] text-left text-sm">
+          <thead><tr className="border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500">
+            <th className="pb-3 pr-3"><input type="checkbox" aria-label="Select all login history on this page" disabled={!history.some((item) => !item.is_current_session)} checked={history.some((item) => !item.is_current_session) && history.filter((item) => !item.is_current_session).every((item) => selectedHistoryIds.includes(item.id))} onChange={toggleVisibleHistorySelection} /></th>
+            <th className="pb-3">Date &amp; Time</th><th className="pb-3">Event</th><th className="pb-3">IP Address</th><th className="pb-3">Browser / Device</th><th className="pb-3 text-right">Actions</th>
+          </tr></thead>
+          <tbody>
+            {history.map((item) => <tr key={item.id} className="border-b border-slate-100">
+              <td className="py-3 pr-3"><input type="checkbox" aria-label={`Select login history record ${item.id}`} checked={selectedHistoryIds.includes(item.id)} disabled={item.is_current_session} title={item.is_current_session ? 'The current session entry cannot be deleted' : undefined} onChange={() => toggleHistorySelection(item.id)} /></td>
+              <td className="py-3">{item.created_at ? new Date(item.created_at).toLocaleString() : '-'}</td>
+              <td className="py-3 font-semibold">{item.event_type}{item.is_current_session && <span className="ml-2 rounded-full bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">Current session</span>}</td>
+              <td className="py-3">{item.ip_address || '-'}</td>
+              <td className="max-w-[180px] truncate py-3" title={item.device_browser || 'Unknown browser / device'}>{formatHistoryDevice(item.device_browser || '')}</td>
+              <td className="py-3 text-right"><button type="button" aria-label={`Delete login history record ${item.id}`} title={item.is_current_session ? 'The current session entry cannot be deleted' : 'Delete record'} disabled={historyDeleting || item.is_current_session} onClick={() => openHistoryDeleteConfirmation('single', [item.id])} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-50"><Trash2 size={16} /></button></td>
+            </tr>)}
+            {history.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-sm text-slate-500">No login history records found.</td></tr>}
+          </tbody>
+        </table>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+          <span>{historyTotal === 0 ? '0 records' : `${(historyPage - 1) * 25 + 1}-${Math.min(historyPage * 25, historyTotal)} of ${historyTotal}`}</span>
+          <div className="flex gap-2">
+            <button type="button" disabled={historyPage <= 1} onClick={() => changeHistoryPage(historyPage - 1)} className="rounded-lg border border-slate-200 px-3 py-2 font-semibold disabled:opacity-40">Previous</button>
+            <button type="button" disabled={historyPage >= Math.ceil(historyTotal / 25)} onClick={() => changeHistoryPage(historyPage + 1)} className="rounded-lg border border-slate-200 px-3 py-2 font-semibold disabled:opacity-40">Next</button>
+          </div>
+        </div>
+        <p className="mt-4 text-xs font-medium text-slate-500">Deleted records are permanently removed after 30 days.</p>
+      </div>
+      {historyDeleteAction && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+        <div role="dialog" aria-modal="true" aria-labelledby="login-history-delete-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+          <h3 id="login-history-delete-title" className="text-xl font-black">
+            {historyDeleteAction.type === 'all' ? 'Delete all login history' : historyDeleteAction.type === 'selected' ? 'Delete selected login history' : 'Delete login history record'}
+          </h3>
+          <p className="mt-2 text-sm text-slate-600">
+            {historyDeleteAction.type === 'all' ? 'Choose which records to soft-delete. Type DELETE to confirm.' : 'This record will be hidden now and permanently removed after 30 days.'}
+          </p>
+          {historyDeleteAction.type === 'all' && <>
+            <label className="mt-5 block text-sm font-semibold text-slate-700">Delete records</label>
+            <select value={historyDeleteAge} onChange={(event) => setHistoryDeleteAge(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm">
+              <option value="7">Older than 7 days</option>
+              <option value="30">Older than 30 days</option>
+              <option value="90">Older than 90 days</option>
+              <option value="all">All records</option>
+            </select>
+            <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="login-history-delete-confirm">Type DELETE to continue</label>
+            <input id="login-history-delete-confirm" value={historyDeleteConfirm} onChange={(event) => setHistoryDeleteConfirm(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="off" />
+          </>}
+          <p className="mt-4 text-xs font-medium text-slate-500">Deleted records are permanently removed after 30 days.</p>
+          <div className="mt-6 flex justify-end gap-3">
+            <button type="button" disabled={historyDeleting} onClick={() => setHistoryDeleteAction(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button>
+            <button type="button" disabled={historyDeleting || (historyDeleteAction.type === 'all' && historyDeleteConfirm !== 'DELETE')} onClick={confirmHistoryDelete} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{historyDeleting ? 'Deleting...' : 'Confirm Delete'}</button>
+          </div>
+        </div>
+      </div>}
+    </>}
     {section === 'permissions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Role & Permissions</h3><p className="mt-2 text-sm text-slate-500">Role</p><p className="font-bold">{profile.role || 'Unavailable'}</p><div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{permissionDefinitions.map(([key, label]) => <label key={key} className={`flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 text-sm font-semibold ${!canEditPermissions ? 'cursor-not-allowed opacity-60' : ''}`}><input type="checkbox" checked={Boolean(permissionState[key])} disabled={!canEditPermissions || permissionsSaving} onChange={(event) => setPermissionState((current) => ({ ...current, [key]: event.target.checked }))} />{label}</label>)}</div>{canEditPermissions ? <button type="button" onClick={savePermissions} disabled={permissionsSaving} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">{permissionsSaving ? 'Saving...' : 'Save Changes'}</button> : <p className="mt-5 text-sm font-semibold text-slate-500">Your role can view permissions but cannot edit them.</p>}</div>}
     {section === 'admin-accounts' && isMainAdmin && <AdminAccountsPanel user={user} />}
   </div>;

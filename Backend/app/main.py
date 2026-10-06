@@ -1778,6 +1778,15 @@ class AdminSessionRequest(BaseModel):
     session_token: str
 
 
+class AdminLoginHistoryBulkDeleteRequest(BaseModel):
+    ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
+class AdminLoginHistoryDeleteAllRequest(BaseModel):
+    confirm: str
+    older_than_days: Optional[int] = Field(None, gt=0, le=36500)
+
+
 class PayoutRecoveryRequest(BaseModel):
     payout_ids: List[int]
     action: str = "recheck"
@@ -2659,23 +2668,33 @@ def _decrypt_totp_secret(value: Optional[str]) -> Optional[str]:
         return normalized
 
 
-def _record_admin_login_event(db: Session, admin_id: Optional[int], event_type: str, request: Request) -> None:
+def _record_admin_login_event(
+    db: Session,
+    admin_id: Optional[int],
+    event_type: str,
+    request: Request,
+    admin_session_id: Optional[int] = None,
+) -> None:
     db.add(AdminLoginHistory(
         admin_id=admin_id,
+        admin_session_id=admin_session_id,
         event_type=event_type,
         ip_address=request.client.host if request.client else None,
         device_browser=request.headers.get("user-agent"),
     ))
 
 
-def _create_admin_session(db: Session, admin: Admin, token: str, request: Request) -> None:
-    db.add(AdminSession(
+def _create_admin_session(db: Session, admin: Admin, token: str, request: Request) -> AdminSession:
+    session = AdminSession(
         admin_id=admin.id,
         session_token=token,
         ip_address=request.client.host if request.client else None,
         device_browser=request.headers.get("user-agent"),
         is_active=True,
-    ))
+    )
+    db.add(session)
+    db.flush()
+    return session
 
 
 def _validate_admin_password(password: str) -> None:
@@ -3350,6 +3369,7 @@ async def on_startup():
             startup_logger.info("Connected database: name=%s audit_table=audit_logs", database_name)
         finally:
             db.close()
+        purge_deleted_login_history()
     except Exception:
         logging.getLogger("app.startup").exception("Startup database initialization failed.")
 
@@ -3396,6 +3416,15 @@ async def on_startup():
         "interval",
         days=1,
         id="cleanup-user-sessions",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    payment_scheduler.add_job(
+        purge_deleted_login_history,
+        "interval",
+        hours=24,
+        id="purge-deleted-admin-login-history",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -3561,8 +3590,10 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
             }
         token = _create_session_token(admin.username, "admin", security.session_timeout, _get_session_secret())
-        _create_admin_session(db, admin, token, request)
-        _record_admin_login_event(db, admin.id, "login_success", request)
+        admin_session = _create_admin_session(db, admin, token, request)
+        _record_admin_login_event(
+            db, admin.id, "login_success", request, admin_session_id=admin_session.id
+        )
         db.commit()
         return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email, "avatar_url": avatar_url, "avatarUrl": avatar_url}}
 
@@ -4295,8 +4326,10 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         )
         if valid_totp or _consume_admin_backup_code(db, admin, second_factor_code):
             token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
-            _create_admin_session(db, admin, token, http_request)
-            _record_admin_login_event(db, admin.id, "login_success_2fa", http_request)
+            admin_session = _create_admin_session(db, admin, token, http_request)
+            _record_admin_login_event(
+                db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
+            )
             db.commit()
             return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}, "remaining_backup_codes": _admin_backup_codes_remaining(db, admin)}
         if admin.two_factor_secret:
@@ -4317,8 +4350,10 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     otp_record.is_used = True
     token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
-    _create_admin_session(db, admin, token, http_request)
-    _record_admin_login_event(db, admin.id, "login_success_2fa", http_request)
+    admin_session = _create_admin_session(db, admin, token, http_request)
+    _record_admin_login_event(
+        db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
+    )
     db.commit()
     return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}}
 
@@ -5264,19 +5299,227 @@ def logout_other_admin_sessions(payload: AdminSessionRequest, request: Request, 
 
 @app.get("/api/admin/login-history")
 def get_admin_login_history(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     session_token: Optional[str] = None,
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     session_token = _extract_admin_token(authorization, session_token)
-    admin, _ = _admin_for_session(db, session_token)
-    return [{
+    admin, current_session = _admin_for_session(db, session_token)
+    current_entry_id = _current_admin_login_history_entry_id(db, admin, current_session)
+    query = db.query(AdminLoginHistory).filter(
+        AdminLoginHistory.admin_id == admin.id,
+        AdminLoginHistory.is_deleted.is_(False),
+    )
+    total = query.count()
+    items = query.order_by(
+        AdminLoginHistory.created_at.desc(),
+        AdminLoginHistory.id.desc(),
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": [{
         "id": item.id,
+        "is_current_session": item.id == current_entry_id,
         "event_type": item.event_type,
         "ip_address": item.ip_address,
         "device_browser": item.device_browser,
         "created_at": item.created_at.isoformat() if item.created_at else None,
-    } for item in db.query(AdminLoginHistory).filter(AdminLoginHistory.admin_id == admin.id).order_by(AdminLoginHistory.created_at.desc()).limit(100).all()]
+        } for item in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+def _current_admin_login_history_entry_id(
+    db: Session,
+    admin: Admin,
+    current_session: AdminSession,
+) -> Optional[int]:
+    linked_entry_id = db.query(AdminLoginHistory.id).filter(
+        AdminLoginHistory.admin_id == admin.id,
+        AdminLoginHistory.admin_session_id == current_session.id,
+        AdminLoginHistory.event_type.in_(("login_success", "login_success_2fa")),
+    ).order_by(
+        AdminLoginHistory.created_at.desc(),
+        AdminLoginHistory.id.desc(),
+    ).scalar()
+    if linked_entry_id is not None or not current_session.created_at:
+        return linked_entry_id
+
+    session_created_at = _as_utc_datetime(current_session.created_at).replace(tzinfo=None)
+    legacy_current_entry = db.query(AdminLoginHistory.id).filter(
+        AdminLoginHistory.admin_id == admin.id,
+        AdminLoginHistory.admin_session_id.is_(None),
+        AdminLoginHistory.event_type.in_(("login_success", "login_success_2fa")),
+        AdminLoginHistory.created_at >= session_created_at - timedelta(seconds=10),
+        AdminLoginHistory.created_at <= session_created_at + timedelta(seconds=10),
+    )
+    if current_session.ip_address:
+        legacy_current_entry = legacy_current_entry.filter(
+            AdminLoginHistory.ip_address == current_session.ip_address
+        )
+    if current_session.device_browser:
+        legacy_current_entry = legacy_current_entry.filter(
+            AdminLoginHistory.device_browser == current_session.device_browser
+        )
+    return legacy_current_entry.order_by(
+        AdminLoginHistory.created_at.desc(),
+        AdminLoginHistory.id.desc(),
+    ).scalar()
+
+
+def _login_history_deletion_query(
+    db: Session,
+    admin: Admin,
+    current_session: AdminSession,
+):
+    query = db.query(AdminLoginHistory).filter(
+        AdminLoginHistory.admin_id == admin.id,
+        AdminLoginHistory.is_deleted.is_(False),
+        or_(
+            AdminLoginHistory.admin_session_id.is_(None),
+            AdminLoginHistory.admin_session_id != current_session.id,
+        ),
+    )
+    current_entry_id = _current_admin_login_history_entry_id(db, admin, current_session)
+    if current_entry_id is not None:
+        query = query.filter(AdminLoginHistory.id != current_entry_id)
+    return query
+
+
+def _soft_delete_admin_login_history(
+    db: Session,
+    admin: Admin,
+    current_session: AdminSession,
+    *,
+    history_ids: Optional[List[int]] = None,
+    older_than_days: Optional[int] = None,
+) -> int:
+    query = _login_history_deletion_query(db, admin, current_session)
+    if history_ids is not None:
+        query = query.filter(AdminLoginHistory.id.in_(history_ids))
+    if older_than_days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        query = query.filter(AdminLoginHistory.created_at < cutoff)
+
+    deleted_at = datetime.now(timezone.utc)
+    affected = query.update(
+        {"is_deleted": True, "deleted_at": deleted_at},
+        synchronize_session=False,
+    )
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action="login_history_deleted",
+        entity_type="AdminLoginHistory",
+        description=(
+            f"Admin {admin.id} soft-deleted {affected} login history record(s) "
+            f"at {deleted_at.isoformat()}."
+        ),
+        status="SUCCESS",
+        severity="informational",
+        ip_address=current_session.ip_address,
+        created_at=deleted_at,
+    ))
+    db.commit()
+    return affected
+
+
+def _login_history_purge_days() -> int:
+    raw_days = os.getenv("LOGIN_HISTORY_PURGE_DAYS", "30").strip()
+    try:
+        purge_days = int(raw_days)
+    except ValueError as exc:
+        raise ValueError("LOGIN_HISTORY_PURGE_DAYS must be a positive integer.") from exc
+    if purge_days < 1:
+        raise ValueError("LOGIN_HISTORY_PURGE_DAYS must be a positive integer.")
+    return purge_days
+
+
+def purge_deleted_login_history() -> int:
+    purge_days = _login_history_purge_days()
+    purged_at = datetime.now(timezone.utc)
+    cutoff = purged_at - timedelta(days=purge_days)
+    db = SessionLocal()
+    try:
+        affected = db.query(AdminLoginHistory).filter(
+            AdminLoginHistory.is_deleted.is_(True),
+            AdminLoginHistory.deleted_at < cutoff,
+        ).delete(synchronize_session=False)
+        db.add(AuditLog(
+            admin_id=None,
+            action="login_history_purged",
+            entity_type="AdminLoginHistory",
+            description=(
+                f"System permanently purged {affected} deleted login history record(s) "
+                f"at {purged_at.isoformat()} using a {purge_days}-day retention period."
+            ),
+            status="SUCCESS",
+            severity="informational",
+            created_at=purged_at,
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+    logging.getLogger("app.security").info(
+        "Purged %s soft-deleted admin login history row(s).",
+        affected,
+    )
+    return affected
+
+
+@app.post("/api/admin/login-history/bulk-delete")
+def bulk_delete_admin_login_history(
+    payload: AdminLoginHistoryBulkDeleteRequest,
+    session_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    session_token = _extract_admin_token(authorization, session_token)
+    admin, current_session = _admin_for_session(db, session_token)
+    affected = _soft_delete_admin_login_history(
+        db, admin, current_session, history_ids=payload.ids
+    )
+    return {"deleted": affected}
+
+
+@app.post("/api/admin/login-history/delete-all")
+def delete_all_admin_login_history(
+    payload: AdminLoginHistoryDeleteAllRequest,
+    session_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    session_token = _extract_admin_token(authorization, session_token)
+    admin, current_session = _admin_for_session(db, session_token)
+    if payload.confirm != "DELETE":
+        raise HTTPException(status_code=400, detail='Type "DELETE" to confirm this action.')
+    affected = _soft_delete_admin_login_history(
+        db,
+        admin,
+        current_session,
+        older_than_days=payload.older_than_days,
+    )
+    return {"deleted": affected}
+
+
+@app.delete("/api/admin/login-history/{history_id}")
+def delete_admin_login_history(
+    history_id: int,
+    session_token: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    session_token = _extract_admin_token(authorization, session_token)
+    admin, current_session = _admin_for_session(db, session_token)
+    affected = _soft_delete_admin_login_history(
+        db, admin, current_session, history_ids=[history_id]
+    )
+    return {"deleted": affected}
 
 
 @app.post("/api/admin/2fa/setup")
@@ -8180,9 +8423,6 @@ def get_seller_dashboard_data(
                 Dispute.status.in_(ACTIVE_DISPUTE_STATUSES),
             ).count(),
         },
-        "disputes": [_serialize_dispute(item, include_parties=True) for item in db.query(Dispute).filter(
-            Dispute.seller_id == student.student_id
-        ).order_by(Dispute.created_at.desc()).all()],
         "performance": {
             "rating": round(float(review_average or 0), 1),
             "response_rate": round(response_rate, 1),

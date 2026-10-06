@@ -505,10 +505,13 @@ class AdminLoginHistory(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=True, index=True)
+    admin_session_id = Column(Integer, nullable=True)
     event_type = Column(String(50), nullable=False)
     ip_address = Column(String(50), nullable=True)
     device_browser = Column(String(255), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    is_deleted = Column(Boolean, default=False, server_default=text("FALSE"), nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
 
     admin = relationship("Admin", back_populates="login_history")
 

@@ -1420,7 +1420,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       });
       const stats = data.stats || {};
       const alerts = data.alerts || {};
-      setSellerDashboardData({ stats, alerts, performance: data.performance || {}, disputes: data.disputes || [], my_listings: listings, received_orders: orders });
+      setSellerDashboardData({ stats, alerts, performance: data.performance || {}, my_listings: listings, received_orders: orders });
       setMyListings(listings);
       setSellerData({
         totalListings: Number(stats.total_listings) || 0,
