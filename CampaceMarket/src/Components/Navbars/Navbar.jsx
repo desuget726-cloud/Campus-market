@@ -4,7 +4,7 @@ import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, onDashboardMenuClick, variant = 'public' }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -12,6 +12,11 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const languageMenuRef = useRef(null);
   const { t, language, setLanguage } = useLanguage();
   const isDashboardLayout = variant === 'dashboard';
+  useEffect(() => {
+    const openMobileNavigation = () => setIsMobileMenuOpen(true);
+    window.addEventListener('campace:open-public-mobile-navigation', openMobileNavigation);
+    return () => window.removeEventListener('campace:open-public-mobile-navigation', openMobileNavigation);
+  }, []);
   const effectiveRole = String(userRole || user?.role || 'student').toLowerCase().trim().replace(/_/g, ' ');
   const isAdmin = ['admin', 'sub admin', 'super admin', 'superadministrator'].includes(effectiveRole);
   const displayUser = isAdmin ? { ...user, ...profileUser } : user;
@@ -78,21 +83,6 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
       <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
         <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">
-          <button
-            type="button"
-            aria-label={isDashboardLayout ? 'Open dashboard navigation' : 'Open mobile navigation'}
-            aria-expanded={isDashboardLayout ? undefined : isMobileMenuOpen}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (isDashboardLayout) onDashboardMenuClick?.();
-              else setIsMobileMenuOpen(true);
-            }}
-            className="block shrink-0 rounded-lg p-1 text-white transition hover:bg-white/10 md:hidden"
-          >
-            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <path d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-          </button>
           <div className="flex shrink-0 cursor-pointer items-center gap-2 max-[500px]:gap-1" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
             <img
               src={logs}
@@ -295,7 +285,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             onClick={() => setIsMobileMenuOpen(false)}
             className="fixed inset-0 z-40 bg-slate-950/50 md:hidden"
           />
-          <aside className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 p-6 text-white shadow-2xl animate-slide-in md:hidden" aria-label="Mobile navigation">
+          <aside id="mobile-navigation" className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 p-6 text-white shadow-2xl animate-slide-in md:hidden" aria-label="Mobile navigation">
             <div className="flex items-center justify-between border-b border-slate-700 pb-5">
               <span className="text-lg font-bold">Campus Menu</span>
               <button type="button" onClick={() => setIsMobileMenuOpen(false)} aria-label="Close menu" className="rounded-lg px-2 py-1 text-2xl leading-none text-slate-300 transition hover:bg-slate-800 hover:text-white">✕</button>

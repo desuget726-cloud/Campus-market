@@ -118,7 +118,7 @@ html:has(.student-dashboard-content) body {
   padding-bottom: 120px;
 }
 
-@media (min-width: 901px) {
+@media (min-width: 768px) {
   .student-dashboard-content {
     scrollbar-width: none;
   }
@@ -261,12 +261,26 @@ html:has(.student-dashboard-content) body {
   }
 }
 
-@media (min-width: 901px) {
+@media (min-width: 768px) {
   .student-mobile-sidebar {
-    position: sticky;
-    top: var(--header-h);
+    position: relative;
+    top: auto;
+    bottom: auto;
     height: calc(100dvh - var(--header-h));
     transform: none !important;
+  }
+}
+
+.hamburger-btn {
+  display: flex;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+@media (min-width: 768px) {
+  .hamburger-btn {
+    display: none;
   }
 }
 

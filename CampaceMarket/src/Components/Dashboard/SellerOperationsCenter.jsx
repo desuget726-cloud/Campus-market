@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useReducer, useState } from "react";
 import OrderDetailsView from "./OrderDetailsView";
-import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
@@ -53,8 +52,6 @@ const normalizeSellerInsight = (listing) => {
 
 function SellerOperationsCenter({
   user,
-  isSidebarOpen,
-  onToggleSidebar,
   sellerData,
   sellerDashboardData,
   sellerOrdersLoading,
@@ -816,8 +813,6 @@ function SellerOperationsCenter({
     return (
       <OrderDetailsView
         order={selectedOrder}
-        isSidebarOpen={isSidebarOpen}
-        onToggleSidebar={onToggleSidebar}
         role="seller"
         loading={selectedOrderLoading}
         error={selectedOrderError}
@@ -852,7 +847,6 @@ function SellerOperationsCenter({
               Seller Hub
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-3">
-              <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
               <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 dark:text-white sm:text-3xl">
                 Seller Operations Center
               </h2>

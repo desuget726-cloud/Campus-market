@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 
 const filters = ["All", "Orders", "Payments", "System"];
 
@@ -124,8 +123,6 @@ const getNotificationAction = (notification, category) => {
 
 function NotificationCenter({
     notifications,
-    isSidebarOpen,
-    onToggleSidebar,
     unreadCount,
     isMarkingRead,
     onMarkAllRead,
@@ -212,7 +209,6 @@ function NotificationCenter({
                             Notification Center
                         </p>
                         <div className="mt-2 flex min-w-0 items-center gap-3">
-                            <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
                             <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 sm:text-3xl">
                                 Stay ahead of campus activity.
                             </h2>

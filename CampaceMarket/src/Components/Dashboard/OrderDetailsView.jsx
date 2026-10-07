@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { isOrderRefunded, shouldShowReceiptActions } from '../../utils/orderReceiptState';
 
@@ -92,7 +91,7 @@ function PrintableReceipt({ receipt, includeBuyerEmail = false, supportEmail = '
   );
 }
 
-function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt, isSidebarOpen, onToggleSidebar, supportEmail = 'support@campus.edu.et' }) {
+function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', onBack, onRefresh, onRaiseDispute, onViewSellerProfile, onConfirmReceived, onSellerAction, onDisputeResponse, paymentReceipt = null, paymentReceiptLoading = false, paymentReceiptError = '', onViewReceipt, onDownloadReceipt, onPrintReceipt, supportEmail = 'support@campus.edu.et' }) {
   const [sellerPickupCode, setSellerPickupCode] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
   const [rejectionNote, setRejectionNote] = useState('');
@@ -314,7 +313,6 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.22em] text-[#059669]">Order Details</p>
             <div className="mt-2 flex items-center gap-3">
-              <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
               <h1 className="text-3xl font-black text-[#0f172a]">Order #{order.id}</h1>
             </div>
             <p className="mt-2 text-sm text-[#64748b]">Placed {formatDate(order.created_at)}</p>

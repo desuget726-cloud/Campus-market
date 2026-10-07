@@ -3,7 +3,6 @@ import toast from 'react-hot-toast';
 import { LockKeyhole, LogOut, Monitor, Smartphone, Tablet } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
-import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import PayoutAccountPanel from './PayoutAccountPanel';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
@@ -99,8 +98,6 @@ const Toggle = ({ label, checked, onChange }) => (
 
 function SettingsCenter({
     settingsTab,
-    isSidebarOpen,
-    onToggleSidebar,
     onNotificationPrefsDirtyChange,
     setSettingsTab,
     profileForm,
@@ -928,10 +925,8 @@ function SettingsCenter({
         <div data-dashboard-view="settings" className="min-h-screen w-full min-w-0 max-w-none bg-slate-50 px-0 pb-10 pt-16 text-slate-900 lg:pt-10">
             <div className="w-full min-w-0 max-w-none">
                 <div className="mb-6">
-                    <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Student Control Center</p>
                     <div className="mt-2 flex min-w-0 items-center justify-between gap-3">
                         <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 sm:text-3xl">Account Settings</h2>
-                        <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={onToggleSidebar} />
                     </div>
                 </div>
 

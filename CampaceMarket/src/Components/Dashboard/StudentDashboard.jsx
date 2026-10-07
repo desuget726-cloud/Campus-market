@@ -9,7 +9,6 @@ import SellerOperationsCenter from './SellerOperationsCenter';
 import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
-import DashboardMobileMenuButton from './DashboardMobileMenuButton';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '../../config';
 import { getAdminSettings } from '../../api/adminSettings';
 import { isOrderRefunded } from '../../utils/orderReceiptState';
@@ -181,9 +180,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const verifiedStudent = isVerifiedStudent(user);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); // ምስል 2 ላይ የተጠየቀው የጎን ፓነል መክፈቻ/መዝጊያ ስቴት
   useEffect(() => {
-    const openSidebar = () => setIsSidebarOpen(true);
-    window.addEventListener('campace:open-dashboard-sidebar', openSidebar);
-    return () => window.removeEventListener('campace:open-dashboard-sidebar', openSidebar);
+    const toggleSidebar = () => setIsSidebarOpen((open) => !open);
+    window.addEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
+    return () => window.removeEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
   }, []);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -3970,13 +3969,13 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   return (
     <div className={`min-h-0 w-full bg-slate-100 text-slate-900 ${activeTab === 'messages' ? 'h-full overflow-hidden' : ''}`}>
-      <div className={`flex min-h-0 w-full flex-col gap-4 px-3 sm:px-4 min-[901px]:flex-row min-[901px]:items-stretch min-[901px]:gap-6 min-[901px]:overflow-hidden min-[901px]:px-6 ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'min-[901px]:h-[calc(100dvh-2rem)]'}`}>
+      <div className={`flex min-h-0 w-full flex-col gap-4 px-3 sm:px-4 min-[768px]:flex-row min-[768px]:items-stretch min-[768px]:gap-6 min-[768px]:overflow-hidden min-[768px]:px-0 ${activeTab === 'messages' ? 'h-full overflow-hidden' : 'min-[768px]:h-[calc(100dvh-2rem)]'}`}>
 
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
-        <aside id="student-mobile-navigation" data-open={isSidebarOpen} style={{ transform: isSidebarOpen ? 'translateX(0)' : 'translateX(-100%)' }} className={`student-mobile-sidebar
-          fixed top-[var(--header-h)] bottom-0 left-0 z-40 flex h-[calc(100dvh-var(--header-h))] w-72 flex-col overflow-hidden overflow-x-hidden bg-[#0a0e23] p-4 pb-6 text-white shadow-2xl transition-transform duration-300 ease-in-out
-          min-[901px]:sticky min-[901px]:top-[var(--header-h)] min-[901px]:h-[calc(100dvh-var(--header-h))] min-[901px]:w-72 min-[901px]:shrink-0 min-[901px]:rounded-[32px] min-[901px]:p-6 min-[901px]:shadow-none
-          ${isSidebarCollapsed ? 'min-[901px]:w-24 min-[901px]:p-3' : 'min-[901px]:w-72 min-[901px]:p-6'}
+        <aside id="student-mobile-navigation" data-open={isSidebarOpen} className={`student-mobile-sidebar ${isSidebarOpen ? 'open translate-x-0' : '-translate-x-full'}
+          fixed top-[var(--header-h)] bottom-0 left-0 z-40 flex h-[calc(100dvh-var(--header-h))] w-[220px] flex-col overflow-hidden overflow-x-hidden bg-[#1a1a2e] p-4 pb-6 text-white shadow-2xl transition-[width,transform,padding] duration-300 ease-in-out
+          min-[768px]:top-0 min-[768px]:h-[calc(100dvh-var(--header-h))] min-[768px]:shrink-0 min-[768px]:translate-x-0 min-[768px]:rounded-[32px] min-[768px]:shadow-none
+          ${isSidebarCollapsed ? 'min-[768px]:w-[60px] min-[768px]:p-2' : 'min-[768px]:w-[220px] min-[768px]:p-6'}
         `}>
           <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
@@ -3985,21 +3984,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 <button
                   type="button"
                   onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-slate-200 transition hover:border-slate-500 hover:text-white cursor-pointer min-[901px]:hidden"
+                  className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-lg font-bold text-slate-200 transition-all duration-300 hover:scale-105 hover:border-slate-500 hover:text-white cursor-pointer max-[767px]:hidden"
                   title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+                  aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    {isSidebarCollapsed ? (
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 6l6 6-6 6" />
-                    ) : (
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 18l-6-6 6-6" />
-                    )}
-                  </svg>
+                  <span className="transition-transform duration-300" aria-hidden="true">{isSidebarCollapsed ? '→' : '←'}</span>
                 </button>
               </div>
               {!isSidebarCollapsed && (
                 <>
-                  <h1 className="mt-3 text-2xl font-bold text-white">Campus Portal</h1>
                   <span className={`mt-3 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${verifiedStudent ? 'border border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border border-amber-400/40 bg-amber-500/10 text-amber-300'}`}>
                     <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white ${verifiedStudent ? 'bg-emerald-500' : 'bg-amber-500'}`}>{verifiedStudent ? '✓' : '!'}</span>
                     {verifiedStudent ? 'Verified Student' : 'Unverified Profile'}
@@ -4008,27 +4001,27 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               )}
             </div>
 
-            {!isSidebarCollapsed && (
-              <button
-                onClick={() => setIsSidebarOpen(false)}
-                className="rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white transition-all duration-200 cursor-pointer min-[901px]:hidden"
-                title="Close sidebar"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setIsSidebarOpen(false)}
+              className="rounded-lg p-1.5 text-slate-300 transition-all duration-200 hover:bg-white/10 hover:text-white min-[768px]:hidden"
+              title="Close sidebar"
+              aria-label="Close sidebar"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
 
           <nav className={`student-sidebar-menu flex min-h-0 flex-1 flex-col space-y-2 overflow-y-auto overflow-x-hidden pb-4 ${isSidebarCollapsed ? 'items-center' : ''}`}>
             {[
-              { key: 'home', label: 'Home' },
-              { key: 'buyer', label: 'Buyer Hub' },
-              { key: 'seller', label: 'Seller Hub' },
-              { key: 'messages', label: 'Messages', badge: unreadCount || unreadMessageCount },
-              { key: 'notifications', label: 'Notifications', badge: unreadNotificationCount },
-              { key: 'settings', label: 'Settings' },
+              { key: 'home', label: 'Home', icon: '🏠' },
+              { key: 'buyer', label: 'Buyer Hub', icon: '🛒' },
+              { key: 'seller', label: 'Seller Hub', icon: '🏪' },
+              { key: 'messages', label: 'Messages', icon: '💬', badge: unreadCount || unreadMessageCount },
+              { key: 'notifications', label: 'Notifications', icon: '🔔', badge: unreadNotificationCount },
+              { key: 'settings', label: 'Settings', icon: '⚙️' },
             ].map((item) => {
               const isActive = activeTab === item.key;
               return (
@@ -4046,7 +4039,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   className={`sidebar-nav-item group flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-sm font-semibold ${isActive ? 'active' : ''} ${isSidebarCollapsed ? 'justify-center px-2' : ''}`}
                   title={item.label}
                 >
-                  <span className={`flex items-center gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
+                  <span className={`flex min-w-0 flex-1 items-center gap-3 ${isSidebarCollapsed ? 'justify-center' : ''}`}>
+                    <span className="shrink-0" aria-hidden="true">{item.icon}</span>
                     {!isSidebarCollapsed && <span>{item.label}</span>}
                     {item.badge > 0 && (
                       <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-slate-950 ring-2 ring-[#111c3a]">
@@ -4072,16 +4066,29 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <span>Wallet</span>
                     <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-300">Live</span>
                   </div>
-                  <div className="mt-3 text-lg font-bold text-white">Wallet: {Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB</div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <button type="button" onClick={() => { setBuyerTab('payments'); setActiveTab('buyer'); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-2 py-3 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">Add Funds</button>
-                    <button type="button" disabled={withdrawLoading || withdrawalEntryBlocked} title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] rounded-xl border border-amber-400/40 bg-amber-500/10 px-2 py-3 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
+                  <div className="mt-3 flex items-baseline justify-between gap-2 text-white">
+                    <span className="text-xs font-semibold text-slate-400">ETB</span>
+                    <span className="text-lg font-bold">{Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="wallet-buttons mt-3 flex w-full flex-row gap-2">
+                    <button type="button" onClick={() => { setBuyerTab('payments'); setActiveTab('buyer'); setIsSidebarOpen(false); }} className="min-h-[44px] min-w-0 flex-1 whitespace-nowrap rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-1 py-2 text-[11px] font-bold text-emerald-200 transition hover:bg-emerald-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">Add Funds</button>
+                    <button type="button" disabled={withdrawLoading || withdrawalEntryBlocked} title={activeWithdrawal ? 'A payout is currently processing' : currentWalletBalance <= 0 ? 'Add funds before withdrawing' : 'Withdraw funds'} onClick={() => { setShowWithdrawModal(true); setIsSidebarOpen(false); }} className="min-h-[44px] min-w-0 flex-1 whitespace-nowrap rounded-xl border border-amber-400/40 bg-amber-500/10 px-1 py-2 text-[11px] font-bold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:border-slate-600 disabled:bg-slate-700 disabled:text-slate-400">Withdraw</button>
                   </div>
                 </>
               ) : (
-                <div className="flex flex-col items-center gap-2 text-center">
-                  <div className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-[9px] font-semibold text-emerald-300">ETB</div>
-                  <div className="text-[10px] font-semibold text-white">{Number(paymentInfo?.balance ?? 0).toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>
+                <div className="flex items-center justify-center" aria-label="Wallet">
+                  <svg
+                    className="h-6 w-6 text-emerald-300"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.8}
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 7.5A2.25 2.25 0 016 5.25h12A2.25 2.25 0 0120.25 7.5v9A2.25 2.25 0 0118 18.75H6a2.25 2.25 0 01-2.25-2.25v-9z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 9h-4.5a2.25 2.25 0 000 4.5h4.5M15.75 11.25h.008v.008h-.008z" />
+                  </svg>
                 </div>
               )}
             </div>
@@ -4114,12 +4121,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         {isSidebarOpen && (
           <div
             onClick={() => setIsSidebarOpen(false)}
-            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm min-[901px]:hidden"
+            className="fixed inset-0 z-30 bg-slate-900/40 backdrop-blur-sm min-[768px]:hidden"
           />
         )}
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
-        <main className={`student-dashboard-content min-h-0 min-w-0 w-full max-w-none flex-1 transition-all duration-300 min-[901px]:h-full min-[901px]:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'min-[901px]:overflow-y-auto min-[901px]:overscroll-y-contain'}`}>
+        <main className={`student-dashboard-content min-h-0 min-w-0 w-full max-w-none flex-1 transition-all duration-300 min-[768px]:h-full min-[768px]:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'min-[768px]:overflow-y-auto min-[768px]:overscroll-y-contain'}`}>
 
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
@@ -4184,35 +4191,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
               <div data-dashboard-view="home" className="min-w-0 space-y-6">
-                <div className="flex flex-col rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-8">
-                  <div className="flex min-w-0 flex-1 items-center gap-4">
-                    {/* ዴስክቶፕ ላይ ማውጫው ከተዘጋ በኋላ ለመክፈቻ የሚሆን የ [|] ቁልፍ (ምስል 2 - Sidebar Toggle Open Button) */}
-                    {!isSidebarOpen && (
-                      <button
-                        onClick={() => setIsSidebarOpen(true)}
-                        className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition cursor-pointer hidden lg:flex"
-                        title="Open sidebar"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h14a1 1 0 011 1v14a1 1 0 01-1 1H5a1 1 0 01-1-1V5z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4v16" />
-                        </svg>
-                      </button>
-                    )}
-
-                    {/* በሞባይል ስልኮች ላይ የሚታየው የሜኑ መክፈቻ ቁልፍ (Mobile Hamburger Menu) */}
-                    <div className="flex min-w-0 flex-1 items-center gap-3">
-                      <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm uppercase tracking-[0.24em] text-slate-600">User Experience</p>
-                        <h2 className="mt-2 break-words text-xl font-semibold text-slate-900 sm:text-3xl">Buyer and Seller dashboard</h2>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-4 flex w-full items-center gap-3 sm:mt-0 sm:w-auto">
-                    <button onClick={() => setShowSupportModal(true)} className="btn-primary w-30  rounded-full px-5 py-2 text-sm font-semibold shadow cursor-pointer sm:w-auto">Support</button>
-                  </div>
-                </div>
 
                 <div className="grid min-w-0 max-w-full gap-6 xl:grid-cols-[1.35fr_0.65fr]">
                   {/* AI Recommendations */}
@@ -4251,7 +4229,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               <p className="mt-1 line-clamp-2 text-xs text-slate-600 dark:text-slate-300">{item.description || 'Popular campus item tailored to your department.'}</p>
                               <div className="mt-auto pt-3">
                                 <span className="text-sm font-bold text-slate-950 dark:text-white">{formatETB(item.price)}</span>
-                                <button type="button" onClick={() => handleRecommendationClick(item.id)} className="mt-2 w-full whitespace-normal break-words rounded-full bg-slate-950 px-3 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200">View Details →</button>
+                                <button type="button" onClick={() => handleRecommendationClick(item.id)} className="mt-2 w-full whitespace-normal break-words rounded-full bg-sky-400 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-sky-500">View Details →</button>
                               </div>
                             </div>
                           );
@@ -4328,8 +4306,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 {disputeFeedback && <p className={`mb-4 rounded-2xl px-4 py-3 text-sm font-bold ${disputeFeedback.startsWith('Dispute submitted') ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{disputeFeedback}</p>}
                 <OrderDetailsView
                   order={selectedOrder}
-                  isSidebarOpen={isSidebarOpen}
-                  onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                   role="buyer"
                   loading={orderDetailsLoading}
                   error={orderDetailsError}
@@ -4429,7 +4405,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               <div data-dashboard-view="buyer" className="min-w-0 w-full max-w-full space-y-6 [&>*]:min-w-0 [&>*]:max-w-full">
                 <div className="min-w-0 w-full max-w-full rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
                   <div className="flex min-w-0 items-center gap-3">
-                    <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
                     <div className="min-w-0">
                       <h3 className="text-xl font-bold text-slate-900">Buyer Hub</h3>
                       <p className="mt-1 break-words text-sm text-slate-600">Search products, manage your wishlist, cart, orders, and payments.</p>
@@ -5313,8 +5288,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'seller' && (
               <SellerOperationsCenter
                 user={user}
-                isSidebarOpen={isSidebarOpen}
-                onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                 sellerData={sellerData}
                 sellerOrdersLoading={sellerOrdersLoading}
                 sellerOrdersError={sellerOrdersError}
@@ -5498,7 +5471,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <div className="min-w-0">
                           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Peer chat</p>
                           <div className="mt-1 flex items-center gap-3">
-                            <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
                             <h3 className="text-xl font-bold text-slate-900 dark:text-white">Messages</h3>
                           </div>
                         </div>
@@ -5580,7 +5552,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           <span className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-white ${activeConversation?.status === 'online' ? 'animate-pulse bg-emerald-500' : 'bg-slate-300'}`} />
                         </div>
                         <div className="flex min-w-0 items-center gap-2">
-                          <DashboardMobileMenuButton isOpen={isSidebarOpen} onToggle={() => setIsSidebarOpen(!isSidebarOpen)} />
                           <div className="min-w-0">
                             <p className="truncate text-base font-bold text-slate-900 dark:text-white">{activeConversation?.name || 'Student'}</p>
                             {peerIsTyping ? (
@@ -5963,8 +5934,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'notifications' && (
               <NotificationCenter
                 notifications={safeNotifications}
-                isSidebarOpen={isSidebarOpen}
-                onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                 unreadCount={unreadCount}
                 isMarkingRead={isMarkingRead}
                 onMarkAllRead={handleMarkAllNotificationsRead}
@@ -5987,8 +5956,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
             {activeTab === 'settings' && (
               <SettingsCenter
                 settingsTab={settingsTab}
-                isSidebarOpen={isSidebarOpen}
-                onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
                 onNotificationPrefsDirtyChange={setIsNotificationPrefsDirty}
                 setSettingsTab={setSettingsTab}
                 profileForm={profileForm}

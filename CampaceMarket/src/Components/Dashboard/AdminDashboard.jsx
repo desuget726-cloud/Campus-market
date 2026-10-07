@@ -849,11 +849,6 @@ function AdminAccountsPanel({ user }) {
 function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  useEffect(() => {
-    const openSidebar = () => setIsSidebarOpen(true);
-    window.addEventListener('campace:open-dashboard-sidebar', openSidebar);
-    return () => window.removeEventListener('campace:open-dashboard-sidebar', openSidebar);
-  }, []);
   const [isReady, setIsReady] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
