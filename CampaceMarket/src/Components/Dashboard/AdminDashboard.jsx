@@ -7,7 +7,7 @@ import AdminDisputeReview from './AdminDisputeReview';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { adminApiGet, getStoredAccessToken } from '../../api/apiClient';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
-import { getAdminSettings } from '../../api/adminSettings';
+import { getAdminSettings, invalidateAdminSettingsCache } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
 import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
@@ -159,8 +159,8 @@ function StatusBadge({ status, className = '', ...props }) {
 
 function AdminTable({ children, className = '', tableClassName = '' }) {
   return (
-    <div className={`w-full overflow-x-auto rounded-2xl ${className}`}>
-      <table className={`w-full min-w-[1000px] table-auto text-left text-sm text-slate-700 ${tableClassName}`}>
+    <div className={`admin-data-table-wrapper w-full max-w-full overflow-x-auto rounded-2xl ${className}`}>
+      <table className={`admin-data-table w-full min-w-[860px] table-auto text-left text-sm text-slate-700 ${tableClassName}`}>
         {children}
       </table>
     </div>
@@ -481,7 +481,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   };
   const confirmHistoryDelete = async () => {
     if (!historyDeleteAction || historyDeleting) return;
-    if (historyDeleteAction.type === 'all' && historyDeleteConfirm !== 'DELETE') return;
+    if (historyDeleteConfirm !== 'DELETE') return;
     setHistoryDeleting(true);
     const headers = { Authorization: `Bearer ${token()}` };
     try {
@@ -490,12 +490,13 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
         result = await request(`${API_BASE_URL}/api/admin/login-history/${historyDeleteAction.ids[0]}`, {
           method: 'DELETE',
           headers,
+          body: JSON.stringify({ confirm: historyDeleteConfirm }),
         });
       } else if (historyDeleteAction.type === 'selected') {
         result = await request(`${API_BASE_URL}/api/admin/login-history/bulk-delete`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ ids: historyDeleteAction.ids }),
+          body: JSON.stringify({ ids: historyDeleteAction.ids, confirm: historyDeleteConfirm }),
         });
       } else {
         const body = { confirm: historyDeleteConfirm };
@@ -558,7 +559,42 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const securityAction = async (path) => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); notifySuccess(data.message || 'Security action completed.', `admin-security-${path}`); refreshSecurityData(); } catch (error) { notifyError(error, `admin-security-${path}`); } finally { setBusy(false); } };
   const startTwoFactorSetup = async () => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/setup`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); notifySuccess('Authenticator setup started', 'admin-2fa-setup'); } catch (error) { notifyError(error, 'admin-2fa-setup'); } finally { setBusy(false); } };
   const verifyTwoFactorSetup = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/setup/verify`, { method: 'POST', body: JSON.stringify({ session_token: token(), code: setupCode }) }); const enabled = Boolean(data.enabled); setProfile((current) => ({ ...current, two_factor_enabled: enabled })); onUserUpdate?.((currentUser) => ({ ...(currentUser || user || {}), two_factor_enabled: enabled })); setSetupData(null); setSetupCode(''); notifySuccess(data.message || 'Authenticator setup completed.', 'admin-2fa-setup-verify'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-setup-verify'); } finally { setBusy(false); } };
-  const confirmReauthentication = async (event) => { event.preventDefault(); if (!reauthPassword && !reauthCode) { notifyError(new Error('Enter your current password or a valid authenticator/backup code.'), 'admin-2fa-reauth'); return; } if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/${reauthAction}`, { method: 'POST', body: JSON.stringify({ session_token: token(), current_password: reauthPassword || null, otp_code: reauthCode || null }) }); if (data.backup_codes) { setBackupCodes(data.backup_codes); } if (typeof data.enabled === 'boolean') { setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); } setReauthAction(null); setReauthPassword(''); setReauthCode(''); setBackupCodesCopied(false); notifySuccess(data.message || 'Security action completed.', 'admin-2fa-reauth'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-2fa-reauth'); } finally { setBusy(false); } };
+  const confirmReauthentication = async (event) => {
+    event.preventDefault();
+    const backupCodeRegeneration = reauthAction === 'backup-codes';
+    if (backupCodeRegeneration && !reauthPassword) {
+      notifyError(new Error('Enter your current password to regenerate backup codes.'), 'admin-2fa-reauth');
+      return;
+    }
+    if (!backupCodeRegeneration && !reauthPassword && !reauthCode) {
+      notifyError(new Error('Enter your current password or a valid authenticator/backup code.'), 'admin-2fa-reauth');
+      return;
+    }
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await request(`${API_BASE_URL}/api/admin/2fa/${reauthAction}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          session_token: token(),
+          current_password: reauthPassword || null,
+          otp_code: backupCodeRegeneration ? null : (reauthCode || null),
+        }),
+      });
+      if (data.backup_codes) setBackupCodes(data.backup_codes);
+      if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled }));
+      setReauthAction(null);
+      setReauthPassword('');
+      setReauthCode('');
+      setBackupCodesCopied(false);
+      notifySuccess(data.message || 'Security action completed.', 'admin-2fa-reauth');
+      refreshSecurityData();
+    } catch (error) {
+      notifyError(error, 'admin-2fa-reauth');
+    } finally {
+      setBusy(false);
+    }
+  };
   const copyBackupCodes = async () => { if (!backupCodes.length || !navigator.clipboard) { notifyError(new Error('Clipboard access is unavailable.'), 'admin-backup-codes-copy'); return; } try { await navigator.clipboard.writeText(backupCodes.join('\n')); setBackupCodesCopied(true); notifySuccess('Backup codes copied.', 'admin-backup-codes-copy'); window.setTimeout(() => setBackupCodesCopied(false), 2000); } catch (error) { notifyError(error, 'admin-backup-codes-copy'); } };
   const downloadBackupCodes = () => { if (!backupCodes.length) return; const generatedDate = new Date().toISOString().slice(0, 10); const contents = `DG Market Admin - Backup Codes (Generated: ${generatedDate}). Keep these safe. Each code can only be used once.\n\n${backupCodes.join('\n')}\n`; const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'dg-market-backup-codes.txt'; document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url); };
   const localizeAvatarMessage = (message) => {
@@ -619,7 +655,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
     {section === 'password' && <form onSubmit={updateProfile} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="grid gap-4 md:grid-cols-2">{field('Current Password', 'current_password', 'password')}{field('New Password', 'new_password', 'password')}</div>{form.new_password && <div className="mt-4"><div className="flex h-2 gap-1">{[0, 1, 2, 3, 4].map((item) => <span key={item} className={`flex-1 rounded-full ${item < passwordScore ? (passwordScore < 3 ? 'bg-rose-500' : passwordScore < 5 ? 'bg-amber-500' : 'bg-emerald-500') : 'bg-slate-200'}`} />)}</div><p className="mt-2 text-xs text-slate-500">{passwordScore}/5 password requirements met</p></div>}{field('Confirm New Password', 'confirm_password', 'password')}<label className="mt-5 flex items-center gap-3 text-sm font-semibold"><input type="checkbox" checked={form.logout_all_sessions} onChange={(event) => setForm((current) => ({ ...current, logout_all_sessions: event.target.checked }))} />Log out of all active sessions</label><button disabled={busy} className="btn-primary mt-6 rounded-xl px-5 py-3 text-sm font-bold">Update Password</button></form>}
     {section === '2fa' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><h3 className="text-xl font-black">Authenticator protection for this admin</h3><p className="mt-2 text-sm text-slate-500">Current admin status: <strong>{profile.two_factor_enabled ? 'Enabled' : 'Disabled'}</strong></p><p className="mt-2 text-xs font-medium leading-5 text-slate-500">This status reflects the authenticated admin&apos;s configured authenticator, not the system-wide login policy in Settings.</p><div className="mt-5 flex flex-wrap gap-3"><button disabled={busy} onClick={startTwoFactorSetup} className="btn-primary rounded-xl px-4 py-3 text-sm font-bold">Setup Authenticator</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('backup-codes')} title={profile.two_factor_enabled ? 'Generate one-time backup codes' : 'Enable 2FA first to generate backup codes'} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-50">Generate Backup Codes</button><button disabled={busy || !profile.two_factor_enabled} onClick={() => setReauthAction('disable')} title={profile.two_factor_enabled ? 'Disable authenticator protection' : 'Enable 2FA first'} className="rounded-xl border border-rose-200 px-4 py-3 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-50">Disable 2FA</button></div></div>}
     {setupData && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={verifyTwoFactorSetup} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Set up authenticator</h3><p className="mt-2 text-sm text-slate-600">Scan this QR code with Google Authenticator or Authy, then enter the six-digit code.</p><img src={setupData.qr_code} alt="Authenticator setup QR code" className="mx-auto mt-5 h-52 w-52" /><p className="mt-3 break-all text-center font-mono text-xs text-slate-500">Manual key: {setupData.secret}</p><input autoFocus inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={setupCode} onChange={(event) => setSetupCode(event.target.value.replace(/\D/g, ''))} placeholder="6-digit code" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-lg tracking-[0.3em]" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setSetupData(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy || setupCode.length !== 6} className="btn-primary rounded-xl px-4 py-3 text-sm font-bold">Verify and Enable</button></div></form></div>}
-    {reauthAction && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={confirmReauthentication} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Confirm security action</h3><p className="mt-2 text-sm text-slate-600">Re-authenticate with your current password or a valid authenticator/backup code before continuing.</p><input type="password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} placeholder="Current password" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3" /><div className="my-3 text-center text-xs font-bold uppercase text-slate-400">or</div><input inputMode="numeric" value={reauthCode} onChange={(event) => setReauthCode(event.target.value.trim())} placeholder="Authenticator or backup code" className="w-full rounded-xl border border-slate-300 px-4 py-3" /><div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setReauthAction(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">Confirm</button></div></form></div>}
+    {reauthAction && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><form onSubmit={confirmReauthentication} className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 className="text-xl font-black">Confirm security action</h3><p className="mt-2 text-sm text-slate-600">{reauthAction === 'backup-codes' ? 'Enter your current password to regenerate backup codes.' : 'Re-authenticate with your current password or a valid authenticator/backup code before continuing.'}</p><input type="password" value={reauthPassword} onChange={(event) => setReauthPassword(event.target.value)} placeholder="Current password" className="mt-5 w-full rounded-xl border border-slate-300 px-4 py-3" />{reauthAction !== 'backup-codes' && <><div className="my-3 text-center text-xs font-bold uppercase text-slate-400">or</div><input inputMode="numeric" value={reauthCode} onChange={(event) => setReauthCode(event.target.value.trim())} placeholder="Authenticator or backup code" className="w-full rounded-xl border border-slate-300 px-4 py-3" /></>}<div className="mt-5 flex justify-end gap-3"><button type="button" onClick={() => setReauthAction(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button><button disabled={busy} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-50">Confirm</button></div></form></div>}
     {backupCodes.length > 0 && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4"><div role="dialog" aria-modal="true" aria-labelledby="backup-codes-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"><h3 id="backup-codes-title" className="text-xl font-black">Backup codes generated</h3><p className="mt-2 text-sm font-semibold text-amber-700">These codes will only be shown once. Store them somewhere secure before closing this dialog.</p><div className="mt-5 grid grid-cols-2 gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 font-mono text-sm">{backupCodes.map((code) => <span key={code}>{code}</span>)}</div><div className="mt-5 flex flex-wrap justify-end gap-3"><button type="button" onClick={copyBackupCodes} className="rounded-xl border border-amber-300 bg-white px-4 py-3 text-sm font-bold text-amber-900 hover:bg-amber-100">{backupCodesCopied ? 'Copied!' : 'Copy All Codes'}</button><button type="button" onClick={downloadBackupCodes} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Download as .txt</button><button type="button" onClick={() => setBackupCodes([])} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white">Close</button></div></div></div>}
     {section === 'sessions' && <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-black">Active Sessions</h3><button disabled={busy} onClick={() => securityAction('sessions/logout-others')} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white">Logout Other Sessions</button></div><div className="mt-5 space-y-3">{sessions.map((item) => <div key={item.id} className="grid gap-2 rounded-xl border border-slate-200 p-4 text-sm md:grid-cols-4"><span className="font-bold">{item.is_current ? 'Current session' : 'Active session'}</span><span>{item.device_browser || 'Unknown browser'}</span><span>{item.ip_address || 'Unknown IP'}</span><span>{item.last_active ? new Date(item.last_active).toLocaleString() : 'Unknown activity'}</span></div>)}{sessions.length === 0 && <p className="text-sm text-slate-500">No active sessions were found for this account.</p>}</div></div>}
     {section === 'history' && <>
@@ -655,7 +691,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
             <button type="button" disabled={historyPage >= Math.ceil(historyTotal / 25)} onClick={() => changeHistoryPage(historyPage + 1)} className="rounded-lg border border-slate-200 px-3 py-2 font-semibold disabled:opacity-40">Next</button>
           </div>
         </div>
-        <p className="mt-4 text-xs font-medium text-slate-500">Deleted records are permanently removed after 30 days.</p>
+        <p className="mt-4 text-xs font-medium text-slate-500">This cannot be undone.</p>
       </div>
       {historyDeleteAction && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
         <div role="dialog" aria-modal="true" aria-labelledby="login-history-delete-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
@@ -663,7 +699,9 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
             {historyDeleteAction.type === 'all' ? 'Delete all login history' : historyDeleteAction.type === 'selected' ? 'Delete selected login history' : 'Delete login history record'}
           </h3>
           <p className="mt-2 text-sm text-slate-600">
-            {historyDeleteAction.type === 'all' ? 'Choose which records to soft-delete. Type DELETE to confirm.' : 'This record will be hidden now and permanently removed after 30 days.'}
+            {historyDeleteAction.type === 'all'
+              ? 'Choose which records to permanently delete. Type DELETE to confirm.'
+              : 'This cannot be undone. Type DELETE to confirm.'}
           </p>
           {historyDeleteAction.type === 'all' && <>
             <label className="mt-5 block text-sm font-semibold text-slate-700">Delete records</label>
@@ -673,13 +711,13 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
               <option value="90">Older than 90 days</option>
               <option value="all">All records</option>
             </select>
-            <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="login-history-delete-confirm">Type DELETE to continue</label>
-            <input id="login-history-delete-confirm" value={historyDeleteConfirm} onChange={(event) => setHistoryDeleteConfirm(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="off" />
           </>}
-          <p className="mt-4 text-xs font-medium text-slate-500">Deleted records are permanently removed after 30 days.</p>
+          <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="login-history-delete-confirm">Type DELETE to continue</label>
+          <input id="login-history-delete-confirm" value={historyDeleteConfirm} onChange={(event) => setHistoryDeleteConfirm(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3" autoComplete="off" />
+          <p className="mt-4 text-xs font-medium text-slate-500">This cannot be undone.</p>
           <div className="mt-6 flex justify-end gap-3">
             <button type="button" disabled={historyDeleting} onClick={() => setHistoryDeleteAction(null)} className="rounded-xl border border-slate-300 px-4 py-3 text-sm font-bold">Cancel</button>
-            <button type="button" disabled={historyDeleting || (historyDeleteAction.type === 'all' && historyDeleteConfirm !== 'DELETE')} onClick={confirmHistoryDelete} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{historyDeleting ? 'Deleting...' : 'Confirm Delete'}</button>
+            <button type="button" disabled={historyDeleting || historyDeleteConfirm !== 'DELETE'} onClick={confirmHistoryDelete} className="rounded-xl bg-rose-600 px-4 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{historyDeleting ? 'Deleting...' : 'Confirm Delete'}</button>
           </div>
         </div>
       </div>}
@@ -3133,7 +3171,10 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/settings`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getAdminSessionToken()}`,
+        },
         body: JSON.stringify(payload)
       });
 
@@ -3142,8 +3183,11 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         throw new Error(data.detail || 'Failed to save settings');
       }
 
-      savedSettingsRef.current = data.settings || payload;
-      setStudentVerificationSettings(payload.studentVerification);
+      const savedSettings = data.settings || payload;
+      savedSettingsRef.current = savedSettings;
+      setSecuritySettings(savedSettings.security || payload.security);
+      setStudentVerificationSettings(savedSettings.studentVerification || payload.studentVerification);
+      invalidateAdminSettingsCache();
       try {
         await fetchDashboardOverview();
       } catch (refreshError) {
@@ -4704,9 +4748,9 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         ]));
 
         return (
-          <div className="space-y-6 animate-fade-in text-slate-900">
+          <div className="admin-product-management min-w-0 w-full space-y-6 animate-fade-in text-slate-900">
             <div className="flex flex-col gap-4 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-              <div>
+              <div className="min-w-0">
                 <h2 className="text-2xl font-black text-slate-950">Product Moderation</h2>
                 <p className="mt-1 text-slate-500 text-sm font-semibold">Curate the campus catalog, review listings, and enforce community standards.</p>
               </div>
@@ -4716,7 +4760,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid min-w-0 grid-cols-1 gap-4 min-[420px]:grid-cols-2 md:grid-cols-4">
               {[
                 { label: 'Total Products', value: productStats.total, tone: 'bg-sky-50 border-sky-200 text-sky-700' },
                 { label: 'Approved', value: productStats.approved, tone: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
@@ -4730,7 +4774,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               ))}
             </div>
 
-            <div className="grid gap-4 md:grid-cols-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="grid min-w-0 grid-cols-1 gap-4 rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm min-[420px]:grid-cols-2 md:grid-cols-4">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Search Products</label>
                 <input
@@ -4786,7 +4830,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               </div>
             </div>
 
-            <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
+            <div className="admin-product-review-queue min-w-0 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
               <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="text-lg font-bold text-slate-950">Product Review Queue</h3>
@@ -4797,23 +4841,23 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                   <button type="button" onClick={handleOpenBulkRejectModal} disabled={!selectedProductIds.length} className="rounded-full bg-rose-500 px-4 py-2 text-xs font-bold text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-300">Reject Selected</button>
                 </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-left text-sm text-slate-700">
+              <div className="admin-data-table-wrapper max-w-full overflow-x-auto overscroll-x-contain">
+                <table className="admin-data-table admin-product-review-table w-full min-w-[900px] text-left text-sm text-slate-700">
                   <thead className="border-b border-slate-200 text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={displayedProducts.length > 0 && displayedProducts.every((product) => selectedProductIds.includes(product.id))} onChange={(event) => setSelectedProductIds(event.target.checked ? displayedProducts.map((product) => product.id) : [])} aria-label="Select visible products" /></th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Product</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Seller ID</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs">Condition</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Status</th>
-                      <th className="px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Action</th>
+                      <th className="min-w-[52px] px-4 py-3 font-bold uppercase tracking-wider text-xs"><input type="checkbox" checked={displayedProducts.length > 0 && displayedProducts.every((product) => selectedProductIds.includes(product.id))} onChange={(event) => setSelectedProductIds(event.target.checked ? displayedProducts.map((product) => product.id) : [])} aria-label="Select visible products" /></th>
+                      <th className="min-w-[220px] px-4 py-3 font-bold uppercase tracking-wider text-xs">Product</th>
+                      <th className="min-w-[140px] px-4 py-3 font-bold uppercase tracking-wider text-xs">Seller ID</th>
+                      <th className="min-w-[110px] px-4 py-3 font-bold uppercase tracking-wider text-xs">Condition</th>
+                      <th className="min-w-[110px] px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Status</th>
+                      <th className="min-w-[120px] px-4 py-3 font-bold uppercase tracking-wider text-xs text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {displayedProducts.map((product) => (
                       <tr key={product.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                         <td className="px-4 py-4"><input type="checkbox" checked={selectedProductIds.includes(product.id)} onChange={(event) => setSelectedProductIds((ids) => event.target.checked ? [...ids, product.id] : ids.filter((id) => id !== product.id))} aria-label={`Select ${product.title}`} /></td>
-                        <td className="px-4 py-4">
+                        <td className="admin-table-wrap-cell min-w-[220px] px-4 py-4">
                           <div className="flex items-center gap-3">
                             <img
                               src={getProductImageUrl(product.image)}
@@ -4824,8 +4868,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                               }}
                               className="h-14 w-14 rounded-xl object-cover border border-slate-200"
                             />
-                            <div>
-                              <div className="font-bold text-slate-900">{product.title}</div>
+                            <div className="min-w-0">
+                              <div className="product-review-title font-bold text-slate-900">{product.title}</div>
                               <div className="text-xs text-slate-500 mt-0.5">{product.category}</div>
                               <div className="text-xs text-emerald-600 mt-1 font-bold">
                                 {(() => {
@@ -4838,16 +4882,16 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                             </div>
                           </div>
                         </td>
-                        <td className="min-w-[150px] px-4 py-4 font-semibold text-slate-700">
+                        <td className="min-w-[140px] px-4 py-4 font-semibold text-slate-700">
                           <div>{product.seller_id || product.seller || 'Unknown Student'}</div>
                           <div className="text-xs text-slate-400 mt-0.5">{product.seller_verified ? 'Verified Seller' : 'Unverified'}</div>
                         </td>
-                        <td className="px-4 py-4">
+                        <td className="min-w-[110px] px-4 py-4">
                           <span className="rounded-full bg-slate-100 border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700">
                             {product.condition || 'New'}
                           </span>
                         </td>
-                        <td className="px-4 py-4 text-center">
+                        <td className="min-w-[110px] px-4 py-4 text-center">
                           <div className="flex flex-col items-center">
                             <span className={`rounded-full px-3 py-1 text-xs font-bold border ${product.status === 'Approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : product.status === 'Flagged' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
                               {product.status || 'Pending'}
@@ -4859,7 +4903,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-4 text-center">
+                        <td className="min-w-[120px] px-4 py-4 text-center">
                           <div className="flex items-center justify-center gap-2">
                             <button
                               type="button"
@@ -5268,7 +5312,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         };
 
         return (
-          <div className="space-y-6 animate-fade-in text-slate-900">
+          <div className="min-w-0 w-full space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
@@ -5286,7 +5330,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-4">
+            <div className="grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-[24px] border border-slate-200 bg-slate-100/70 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total Orders</p>
                 <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.totalOrders.toLocaleString()}</p>
@@ -5318,7 +5362,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
             )}
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3">
                 <input
                   type="text"
                   value={orderSearch}
@@ -5364,13 +5408,13 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                 </select>
               </div>
 
-              <div className="mt-6 overflow-x-auto">
-                <table className="min-w-full text-left text-sm text-slate-700">
+              <div className="admin-data-table-wrapper mt-6 w-full max-w-full overflow-x-auto">
+                <table className="admin-data-table w-full min-w-[860px] text-left text-sm text-slate-700">
                   <thead className="border-b border-slate-200 bg-slate-50 text-slate-500">
                     <tr>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Order ID</th>
+                      <th className="min-w-[130px] px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Order ID</th>
                       <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Buyer & Seller IDs</th>
-                      <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Product Title</th>
+                      <th className="min-w-[180px] px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Product Title</th>
                       <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Total Amount</th>
                       <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Order Status</th>
                       <th className="px-4 py-3 text-[11px] font-bold uppercase tracking-[0.18em]">Payment Status</th>
@@ -5387,8 +5431,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                             <button type="button" onClick={() => setSelectedOrderDetails(order)} className="text-left text-xs text-slate-500 underline-offset-2 hover:underline">{order.seller_id || order.seller}</button>
                           </div>
                         </td>
-                        <td className="px-4 py-4">
-                          <div className="font-semibold text-slate-800">{order.product_title || order.item}</div>
+                        <td className="admin-table-wrap-cell min-w-[180px] px-4 py-4">
+                          <div className="admin-table-wrap-cell font-semibold text-slate-800">{order.product_title || order.item}</div>
                           <div className="mt-1 text-xs text-slate-500">{new Date(order.date).toLocaleDateString()}</div>
                         </td>
                         <td className="px-4 py-4 font-black text-slate-950">{order.price || `${Number(order.total_amount ?? 0).toLocaleString('en-ET')} ETB`}</td>
@@ -5726,8 +5770,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                 </select>
                 <input type="date" value={paymentFromDate} onChange={(e) => { setPaymentFromDate(e.target.value); setPaymentPage(1); }} aria-label="From date" className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
                 <input type="date" value={paymentToDate} onChange={(e) => { setPaymentToDate(e.target.value); setPaymentPage(1); }} aria-label="To date" className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
-                <ActionButton type="button" onClick={handleExportPaymentsCSV} className="border border-slate-200 bg-white text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50">Export CSV</ActionButton>
-                <ActionButton type="button" onClick={handleExportPaymentsPDF} className="bg-slate-900 text-xs font-bold text-white shadow-sm transition hover:bg-slate-800">Export PDF</ActionButton>
               </div>
 
               <div className="mt-6 grid grid-cols-1 gap-3 md:hidden">
@@ -6057,7 +6099,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                     <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
                       <td className="min-w-[110px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{rep.report_id}</span></td>
                       <td className="min-w-[140px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-semibold text-slate-700">{rep.inferredType}</span></td>
-                      <td className="min-w-[260px] px-4 py-3 align-middle text-slate-700">
+                      <td className="admin-table-wrap-cell min-w-[260px] px-4 py-3 align-middle text-slate-700">
                         <p title={rep.product_name} className="font-semibold text-slate-900">{rep.product_name || 'Report details'}</p>
                         <p title={rep.issue} className="mt-1 line-clamp-2 break-words text-xs leading-5 text-slate-600">{rep.issue}</p>
                       </td>
@@ -6386,8 +6428,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Performance</p>
                 <h3 className="mt-1 text-xl font-black text-slate-950">Category Performance</h3>
 
-                <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
-                  <table className="min-w-full text-left text-sm">
+                <div className="admin-data-table-wrapper mt-5 max-w-full overflow-x-auto rounded-2xl border border-slate-200">
+                  <table className="admin-data-table w-full min-w-[860px] text-left text-sm">
                     <thead className="bg-slate-100 text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
                       <tr>
                         <th className="px-3 py-3">Category</th>
@@ -7065,8 +7107,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Detected Changes</p>
                           <p className="mt-1 text-xs text-amber-800">Review the values changed by this event.</p>
                         </div>
-                        <div className="overflow-x-auto">
-                          <table className="w-full min-w-[520px] text-left text-sm">
+                        <div className="admin-data-table-wrapper w-full max-w-full overflow-x-auto">
+                          <table className="admin-data-table w-full min-w-[860px] text-left text-sm">
                             <thead className="bg-amber-100/70 text-[10px] font-bold uppercase tracking-[0.16em] text-amber-800">
                               <tr>
                                 <th className="px-4 py-3">Field</th>
@@ -7083,8 +7125,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                                 return (
                                   <tr key={`${change.field}-${index}`} className={isRemoved ? 'bg-rose-50' : 'bg-yellow-50/60'}>
                                     <td className="px-4 py-3 align-top font-bold text-slate-900">{change.field}</td>
-                                    <td className="max-w-[180px] break-words px-4 py-3 align-top font-medium text-slate-600">{previousValue}</td>
-                                    <td className={`max-w-[180px] break-words px-4 py-3 align-top font-bold ${isRemoved ? 'text-rose-700' : 'text-amber-800'}`}>
+                                    <td className="admin-table-wrap-cell min-w-[180px] px-4 py-3 align-top font-medium text-slate-600">{previousValue}</td>
+                                    <td className={`admin-table-wrap-cell min-w-[180px] px-4 py-3 align-top font-bold ${isRemoved ? 'text-rose-700' : 'text-amber-800'}`}>
                                       {change.field} changed from {previousValue} to {newValue}
                                     </td>
                                   </tr>
@@ -7582,7 +7624,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
         {/* Main Panel Content Area */}
         {/* Start content directly below the global navbar; the former empty hero card is removed. */}
-        <main className="admin-dashboard-content min-w-0 flex-1 overflow-visible pb-8 pt-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:overscroll-y-contain lg:pt-2 lg:pr-2">
+        <main className="admin-dashboard-content min-w-0 flex-1 overflow-x-hidden pb-8 pt-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:pt-2 lg:pr-2">
 
           <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:hidden">
             <button

@@ -453,6 +453,36 @@ class AdminBackupCode(Base):
     admin = relationship("Admin", back_populates="backup_code_records")
 
 
+class AdminLoginChallenge(Base):
+    __tablename__ = "admin_login_challenges"
+
+    challenge_id = Column(String(64), primary_key=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True)
+    failed_attempts = Column(Integer, default=0, nullable=False)
+    setup_verified = Column(Boolean, default=False, nullable=False)
+    used = Column(Boolean, default=False, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    admin = relationship("Admin")
+
+
+class AdminLoginEmailCode(Base):
+    __tablename__ = "admin_login_email_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True)
+    challenge_id = Column(String(64), ForeignKey("admin_login_challenges.challenge_id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash = Column(String(255), nullable=False)
+    failed_attempts = Column(Integer, default=0, nullable=False)
+    used = Column(Boolean, default=False, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    sent_at = Column(DateTime, nullable=False, index=True)
+
+    admin = relationship("Admin")
+    challenge = relationship("AdminLoginChallenge")
+
+
 class GoogleOAuthState(Base):
     __tablename__ = "google_oauth_states"
 

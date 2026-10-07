@@ -141,6 +141,7 @@ class AdminLoginHistoryEndpointTests(unittest.TestCase):
         response = self.request(
             "DELETE",
             f"/api/admin/login-history/{self.current_entry.id}",
+            json={"confirm": "DELETE"},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -148,32 +149,54 @@ class AdminLoginHistoryEndpointTests(unittest.TestCase):
         self.db.refresh(self.current_entry)
         self.assertFalse(self.current_entry.is_deleted)
 
-    def test_single_and_bulk_deletes_are_soft_and_never_delete_current_session_entry(self):
+    def test_single_and_bulk_deletes_are_hard_and_never_delete_current_session_entry(self):
+        own_entry_id = self.own_entry.id
+        current_entry_id = self.current_entry.id
+        other_admin_entry_id = self.other_admin_entry.id
+        invalid_single = self.request(
+            "DELETE",
+            f"/api/admin/login-history/{own_entry_id}",
+            json={"confirm": "delete"},
+        )
         single_response = self.request(
             "DELETE",
-            f"/api/admin/login-history/{self.own_entry.id}",
+            f"/api/admin/login-history/{own_entry_id}",
+            json={"confirm": "DELETE"},
+        )
+        invalid_bulk = self.request(
+            "POST",
+            "/api/admin/login-history/bulk-delete",
+            json={"ids": [current_entry_id], "confirm": "delete"},
         )
         bulk_response = self.request(
             "POST",
             "/api/admin/login-history/bulk-delete",
-            json={"ids": [self.current_entry.id, self.other_admin_entry.id]},
+            json={
+                "ids": [current_entry_id, other_admin_entry_id],
+                "confirm": "DELETE",
+            },
         )
 
+        self.assertEqual(invalid_single.status_code, 400)
+        self.assertEqual(invalid_bulk.status_code, 400)
         self.assertEqual(single_response.status_code, 200)
         self.assertEqual(single_response.json(), {"deleted": 1})
         self.assertEqual(bulk_response.status_code, 200)
         self.assertEqual(bulk_response.json(), {"deleted": 0})
-        self.db.refresh(self.own_entry)
-        self.db.refresh(self.current_entry)
-        self.db.refresh(self.other_admin_entry)
-        self.assertTrue(self.own_entry.is_deleted)
-        self.assertIsNotNone(self.own_entry.deleted_at)
-        self.assertFalse(self.current_entry.is_deleted)
-        self.assertFalse(self.other_admin_entry.is_deleted)
-        actions = [row.action for row in self.db.query(AuditLog).all()]
-        self.assertEqual(actions.count("login_history_deleted"), 2)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(AdminLoginHistory, own_entry_id))
+        self.assertIsNotNone(self.db.get(AdminLoginHistory, current_entry_id))
+        self.assertIsNotNone(self.db.get(AdminLoginHistory, other_admin_entry_id))
+        audits = self.db.query(AuditLog).filter_by(
+            action="login_history_permanently_deleted"
+        ).all()
+        self.assertEqual(len(audits), 2)
+        self.assertTrue(any("single record ID" in audit.description for audit in audits))
+        self.assertTrue(any("selected IDs" in audit.description for audit in audits))
 
     def test_delete_all_requires_confirmation_and_supports_age_filter(self):
+        own_entry_id = self.own_entry.id
+        current_entry_id = self.current_entry.id
         invalid = self.request(
             "POST",
             "/api/admin/login-history/delete-all",
@@ -188,40 +211,67 @@ class AdminLoginHistoryEndpointTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(valid.status_code, 200)
         self.assertEqual(valid.json(), {"deleted": 1})
-        self.db.refresh(self.own_entry)
-        self.db.refresh(self.current_entry)
-        self.assertTrue(self.own_entry.is_deleted)
-        self.assertFalse(self.current_entry.is_deleted)
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(AdminLoginHistory, own_entry_id))
+        self.assertIsNotNone(self.db.get(AdminLoginHistory, current_entry_id))
+        audit = self.db.query(AuditLog).filter_by(
+            action="login_history_permanently_deleted"
+        ).one()
+        self.assertIn("older than 7 days", audit.description)
 
-    def test_purge_hard_deletes_expired_rows_and_audits_count(self):
-        expired = self.add_history(
+    def test_delete_all_defaults_to_all_records_and_preserves_current_and_other_admin(self):
+        current_entry_id = self.current_entry.id
+        own_entry_id = self.own_entry.id
+        other_admin_entry_id = self.other_admin_entry.id
+        response = self.request(
+            "POST", "/api/admin/login-history/delete-all", json={"confirm": "DELETE"}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"deleted": 1})
+        self.db.expire_all()
+        self.assertIsNotNone(self.db.get(AdminLoginHistory, current_entry_id))
+        self.assertIsNone(self.db.get(AdminLoginHistory, own_entry_id))
+        self.assertIsNotNone(self.db.get(AdminLoginHistory, other_admin_entry_id))
+        audit = self.db.query(AuditLog).filter_by(
+            action="login_history_permanently_deleted"
+        ).one()
+        self.assertEqual(audit.admin_id, self.admin.id)
+        self.assertIn("permanently deleted 1", audit.description)
+        self.assertIn("all records", audit.description)
+        self.assertIsNotNone(audit.created_at)
+
+    def test_startup_cleanup_hard_deletes_previously_soft_deleted_rows(self):
+        legacy_deleted = self.add_history(
             admin_id=self.admin.id,
-            event_type="expired",
+            event_type="legacy_deleted",
             created_at=self.now - timedelta(days=40),
             is_deleted=True,
             deleted_at=self.now - timedelta(days=31),
         )
-        retained = self.add_history(
+        legacy_current = self.add_history(
             admin_id=self.admin.id,
-            event_type="retained",
-            created_at=self.now - timedelta(days=35),
+            event_type="legacy_current",
+            created_at=self.now,
+            admin_session_id=self.current_session.id,
             is_deleted=True,
-            deleted_at=self.now - timedelta(days=29),
+            deleted_at=self.now,
         )
         self.db.commit()
-        expired_id = expired.id
-        retained_id = retained.id
+        legacy_deleted_id = legacy_deleted.id
+        legacy_current_id = legacy_current.id
 
-        with patch.dict(os.environ, {"LOGIN_HISTORY_PURGE_DAYS": "30"}):
-            with patch.object(main_module, "SessionLocal", self.session_factory):
-                purged = main_module.purge_deleted_login_history()
+        with patch.object(main_module, "SessionLocal", self.session_factory):
+            deleted = main_module.purge_legacy_soft_deleted_login_history()
 
-        self.assertEqual(purged, 1)
+        self.assertEqual(deleted, 2)
         self.db.expire_all()
-        self.assertIsNone(self.db.get(AdminLoginHistory, expired_id))
-        self.assertIsNotNone(self.db.get(AdminLoginHistory, retained_id))
-        audit = self.db.query(AuditLog).filter_by(action="login_history_purged").one()
-        self.assertIn("purged 1", audit.description)
+        self.assertIsNone(self.db.get(AdminLoginHistory, legacy_deleted_id))
+        self.assertIsNone(self.db.get(AdminLoginHistory, legacy_current_id))
+        audit = self.db.query(AuditLog).filter_by(
+            action="login_history_legacy_rows_deleted"
+        ).one()
+        self.assertIn("permanently deleted 2", audit.description)
 
 
 if __name__ == "__main__":

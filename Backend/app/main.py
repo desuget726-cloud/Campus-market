@@ -25,7 +25,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, F
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError
 from sqlalchemy import Numeric as SQLNumeric, String, and_, case, cast as sql_cast, event, extract, func, inspect, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
@@ -80,7 +80,7 @@ from .models import (
     Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, AdminBackupCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_webhook_secret, get_payout_adapter
@@ -1769,6 +1769,26 @@ class AdminLoginOtpRequest(BaseModel):
     otp_code: str
 
 
+class AdminLoginTwoFactorRequest(BaseModel):
+    challenge_token: str
+    code: Optional[str] = Field(None, max_length=32)
+    backup_code: Optional[str] = Field(None, min_length=1, max_length=64)
+    method: Literal["authenticator", "backup", "email"] = "authenticator"
+
+
+class AdminLoginTwoFactorEmailCodeRequest(BaseModel):
+    challenge_token: str
+
+
+class AdminLoginTwoFactorSetupRequest(BaseModel):
+    challenge_token: str
+    code: str = Field(..., max_length=32)
+
+
+class AdminLoginTwoFactorCompleteRequest(BaseModel):
+    challenge_token: str
+
+
 class StudentLoginOtpRequest(BaseModel):
     email: str
     otp_code: str
@@ -1780,11 +1800,16 @@ class AdminSessionRequest(BaseModel):
 
 class AdminLoginHistoryBulkDeleteRequest(BaseModel):
     ids: List[int] = Field(..., min_length=1, max_length=500)
+    confirm: str
 
 
 class AdminLoginHistoryDeleteAllRequest(BaseModel):
     confirm: str
     older_than_days: Optional[int] = Field(None, gt=0, le=36500)
+
+
+class AdminLoginHistoryDeleteRequest(BaseModel):
+    confirm: str
 
 
 class PayoutRecoveryRequest(BaseModel):
@@ -2491,6 +2516,43 @@ class StudentVerificationSettingsModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
+class AdminSecuritySettingsRequest(BaseModel):
+    requireStudentVerification: StrictBool
+    admin2FA: StrictBool
+    maxLoginAttempts: StrictInt
+    sessionTimeout: StrictInt
+    minPasswordLength: StrictInt
+    auditLogging: StrictBool
+
+
+class AdminSecuritySettingsResponse(BaseModel):
+    requireStudentVerification: bool
+    admin2FA: bool
+    maxLoginAttempts: int
+    sessionTimeout: int
+    minPasswordLength: int
+    auditLogging: bool
+    model_config = ConfigDict(extra="allow")
+
+
+class AdminSettingsUpdateRequest(BaseModel):
+    security: Optional[AdminSecuritySettingsRequest] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class AdminSettingsResponse(BaseModel):
+    security: AdminSecuritySettingsResponse
+    model_config = ConfigDict(extra="allow")
+
+
+class AdminSettingsSaveResponse(BaseModel):
+    success: bool
+    message: str
+    settings: AdminSettingsResponse
+    changes: List[str]
+    model_config = ConfigDict(extra="allow")
+
+
 def _normalize_student_verification_settings(values: dict) -> dict:
     defaults = DEFAULT_SETTINGS_BLOCKS["studentVerification"]
     normalized = StudentVerificationSettingsModel(
@@ -2666,6 +2728,216 @@ def _decrypt_totp_secret(value: Optional[str]) -> Optional[str]:
         if normalized.startswith("gAAAA"):
             return None
         return normalized
+
+
+def _create_admin_login_challenge(db: Session, admin: Admin) -> str:
+    challenge_id = secrets.token_urlsafe(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    db.query(AdminLoginChallenge).filter(
+        or_(
+            AdminLoginChallenge.used.is_(True),
+            AdminLoginChallenge.expires_at < datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1),
+        )
+    ).delete(synchronize_session=False)
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {
+        "sub": str(admin.id),
+        "purpose": "admin_login_2fa",
+        "jti": challenge_id,
+        "exp": int(expires_at.timestamp()),
+    }
+
+    def encode(value: dict) -> str:
+        return base64.urlsafe_b64encode(
+            json.dumps(value, separators=(",", ":")).encode("utf-8")
+        ).rstrip(b"=").decode("ascii")
+
+    unsigned_token = f"{encode(header)}.{encode(payload)}"
+    signature = hmac.new(
+        _get_session_secret().encode("utf-8"),
+        unsigned_token.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    token = f"{unsigned_token}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode('ascii')}"
+    db.add(AdminLoginChallenge(
+        challenge_id=challenge_id,
+        admin_id=admin.id,
+        expires_at=expires_at.replace(tzinfo=None),
+    ))
+    return token
+
+
+def _decode_admin_login_challenge(token: str) -> dict:
+    try:
+        encoded_header, encoded_payload, encoded_signature = token.split(".")
+        padding = lambda value: value + "=" * (-len(value) % 4)
+        header = json.loads(base64.urlsafe_b64decode(padding(encoded_header)).decode("utf-8"))
+        payload = json.loads(base64.urlsafe_b64decode(padding(encoded_payload)).decode("utf-8"))
+        provided_signature = base64.urlsafe_b64decode(padding(encoded_signature))
+    except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as error:
+        raise HTTPException(status_code=400, detail="Invalid or expired login challenge.") from error
+
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid or expired login challenge.")
+    if header.get("alg") != "HS256" or header.get("typ") != "JWT":
+        raise HTTPException(status_code=400, detail="Invalid or expired login challenge.")
+    unsigned_token = f"{encoded_header}.{encoded_payload}"
+    expected_signature = hmac.new(
+        _get_session_secret().encode("utf-8"),
+        unsigned_token.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        raise HTTPException(status_code=400, detail="Invalid or expired login challenge.")
+    if payload.get("purpose") != "admin_login_2fa" or not payload.get("jti"):
+        raise HTTPException(status_code=400, detail="Invalid or expired login challenge.")
+    try:
+        if int(payload.get("exp", 0)) <= int(datetime.now(timezone.utc).timestamp()):
+            raise HTTPException(status_code=400, detail="Login challenge expired. Enter your password again.")
+        admin_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail="Invalid or expired login challenge.") from error
+    payload["admin_id"] = admin_id
+    return payload
+
+
+def _get_admin_login_challenge(
+    db: Session,
+    token: str,
+) -> tuple[AdminLoginChallenge, Admin]:
+    claims = _decode_admin_login_challenge(token)
+    challenge = db.query(AdminLoginChallenge).filter(
+        AdminLoginChallenge.challenge_id == claims["jti"],
+    ).with_for_update().first()
+    if (
+        not challenge
+        or challenge.used
+        or challenge.admin_id != claims["admin_id"]
+        or _as_utc_datetime(challenge.expires_at) <= datetime.now(timezone.utc)
+    ):
+        raise HTTPException(status_code=400, detail="Login challenge expired or already used. Enter your password again.")
+    admin = db.query(Admin).filter(Admin.id == challenge.admin_id).with_for_update().first()
+    if not admin:
+        raise HTTPException(status_code=400, detail="Administrator account is no longer available.")
+    return challenge, admin
+
+
+def _admin_login_email_is_configured() -> bool:
+    sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
+    sender_password = os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip().replace(" ", "")
+    return bool(sender_email and sender_password)
+
+
+def _mask_admin_email(email: str) -> str:
+    local_part, separator, domain = email.strip().partition("@")
+    if not separator or not local_part or not domain:
+        return "your registered email"
+    return f"{local_part[0]}***@{domain}"
+
+
+def _hash_admin_login_email_code(code: str, salt: Optional[str] = None) -> str:
+    code_salt = salt or secrets.token_hex(16)
+    digest = hmac.new(
+        _get_session_secret().encode("utf-8"),
+        f"{code_salt}:{code.strip()}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{code_salt}${digest}"
+
+
+def _audit_admin_login_email_event(
+    db: Session,
+    admin: Admin,
+    request: Request,
+    action: str,
+    description: str,
+    status_value: str,
+) -> None:
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action=action,
+        entity_type="Admin",
+        entity_id=admin.id,
+        description=description,
+        status=status_value,
+        severity="informational" if status_value == "SUCCESS" else "warning",
+        ip_address=request.client.host if request.client else None,
+    ))
+
+
+def _record_admin_login_challenge_failure(
+    db: Session,
+    challenge: AdminLoginChallenge,
+    admin: Admin,
+    request: Request,
+    description: str,
+) -> None:
+    challenge.failed_attempts += 1
+    exhausted = challenge.failed_attempts >= 5
+    if exhausted:
+        challenge.used = True
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action="Admin 2FA Login Failed",
+        entity_type="Admin",
+        entity_id=admin.id,
+        description=description,
+        status="FAILURE",
+        severity="warning",
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+    if exhausted:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many 2FA attempts. Enter your password again to start a new challenge.",
+        )
+    raise HTTPException(status_code=400, detail="Invalid authenticator or backup code.")
+
+
+def _complete_admin_login(
+    db: Session,
+    admin: Admin,
+    request: Request,
+    audit_action: str = "Admin 2FA Login Succeeded",
+) -> dict:
+    settings = get_security_settings(db)
+    token = _create_session_token(
+        admin.username,
+        "admin",
+        settings.session_timeout,
+        _get_session_secret(),
+    )
+    admin_session = _create_admin_session(db, admin, token, request)
+    _record_admin_login_event(
+        db,
+        admin.id,
+        "login_success_2fa",
+        request,
+        admin_session_id=admin_session.id,
+    )
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action=audit_action,
+        entity_type="Admin",
+        entity_id=admin.id,
+        description="Administrator completed the login 2FA challenge.",
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.flush()
+    return {
+        "role": "admin",
+        "access_token": token,
+        "user": {
+            "name": admin.full_name or admin.username,
+            "username": admin.username,
+            "email": admin.email,
+            "avatar_url": _get_avatar_url(admin, f"{admin.username}.jpg"),
+            "avatarUrl": _get_avatar_url(admin, f"{admin.username}.jpg"),
+        },
+        "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
+    }
 
 
 def _record_admin_login_event(
@@ -3005,6 +3277,36 @@ def ensure_database_compatibility(db: Session) -> None:
                 INDEX ix_admin_backup_codes_admin_id (admin_id),
                 INDEX ix_admin_backup_codes_used (used),
                 CONSTRAINT fk_admin_backup_codes_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
+            )""",
+            "admin_login_challenges": """CREATE TABLE IF NOT EXISTS admin_login_challenges (
+                challenge_id VARCHAR(64) PRIMARY KEY,
+                admin_id INT NOT NULL,
+                failed_attempts INT NOT NULL DEFAULT 0,
+                setup_verified BOOLEAN NOT NULL DEFAULT FALSE,
+                used BOOLEAN NOT NULL DEFAULT FALSE,
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                INDEX ix_admin_login_challenges_admin_id (admin_id),
+                INDEX ix_admin_login_challenges_used (used),
+                INDEX ix_admin_login_challenges_expires_at (expires_at),
+                CONSTRAINT fk_admin_login_challenges_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
+            )""",
+            "admin_login_email_codes": """CREATE TABLE IF NOT EXISTS admin_login_email_codes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                admin_id INT NOT NULL,
+                challenge_id VARCHAR(64) NOT NULL,
+                code_hash VARCHAR(255) NOT NULL,
+                failed_attempts INT NOT NULL DEFAULT 0,
+                used BOOLEAN NOT NULL DEFAULT FALSE,
+                expires_at DATETIME NOT NULL,
+                sent_at DATETIME NOT NULL,
+                INDEX ix_admin_login_email_codes_admin_id (admin_id),
+                INDEX ix_admin_login_email_codes_challenge_id (challenge_id),
+                INDEX ix_admin_login_email_codes_used (used),
+                INDEX ix_admin_login_email_codes_expires_at (expires_at),
+                INDEX ix_admin_login_email_codes_sent_at (sent_at),
+                CONSTRAINT fk_admin_login_email_codes_admin FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE,
+                CONSTRAINT fk_admin_login_email_codes_challenge FOREIGN KEY (challenge_id) REFERENCES admin_login_challenges(challenge_id) ON DELETE CASCADE
             )""",
             "payout_providers": """CREATE TABLE IF NOT EXISTS payout_providers (
                 id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(150) NOT NULL,
@@ -3369,7 +3671,7 @@ async def on_startup():
             startup_logger.info("Connected database: name=%s audit_table=audit_logs", database_name)
         finally:
             db.close()
-        purge_deleted_login_history()
+        purge_legacy_soft_deleted_login_history()
     except Exception:
         logging.getLogger("app.startup").exception("Startup database initialization failed.")
 
@@ -3416,15 +3718,6 @@ async def on_startup():
         "interval",
         days=1,
         id="cleanup-user-sessions",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    payment_scheduler.add_job(
-        purge_deleted_login_history,
-        "interval",
-        hours=24,
-        id="purge-deleted-admin-login-history",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -3554,14 +3847,50 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         admin.locked_until = None
         _reset_login_attempts(db, identifier)
         avatar_url = _get_avatar_url(admin, f"{admin.username}.jpg")
-        if not DISABLE_ADMIN_2FA and admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret):
+        require_admin_2fa = get_security_settings(db).admin_2fa
+        admin_2fa_configured = bool(
+            admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret)
+        )
+        if require_admin_2fa:
+            bypass_enabled = os.getenv("ADMIN_2FA_BYPASS", "false").strip().lower() == "true"
+            active_admin_count = db.query(Admin).filter(func.lower(Admin.status) == "active").count()
+            if bypass_enabled and active_admin_count == 1 and str(admin.status or "").lower() == "active":
+                db.add(AuditLog(
+                    admin_id=admin.id,
+                    action="Admin 2FA Emergency Bypass",
+                    entity_type="Admin",
+                    entity_id=admin.id,
+                    description=(
+                        "Password-only login used ADMIN_2FA_BYPASS for the last active administrator. "
+                        "Disable the bypass immediately after account recovery."
+                    ),
+                    status="BYPASS",
+                    severity="critical",
+                    ip_address=request.client.host if request.client else None,
+                ))
+            else:
+                challenge_token = _create_admin_login_challenge(db, admin)
+                db.commit()
+                return {
+                    "role": "admin",
+                    "requires_2fa": admin_2fa_configured,
+                    "requires_2fa_setup": not admin_2fa_configured,
+                    "challenge_token": challenge_token,
+                    "email_code_available": admin_2fa_configured and _admin_login_email_is_configured(),
+                    "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
+                }
+        elif not DISABLE_ADMIN_2FA and admin_2fa_configured:
+            challenge_token = _create_admin_login_challenge(db, admin)
+            db.commit()
             return {
                 "role": "admin",
                 "requires_2fa": True,
-                "otp_email": admin.email,
+                "requires_2fa_setup": False,
                 "two_factor_method": "authenticator",
+                "challenge_token": challenge_token,
+                "email_code_available": _admin_login_email_is_configured(),
                 "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
-                "message": "Enter the six-digit code from your authenticator app, or use a backup code.",
+                "message": "Enter the six-digit code from your authenticator app, use a backup code, or request an email code.",
             }
         if not DISABLE_ADMIN_2FA and security.admin_2fa:
             otp = _generate_otp_code()
@@ -3670,6 +3999,360 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         db.commit()
     _record_failed_login(db, identifier, security)
     raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
+
+
+@app.post("/api/admin/login/2fa/email-code")
+def send_admin_login_two_factor_email_code(
+    payload: AdminLoginTwoFactorEmailCodeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    try:
+        challenge, admin = _get_admin_login_challenge(db, payload.challenge_token)
+        if challenge.setup_verified or not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
+            raise HTTPException(status_code=400, detail="Email verification is only available after authenticator setup.")
+        if not admin.email or not str(admin.email).strip():
+            raise HTTPException(status_code=400, detail="This administrator does not have a registered email address.")
+        if not _admin_login_email_is_configured():
+            _audit_admin_login_email_event(
+                db,
+                admin,
+                request,
+                "Admin 2FA Email Code Failed",
+                "Email verification was requested but SMTP sender credentials are not configured.",
+                "FAILURE",
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail="Email verification is not configured. Add SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.",
+            )
+
+        now = datetime.now(timezone.utc)
+        now_naive = now.replace(tzinfo=None)
+        last_sent = db.query(AdminLoginEmailCode).filter(
+            AdminLoginEmailCode.admin_id == admin.id,
+        ).order_by(AdminLoginEmailCode.sent_at.desc()).first()
+        if last_sent:
+            seconds_since_send = (now - _as_utc_datetime(last_sent.sent_at)).total_seconds()
+            if seconds_since_send < 60:
+                retry_after = max(1, 60 - int(seconds_since_send))
+                _audit_admin_login_email_event(
+                    db,
+                    admin,
+                    request,
+                    "Admin 2FA Email Code Failed",
+                    "Email verification resend was rate-limited by the 60-second cooldown.",
+                    "FAILURE",
+                )
+                db.commit()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Wait {retry_after} seconds before requesting another email code.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+        hourly_count = db.query(AdminLoginEmailCode).filter(
+            AdminLoginEmailCode.admin_id == admin.id,
+            AdminLoginEmailCode.sent_at >= (now - timedelta(hours=1)).replace(tzinfo=None),
+        ).count()
+        if hourly_count >= 5:
+            oldest_allowed = db.query(AdminLoginEmailCode.sent_at).filter(
+                AdminLoginEmailCode.admin_id == admin.id,
+                AdminLoginEmailCode.sent_at >= (now - timedelta(hours=1)).replace(tzinfo=None),
+            ).order_by(AdminLoginEmailCode.sent_at.asc()).first()
+            retry_after = 3600
+            if oldest_allowed:
+                retry_after = max(
+                    1,
+                    3600 - int((now - _as_utc_datetime(oldest_allowed[0])).total_seconds()),
+                )
+            _audit_admin_login_email_event(
+                db,
+                admin,
+                request,
+                "Admin 2FA Email Code Failed",
+                "Email verification resend was rate-limited by the five-per-hour limit.",
+                "FAILURE",
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail="Email code request limit reached. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        email_code = _generate_otp_code()
+        email_code_record = AdminLoginEmailCode(
+            admin_id=admin.id,
+            challenge_id=challenge.challenge_id,
+            code_hash=_hash_admin_login_email_code(email_code),
+            failed_attempts=0,
+            used=False,
+            expires_at=(now + timedelta(minutes=10)).replace(tzinfo=None),
+            sent_at=now_naive,
+        )
+        db.query(AdminLoginEmailCode).filter(
+            AdminLoginEmailCode.challenge_id == challenge.challenge_id,
+            AdminLoginEmailCode.used.is_(False),
+        ).update({"used": True}, synchronize_session=False)
+        db.add(email_code_record)
+        db.commit()
+
+        if not send_otp_email(admin.email, email_code):
+            email_code_record.used = True
+            _audit_admin_login_email_event(
+                db,
+                admin,
+                request,
+                "Admin 2FA Email Code Failed",
+                "SMTP delivery failed while sending an administrator login code.",
+                "FAILURE",
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail="Could not send an email verification code. Check SMTP configuration and try again.",
+            )
+
+        _audit_admin_login_email_event(
+            db,
+            admin,
+            request,
+            "Admin 2FA Email Code Sent",
+            "Sent an administrator login verification code to the registered email address.",
+            "SUCCESS",
+        )
+        db.commit()
+        return {
+            "sent": True,
+            "masked_email": _mask_admin_email(admin.email),
+            "resend_after_seconds": 60,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Unhandled admin login email-code request error")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Could not send an email verification code. Please try again."},
+        )
+
+
+@app.post("/api/admin/login/2fa")
+def verify_admin_login_two_factor(
+    payload: AdminLoginTwoFactorRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    challenge, admin = _get_admin_login_challenge(db, payload.challenge_token)
+    if challenge.setup_verified:
+        raise HTTPException(
+            status_code=400,
+            detail="Finish the authenticator setup to complete this login.",
+        )
+    if payload.method == "email":
+        email_code = db.query(AdminLoginEmailCode).filter(
+            AdminLoginEmailCode.challenge_id == challenge.challenge_id,
+            AdminLoginEmailCode.admin_id == admin.id,
+            AdminLoginEmailCode.used.is_(False),
+        ).order_by(AdminLoginEmailCode.sent_at.desc()).with_for_update().first()
+        candidate = str(payload.code or "").strip()
+        if email_code is None:
+            _audit_admin_login_email_event(
+                db,
+                admin,
+                request,
+                "Admin 2FA Email Code Failed",
+                "Administrator attempted to verify an email code without an active code for this challenge.",
+                "FAILURE",
+            )
+            _record_admin_login_challenge_failure(
+                db,
+                challenge,
+                admin,
+                request,
+                "Administrator submitted an email verification code before one was issued for this challenge.",
+            )
+
+        salt, separator, expected_hash = str(email_code.code_hash).partition("$")
+        provided_hash = _hash_admin_login_email_code(candidate, salt).partition("$")[2] if separator else ""
+        is_valid_email_code = bool(
+            email_code
+            and not email_code.used
+            and email_code.failed_attempts < 5
+            and _as_utc_datetime(email_code.expires_at) > datetime.now(timezone.utc)
+            and re.fullmatch(r"\d{6}", candidate)
+            and hmac.compare_digest(provided_hash, expected_hash)
+        )
+        if not is_valid_email_code:
+            if email_code and not email_code.used:
+                email_code.failed_attempts += 1
+                if email_code.failed_attempts >= 5:
+                    email_code.used = True
+            _audit_admin_login_email_event(
+                db,
+                admin,
+                request,
+                "Admin 2FA Email Code Failed",
+                "Administrator submitted an invalid, expired, or previously used email verification code.",
+                "FAILURE",
+            )
+            _record_admin_login_challenge_failure(
+                db,
+                challenge,
+                admin,
+                request,
+                "Administrator submitted an invalid or expired email verification code.",
+            )
+        email_code.used = True
+        _audit_admin_login_email_event(
+            db,
+            admin,
+            request,
+            "Admin 2FA Email Code Succeeded",
+            "Administrator completed login verification using an email code.",
+            "SUCCESS",
+        )
+    elif payload.method == "backup":
+        if payload.code is not None or payload.backup_code is None:
+            _record_admin_login_challenge_failure(
+                db, challenge, admin, request, "A backup-code challenge must supply exactly one backup code."
+            )
+    elif payload.code is None or payload.backup_code is not None:
+        _record_admin_login_challenge_failure(
+            db, challenge, admin, request, "A login challenge must use exactly one authenticator or backup code."
+        )
+
+    valid_code = payload.method == "email"
+    if payload.method == "authenticator":
+        secret = _decrypt_totp_secret(admin.two_factor_secret)
+        valid_code = bool(
+            admin.two_factor_enabled
+            and secret
+            and re.fullmatch(r"\d{6}", payload.code.strip())
+            and pyotp.TOTP(secret).verify(payload.code.strip(), valid_window=1)
+        )
+    elif payload.method == "backup":
+        valid_code = bool(
+            admin.two_factor_enabled
+            and _decrypt_totp_secret(admin.two_factor_secret)
+            and payload.backup_code
+            and _consume_admin_backup_code(db, admin, payload.backup_code)
+        )
+
+    if payload.method != "email" and not valid_code:
+        _record_admin_login_challenge_failure(
+            db, challenge, admin, request, "Administrator submitted an invalid authenticator or backup code."
+        )
+
+    challenge.used = True
+    result = _complete_admin_login(db, admin, request)
+    db.commit()
+    return result
+
+
+@app.post("/api/admin/login/2fa/setup")
+def start_admin_login_two_factor_setup(
+    payload: AdminLoginTwoFactorCompleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    challenge, admin = _get_admin_login_challenge(db, payload.challenge_token)
+    if challenge.setup_verified:
+        raise HTTPException(status_code=400, detail="Authenticator setup is already verified.")
+    if admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret):
+        raise HTTPException(status_code=400, detail="This administrator already has an authenticator configured.")
+
+    secret = pyotp.random_base32()
+    admin.two_factor_pending_secret = _encrypt_totp_secret(secret)
+    provisioning_uri = pyotp.TOTP(secret).provisioning_uri(
+        name=admin.email,
+        issuer_name="Campus Market",
+    )
+    qr_buffer = io.BytesIO()
+    qrcode.make(provisioning_uri).save(qr_buffer, kind="PNG")
+    qr_code = base64.b64encode(qr_buffer.getvalue()).decode("ascii")
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action="Admin 2FA Login Setup Started",
+        entity_type="Admin",
+        entity_id=admin.id,
+        description="Administrator started the required authenticator setup from a password challenge.",
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+    return {
+        "secret": secret,
+        "qr_code": f"data:image/png;base64,{qr_code}",
+        "message": "Scan the QR code, then enter the six-digit code to finish setup.",
+    }
+
+
+@app.post("/api/admin/login/2fa/setup/verify")
+def verify_admin_login_two_factor_setup(
+    payload: AdminLoginTwoFactorSetupRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    challenge, admin = _get_admin_login_challenge(db, payload.challenge_token)
+    if challenge.setup_verified:
+        raise HTTPException(status_code=400, detail="Authenticator setup is already verified.")
+    secret = _decrypt_totp_secret(admin.two_factor_pending_secret)
+    if (
+        not secret
+        or not re.fullmatch(r"\d{6}", payload.code.strip())
+        or not pyotp.TOTP(secret).verify(payload.code.strip(), valid_window=1)
+    ):
+        _record_admin_login_challenge_failure(
+            db, challenge, admin, request, "Administrator submitted an invalid code during required 2FA setup."
+        )
+
+    admin.two_factor_secret = _encrypt_totp_secret(secret)
+    admin.two_factor_pending_secret = None
+    admin.two_factor_enabled = True
+    db.query(AdminBackupCode).filter(
+        AdminBackupCode.admin_id == admin.id,
+    ).update({"used": True}, synchronize_session=False)
+    backup_codes = [secrets.token_hex(5).upper() for _ in range(8)]
+    admin.backup_codes = json.dumps([_hash_admin_backup_code(code) for code in backup_codes])
+    db.add_all([
+        AdminBackupCode(admin_id=admin.id, code_hash=_hash_admin_backup_code(code))
+        for code in backup_codes
+    ])
+    challenge.setup_verified = True
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action="Admin 2FA Login Setup Verified",
+        entity_type="Admin",
+        entity_id=admin.id,
+        description="Administrator verified the authenticator and received one-time backup codes.",
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
+    db.commit()
+    return {
+        "setup_verified": True,
+        "backup_codes": backup_codes,
+        "remaining_backup_codes": len(backup_codes),
+        "message": "Save these backup codes. They will not be shown again.",
+    }
+
+
+@app.post("/api/admin/login/2fa/setup/complete")
+def complete_admin_login_two_factor_setup(
+    payload: AdminLoginTwoFactorCompleteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    challenge, admin = _get_admin_login_challenge(db, payload.challenge_token)
+    if not challenge.setup_verified or not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
+        raise HTTPException(status_code=400, detail="Verify your authenticator and save the backup codes first.")
+    challenge.used = True
+    result = _complete_admin_login(db, admin, request, audit_action="Admin Login After 2FA Setup")
+    db.commit()
+    return result
 
 
 def _redact_oauth_log_value(value: Optional[str], payload: dict) -> str:
@@ -4314,6 +4997,22 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
     admin = db.query(Admin).filter(Admin.email.ilike(request.email.strip().lower())).first()
     if not admin:
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
+    if (
+        get_security_settings(db).admin_2fa
+        or (admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret))
+    ):
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action="Admin 2FA Login Failed",
+            entity_type="Admin",
+            entity_id=admin.id,
+            description="Rejected legacy OTP verification because this account requires the password-bound login challenge.",
+            status="FAILURE",
+            severity="warning",
+            ip_address=http_request.client.host if http_request.client else None,
+        ))
+        db.commit()
+        raise HTTPException(status_code=400, detail="Use the active password login challenge to verify 2FA.")
     if admin.two_factor_enabled:
         admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
         if not admin:
@@ -5377,7 +6076,6 @@ def _login_history_deletion_query(
 ):
     query = db.query(AdminLoginHistory).filter(
         AdminLoginHistory.admin_id == admin.id,
-        AdminLoginHistory.is_deleted.is_(False),
         or_(
             AdminLoginHistory.admin_session_id.is_(None),
             AdminLoginHistory.admin_session_id != current_session.id,
@@ -5389,11 +6087,12 @@ def _login_history_deletion_query(
     return query
 
 
-def _soft_delete_admin_login_history(
+def _permanently_delete_admin_login_history(
     db: Session,
     admin: Admin,
     current_session: AdminSession,
     *,
+    option: str,
     history_ids: Optional[List[int]] = None,
     older_than_days: Optional[int] = None,
 ) -> int:
@@ -5405,70 +6104,62 @@ def _soft_delete_admin_login_history(
         query = query.filter(AdminLoginHistory.created_at < cutoff)
 
     deleted_at = datetime.now(timezone.utc)
-    affected = query.update(
-        {"is_deleted": True, "deleted_at": deleted_at},
-        synchronize_session=False,
-    )
-    db.add(AuditLog(
-        admin_id=admin.id,
-        action="login_history_deleted",
-        entity_type="AdminLoginHistory",
-        description=(
-            f"Admin {admin.id} soft-deleted {affected} login history record(s) "
-            f"at {deleted_at.isoformat()}."
-        ),
-        status="SUCCESS",
-        severity="informational",
-        ip_address=current_session.ip_address,
-        created_at=deleted_at,
-    ))
-    db.commit()
+    try:
+        affected = query.delete(synchronize_session=False)
+        db.execute(text(
+            "INSERT INTO audit_logs "
+            "(admin_id, action, entity_type, description, status, severity, ip_address, created_at) "
+            "VALUES (:admin_id, :action, :entity_type, :description, :status, :severity, :ip_address, :created_at)"
+        ), {
+            "admin_id": admin.id,
+            "action": "login_history_permanently_deleted",
+            "entity_type": "AdminLoginHistory",
+            "description": (
+                f"Admin {admin.id} permanently deleted {affected} login history "
+                f"record(s) using option '{option}' at {deleted_at.isoformat()}."
+            ),
+            "status": "SUCCESS",
+            "severity": "informational",
+            "ip_address": current_session.ip_address,
+            "created_at": deleted_at,
+        })
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return affected
 
 
-def _login_history_purge_days() -> int:
-    raw_days = os.getenv("LOGIN_HISTORY_PURGE_DAYS", "30").strip()
-    try:
-        purge_days = int(raw_days)
-    except ValueError as exc:
-        raise ValueError("LOGIN_HISTORY_PURGE_DAYS must be a positive integer.") from exc
-    if purge_days < 1:
-        raise ValueError("LOGIN_HISTORY_PURGE_DAYS must be a positive integer.")
-    return purge_days
-
-
-def purge_deleted_login_history() -> int:
-    purge_days = _login_history_purge_days()
-    purged_at = datetime.now(timezone.utc)
-    cutoff = purged_at - timedelta(days=purge_days)
+def purge_legacy_soft_deleted_login_history() -> int:
+    deleted_at = datetime.now(timezone.utc)
     db = SessionLocal()
     try:
         affected = db.query(AdminLoginHistory).filter(
             AdminLoginHistory.is_deleted.is_(True),
-            AdminLoginHistory.deleted_at < cutoff,
         ).delete(synchronize_session=False)
-        db.add(AuditLog(
-            admin_id=None,
-            action="login_history_purged",
-            entity_type="AdminLoginHistory",
-            description=(
-                f"System permanently purged {affected} deleted login history record(s) "
-                f"at {purged_at.isoformat()} using a {purge_days}-day retention period."
-            ),
-            status="SUCCESS",
-            severity="informational",
-            created_at=purged_at,
-        ))
+        if affected:
+            db.execute(text(
+                "INSERT INTO audit_logs "
+                "(admin_id, action, entity_type, description, status, severity, created_at) "
+                "VALUES (:admin_id, :action, :entity_type, :description, :status, :severity, :created_at)"
+            ), {
+                "admin_id": None,
+                "action": "login_history_legacy_rows_deleted",
+                "entity_type": "AdminLoginHistory",
+                "description": (
+                    f"System permanently deleted {affected} legacy soft-deleted login "
+                    f"history record(s) at {deleted_at.isoformat()}."
+                ),
+                "status": "SUCCESS",
+                "severity": "informational",
+                "created_at": deleted_at,
+            })
         db.commit()
     except Exception:
         db.rollback()
         raise
     finally:
         db.close()
-    logging.getLogger("app.security").info(
-        "Purged %s soft-deleted admin login history row(s).",
-        affected,
-    )
     return affected
 
 
@@ -5481,8 +6172,14 @@ def bulk_delete_admin_login_history(
 ):
     session_token = _extract_admin_token(authorization, session_token)
     admin, current_session = _admin_for_session(db, session_token)
-    affected = _soft_delete_admin_login_history(
-        db, admin, current_session, history_ids=payload.ids
+    if payload.confirm != "DELETE":
+        raise HTTPException(status_code=400, detail='Type "DELETE" to confirm this action.')
+    affected = _permanently_delete_admin_login_history(
+        db,
+        admin,
+        current_session,
+        history_ids=payload.ids,
+        option=f"selected IDs {payload.ids}",
     )
     return {"deleted": affected}
 
@@ -5498,11 +6195,17 @@ def delete_all_admin_login_history(
     admin, current_session = _admin_for_session(db, session_token)
     if payload.confirm != "DELETE":
         raise HTTPException(status_code=400, detail='Type "DELETE" to confirm this action.')
-    affected = _soft_delete_admin_login_history(
+    option = (
+        f"older than {payload.older_than_days} days"
+        if payload.older_than_days is not None
+        else "all records"
+    )
+    affected = _permanently_delete_admin_login_history(
         db,
         admin,
         current_session,
         older_than_days=payload.older_than_days,
+        option=option,
     )
     return {"deleted": affected}
 
@@ -5510,14 +6213,21 @@ def delete_all_admin_login_history(
 @app.delete("/api/admin/login-history/{history_id}")
 def delete_admin_login_history(
     history_id: int,
+    payload: AdminLoginHistoryDeleteRequest,
     session_token: Optional[str] = None,
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     session_token = _extract_admin_token(authorization, session_token)
     admin, current_session = _admin_for_session(db, session_token)
-    affected = _soft_delete_admin_login_history(
-        db, admin, current_session, history_ids=[history_id]
+    if payload.confirm != "DELETE":
+        raise HTTPException(status_code=400, detail='Type "DELETE" to confirm this action.')
+    affected = _permanently_delete_admin_login_history(
+        db,
+        admin,
+        current_session,
+        history_ids=[history_id],
+        option=f"single record ID {history_id}",
     )
     return {"deleted": affected}
 
@@ -5572,15 +6282,20 @@ def _consume_admin_backup_code(db: Session, admin: Admin, code: str) -> bool:
     if not candidate:
         return False
 
-    for record in db.query(AdminBackupCode).filter(
+    code_records = db.query(AdminBackupCode).filter(
         AdminBackupCode.admin_id == admin.id,
-        AdminBackupCode.used.is_(False),
-    ).with_for_update().all():
+    ).with_for_update().all()
+    for record in code_records:
+        if record.used:
+            continue
         salt, _, expected_hash = str(record.code_hash).partition("$")
         candidate_hash = _hash_admin_backup_code(candidate, salt).partition("$")[2]
         if hmac.compare_digest(candidate_hash, expected_hash):
             record.used = True
             return True
+
+    if code_records:
+        return False
 
     raw_codes = str(admin.backup_codes or "").strip()
     if not raw_codes:
@@ -5606,12 +6321,11 @@ def _consume_admin_backup_code(db: Session, admin: Admin, code: str) -> bool:
 
 
 def _admin_backup_codes_remaining(db: Session, admin: Admin) -> int:
-    table_codes = db.query(AdminBackupCode).filter(
+    table_query = db.query(AdminBackupCode).filter(
         AdminBackupCode.admin_id == admin.id,
-        AdminBackupCode.used.is_(False),
-    ).count()
-    if table_codes:
-        return table_codes
+    )
+    if table_query.count():
+        return table_query.filter(AdminBackupCode.used.is_(False)).count()
 
     try:
         stored_codes = json.loads(str(admin.backup_codes or "[]"))
@@ -5638,8 +6352,8 @@ def generate_admin_backup_codes(payload: AdminTwoFactorRequest, request: Request
         raise HTTPException(status_code=404, detail="Administrator account not found.")
     if not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
         raise HTTPException(status_code=400, detail="Enable authenticator-based 2FA before generating backup codes.")
-    if not _verify_admin_reauthentication(db, admin, payload.current_password, payload.otp_code):
-        raise HTTPException(status_code=403, detail="Re-authentication is required to generate backup codes.")
+    if not payload.current_password or not verify_password(payload.current_password, admin.password_hash):
+        raise HTTPException(status_code=403, detail="Your current password is required to generate backup codes.")
     codes = [secrets.token_hex(5).upper() for _ in range(8)]
     db.query(AdminBackupCode).filter(AdminBackupCode.admin_id == admin.id).update({"used": True}, synchronize_session=False)
     admin.backup_codes = json.dumps([_hash_admin_backup_code(code) for code in codes])
@@ -5749,7 +6463,7 @@ async def upload_admin_avatar(
     return {"avatar_url": avatar_url, "message": "Profile photo updated"}
 
 
-@app.get("/api/admin/settings")
+@app.get("/api/admin/settings", response_model=AdminSettingsResponse)
 def get_admin_settings(db: Session = Depends(get_db)):
     response = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
     grouped_keys = set(DEFAULT_SETTINGS_BLOCKS)
@@ -5763,6 +6477,15 @@ def get_admin_settings(db: Session = Depends(get_db)):
     response["studentVerification"] = _normalize_student_verification_settings(
         response.get("studentVerification", {})
     )
+    security = get_security_settings(db)
+    response["security"] = {
+        "requireStudentVerification": security.require_student_verification,
+        "admin2FA": security.admin_2fa,
+        "maxLoginAttempts": security.max_login_attempts,
+        "sessionTimeout": security.session_timeout,
+        "minPasswordLength": security.min_password_length,
+        "auditLogging": security.audit_logging,
+    }
     response["support_email"] = str(
         response.get("general", {}).get("supportEmail") or "support@campus.edu.et"
     ).strip() or "support@campus.edu.et"
@@ -5774,22 +6497,25 @@ def get_admin_settings(db: Session = Depends(get_db)):
     return response
 
 
-@app.put("/api/admin/settings")
-def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
+@app.put("/api/admin/settings", response_model=AdminSettingsSaveResponse)
+def update_admin_settings(
+    payload: AdminSettingsUpdateRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
     try:
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="Settings payload must be a JSON object.")
+        submitted_payload = payload.model_dump(exclude_unset=True)
 
         current = get_admin_settings(db)
         normalized = json.loads(json.dumps(DEFAULT_SETTINGS_BLOCKS))
-        for block, values in payload.items():
+        for block, values in submitted_payload.items():
             if block not in normalized:
                 raise HTTPException(status_code=400, detail=f"Unknown settings block: {block}")
             if not isinstance(values, dict):
                 raise HTTPException(status_code=400, detail=f"Settings block '{block}' must be an object.")
             normalized[block].update(values)
 
-        submitted_verification = payload.get("studentVerification", {})
+        submitted_verification = submitted_payload.get("studentVerification", {})
         verification_values = {}
         verification_fields = (
             ("allowed_email_domain", "allowedEmailDomain"),
@@ -5819,7 +6545,7 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
         normalized["studentVerification"] = normalized_verification
 
         payment_values = normalized["payment"]
-        submitted_payment = payload.get("payment", {})
+        submitted_payment = submitted_payload.get("payment", {})
         if isinstance(submitted_payment, dict) and isinstance(submitted_payment.get("security"), dict):
             payment_values["security"].update(submitted_payment["security"])
         if isinstance(submitted_payment, dict) and isinstance(submitted_payment.get("commission"), dict):
@@ -5840,6 +6566,18 @@ def update_admin_settings(payload: dict, db: Session = Depends(get_db)):
             or any(not isinstance(value, bool) for value in security_values.values())
         ):
             raise HTTPException(status_code=400, detail="Payment security rules must be boolean values.")
+
+        if (
+            normalized["security"]["admin2FA"]
+            and not current.get("security", {}).get("admin2FA", False)
+        ):
+            session_token = _extract_admin_token(authorization, None)
+            admin, _ = _admin_for_session(db, session_token)
+            if not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Set up your own authenticator before enabling this",
+                )
         payment_values["commission"] = _normalize_payment_commission_settings(payment_values.get("commission"))
         payment_values.pop("publicKey", None)
         payment_values.pop("secretKey", None)
@@ -10505,7 +11243,7 @@ def _normalize_product_image(raw_image: Optional[object]) -> Optional[str]:
     return f"http://127.0.0.1:8000/static/uploads/{image_url.lstrip('/')}"
 
 
-def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = True) -> dict:
+def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = False) -> dict:
     product = db.query(Product).filter(Product.id == order.product_id).first()
     snapshot_seller_id = getattr(order, "seller_id", None)
     current_seller_identifier = product.seller if product else snapshot_seller_id
@@ -10573,7 +11311,6 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "total_paid": float(total_paid),
         "total": float(total_paid),
         "pickup_location": pickup_location,
-        "pickup_code": order.pickup_code if include_pickup_code else None,
         "buyer_confirmed": bool(order.buyer_confirmed),
         "seller_confirmed": bool(order.seller_confirmed),
         "is_funds_released": bool(order.is_funds_released),
@@ -10600,6 +11337,8 @@ def _serialize_order(db: Session, order: Order, *, include_pickup_code: bool = T
         "dispute_description": dispute.description if dispute else None,
         "dispute_created_at": dispute.created_at.isoformat() if dispute and dispute.created_at else None,
     }
+    if include_pickup_code:
+        payload["pickup_code"] = order.pickup_code
     payload["required_seller_action"] = {
         "Pending": "Accept or reject order",
         "Processing": "Prepare order",
@@ -11133,7 +11872,7 @@ def checkout_student_cart(
             _dispatch_student_notification(
                 db, seller_student, "New Order", f"You received a new order for '{product.title}'.", "order", order_id=order.id
             )
-        order_payload.append(_serialize_order(db, order))
+        order_payload.append(_serialize_order(db, order, include_pickup_code=True))
 
     for cart_item in cart_items:
         db.delete(cart_item)
@@ -11320,7 +12059,7 @@ def get_student_orders(
         Order.student_id == student_id,
         hidden_filter,
     ).order_by(Order.created_at.desc()).all()
-    return [_serialize_order(db, order) for order in orders]
+    return [_serialize_order(db, order, include_pickup_code=True) for order in orders]
 
 
 @app.patch("/api/student/orders/{order_id}/hide")

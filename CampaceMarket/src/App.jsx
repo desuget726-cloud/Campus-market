@@ -551,7 +551,7 @@ function AppContent() {
   };
 
   return (
-    <div className={`flex min-h-screen flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-screen lg:overflow-hidden' : ''}`}>
+    <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-screen lg:overflow-hidden' : ''}`}>
       <Toaster
         position="top-right"
         containerStyle={{ top: 92, right: 20, zIndex: 9999 }}

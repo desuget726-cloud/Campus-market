@@ -42,9 +42,27 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [otpMode, setOtpMode] = useState('authenticator');
   const [remainingBackupCodes, setRemainingBackupCodes] = useState(null);
+  const [adminChallengeToken, setAdminChallengeToken] = useState('');
+  const [adminLoginStep, setAdminLoginStep] = useState('');
+  const [adminSetupData, setAdminSetupData] = useState(null);
+  const [adminSetupCode, setAdminSetupCode] = useState('');
+  const [adminSetupBackupCodes, setAdminSetupBackupCodes] = useState([]);
+  const [pendingAdminLogin, setPendingAdminLogin] = useState(null);
+  const [emailCodeAvailable, setEmailCodeAvailable] = useState(false);
+  const [maskedAdminEmail, setMaskedAdminEmail] = useState('');
+  const [emailCodeCountdown, setEmailCodeCountdown] = useState(0);
+  const [emailCodeSending, setEmailCodeSending] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+
+  useEffect(() => {
+    if (emailCodeCountdown <= 0) return undefined;
+    const timerId = window.setTimeout(() => {
+      setEmailCodeCountdown((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearTimeout(timerId);
+  }, [emailCodeCountdown]);
 
   useEffect(() => {
     const callbackUrl = new URL(window.location.href);
@@ -195,6 +213,32 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
     return '';
   };
 
+  const restartAdminLogin = () => {
+    setShowOtpModal(false);
+    setAdminChallengeToken('');
+    setAdminLoginStep('');
+    setAdminSetupData(null);
+    setAdminSetupCode('');
+    setAdminSetupBackupCodes([]);
+    setPendingAdminLogin(null);
+    setOtpCode('');
+    setEmailCodeAvailable(false);
+    setMaskedAdminEmail('');
+    setEmailCodeCountdown(0);
+    setError('');
+  };
+
+  const startRequiredAdminSetup = async (challengeToken) => {
+    const response = await fetch(apiUrl('/api/admin/login/2fa/setup'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge_token: challengeToken }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || 'Could not start authenticator setup.');
+    setAdminSetupData(data);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     const validationError = validate();
@@ -232,6 +276,41 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
         return;
       }
 
+      if (data.requires_2fa_setup && data.challenge_token) {
+        setOtpRole('admin');
+        setAdminChallengeToken(data.challenge_token);
+        setAdminLoginStep('setup');
+        setAdminSetupData(null);
+        setAdminSetupCode('');
+        setAdminSetupBackupCodes([]);
+        setShowOtpModal(true);
+        setError('');
+        try {
+          await startRequiredAdminSetup(data.challenge_token);
+        } catch (setupError) {
+          setError(setupError.message || 'Could not start authenticator setup.');
+        }
+        return;
+      }
+
+      if (data.requires_2fa && data.challenge_token) {
+        setOtpRole('admin');
+        setAdminChallengeToken(data.challenge_token);
+        setAdminLoginStep('challenge');
+        setEmailCodeAvailable(Boolean(data.email_code_available));
+        setMaskedAdminEmail('');
+        setEmailCodeCountdown(0);
+        setOtpEmail('');
+        setOtpCode('');
+        setOtpMode('authenticator');
+        setRemainingBackupCodes(Number.isFinite(Number(data.remaining_backup_codes))
+          ? Number(data.remaining_backup_codes)
+          : null);
+        setShowOtpModal(true);
+        setError('');
+        return;
+      }
+
       if (data.status === 'otp_required' || data.requires_2fa) {
         const nextRole = data.role || (data.status === 'otp_required' ? 'student' : 'admin');
         const nextEmail = data.email || data.otp_email || formData.studentId.trim();
@@ -257,9 +336,40 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
     }
   };
 
+  const requestAdminEmailCode = async () => {
+    if (!adminChallengeToken || emailCodeCountdown > 0 || emailCodeSending) return;
+    setEmailCodeSending(true);
+    try {
+      const response = await fetch(apiUrl('/api/admin/login/2fa/email-code'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challenge_token: adminChallengeToken }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 503) setEmailCodeAvailable(false);
+        const retryAfter = Number(response.headers.get('Retry-After'));
+        if (response.status === 429 && Number.isFinite(retryAfter) && retryAfter > 0) {
+          setEmailCodeCountdown(retryAfter);
+        }
+        throw new Error(data.detail || 'Could not send an email verification code.');
+      }
+      setEmailCodeAvailable(true);
+      setMaskedAdminEmail(data.masked_email || '');
+      setEmailCodeCountdown(Number(data.resend_after_seconds) || 60);
+      setOtpMode('email');
+      setOtpCode('');
+      setError('');
+    } catch (emailError) {
+      setError(emailError.message || 'Could not send an email verification code.');
+    } finally {
+      setEmailCodeSending(false);
+    }
+  };
+
   const handleOtpSubmit = async (event) => {
     event.preventDefault();
-    if (otpMode === 'authenticator' && !/^\d{6}$/.test(otpCode)) {
+    if (['authenticator', 'email'].includes(otpMode) && !/^\d{6}$/.test(otpCode)) {
       setError(t('auth.enterCode'));
       return;
     }
@@ -269,6 +379,34 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
     }
 
     try {
+      if (otpRole === 'admin' && adminChallengeToken) {
+        const response = await fetch(apiUrl('/api/admin/login/2fa'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challenge_token: adminChallengeToken,
+            method: otpMode === 'backup'
+              ? 'backup'
+              : otpMode === 'email'
+                ? 'email'
+                : 'authenticator',
+            ...(otpMode === 'backup'
+              ? { backup_code: otpCode.trim() }
+              : { code: otpCode.trim() }),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || t('auth.invalidCode'));
+        setPendingAdminLogin(data);
+        setRemainingBackupCodes(Number.isFinite(Number(data.remaining_backup_codes))
+          ? Number(data.remaining_backup_codes)
+          : null);
+        setAdminLoginStep('login-success');
+        setOtpCode('');
+        setError('');
+        return;
+      }
+
       const endpoint = otpRole === 'student' ? `${API_BASE_URL}/api/auth/verify-login-otp` : `${API_BASE_URL}/api/login/verify-otp`;
       const body = { email: otpEmail, otp_code: otpCode.trim() };
 
@@ -289,6 +427,73 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
     } catch (err) {
       setError(err.message || t('auth.couldNotVerify'));
     }
+  };
+
+  const handleRequiredAdminSetupVerify = async (event) => {
+    event.preventDefault();
+    if (adminSetupCode.length !== 6 || !adminChallengeToken) {
+      setError('Enter the six-digit code shown in your authenticator app.');
+      return;
+    }
+    try {
+      const response = await fetch(apiUrl('/api/admin/login/2fa/setup/verify'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          challenge_token: adminChallengeToken,
+          code: adminSetupCode,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Authenticator verification failed.');
+      setAdminSetupBackupCodes(data.backup_codes || []);
+      setRemainingBackupCodes(Number.isFinite(Number(data.remaining_backup_codes))
+        ? Number(data.remaining_backup_codes)
+        : null);
+      setAdminLoginStep('setup-backup');
+      setAdminSetupCode('');
+      setError('');
+    } catch (setupError) {
+      setError(setupError.message || 'Authenticator verification failed.');
+    }
+  };
+
+  const completeRequiredAdminSetup = async () => {
+    if (!adminChallengeToken) return;
+    try {
+      const response = await fetch(apiUrl('/api/admin/login/2fa/setup/complete'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challenge_token: adminChallengeToken }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Could not complete sign-in.');
+      onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
+      setIsSuccess(true);
+      setShowOtpModal(false);
+      setAdminChallengeToken('');
+      setAdminLoginStep('');
+      setAdminSetupBackupCodes([]);
+      setRemainingBackupCodes(null);
+      setError('');
+    } catch (setupError) {
+      setError(setupError.message || 'Could not complete sign-in.');
+    }
+  };
+
+  const continueAdminLogin = () => {
+    if (!pendingAdminLogin) return;
+    onLoginSuccess?.({
+      ...pendingAdminLogin.user,
+      access_token: pendingAdminLogin.access_token,
+    }, pendingAdminLogin.role);
+    setIsSuccess(true);
+    setShowOtpModal(false);
+    setAdminChallengeToken('');
+    setAdminLoginStep('');
+    setPendingAdminLogin(null);
+    setRemainingBackupCodes(null);
+    setError('');
   };
 
   const beginOAuthLogin = async (provider, clientId, redirectUri, authorizationEndpoint, scope) => {
@@ -395,38 +600,173 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
                   <div className="mb-4 flex items-start justify-between gap-3">
                     <div>
                       <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue-600">Two-step verification</p>
-                      <h2 className="mt-2 text-xl font-bold text-slate-900">Verify your login code</h2>
+                      <h2 className="mt-2 text-xl font-bold text-slate-900">
+                        {adminLoginStep === 'setup' || adminLoginStep === 'setup-backup'
+                          ? 'Set up your authenticator'
+                          : adminLoginStep === 'login-success'
+                            ? 'Two-step verification complete'
+                            : 'Verify your login code'}
+                      </h2>
                     </div>
-                    <button type="button" onClick={() => setShowOtpModal(false)} className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600">✕</button>
+                    <button
+                      type="button"
+                      onClick={() => (adminChallengeToken ? restartAdminLogin() : setShowOtpModal(false))}
+                      className="rounded-full bg-slate-100 px-2.5 py-1 text-sm text-slate-600"
+                      aria-label="Close verification"
+                    >✕</button>
                   </div>
 
-                  <p className="mb-4 text-sm leading-6 text-slate-600">
-                    {otpMode === 'backup'
-                      ? 'Enter one unused backup code for this administrator account.'
-                      : otpMode === 'email'
-                        ? <>Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.</>
-                        : 'Enter the 6-digit code from your authenticator app.'}
-                  </p>
-
-                  {remainingBackupCodes !== null && remainingBackupCodes <= 2 && (
-                    <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-                      Only {remainingBackupCodes} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining. Consider regenerating them after signing in.
-                    </p>
+                  {error && (
+                    <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700" role="alert">
+                      {error}
+                    </div>
                   )}
 
-                  <form onSubmit={handleOtpSubmit} className="space-y-4">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={otpMode === 'backup' ? 32 : 6}
-                      value={otpCode}
-                      onChange={(e) => setOtpCode(otpMode === 'backup' ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ''))}
-                      placeholder={otpMode === 'backup' ? 'BACKUP-CODE' : '000000'}
-                      className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <button type="submit" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold">{t('auth.verifyCode')}</button>
-                  </form>
-                  {otpRole === 'admin' && otpMode !== 'email' && <button type="button" onClick={() => { setOtpMode(otpMode === 'backup' ? 'authenticator' : 'backup'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">{otpMode === 'backup' ? 'Use authenticator code instead' : 'Use a backup code instead'}</button>}
+                  {adminLoginStep === 'setup' && (
+                    <>
+                      <p className="mb-4 text-sm leading-6 text-slate-600">
+                        Your organization requires 2FA. Scan this QR code, then verify a code from your authenticator app.
+                      </p>
+                      {adminSetupData?.qr_code ? (
+                        <>
+                          <img src={adminSetupData.qr_code} alt="Authenticator setup QR code" className="mx-auto mb-4 h-48 w-48" />
+                          <p className="mb-4 break-all text-center font-mono text-xs text-slate-500">
+                            Manual setup key: {adminSetupData.secret}
+                          </p>
+                          <form onSubmit={handleRequiredAdminSetupVerify} className="space-y-4">
+                            <input
+                              autoFocus
+                              type="text"
+                              inputMode="numeric"
+                              maxLength={6}
+                              value={adminSetupCode}
+                              onChange={(event) => setAdminSetupCode(event.target.value.replace(/\D/g, ''))}
+                              placeholder="6-digit code"
+                              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                            />
+                            <button type="submit" disabled={adminSetupCode.length !== 6} className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold disabled:opacity-50">
+                              Verify authenticator
+                            </button>
+                          </form>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => startRequiredAdminSetup(adminChallengeToken).catch((setupError) => setError(setupError.message || 'Could not start authenticator setup.'))}
+                          className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold"
+                        >Retry setup</button>
+                      )}
+                    </>
+                  )}
+
+                  {adminLoginStep === 'setup-backup' && (
+                    <>
+                      <p className="mb-3 text-sm leading-6 text-slate-600">
+                        Save these one-time backup codes somewhere safe. You will not be able to view them again.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-4 font-mono text-sm font-bold text-slate-800">
+                        {adminSetupBackupCodes.map((backupCode) => <span key={backupCode}>{backupCode}</span>)}
+                      </div>
+                      <p className="mt-3 text-sm font-semibold text-slate-600">
+                        {remainingBackupCodes ?? adminSetupBackupCodes.length} backup codes remaining.
+                      </p>
+                      <button type="button" onClick={completeRequiredAdminSetup} className="btn-primary mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold">
+                        I saved my codes — continue
+                      </button>
+                    </>
+                  )}
+
+                  {adminLoginStep === 'login-success' && (
+                    <>
+                      <p className="text-sm leading-6 text-slate-600">
+                        Verification succeeded. You have {remainingBackupCodes ?? 0} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining.
+                      </p>
+                      <button type="button" onClick={continueAdminLogin} className="btn-primary mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold">
+                        Continue
+                      </button>
+                    </>
+                  )}
+
+                  {(adminLoginStep === 'challenge' || !adminChallengeToken) && (
+                    <>
+                      {adminChallengeToken && otpMode === 'email' && maskedAdminEmail && (
+                        <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800" role="status">
+                          Code sent to {maskedAdminEmail}
+                        </p>
+                      )}
+                      <p className="mb-4 text-sm leading-6 text-slate-600">
+                        {otpMode === 'backup'
+                          ? 'Enter one unused backup code for this administrator account.'
+                          : otpMode === 'email'
+                            ? adminChallengeToken
+                              ? 'Enter the six-digit code sent to your registered email.'
+                              : <>Enter the 6-digit code sent to <span className="font-semibold text-slate-800">{otpEmail}</span>.</>
+                            : 'Enter the 6-digit code from your authenticator app.'}
+                      </p>
+
+                      {adminChallengeToken && remainingBackupCodes !== null && (
+                        <p className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
+                          {remainingBackupCodes} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining.
+                        </p>
+                      )}
+
+                      {remainingBackupCodes !== null && remainingBackupCodes <= 2 && (
+                        <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+                          Only {remainingBackupCodes} backup code{remainingBackupCodes === 1 ? '' : 's'} remaining. Consider regenerating them after signing in.
+                        </p>
+                      )}
+
+                      <form onSubmit={handleOtpSubmit} className="space-y-4">
+                        <input
+                          type="text"
+                          inputMode={otpMode === 'backup' ? 'text' : 'numeric'}
+                          maxLength={otpMode === 'backup' ? 32 : 6}
+                          value={otpCode}
+                          onChange={(e) => setOtpCode(otpMode === 'backup' ? e.target.value.toUpperCase() : e.target.value.replace(/\D/g, ''))}
+                          placeholder={otpMode === 'backup' ? 'BACKUP-CODE' : '000000'}
+                          className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xl font-bold tracking-[0.2em] outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                        />
+                        <button type="submit" className="btn-primary w-full rounded-xl px-4 py-3 text-sm font-semibold">{t('auth.verifyCode')}</button>
+                      </form>
+                      {otpRole === 'admin' && otpMode !== 'backup' && <button type="button" onClick={() => { setOtpMode('backup'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">Use a backup code instead</button>}
+                      {otpRole === 'admin' && otpMode === 'backup' && <button type="button" onClick={() => { setOtpMode('authenticator'); setOtpCode(''); setError(''); }} className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2">Use authenticator code instead</button>}
+                      {adminChallengeToken && emailCodeAvailable && otpMode !== 'email' && (
+                        <button
+                          type="button"
+                          disabled={emailCodeSending}
+                          onClick={requestAdminEmailCode}
+                          className="mt-3 w-full text-sm font-semibold text-blue-700 underline underline-offset-2 disabled:opacity-60"
+                        >{emailCodeSending ? 'Sending email code...' : 'Email me a code instead'}</button>
+                      )}
+                      {adminChallengeToken && otpMode === 'email' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => { setOtpMode('authenticator'); setOtpCode(''); setError(''); }}
+                            className="mt-4 w-full text-sm font-semibold text-blue-700 underline underline-offset-2"
+                          >Use authenticator app instead</button>
+                          <button
+                            type="button"
+                            disabled={emailCodeCountdown > 0 || emailCodeSending}
+                            onClick={requestAdminEmailCode}
+                            className="mt-3 w-full text-sm font-semibold text-slate-600 underline underline-offset-2 disabled:no-underline disabled:opacity-60"
+                          >
+                            {emailCodeSending
+                              ? 'Sending email code...'
+                              : emailCodeCountdown > 0
+                                ? `Resend email code in ${emailCodeCountdown}s`
+                                : 'Resend email code'}
+                          </button>
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {adminChallengeToken && adminLoginStep !== 'setup-backup' && adminLoginStep !== 'login-success' && (
+                    <button type="button" onClick={restartAdminLogin} className="mt-4 w-full text-sm font-semibold text-slate-600 underline underline-offset-2">
+                      Back to password and restart sign-in
+                    </button>
+                  )}
                 </div>
               </div>
             )}

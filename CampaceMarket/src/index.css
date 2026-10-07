@@ -27,10 +27,13 @@
 
 .app-page-shell {
   padding-top: var(--header-h);
+  min-height: 100dvh;
+  height: auto;
 }
 
 .app-main-content {
-  padding-bottom: 96px;
+  min-height: 0;
+  padding-bottom: 120px;
 }
 
 .app-main-content--messages {
@@ -111,6 +114,10 @@ html:has(.student-dashboard-content) body {
   min-width: 0;
 }
 
+.student-dashboard-content {
+  padding-bottom: 120px;
+}
+
 @media (min-width: 901px) {
   .student-dashboard-content {
     scrollbar-width: none;
@@ -178,6 +185,69 @@ html:has(.student-dashboard-content) body {
 
 .admin-dashboard-content::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.6);
+}
+
+.admin-data-table-wrapper {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.admin-data-table {
+  width: 100%;
+  min-width: 860px;
+}
+
+.admin-data-table.admin-product-review-table {
+  min-width: 900px;
+}
+
+.admin-data-table th,
+.admin-data-table td {
+  writing-mode: horizontal-tb;
+  word-break: normal;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+
+.admin-data-table .admin-table-wrap-cell {
+  min-width: 180px;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.admin-data-table td button {
+  min-width: 64px;
+  white-space: nowrap;
+}
+
+.admin-data-table [class*="rounded-full"] {
+  white-space: nowrap;
+}
+
+.admin-product-management,
+.admin-product-management * {
+  writing-mode: horizontal-tb;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+.admin-product-review-queue th {
+  white-space: nowrap;
+}
+
+.admin-product-review-queue .product-review-title {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+#admin-mobile-navigation,
+#admin-mobile-navigation * {
+  writing-mode: horizontal-tb;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 
 @media (min-width: 1024px) {
@@ -255,6 +325,8 @@ body>.skiptranslate,
 #root {
   width: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
+  height: auto;
   background: #ffffff;
 }
 

@@ -175,6 +175,25 @@ class DisputeRefundE2ETests(unittest.TestCase):
             session_id=user_session.id,
         )
 
+    def test_pickup_code_is_returned_to_buyer_but_never_to_seller(self):
+        buyer_token = self._student_token(self.buyer.student_id)
+        seller_token = self._student_token(self.seller.student_id)
+        self.db.commit()
+
+        buyer_response = self.client.get(
+            f"/api/student/orders/detail/{self.order.id}",
+            headers={"Authorization": f"Bearer {buyer_token}"},
+        )
+        seller_response = self.client.get(
+            f"/api/student/orders/detail/{self.order.id}",
+            headers={"Authorization": f"Bearer {seller_token}"},
+        )
+
+        self.assertEqual(buyer_response.status_code, 200, buyer_response.text)
+        self.assertEqual(seller_response.status_code, 200, seller_response.text)
+        self.assertEqual(buyer_response.json()["pickup_code"], 1234)
+        self.assertNotIn("pickup_code", seller_response.json())
+
     def _open_refund_dispute(self, student_id=None):
         owner = student_id or self.buyer.student_id
         return self.client.post(

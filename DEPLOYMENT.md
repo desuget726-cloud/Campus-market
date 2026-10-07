@@ -24,6 +24,7 @@ PAYOUT_ADMIN_APPROVAL_THRESHOLD_ETB=5000.00
 PAYOUT_TIMEOUT_HOURS=24
 OPENAI_API_KEY=replace-with-your-value
 SESSION_SECRET=replace-with-a-long-random-value
+ADMIN_2FA_BYPASS=false
 CHAPA_PUBLIC_KEY=replace-with-your-value
 CHAPA_CALLBACK_URL=https://your-render-service.onrender.com/api/admin/payments/webhook
 CHAPA_RETURN_URL=https://campus-market-gamma-eight.vercel.app/
@@ -32,6 +33,11 @@ SENDER_PASSWORD=replace-with-your-value
 GOOGLE_API_KEY=replace-with-your-value
 GOOGLE_CSE_ID=replace-with-your-value
 ```
+
+`ADMIN_2FA_BYPASS` defaults to `false`. Only set it to `true` for supervised recovery
+when the sole active administrator cannot complete the required 2FA flow; it permits
+that administrator to sign in with the password alone and records a critical audit
+entry. Set it back to `false` immediately after recovery.
 
 Render Web Service settings:
 
