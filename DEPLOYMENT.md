@@ -25,6 +25,7 @@ PAYOUT_TIMEOUT_HOURS=24
 OPENAI_API_KEY=replace-with-your-value
 SESSION_SECRET=replace-with-a-long-random-value
 ADMIN_2FA_BYPASS=false
+SELLER_ACCEPTANCE_HOURS=24
 CHAPA_PUBLIC_KEY=replace-with-your-value
 CHAPA_CALLBACK_URL=https://your-render-service.onrender.com/api/admin/payments/webhook
 CHAPA_RETURN_URL=https://campus-market-gamma-eight.vercel.app/
@@ -38,6 +39,11 @@ GOOGLE_CSE_ID=replace-with-your-value
 when the sole active administrator cannot complete the required 2FA flow; it permits
 that administrator to sign in with the password alone and records a critical audit
 entry. Set it back to `false` immediately after recovery.
+
+`SELLER_ACCEPTANCE_HOURS` sets the seller's response window for new paid orders and
+defaults to `24`. Existing orders with a stored seller acceptance deadline keep that
+deadline unless you deliberately run the optional SQL migration at
+`Backend/scripts/update_pending_seller_acceptance_deadlines_24h.sql`.
 
 Render Web Service settings:
 

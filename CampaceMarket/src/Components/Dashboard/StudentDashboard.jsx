@@ -438,6 +438,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const withdrawSubmitInFlightRef = useRef(false);
   const withdrawIdempotencyKeyRef = useRef(null);
   const [recommendedProducts, setRecommendedProducts] = useState([]);
+  const [recommendationsFailed, setRecommendationsFailed] = useState(false);
+  const [recommendationsStudentId, setRecommendationsStudentId] = useState('');
+  const [recommendationsRetryKey, setRecommendationsRetryKey] = useState(0);
   const [recentCampusActivity, setRecentCampusActivity] = useState([]);
 
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
@@ -1660,21 +1663,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   useEffect(() => {
-    if (!studentId) return;
-
-    const fetchRecommendations = async () => {
-      try {
-        const response = await fetch(`${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`);
-        if (!response.ok) return;
-
-        const recommendationData = await response.json();
-        setRecommendedProducts(Array.isArray(recommendationData) ? recommendationData : (recommendationData.recommendations || []));
-      } catch (err) {
-        console.error('Error fetching recommendations:', err);
-      }
-    };
-
     const fetchRecentActivity = async () => {
+      if (!studentId) return;
       try {
         const response = await fetch(`${API_BASE_URL}/api/student/recent-activity?student_id=${encodeURIComponent(studentId)}`);
         if (!response.ok) return;
@@ -1696,9 +1686,39 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       setAvatarUrl('');
     }
 
-    fetchRecommendations();
     fetchRecentActivity();
   }, [studentId, user?.avatarUrl, user?.department]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!studentId) return () => { cancelled = true; };
+
+    const fetchRecommendations = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`);
+        if (!response.ok) throw new Error('Failed to load recommendations');
+
+        const recommendationData = await response.json();
+        const recommendations = Array.isArray(recommendationData)
+          ? recommendationData
+          : recommendationData?.recommendations || recommendationData?.items || [];
+        if (!cancelled) {
+          setRecommendedProducts(Array.isArray(recommendations) ? recommendations : []);
+          setRecommendationsFailed(false);
+          setRecommendationsStudentId(studentId);
+        }
+      } catch {
+        if (!cancelled) {
+          setRecommendedProducts([]);
+          setRecommendationsFailed(true);
+          setRecommendationsStudentId(studentId);
+        }
+      }
+    };
+
+    fetchRecommendations();
+    return () => { cancelled = true; };
+  }, [studentId, recommendationsRetryKey]);
 
   const loadSearchDefaults = useCallback(async () => {
     if (activeTab !== 'buyer' || buyerTab !== 'search') return;
@@ -4203,7 +4223,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     </div>
 
                     <div className="-mx-2 flex min-w-0 max-w-full snap-x snap-mandatory touch-pan-x gap-3 overflow-x-auto px-2 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mx-0 md:grid md:grid-cols-2 md:overflow-visible md:px-0 md:pb-0 lg:grid-cols-4">
-                      {recommendedProducts.length ? (
+                      {recommendationsStudentId === studentId && recommendedProducts.length ? (
                         recommendedProducts.map((item) => {
                           const fallbackImage = getRecommendationPlaceholder(item.category);
                           const displayImage = getRecommendationImage(item.image) || fallbackImage;
@@ -4238,7 +4258,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         })
                       ) : (
                         <div className="w-full rounded-[24px] border border-slate-100 bg-slate-50 p-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:col-span-2 lg:col-span-4">
-                          No recommendations are available yet for your department.
+                          {recommendationsFailed && recommendationsStudentId === studentId ? (
+                            <>
+                              Recommendations are temporarily unavailable.{' '}
+                              <button type="button" onClick={() => setRecommendationsRetryKey((key) => key + 1)} className="font-semibold underline underline-offset-2">
+                                Try again
+                              </button>
+                            </>
+                          ) : 'No recommendations are available yet for your department.'}
                         </div>
                       )}
                     </div>

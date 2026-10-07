@@ -133,6 +133,9 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [aiRecommendations, setAiRecommendations] = useState([]);
+  const [recommendationsFailed, setRecommendationsFailed] = useState(false);
+  const [recommendationsStudentId, setRecommendationsStudentId] = useState('');
+  const [recommendationsRetryKey, setRecommendationsRetryKey] = useState(0);
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const aiScrollRef = useRef(null);
   const latestProductsRequestRef = useRef(0);
@@ -277,31 +280,37 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   }, [initialProductId, searchResults]);
 
   useEffect(() => {
-    const fetchRecommendations = async () => {
-      if (!user?.studentId) {
-        setAiRecommendations([]);
-        return;
-      }
+    let cancelled = false;
+    if (!user?.studentId) return () => { cancelled = true; };
 
+    const fetchRecommendations = async () => {
       try {
         const response = await fetch(
           `${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`
         );
-        if (!response.ok) throw new Error('Failed to load AI recommendations');
+        if (!response.ok) throw new Error('Failed to load recommendations');
 
         const data = await response.json();
         const recommendations = Array.isArray(data)
           ? data
-          : data.recommendations || data.items || [];
-        setAiRecommendations(Array.isArray(recommendations) ? recommendations : []);
-      } catch (error) {
-        console.error('Recommendation fetch error:', error);
-        setAiRecommendations([]);
+          : data?.recommendations || data?.items || [];
+        if (!cancelled) {
+          setAiRecommendations(Array.isArray(recommendations) ? recommendations : []);
+          setRecommendationsFailed(false);
+          setRecommendationsStudentId(user.studentId);
+        }
+      } catch {
+        if (!cancelled) {
+          setAiRecommendations([]);
+          setRecommendationsFailed(true);
+          setRecommendationsStudentId(user.studentId);
+        }
       }
     };
 
     fetchRecommendations();
-  }, [user?.studentId]);
+    return () => { cancelled = true; };
+  }, [user?.studentId, recommendationsRetryKey]);
 
   const scrollAiRecommendations = (direction) => {
     const container = aiScrollRef.current;
@@ -590,7 +599,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
               </aside>
 
               <div className="min-w-0 space-y-8">
-                {user?.studentId && aiRecommendations.length > 0 && (
+                {user?.studentId && recommendationsStudentId === user.studentId && (aiRecommendations.length > 0 || recommendationsFailed) && (
                   <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
                     <div className="flex items-center justify-between gap-4">
                       <div>
@@ -598,13 +607,20 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                         <h3 className="mt-1 text-2xl font-black text-slate-950">AI Recommendations</h3>
                         <p className="mt-1 text-sm text-slate-500">Relevant products selected from your campus marketplace activity.</p>
                       </div>
-                      <div className="flex shrink-0 gap-2">
+                      {aiRecommendations.length > 0 && <div className="flex shrink-0 gap-2">
                         <button type="button" onClick={() => scrollAiRecommendations(-1)} aria-label="Previous AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&lt;</button>
                         <button type="button" onClick={() => scrollAiRecommendations(1)} aria-label="Next AI recommendations" className="btn-primary flex h-10 w-10 items-center justify-center rounded-full text-lg font-bold transition">&gt;</button>
-                      </div>
+                      </div>}
                     </div>
 
-                    <div ref={aiScrollRef} className="mt-5 flex snap-x items-stretch gap-2 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
+                    {recommendationsFailed ? (
+                      <p className="mt-5 text-sm text-slate-500">
+                        Recommendations are temporarily unavailable.{' '}
+                        <button type="button" onClick={() => setRecommendationsRetryKey((key) => key + 1)} className="font-semibold text-emerald-700 underline underline-offset-2">
+                          Try again
+                        </button>
+                      </p>
+                    ) : <div ref={aiScrollRef} className="mt-5 flex snap-x items-stretch gap-2 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
                       {aiRecommendations.map((product, index) => (
                         <article key={product.id ?? `${product.title}-${index}`} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 w-[calc(25%_-_0.375rem)] shrink-0 snap-start cursor-pointer flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md sm:w-[calc(33.333%_-_0.667rem)] lg:w-[calc(25%_-_0.75rem)]">
                           <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title || 'Recommended product'} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
@@ -622,7 +638,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                           </div>
                         </article>
                       ))}
-                    </div>
+                    </div>}
                   </section>
                 )}
 

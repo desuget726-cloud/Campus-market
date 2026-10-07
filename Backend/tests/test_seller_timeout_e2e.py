@@ -201,7 +201,7 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         self.assertIsNotNone(order.paid_at)
         self.assertIsNotNone(order.seller_accept_deadline)
         self.assertEqual(order.status, "Pending")
-        self.assertEqual(order.seller_accept_deadline, order.paid_at + timedelta(hours=48))
+        self.assertEqual(order.seller_accept_deadline, order.paid_at + timedelta(hours=24))
         asyncio.run(main_module._process_seller_acceptance_deadlines())
         self.db.expire_all()
         self.assertEqual(self.db.get(Order, order.id).status, "Pending")
@@ -263,6 +263,34 @@ class SellerAcceptanceTimeoutE2ETests(unittest.TestCase):
         self.assertEqual(self.db.query(Transaction).filter(
             Transaction.tx_id == f"REFUND-{order.id}"
         ).count(), 1)
+
+    def test_configured_acceptance_hours_control_new_order_deadline(self):
+        with patch.dict(os.environ, {"SELLER_ACCEPTANCE_HOURS": "36"}):
+            order = self._checkout()
+
+        self.assertEqual(order.seller_accept_deadline, order.paid_at + timedelta(hours=36))
+
+    def test_acceptance_hours_default_to_24(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(main_module.get_seller_acceptance_hours(), 24)
+
+    def test_six_hour_acceptance_reminder_is_sent_once(self):
+        order = self._checkout()
+        order.seller_accept_deadline = datetime.now() + timedelta(hours=5, minutes=59)
+        self.db.commit()
+
+        for _ in range(2):
+            asyncio.run(main_module._process_seller_acceptance_deadlines())
+            self.db.expire_all()
+
+        self.assertTrue(self.db.get(Order, order.id).seller_reminder_6h_sent)
+        reminders = self.db.query(Notification).filter(
+            Notification.student_id == self.seller.student_id,
+            Notification.title == "Order Acceptance Reminder",
+            Notification.target.like(f'%"order_id": {order.id}%'),
+        ).all()
+        self.assertEqual(len(reminders), 1)
+        self.assertIn("about 6 hours", reminders[0].message)
 
     def test_student_verification_settings_save_reload_and_normalize_legacy_keys(self):
         saved = self.client.put("/api/admin/settings", json={

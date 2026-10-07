@@ -1,10 +1,12 @@
 import os
+import logging
 from typing import Generator
 from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from .config import get_seller_acceptance_hours
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("MYSQL_URL")
 if not DATABASE_URL:
@@ -212,6 +214,7 @@ def init_db() -> None:
             "refund_attempts": "INT NOT NULL DEFAULT 0",
             "seller_reminder_12h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
             "seller_reminder_22h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "seller_reminder_6h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
             "rejection_reason": "VARCHAR(30) NULL",
             "rejection_note": "TEXT NULL",
         }
@@ -221,16 +224,18 @@ def init_db() -> None:
                     connection.execute(text(
                         f"ALTER TABLE orders ADD COLUMN `{column_name}` {column_definition}"
                     ))
+        acceptance_hours = get_seller_acceptance_hours()
         deadline_expression = (
-            "DATE_ADD(COALESCE(paid_at, created_at), INTERVAL 48 HOUR)"
+            f"DATE_ADD(COALESCE(paid_at, created_at), INTERVAL {acceptance_hours} HOUR)"
             if engine.dialect.name == "mysql"
-            else "DATETIME(COALESCE(paid_at, created_at), '+48 hours')"
+            else f"DATETIME(COALESCE(paid_at, created_at), '+{acceptance_hours} hours')"
         )
         with engine.begin() as connection:
             connection.execute(text(
                 "UPDATE orders SET paid_at = COALESCE(paid_at, created_at), "
                 f"seller_accept_deadline = {deadline_expression} "
-                "WHERE LOWER(status) = 'pending' AND LOWER(payment_status) = 'successful'"
+                "WHERE LOWER(status) = 'pending' AND LOWER(payment_status) = 'successful' "
+                "AND seller_accept_deadline IS NULL"
             ))
         order_indexes = {index["name"] for index in inspect(engine).get_indexes("orders")}
         if "ix_orders_status_seller_accept_deadline" not in order_indexes:
@@ -264,3 +269,40 @@ def init_db() -> None:
                 "UPDATE students SET notif_pay_inapp = 1 "
                 "WHERE notif_pay_inapp IS NULL OR notif_pay_inapp = 0"
             ))
+        if engine.dialect.name == "mysql":
+            for column_name in ("college", "department"):
+                column = next(
+                    column for column in inspect(engine).get_columns("students")
+                    if column["name"] == column_name
+                )
+                if not column["nullable"]:
+                    with engine.begin() as connection:
+                        connection.execute(text(
+                            f"ALTER TABLE students MODIFY COLUMN `{column_name}` VARCHAR(150) NULL"
+                        ))
+    _log_model_schema_drift()
+
+
+def _log_model_schema_drift() -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    missing_schema_items = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            missing_schema_items.append(f"{table.name} (table)")
+            continue
+        existing_columns = {
+            column["name"] for column in inspector.get_columns(table.name)
+        }
+        missing_columns = sorted(
+            column.name for column in table.columns
+            if column.name not in existing_columns
+        )
+        missing_schema_items.extend(
+            f"{table.name}.{column_name}" for column_name in missing_columns
+        )
+    if missing_schema_items:
+        logging.getLogger("app.startup").error(
+            "Database schema is missing model tables or columns after startup migrations: %s",
+            ", ".join(missing_schema_items),
+        )

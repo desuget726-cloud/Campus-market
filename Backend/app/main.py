@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import re
+import traceback
 
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 logging.basicConfig(level=logging.INFO)
@@ -83,6 +84,7 @@ from .models import (
     AdminSession, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
+from .config import get_seller_acceptance_hours
 from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_webhook_secret, get_payout_adapter
 from .order_lifecycle import (
     apply_buyer_receipt_confirmation,
@@ -1410,18 +1412,20 @@ async def _process_seller_acceptance_deadlines() -> None:
     logger = logging.getLogger("app.orders")
     db = SessionLocal()
     try:
+        reminder_window_hours = min(22, get_seller_acceptance_hours())
         reminder_orders = db.query(Order.id, Order.seller_accept_deadline).filter(
             func.lower(Order.status) == "pending",
             Order.seller_accept_deadline > now,
-            Order.seller_accept_deadline <= now + timedelta(hours=22),
+            Order.seller_accept_deadline <= now + timedelta(hours=reminder_window_hours),
         ).all()
         for order_id, deadline in reminder_orders:
             remaining = deadline - now
-            reminder_column = (
-                Order.seller_reminder_12h_sent
-                if remaining <= timedelta(hours=12)
-                else Order.seller_reminder_22h_sent
-            )
+            if remaining <= timedelta(hours=6):
+                reminder_column = Order.seller_reminder_6h_sent
+            elif remaining <= timedelta(hours=12):
+                reminder_column = Order.seller_reminder_12h_sent
+            else:
+                reminder_column = Order.seller_reminder_22h_sent
             sent = db.query(Order).filter(
                 Order.id == order_id,
                 func.lower(Order.status) == "pending",
@@ -1433,7 +1437,7 @@ async def _process_seller_acceptance_deadlines() -> None:
             order = db.query(Order).filter(Order.id == order_id).first()
             seller = db.query(Student).filter(Student.student_id == order.seller_id).first() if order and order.seller_id else None
             if seller and order:
-                hours_left = max(1, int((deadline - now).total_seconds() // 3600))
+                hours_left = max(1, math.ceil((deadline - now).total_seconds() / 3600))
                 _dispatch_student_notification(
                     db,
                     seller,
@@ -2218,7 +2222,7 @@ def _refund_pending_order(
             severity="info",
         ))
     else:
-        message = f"Your order expired after 48 hours without seller confirmation. {refund_amount:,.2f} ETB has been refunded to your wallet."
+        message = f"The seller acceptance deadline passed without confirmation. {refund_amount:,.2f} ETB has been refunded to your wallet."
         _dispatch_student_notification(db, buyer, "Order Expired", message, "order", order_id=order.id)
         seller_identifier = order.seller_id or product.seller
         seller = db.query(Student).filter(
@@ -2239,7 +2243,7 @@ def _refund_pending_order(
             action="seller_timeout",
             entity_type="Order",
             entity_id=order.id,
-            description=f"Order #{order.id} expired after 48 hours without seller acceptance.",
+            description=f"Order #{order.id} expired after the seller acceptance deadline.",
             status="SUCCESS",
             severity="warning",
         ))
@@ -10190,8 +10194,79 @@ def _collaborative_product_scores(student: Student, db: Session) -> Dict[int, fl
     } if maximum_score else {}
 
 
-@app.get("/api/student/recommendations")
-def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
+def _fallback_student_recommendations(
+    department: str,
+    college: str,
+    products: List[dict],
+    limit: int,
+) -> List[dict]:
+    profile_terms = {
+        token for token in re.findall(r"[a-z0-9]+", f"{department} {college}".lower())
+        if len(token) > 2
+    }
+    category_counts: Dict[str, int] = {}
+    for product in products:
+        category = str(product.get("category") or "").strip().lower()
+        if category:
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+    def recommendation_key(product: dict) -> tuple:
+        category = str(product.get("category") or "").strip().lower()
+        category_text = " ".join((
+            category,
+            str(product.get("subcategory") or ""),
+            str(product.get("title") or ""),
+        )).lower()
+        department_match = sum(
+            1 for term in profile_terms if term in category_text
+        )
+        created_at = product.get("created_at")
+        return (
+            department_match,
+            category_counts.get(category, 0),
+            created_at.isoformat() if created_at else "",
+            product.get("id") or 0,
+        )
+
+    recommendations = []
+    for product in sorted(products, key=recommendation_key, reverse=True)[:limit]:
+        category = product.get("category") or "General"
+        recommendations.append({
+            "id": product.get("id"),
+            "title": product.get("title") or "Marketplace item",
+            "description": product.get("description") or "Recommended from campus marketplace categories.",
+            "category": category,
+            "price": product.get("price"),
+            "image": product.get("image"),
+            "match_score": 0,
+            "match": "Recommended",
+            "reason": (
+                "Matches your department or college"
+                if profile_terms and recommendation_key(product)[0] > 0
+                else f"Recommended from {category} listings"
+            ),
+        })
+    return recommendations
+
+
+def _recommendation_traceback() -> str:
+    rendered = traceback.format_exc()
+    rendered = re.sub(
+        r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret)([\"']?\s*[:=]\s*[\"']?)[^\"'\s,;]+",
+        r"\1\2[REDACTED]",
+        rendered,
+    )
+    rendered = re.sub(r"(?i)(Bearer\s+)[^\s\"']+", r"\1[REDACTED]", rendered)
+    rendered = re.sub(r"\bsk-[A-Za-z0-9_-]{20,}\b", "[REDACTED]", rendered)
+    rendered = re.sub(r"\bAIza[A-Za-z0-9_-]{30,}\b", "[REDACTED]", rendered)
+    return re.sub(
+        r"(://[^:/\s]+:)[^@/\s]+@",
+        r"\1[REDACTED]@",
+        rendered,
+    )
+
+
+def _build_student_recommendations(student_id: str, db: Session):
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
@@ -10244,65 +10319,93 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
     if not approved_products:
         return []
 
-    owned_product_ids = {
-        order.product_id
-        for order in db.query(Order).filter(Order.student_id == student.student_id).all()
-        if order.product_id
-    }
-    cart_product_ids = {
-        item.product_id
-        for item in db.query(CartItem).filter(CartItem.student_id == student.student_id).all()
-        if item.product_id
-    }
-    wishlist_product_ids = {
-        item.product_id
-        for item in db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
-        if item.product_id
-    }
-    excluded_product_ids = owned_product_ids | cart_product_ids | wishlist_product_ids
+    department = str(getattr(student, "department", None) or "").strip()
+    college = str(getattr(student, "college", None) or "").strip()
+    fallback_products = [
+        {
+            "id": product.id,
+            "title": product.title,
+            "description": product.description,
+            "category": product.category,
+            "subcategory": product.subcategory,
+            "price": product.price,
+            "image": _normalize_product_image(product.image),
+            "created_at": product.created_at,
+        }
+        for product in approved_products
+    ]
+    try:
+        owned_product_ids = {
+            order.product_id
+            for order in db.query(Order).filter(Order.student_id == student.student_id).all()
+            if order.product_id
+        }
+        cart_product_ids = {
+            item.product_id
+            for item in db.query(CartItem).filter(CartItem.student_id == student.student_id).all()
+            if item.product_id
+        }
+        wishlist_product_ids = {
+            item.product_id
+            for item in db.query(WishlistItem).filter(WishlistItem.student_id == student.student_id).all()
+            if item.product_id
+        }
+        excluded_product_ids = owned_product_ids | cart_product_ids | wishlist_product_ids
 
-    content_scores: Dict[int, float] = {}
-    if recommendation_engine in {"Content-Based Filtering (TF-IDF)", "Hybrid Recommendation"}:
-        profile_text = _student_interest_text(student, db)
-        product_texts = [
-            " ".join([
-                product.title or '',
-                product.category or '',
-                product.subcategory or '',
-                product.description or '',
-                product.seller or '',
-            ])
-            for product in approved_products
-        ]
-        vectors, _ = _build_tfidf_vectors([profile_text] + product_texts)
-        if vectors is not None:
-            profile_vector = vectors[0:1]
-            for idx, product in enumerate(approved_products, start=1):
-                content_scores[product.id] = _cosine_similarity(profile_vector, vectors[idx:idx + 1]) if idx < vectors.shape[0] else 0.0
+        content_scores: Dict[int, float] = {}
+        if recommendation_engine in {"Content-Based Filtering (TF-IDF)", "Hybrid Recommendation"}:
+            profile_text = _student_interest_text(student, db)
+            product_texts = [
+                " ".join([
+                    str(product.title or ''),
+                    str(product.category or ''),
+                    str(product.subcategory or ''),
+                    str(product.description or ''),
+                    str(product.seller or ''),
+                ])
+                for product in approved_products
+            ]
+            vectors, _ = _build_tfidf_vectors([profile_text] + product_texts)
+            if vectors is not None:
+                profile_vector = vectors[0:1]
+                for idx, product in enumerate(approved_products, start=1):
+                    content_scores[product.id] = _cosine_similarity(profile_vector, vectors[idx:idx + 1]) if idx < vectors.shape[0] else 0.0
 
-    collaborative_scores = (
-        _collaborative_product_scores(student, db)
-        if recommendation_engine in {"Collaborative Filtering", "Hybrid Recommendation"}
-        else {}
-    )
-    scored_products = []
-    for product in approved_products:
-        if product.id in excluded_product_ids:
-            continue
-        content_score = content_scores.get(product.id, 0.0)
-        collaborative_score = collaborative_scores.get(product.id, 0.0)
-        if recommendation_engine == "Collaborative Filtering":
-            score = collaborative_score
-        elif recommendation_engine == "Hybrid Recommendation":
-            score = (content_score * 0.6) + (collaborative_score * 0.4)
-        else:
-            score = content_score
-        scored_products.append({
-            "product": product,
-            "score": score,
-            "content_score": content_score,
-            "collaborative_score": collaborative_score,
-        })
+        collaborative_scores = (
+            _collaborative_product_scores(student, db)
+            if recommendation_engine in {"Collaborative Filtering", "Hybrid Recommendation"}
+            else {}
+        )
+        scored_products = []
+        for product in approved_products:
+            if product.id in excluded_product_ids:
+                continue
+            content_score = content_scores.get(product.id, 0.0)
+            collaborative_score = collaborative_scores.get(product.id, 0.0)
+            if recommendation_engine == "Collaborative Filtering":
+                score = collaborative_score
+            elif recommendation_engine == "Hybrid Recommendation":
+                score = (content_score * 0.6) + (collaborative_score * 0.4)
+            else:
+                score = content_score
+            scored_products.append({
+                "product": product,
+                "score": score,
+                "content_score": content_score,
+                "collaborative_score": collaborative_score,
+            })
+    except Exception:
+        db.rollback()
+        logger.error(
+            "Recommendation scoring failed; using department/category fallback.\n%s",
+            _recommendation_traceback(),
+        )
+        return _fallback_student_recommendations(
+            department,
+            college,
+            fallback_products,
+            num_recommendations,
+        )
 
     scored_products.sort(key=lambda item: item["score"], reverse=True)
     threshold_matches = sum(item["score"] >= min_similarity_score for item in scored_products)
@@ -10337,8 +10440,8 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
             reason = "Popular among similar students"
         elif item["content_score"] > 0 and product.category:
             reason = f"Because you liked similar {product.category} items"
-        elif student.department:
-            reason = f"Because you're in {student.department}"
+        elif department:
+            reason = f"Because you're in {department}"
         else:
             reason = "Recommended from your marketplace activity"
         best_matches.append({
@@ -10385,6 +10488,24 @@ def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
         ))
     db.commit()
     return best_matches
+
+
+@app.get("/api/student/recommendations")
+def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
+    try:
+        return _build_student_recommendations(student_id, db)
+    except HTTPException:
+        raise
+    except Exception:
+        db.rollback()
+        logger.error(
+            "Unexpected student recommendations failure.\n%s",
+            _recommendation_traceback(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Unable to load recommendations right now. Please try again."},
+        )
 
 
 @app.post("/api/ai/log-click", status_code=status.HTTP_201_CREATED)
@@ -11830,7 +11951,7 @@ def checkout_student_cart(
             quantity=int(cart_item.quantity or 1),
             status="Pending",
             paid_at=paid_at,
-            seller_accept_deadline=paid_at + timedelta(hours=48),
+            seller_accept_deadline=paid_at + timedelta(hours=get_seller_acceptance_hours()),
             pickup_code=secrets.randbelow(9000) + 1000,
             pickup_location=_resolve_pickup_location(db, product),
             payment_status="Successful",
