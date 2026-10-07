@@ -507,13 +507,13 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
             {isDirectoryOpen && (
               <div
                 onClick={() => setIsDirectoryOpen(false)}
-                className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-sm md:hidden"
+                className="fixed inset-0 z-40 bg-transparent md:hidden"
               />
             )}
 
             <div className="grid gap-8 md:grid-cols-[280px_1fr]">
-              <aside className={`fixed inset-y-0 left-0 z-50 h-full min-h-0 w-full max-w-full -translate-x-full overflow-hidden bg-white p-3 shadow-2xl transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:translate-x-0 md:overflow-visible md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
-                <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm md:h-auto md:min-h-[500px] md:overflow-visible">
+              <aside className={`fixed left-3 top-[136px] z-50 h-[min(70vh,600px)] min-h-0 w-[260px] max-w-[280px] -translate-x-[calc(100%+1rem)] overflow-hidden rounded-xl bg-white p-0 shadow-[0_4px_20px_rgba(0,0,0,0.1)] transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:max-w-none md:translate-x-0 md:overflow-visible md:rounded-none md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
+                <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_20px_rgba(0,0,0,0.1)] md:h-auto md:min-h-[500px] md:overflow-visible md:rounded-[24px] md:shadow-sm">
                   <div className="flex shrink-0 items-center justify-between border-b pb-2 md:block">
                     <h3 className="m-4 text-md font-bold text-slate-900">Directory</h3>
                     <button type="button" onClick={() => setIsDirectoryOpen(false)} className="mr-4 rounded-full p-2 text-slate-500 hover:bg-slate-100 md:hidden" aria-label="Close directory">✕</button>
