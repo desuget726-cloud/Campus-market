@@ -195,27 +195,9 @@
   padding: 0;
 }
 
-.login-meta-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 2px;
-}
-
-.login-checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: #334155;
-  font-size: 0.875rem;
-  cursor: pointer;
-}
-
-.login-checkbox input {
-  width: 16px;
-  height: 16px;
-  accent-color: #0ea5e9;
+.login-forgot-password {
+  margin-top: 12px;
+  text-align: center;
 }
 
 .login-link {
@@ -384,11 +366,6 @@
 
   .login-card {
     padding: 24px 20px;
-  }
-
-  .login-meta-row {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .login-decor {

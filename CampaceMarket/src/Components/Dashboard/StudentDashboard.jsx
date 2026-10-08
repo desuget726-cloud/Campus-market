@@ -3974,7 +3974,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         {/* 1. የግራ የጎን መቆጣጠሪያ ፓነል (Responsive Collapsible Student Sidebar) */}
         <aside id="student-mobile-navigation" data-open={isSidebarOpen} className={`student-mobile-sidebar ${isSidebarOpen ? 'open translate-x-0' : '-translate-x-full'}
           fixed top-[var(--header-h)] bottom-0 left-0 z-40 flex h-[calc(100dvh-var(--header-h))] w-[220px] flex-col overflow-hidden overflow-x-hidden bg-[#1a1a2e] p-4 pb-6 text-white shadow-2xl transition-[width,transform,padding] duration-300 ease-in-out
-          min-[768px]:top-0 min-[768px]:h-[calc(100dvh-var(--header-h))] min-[768px]:shrink-0 min-[768px]:translate-x-0 min-[768px]:rounded-[32px] min-[768px]:shadow-none
+          min-[768px]:sticky min-[768px]:top-[var(--header-h)] min-[768px]:h-[calc(100vh-var(--header-h))] min-[768px]:shrink-0 min-[768px]:translate-x-0 min-[768px]:rounded-[32px] min-[768px]:shadow-none
           ${isSidebarCollapsed ? 'min-[768px]:w-[60px] min-[768px]:p-2' : 'min-[768px]:w-[220px] min-[768px]:p-6'}
         `}>
           <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'flex-col gap-3' : ''}`}>

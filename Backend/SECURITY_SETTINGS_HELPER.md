@@ -129,11 +129,11 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
                 "otp_email": admin.email,
             }
         
-        # Step 4: Generate session token with configured timeout
+        # Step 4: Generate session token with a fixed seven-day expiry
         session_secret = os.getenv("SESSION_SECRET", "campace-session-secret")
         token = _create_session_token(
             admin.username, "admin", 
-            security.session_timeout,  # Use dynamic timeout
+            7 * 24 * 60,  # Seven days in minutes
             session_secret
         )
         return {"role": "admin", "access_token": token, ...}
@@ -153,7 +153,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         _reset_login_attempts(db, identifier)
         token = _create_session_token(
             student.student_id, "student", 
-            security.session_timeout,
+            7 * 24 * 60,
             session_secret
         )
         return {"role": "student", "access_token": token, ...}
@@ -270,9 +270,9 @@ INSERT INTO system_settings (key, value) VALUES (
 4. After 30 minutes, lockout expires; attempts can resume
 
 ### Scenario 4: Session Token Lifetime
-1. `_create_session_token()` is called with `exp = now + session_timeout` (in minutes)
-2. Token issued with expiry = current_time + 30 minutes
-3. After 30 minutes, token is invalid; student must re-login
+1. `_create_session_token()` is called with the fixed seven-day lifetime (in minutes)
+2. Token issued with expiry = current_time + 7 days
+3. After seven days, token is invalid; user must re-login
 
 ### Scenario 5: Audit Logging Disabled
 1. Admin disables `auditLogging = False` in settings
@@ -290,7 +290,7 @@ INSERT INTO system_settings (key, value) VALUES (
 | `requireStudentVerification` | POST /api/products | Blocks product creation |
 | `admin2FA` | POST /api/login | Triggers OTP flow |
 | `maxLoginAttempts` | POST /api/login | Increments & locks after threshold |
-| `sessionTimeout` | POST /api/login | Sets token expiry |
+| `sessionTimeout` | Client session handling | Configures inactivity timeout; login JWT expiry is fixed at seven days |
 | `minPasswordLength` | POST /api/register | Validates password |
 | `minPasswordLength` | POST /api/auth/reset-password | Validates new password |
 | `auditLogging` | All admin actions | Filters audit log inserts |
@@ -381,5 +381,4 @@ def secure_operation(db: Session = Depends(get_db)):
 - [ ] Password validation enforces min_password_length
 - [ ] Audit logs appear when audit_logging = true
 - [ ] Audit logs suppressed when audit_logging = false
-- [ ] Session token expiry matches session_timeout
-
+- [ ] Login session tokens expire after seven days for all users

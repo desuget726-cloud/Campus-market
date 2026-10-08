@@ -121,6 +121,18 @@ class StudentSessionTests(unittest.TestCase):
         self.assertEqual(len(notifications), 2)
         self.assertTrue(all(notification.message.startswith("New login from ") for notification in notifications))
 
+    def test_login_token_expiry_is_fixed_at_seven_days(self):
+        started_at = datetime.now(timezone.utc)
+        result = self._login()
+        payload = main_module._decode_student_jwt(result["access_token"])
+        expected_expiry = started_at + timedelta(days=7)
+
+        self.assertAlmostEqual(
+            payload["exp"],
+            expected_expiry.timestamp(),
+            delta=10,
+        )
+
     def test_forwarded_ip_is_only_used_from_a_configured_trusted_proxy(self):
         request = self._request(
             "127.0.0.1",

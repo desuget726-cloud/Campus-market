@@ -114,6 +114,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         secret = self.configure_authenticator()
         password_step = self.login()
         challenge_token = password_step.json()["challenge_token"]
+        started_at = datetime.now(timezone.utc)
 
         valid = self.client.post(
             "/api/admin/login/2fa",
@@ -122,6 +123,12 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
 
         self.assertEqual(valid.status_code, 200, valid.text)
         self.assertTrue(valid.json()["access_token"])
+        claims = main_module._decode_admin_jwt(valid.json()["access_token"])
+        self.assertAlmostEqual(
+            claims["exp"],
+            (started_at + timedelta(days=7)).timestamp(),
+            delta=10,
+        )
         self.assertEqual(valid.json()["remaining_backup_codes"], 0)
         self.assertEqual(self.db.query(AdminSession).count(), 1)
         self.assertEqual(self.db.query(AdminLoginHistory).count(), 1)

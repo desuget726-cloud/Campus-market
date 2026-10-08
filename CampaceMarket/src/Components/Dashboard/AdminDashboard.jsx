@@ -849,6 +849,7 @@ function AdminAccountsPanel({ user }) {
 function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const activeDesktopSidebarItemRef = useRef(null);
   const [isReady, setIsReady] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
@@ -1928,6 +1929,10 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     setActiveTab(nextTab);
     if (nextTab !== initialTab) onTabChange?.(nextTab);
   }, [initialTab, onTabChange]);
+
+  useEffect(() => {
+    activeDesktopSidebarItemRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [activeTab]);
 
   useEffect(() => {
     fetchDashboardOverview();
@@ -7526,10 +7531,10 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   };
 
   return (
-    <div className="admin-dashboard-shell flex min-h-[calc(100dvh-4rem)] flex-col bg-slate-50 text-slate-900 lg:min-h-0 lg:overflow-hidden">
-      <div className="flex flex-1 flex-col gap-3 px-3 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:overflow-hidden lg:px-4 lg:py-4">
+    <div className="admin-dashboard-shell flex min-h-[calc(100dvh-4rem)] flex-col bg-slate-50 text-slate-900 lg:min-h-0">
+      <div className="flex flex-1 flex-col items-start gap-3 px-3 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:px-4 lg:py-4">
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
-        <aside className="relative hidden lg:flex lg:h-200 lg:min-h-0 lg:w-72 lg:shrink-5 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
+        <aside className="admin-dashboard-sidebar relative hidden lg:flex lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
           <div className="relative z-10 flex shrink-0 items-start gap-3 overflow-hidden">
             {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
@@ -7552,9 +7557,10 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               return (
                 <button
                   key={tab.id}
+                  ref={isActive ? activeDesktopSidebarItemRef : null}
                   type="button"
                   onClick={() => handleTabClick(tab.id)}
-                  className={`mb-2 flex w-full items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
+                  className={`mb-2 flex w-full shrink-0 items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
                     ? 'bg-[#1d4ed8] text-white shadow-md'
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
                     }`}
@@ -7576,7 +7582,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           </nav>
         </aside>
 
-        <aside id="admin-mobile-navigation" className={`fixed left-0 top-16 bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <aside id="admin-mobile-navigation" className={`fixed left-0 top-[72px] bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           {/* The mobile header uses the same relative/clipped containment as desktop. */}
           <div className="relative z-10 flex min-h-0 items-start gap-3 overflow-hidden">
             <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
@@ -7613,7 +7619,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         </aside>
         {
           isSidebarOpen && (
-            <div onClick={() => setIsSidebarOpen(false)} className="fixed top-16 bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
+            <div onClick={() => setIsSidebarOpen(false)} className="fixed top-[72px] bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
           )
         }
 

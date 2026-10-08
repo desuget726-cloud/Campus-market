@@ -56,6 +56,28 @@ Health Check Path: /health
 
 After deployment, verify `https://your-render-service.onrender.com/health` returns `{"status":"ok"}`.
 
+## Local Chapa callback testing
+
+The backend listens on port `8000` for local development. In PowerShell, start it from the `Backend` directory:
+
+```powershell
+cd C:\Users\Lab 3\Documents\Campus-market\Backend
+.\venv\Scripts\Activate.ps1
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+In a second terminal, start a tunnel to that port:
+
+```powershell
+npx localtunnel --port 8000 --local-host 127.0.0.1
+```
+
+Use the HTTPS URL printed by Localtunnel (it can change when restarted) to set `CHAPA_CALLBACK_URL` in the backend's local `.env` to `<tunnel-url>/api/payment/webhook`. This is also the callback/webhook endpoint to register in Chapa if the dashboard asks for a webhook URL. Restart Uvicorn after changing backend environment variables. The backend accepts callbacks at `/api/payment/webhook` and the legacy `/api/admin/payments/webhook` path.
+
+Set `CHAPA_RETURN_URL` to a URL the user's browser can open after payment, such as the deployed frontend `https://campus-market-gamma-eight.vercel.app/`. The API tunnel's `/` is the backend health-style root, not the marketplace UI; if you want to return to a local frontend, expose its port `5173` through a separate tunnel and use that tunnel URL instead.
+
+Before testing Chapa, verify `http://127.0.0.1:8000/health` returns `{"status":"ok"}`, then verify `<tunnel-url>/health` returns the same response. A `503 Tunnel Unavailable` at the tunnel URL means the tunnel service cannot reach the local listener; check that Uvicorn is still running on port `8000` and restart the tunnel command above. `/favicon.ico` now returns `204 No Content` from the backend; the frontend serves its own favicon.
+
 ## Vercel frontend
 
 Settings:
@@ -68,6 +90,8 @@ Environment Variable: VITE_API_URL=https://your-render-service.onrender.com
 ```
 
 In the Vercel project settings, set `VITE_API_URL` to the actual Render service's public origin (for example, `https://your-render-service.onrender.com`), with no trailing slash. Redeploy the Vercel project after adding or changing this variable so Vite includes it in the build.
+
+The frontend's `public` directory is served as the site root by Vite and copied to `dist` during builds. Verify the deployed frontend's `/favicon.ico` returns `200` with an icon content type; this file must be a real ICO image, not SVG content renamed with an `.ico` extension.
 
 On Render, set `CORS_ORIGINS=https://campus-market-gamma-eight.vercel.app` (no trailing slash). The backend also allows this production origin if `CORS_ORIGINS` is omitted, and normalizes a trailing slash if one is supplied.
 

@@ -8,25 +8,6 @@ import { API_BASE_URL } from '../../config';
 import logs from '../../assets/logs.png';
 import './LoginForm.css';
 
-const microsoftClientId = import.meta.env.VITE_MICROSOFT_CLIENT_ID || '';
-const microsoftRedirectUri = import.meta.env.VITE_MICROSOFT_REDIRECT_URI || `${window.location.origin}/login`;
-
-const toBase64Url = (bytes) => {
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-};
-
-const createPkcePair = async () => {
-  const verifierBytes = new Uint8Array(32);
-  window.crypto.getRandomValues(verifierBytes);
-  const verifier = toBase64Url(verifierBytes);
-  const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-  return { verifier, challenge: toBase64Url(new Uint8Array(digest)) };
-};
-
 function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
   const { t } = useLanguage();
   const [formData, setFormData] = useState({ studentId: '', password: '' });
@@ -163,18 +144,11 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
       return;
     }
 
-    const callbackPath = provider === 'microsoft'
-      ? '/api/auth/microsoft-callback'
-      : '/api/auth/google-callback';
-    const redirectUri = provider === 'microsoft'
-      ? microsoftRedirectUri
-      : apiUrl('/auth/google/callback');
-
-    fetch(apiUrl(callbackPath), {
+    fetch(apiUrl('/api/auth/google-callback'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: redirectUri }),
+      body: JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: apiUrl('/auth/google/callback') }),
     })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}));
@@ -496,38 +470,6 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
     setError('');
   };
 
-  const beginOAuthLogin = async (provider, clientId, redirectUri, authorizationEndpoint, scope) => {
-    if (!clientId) {
-      setError(`${provider} login is not configured.`);
-      return;
-    }
-
-    try {
-      const stateBytes = new Uint8Array(32);
-      window.crypto.getRandomValues(stateBytes);
-      const state = toBase64Url(stateBytes);
-      const { verifier, challenge } = await createPkcePair();
-      sessionStorage.setItem('campaceOAuthProvider', provider);
-      sessionStorage.setItem('campaceOAuthState', state);
-      sessionStorage.setItem('campaceOAuthCodeVerifier', verifier);
-
-      const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: 'code',
-        scope,
-        state,
-        code_challenge: challenge,
-        code_challenge_method: 'S256',
-        ...(provider === 'microsoft' ? { response_mode: 'query' } : {}),
-      });
-      window.location.assign(`${authorizationEndpoint}?${params.toString()}`);
-    } catch (error) {
-      console.error('Unable to start secure OAuth login:', error);
-      setError('Secure social login could not be started. Please try again.');
-    }
-  };
-
   const handleGoogleLogin = () => {
     if (googleRedirectStartedRef.current) return;
     googleRedirectStartedRef.current = true;
@@ -540,17 +482,6 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
       setError('Google sign-in could not be started. Please try again.');
     }
   };
-
-  const handleMicrosoftLogin = () => {
-    beginOAuthLogin(
-      'microsoft',
-      microsoftClientId,
-      microsoftRedirectUri,
-      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-      'openid profile email User.Read',
-    );
-  };
-
 
   return (
     <>
@@ -805,24 +736,20 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
                     </button>
                   </div>
 
-                  <div className="login-meta-row">
-                    <label className="login-checkbox">
-                      <input type="checkbox" />
-                      <span>Stay signed in for a week.</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setShowForgotPasswordModal(true)}
-                      className="login-link login-link-muted"
-                    >
-                      Forgot password?
-                    </button>
-                  </div>
-
                   <button type="submit" className="login-submit">
                     Login
                   </button>
                 </form>
+
+                <div className="login-forgot-password">
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotPasswordModal(true)}
+                    className="login-link login-link-muted"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
 
                 <div className="login-divider">
                   <span>OR</span>
@@ -842,15 +769,6 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
                       <path fill="#EA4335" d="M12 6.28c1.43 0 2.71.49 3.72 1.45l2.79-2.79C16.83 3.38 14.63 2.4 12 2.4a9.74 9.74 0 0 0-8.71 5.38l3.24 2.53C7.3 8 9.46 6.28 12 6.28Z" />
                     </svg>
                     {isGoogleRedirecting ? 'Redirecting to Google…' : 'Continue with Google'}
-                  </button>
-                  <button type="button" onClick={handleMicrosoftLogin} className="login-social-btn">
-                    <svg viewBox="0 0 24 24" className="login-social-icon" aria-hidden="true">
-                      <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
-                      <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
-                      <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
-                      <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
-                    </svg>
-                    Continue with Microsoft
                   </button>
                 </div>
 

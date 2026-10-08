@@ -19,14 +19,7 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-@media (min-width: 640px) {
-  :root {
-    --header-h: 80px;
-  }
-}
-
 .app-page-shell {
-  padding-top: var(--header-h);
   min-height: 100dvh;
   height: auto;
 }
@@ -50,8 +43,6 @@
   height: calc(100dvh - var(--header-h));
   overflow: hidden;
   overscroll-behavior: contain;
-  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
-  scrollbar-width: thin;
   user-select: none;
 }
 
@@ -60,7 +51,7 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  scrollbar-color: rgba(71, 85, 105, 0.8) transparent;
   scrollbar-width: thin;
 }
 
@@ -128,29 +119,29 @@ html:has(.student-dashboard-content) body {
   }
 }
 
-.student-mobile-sidebar::-webkit-scrollbar,
 .student-sidebar-menu::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
 }
 
-.student-mobile-sidebar::-webkit-scrollbar-track,
 .student-sidebar-menu::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.student-mobile-sidebar::-webkit-scrollbar-thumb,
 .student-sidebar-menu::-webkit-scrollbar-thumb {
   border-radius: 9999px;
-  background: rgba(148, 163, 184, 0.45);
+  background: rgba(71, 85, 105, 0.8);
 }
 
-.student-mobile-sidebar::-webkit-scrollbar-thumb:hover,
 .student-sidebar-menu::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.65);
+  background: rgba(100, 116, 139, 0.95);
 }
 
 .admin-sidebar-menu {
-  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(71, 85, 105, 0.8) transparent;
   scrollbar-width: thin;
 }
 
@@ -159,23 +150,29 @@ html:has(.student-dashboard-content) body {
   scrollbar-width: thin;
 }
 
-.admin-sidebar-menu::-webkit-scrollbar,
+.admin-sidebar-menu::-webkit-scrollbar {
+  width: 5px;
+}
+
+.admin-sidebar-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .admin-dashboard-content::-webkit-scrollbar {
   width: 6px;
 }
 
-.admin-sidebar-menu::-webkit-scrollbar-track,
 .admin-dashboard-content::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .admin-sidebar-menu::-webkit-scrollbar-thumb {
   border-radius: 9999px;
-  background: rgba(148, 163, 184, 0.45);
+  background: rgba(71, 85, 105, 0.8);
 }
 
 .admin-sidebar-menu::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.65);
+  background: rgba(100, 116, 139, 0.95);
 }
 
 .admin-dashboard-content::-webkit-scrollbar-thumb {
@@ -252,20 +249,31 @@ html:has(.student-dashboard-content) body {
 
 @media (min-width: 1024px) {
   .admin-dashboard-shell {
-    height: calc(100vh - 64px);
-    height: calc(100dvh - 64px);
+    height: calc(100vh - var(--header-h));
+    height: calc(100dvh - var(--header-h));
   }
 
   .admin-sidebar-menu {
     overscroll-behavior: contain;
   }
+
+  .admin-dashboard-sidebar {
+    position: sticky;
+    top: calc(var(--header-h) + 16px);
+    z-index: 40;
+    align-self: flex-start;
+    height: calc(100vh - var(--header-h) - 32px);
+    height: calc(100dvh - var(--header-h) - 32px);
+  }
 }
 
 @media (min-width: 768px) {
   .student-mobile-sidebar {
-    position: relative;
-    top: auto;
+    position: sticky;
+    top: var(--header-h);
     bottom: auto;
+    align-self: flex-start;
+    height: calc(100vh - var(--header-h));
     height: calc(100dvh - var(--header-h));
     transform: none !important;
   }

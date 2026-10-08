@@ -112,6 +112,7 @@ app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backe
 
 GOOGLE_REDIRECT_URI_DEFAULT = "http://localhost:8000/auth/google/callback"
 GOOGLE_OAUTH_STATE_TTL = timedelta(minutes=10)
+SESSION_TOKEN_TIMEOUT_MINUTES = 7 * 24 * 60
 
 
 class OAuthAccessLogRedactionFilter(logging.Filter):
@@ -245,6 +246,12 @@ app.add_middleware(
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
+
 
 # Create static directory for uploads if it doesn't exist
 STATIC_ROOT = os.path.join(os.path.dirname(__file__), "static")
@@ -2612,10 +2619,6 @@ def _add_audit_log(db: Session, **values) -> None:
         db.add(AuditLog(**values))
 
 
-def _session_timeout_minutes(db: Session) -> int:
-    return get_security_settings(db).session_timeout
-
-
 def _session_password_min_length(db: Session) -> int:
     return get_security_settings(db).min_password_length
 
@@ -2905,11 +2908,10 @@ def _complete_admin_login(
     request: Request,
     audit_action: str = "Admin 2FA Login Succeeded",
 ) -> dict:
-    settings = get_security_settings(db)
     token = _create_session_token(
         admin.username,
         "admin",
-        settings.session_timeout,
+        SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
     )
     admin_session = _create_admin_session(db, admin, token, request)
@@ -3922,7 +3924,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "dev_mode": not email_sent,
                 "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
             }
-        token = _create_session_token(admin.username, "admin", security.session_timeout, _get_session_secret())
+        token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
         admin_session = _create_admin_session(db, admin, token, request)
         _record_admin_login_event(
             db, admin.id, "login_success", request, admin_session_id=admin_session.id
@@ -3980,7 +3982,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         token = _create_session_token(
             student.student_id,
             "student",
-            security.session_timeout,
+            SESSION_TOKEN_TIMEOUT_MINUTES,
             _get_session_secret(),
             session_id=user_session.id,
         )
@@ -4572,12 +4574,11 @@ def _oauth_cookie_secure() -> bool:
 
 
 def _create_secure_session_for_student(student: Student, response: Response, db: Session, request: Optional[Request] = None) -> dict:
-    security = get_security_settings(db)
     user_session = _create_user_session(db, student, request)
     token = _create_session_token(
         student.student_id,
         "student",
-        security.session_timeout,
+        SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
         session_id=user_session.id,
     )
@@ -4585,7 +4586,7 @@ def _create_secure_session_for_student(student: Student, response: Response, db:
     response.set_cookie(
         key="session_token",
         value=token,
-        max_age=security.session_timeout * 60,
+        max_age=SESSION_TOKEN_TIMEOUT_MINUTES * 60,
         httponly=True,
         secure=_oauth_cookie_secure(),
         samesite="none" if _oauth_cookie_secure() else "lax",
@@ -4977,7 +4978,7 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
     token = _create_session_token(
         student.student_id,
         "student",
-        _session_timeout_minutes(db),
+        SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
         session_id=user_session.id,
     )
@@ -5028,7 +5029,7 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
             and pyotp.TOTP(configured_secret).verify(second_factor_code, valid_window=1)
         )
         if valid_totp or _consume_admin_backup_code(db, admin, second_factor_code):
-            token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
+            token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
             admin_session = _create_admin_session(db, admin, token, http_request)
             _record_admin_login_event(
                 db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
@@ -5052,7 +5053,7 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
     if not otp_record:
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     otp_record.is_used = True
-    token = _create_session_token(admin.username, "admin", _session_timeout_minutes(db), _get_session_secret())
+    token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
     admin_session = _create_admin_session(db, admin, token, http_request)
     _record_admin_login_event(
         db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
@@ -7219,7 +7220,7 @@ def update_student_me(
     access_token = _create_session_token(
         student.student_id,
         "student",
-        _session_timeout_minutes(db),
+        SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
         session_id=session_id,
     )
