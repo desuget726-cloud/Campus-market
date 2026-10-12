@@ -3857,9 +3857,10 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         admin_2fa_configured = bool(
             admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret)
         )
-        if require_admin_2fa:
-            bypass_enabled = os.getenv("ADMIN_2FA_BYPASS", "false").strip().lower() == "true"
-            active_admin_count = db.query(Admin).filter(func.lower(Admin.status) == "active").count()
+       
+ if require_admin_2fa and not DISABLE_ADMIN_2FA:
+    bypass_enabled = os.getenv("ADMIN_2FA_BYPASS", "false").strip().lower() == "true"
+    active_admin_count = db.query(Admin).filter(func.lower(Admin.status) == "active").count()
             if bypass_enabled and active_admin_count == 1 and str(admin.status or "").lower() == "active":
                 db.add(AuditLog(
                     admin_id=admin.id,
