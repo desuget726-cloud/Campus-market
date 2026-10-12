@@ -1527,80 +1527,86 @@ if not email_logger.handlers:
     email_logger.setLevel(logging.INFO)
 
 
+
 def send_otp_email(receiver_email: str, otp: str) -> bool:
     """Send ONLY the raw 6-digit OTP number as a plain-text email body."""
-    normalized_sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
-    normalized_sender_password = os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip().replace(" ", "")
-
     try:
+        import os
+        import httpx
+
         if not _notifications_enabled(None, "emailNotifs"):
-            message = "OTP email skipped: the emailNotifs system setting is disabled."
+            message = "OTP email skipped: emailNotifs is disabled."
             email_logger.warning(message)
             print(f"[EMAIL WARNING] {message}", flush=True)
             return False
+
         if not receiver_email:
             message = "OTP email was not sent: receiver_email is empty."
             email_logger.error(message)
             print(f"[EMAIL ERROR] {message}", flush=True)
             return False
-        if not normalized_sender_email or not normalized_sender_password:
-            message = "OTP email was not sent: SENDER_EMAIL or SENDER_PASSWORD is missing from Backend/.env."
+
+        api_key = os.getenv("BREVO_API_KEY", "").strip()
+        sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
+
+        if not api_key:
+            message = "OTP email was not sent: BREVO_API_KEY is missing."
             email_logger.error(message)
             print(f"[EMAIL ERROR] {message}", flush=True)
             return False
 
-        body = str(otp)
+        if not sender_email:
+            message = "OTP email was not sent: SENDER_EMAIL is missing."
+            email_logger.error(message)
+            print(f"[EMAIL ERROR] {message}", flush=True)
+            return False
 
-        msg = MIMEMultipart()
-        msg["Subject"] = "DG Market"
-        msg["From"] = normalized_sender_email
-        msg["To"] = receiver_email
-        msg.attach(MIMEText(body, "plain"))
-
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.starttls()
-            server.login(normalized_sender_email, normalized_sender_password)
-            server.sendmail(normalized_sender_email, receiver_email, msg.as_string())
-
-        return True
-    except smtplib.SMTPAuthenticationError as error:
-        error_message = (
-            f"SMTP authentication failed for {normalized_sender_email}: {error}. "
-            "Check that 2-Step Verification is enabled and SENDER_PASSWORD is a current Google App Password without spaces."
+        response = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "accept": "application/json",
+                "api-key": api_key,
+                "content-type": "application/json",
+            },
+            json={
+                "sender": {
+                    "name": "DG Market",
+                    "email": sender_email,
+                },
+                "to": [{"email": receiver_email}],
+                "subject": "DG Market",
+                "textContent": str(otp),
+            },
+            timeout=20.0,
         )
-        email_logger.exception(error_message)
-        print(f"[EMAIL AUTH ERROR] {error_message}", flush=True)
+
+        if response.status_code not in (200, 201, 202):
+            message = (
+                f"Brevo API failed: status={response.status_code}, "
+                f"response={response.text[:500]}"
+            )
+            email_logger.error(message)
+            print(f"[EMAIL API ERROR] {message}", flush=True)
+            return False
+
+        email_logger.info("OTP email accepted by Brevo for %s", receiver_email)
+        return True
+
+    except httpx.TimeoutException:
+        email_logger.exception("Timed out while sending OTP through Brevo.")
+        print("[EMAIL TIMEOUT] Brevo API request timed out.", flush=True)
         return False
-    except smtplib.SMTPConnectError as error:
-        error_message = f"Could not connect to smtp.gmail.com:587 while sending OTP to {receiver_email}: {error}"
-        email_logger.exception(error_message)
-        print(f"[EMAIL CONNECTION ERROR] {error_message}", flush=True)
+
+    except httpx.RequestError as error:
+        email_logger.exception("Network error connecting to Brevo API: %s", error)
+        print(f"[EMAIL NETWORK ERROR] Brevo API: {error}", flush=True)
         return False
-    except socket.timeout as error:
-        error_message = f"Timed out connecting to smtp.gmail.com:587 while sending OTP to {receiver_email}: {error}"
-        email_logger.exception(error_message)
-        print(f"[EMAIL TIMEOUT] {error_message}", flush=True)
-        return False
-    except smtplib.SMTPServerDisconnected as error:
-        error_message = f"Gmail SMTP disconnected while sending OTP to {receiver_email}: {error}"
-        email_logger.exception(error_message)
-        print(f"[EMAIL DISCONNECT ERROR] {error_message}", flush=True)
-        return False
-    except smtplib.SMTPException as error:
-        error_message = f"Gmail SMTP error while sending OTP to {receiver_email}: {error}"
-        email_logger.exception(error_message)
-        print(f"[EMAIL SMTP ERROR] {error_message}", flush=True)
-        return False
-    except (TimeoutError, OSError) as error:
-        error_message = f"Network error reaching smtp.gmail.com:587 while sending OTP to {receiver_email}: {error}"
-        email_logger.exception(error_message)
-        print(f"[EMAIL NETWORK ERROR] {error_message}", flush=True)
-        return False
+
     except Exception as error:
-        error_message = f"Unexpected error while sending OTP to {receiver_email}: {error}"
-        email_logger.exception(error_message)
-        print(f"[EMAIL UNEXPECTED ERROR] {error_message}", flush=True)
+        email_logger.exception("Unexpected error while sending OTP through Brevo.")
+        print(f"[EMAIL UNEXPECTED ERROR] {error}", flush=True)
         return False
+
 
 
 def send_verification_status_email(receiver_email: str, status: str, reason: Optional[str] = None) -> bool:
