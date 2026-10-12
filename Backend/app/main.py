@@ -3829,66 +3829,112 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
 
 
 # 2. የጋራ የሎጊን ኤፒአይ ኤንድፖይንት (POST /api/login)
+
 @app.post("/api/login")
 def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     security = get_security_settings(db)
     identifier = _login_identifier(data.id_or_email)
     _check_login_lock(db, identifier, security)
 
-    # 2.1 መጀመሪያ በአስተዳዳሪ ሰንጠረዥ ይፈትሻል
+    # 2.1 Check the administrator table first
     normalized_id = _login_identifier(data.id_or_email)
+
     admin = db.query(Admin).filter(
-        or_(func.lower(Admin.username) == normalized_id, func.lower(Admin.email) == normalized_id)
+        or_(
+            func.lower(Admin.username) == normalized_id,
+            func.lower(Admin.email) == normalized_id,
+        )
     ).first()
 
-    admin_locked_until = _as_utc_datetime(admin.locked_until) if admin else None
-    if admin is not None and admin_locked_until and admin_locked_until > datetime.now(timezone.utc):
+    admin_locked_until = (
+        _as_utc_datetime(admin.locked_until) if admin else None
+    )
+
+    if (
+        admin is not None
+        and admin_locked_until
+        and admin_locked_until > datetime.now(timezone.utc)
+    ):
         _record_admin_login_event(db, admin.id, "login_locked", request)
         db.commit()
         retry_at = admin_locked_until.strftime("%Y-%m-%d %H:%M:%S UTC")
-        raise HTTPException(status_code=429, detail=f"Administrator account is temporarily locked. Try again at {retry_at}.")
-    
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Administrator account is temporarily locked. "
+                f"Try again at {retry_at}."
+            ),
+        )
+
     if admin and verify_password(data.password, admin.password_hash):
         admin.failed_login_attempts = 0
         admin.locked_until = None
         _reset_login_attempts(db, identifier)
+
         avatar_url = _get_avatar_url(admin, f"{admin.username}.jpg")
         require_admin_2fa = get_security_settings(db).admin_2fa
+
         admin_2fa_configured = bool(
-            admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret)
+            admin.two_factor_enabled
+            and _decrypt_totp_secret(admin.two_factor_secret)
         )
-       
- if require_admin_2fa and not DISABLE_ADMIN_2FA:
-    bypass_enabled = os.getenv("ADMIN_2FA_BYPASS", "false").strip().lower() == "true"
-    active_admin_count = db.query(Admin).filter(func.lower(Admin.status) == "active").count()
-            if bypass_enabled and active_admin_count == 1 and str(admin.status or "").lower() == "active":
+
+        # Require admin 2FA only when it has not been disabled.
+        if require_admin_2fa and not DISABLE_ADMIN_2FA:
+            bypass_enabled = (
+                os.getenv("ADMIN_2FA_BYPASS", "false").strip().lower()
+                == "true"
+            )
+
+            active_admin_count = (
+                db.query(Admin)
+                .filter(func.lower(Admin.status) == "active")
+                .count()
+            )
+
+            if (
+                bypass_enabled
+                and active_admin_count == 1
+                and str(admin.status or "").lower() == "active"
+            ):
                 db.add(AuditLog(
                     admin_id=admin.id,
                     action="Admin 2FA Emergency Bypass",
                     entity_type="Admin",
                     entity_id=admin.id,
                     description=(
-                        "Password-only login used ADMIN_2FA_BYPASS for the last active administrator. "
-                        "Disable the bypass immediately after account recovery."
+                        "Password-only login used ADMIN_2FA_BYPASS for the "
+                        "last active administrator. Disable the bypass "
+                        "immediately after account recovery."
                     ),
                     status="BYPASS",
                     severity="critical",
-                    ip_address=request.client.host if request.client else None,
+                    ip_address=(
+                        request.client.host if request.client else None
+                    ),
                 ))
             else:
                 challenge_token = _create_admin_login_challenge(db, admin)
                 db.commit()
+
                 return {
                     "role": "admin",
                     "requires_2fa": admin_2fa_configured,
                     "requires_2fa_setup": not admin_2fa_configured,
                     "challenge_token": challenge_token,
-                    "email_code_available": admin_2fa_configured and _admin_login_email_is_configured(),
-                    "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
+                    "email_code_available": (
+                        admin_2fa_configured
+                        and _admin_login_email_is_configured()
+                    ),
+                    "remaining_backup_codes": (
+                        _admin_backup_codes_remaining(db, admin)
+                    ),
                 }
+
         elif not DISABLE_ADMIN_2FA and admin_2fa_configured:
             challenge_token = _create_admin_login_challenge(db, admin)
             db.commit()
+
             return {
                 "role": "admin",
                 "requires_2fa": True,
@@ -3896,21 +3942,35 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "two_factor_method": "authenticator",
                 "challenge_token": challenge_token,
                 "email_code_available": _admin_login_email_is_configured(),
-                "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
-                "message": "Enter the six-digit code from your authenticator app, use a backup code, or request an email code.",
+                "remaining_backup_codes": (
+                    _admin_backup_codes_remaining(db, admin)
+                ),
+                "message": (
+                    "Enter the six-digit code from your authenticator app, "
+                    "use a backup code, or request an email code."
+                ),
             }
+
         if not DISABLE_ADMIN_2FA and security.admin_2fa:
             otp = _generate_otp_code()
+
             db.add(PasswordReset(
                 email=admin.email,
                 otp_code=otp,
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+                expires_at=(
+                    datetime.now(timezone.utc) + timedelta(minutes=10)
+                ),
                 is_used=False,
             ))
             db.commit()
+
             email_sent = send_otp_email(admin.email, otp)
+
             if not email_sent:
-                logging.getLogger(__name__).warning("Admin login OTP email could not be sent.")
+                logging.getLogger(__name__).warning(
+                    "Admin login OTP email could not be sent."
+                )
+
             return {
                 "role": "admin",
                 "requires_2fa": True,
@@ -3919,21 +3979,54 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 "message": (
                     "A verification code was sent to the administrator email."
                     if email_sent
-                    else "A verification code was generated, but email delivery failed."
+                    else (
+                        "A verification code was generated, "
+                        "but email delivery failed."
+                    )
                 ),
                 "email_sent": email_sent,
                 "dev_mode": not email_sent,
-                "remaining_backup_codes": _admin_backup_codes_remaining(db, admin),
+                "remaining_backup_codes": (
+                    _admin_backup_codes_remaining(db, admin)
+                ),
             }
-        token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
-        admin_session = _create_admin_session(db, admin, token, request)
-        _record_admin_login_event(
-            db, admin.id, "login_success", request, admin_session_id=admin_session.id
-        )
-        db.commit()
-        return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email, "avatar_url": avatar_url, "avatarUrl": avatar_url}}
 
-    if _setting_bool(_get_setting_value(db, "maintenance", "maintenanceMode", False)):
+        # Admin login without 2FA
+        token = _create_session_token(
+            admin.username,
+            "admin",
+            SESSION_TOKEN_TIMEOUT_MINUTES,
+            _get_session_secret(),
+        )
+
+        admin_session = _create_admin_session(db, admin, token, request)
+
+        _record_admin_login_event(
+            db,
+            admin.id,
+            "login_success",
+            request,
+            admin_session_id=admin_session.id,
+        )
+
+        db.commit()
+
+        return {
+            "role": "admin",
+            "access_token": token,
+            "user": {
+                "name": admin.full_name or admin.username,
+                "username": admin.username,
+                "email": admin.email,
+                "avatar_url": avatar_url,
+                "avatarUrl": avatar_url,
+            },
+        }
+
+    # Maintenance mode check
+    if _setting_bool(
+        _get_setting_value(db, "maintenance", "maintenanceMode", False)
+    ):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=_get_setting_value(
@@ -3944,42 +4037,64 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             ),
         )
 
-    # 2.2 ካልሆነ በተማሪዎች ሰንጠረዥ ይፈትሻል
+    # 2.2 Check the student table
     if _is_email_identifier(normalized_id):
-        student = db.query(Student).filter(func.lower(Student.email) == normalized_id).first()
+        student = db.query(Student).filter(
+            func.lower(Student.email) == normalized_id
+        ).first()
     else:
-        student = db.query(Student).filter(func.lower(Student.student_id) == normalized_id).first()
+        student = db.query(Student).filter(
+            func.lower(Student.student_id) == normalized_id
+        ).first()
 
     if student and verify_password(data.password, student.password):
         if security.require_student_verification and not student.is_verified:
             _record_failed_login(db, identifier, security)
-            raise HTTPException(status_code=403, detail="Student verification is required before login.")
+            raise HTTPException(
+                status_code=403,
+                detail="Student verification is required before login.",
+            )
+
         _reset_login_attempts(db, identifier)
         avatar_url = _get_avatar_url(student, f"{student.student_id}.jpg")
+
         if student.two_factor_enabled:
             otp = f"{secrets.randbelow(900000) + 100000:06d}"
+
             db.add(PasswordReset(
                 email=student.email,
                 otp_code=otp,
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+                expires_at=(
+                    datetime.now(timezone.utc) + timedelta(minutes=10)
+                ),
                 is_used=False,
             ))
             db.commit()
+
             email_sent = send_otp_email(student.email, otp)
+
             if not email_sent:
-                logging.getLogger("app.auth").warning("Student login OTP email could not be sent.")
+                logging.getLogger("app.auth").warning(
+                    "Student login OTP email could not be sent."
+                )
+
             return {
                 "status": "otp_required",
                 "email": student.email,
                 "message": (
                     "A verification code was sent to your email."
                     if email_sent
-                    else "A verification code was generated, but email delivery failed."
+                    else (
+                        "A verification code was generated, "
+                        "but email delivery failed."
+                    )
                 ),
                 "email_sent": email_sent,
                 "dev_mode": not email_sent,
             }
+
         user_session = _create_user_session(db, student, request)
+
         token = _create_session_token(
             student.student_id,
             "student",
@@ -3987,25 +4102,59 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             _get_session_secret(),
             session_id=user_session.id,
         )
-        db.commit()
-        return {"role": "student", "access_token": token, "user": {"name": student.name, "studentId": student.student_id, "email": student.email, "avatarUrl": avatar_url, "is_verified": bool(student.is_verified), "two_factor_enabled": bool(student.two_factor_enabled)}}
 
+        db.commit()
+
+        return {
+            "role": "student",
+            "access_token": token,
+            "user": {
+                "name": student.name,
+                "studentId": student.student_id,
+                "email": student.email,
+                "avatarUrl": avatar_url,
+                "is_verified": bool(student.is_verified),
+                "two_factor_enabled": bool(student.two_factor_enabled),
+            },
+        }
+
+    # Failed login handling
     if admin:
-        admin.failed_login_attempts = int(admin.failed_login_attempts or 0) + 1
+        admin.failed_login_attempts = int(
+            admin.failed_login_attempts or 0
+        ) + 1
+
         if admin.failed_login_attempts >= 5:
-            admin.locked_until = datetime.now(timezone.utc) + timedelta(minutes=15)
-            _record_admin_login_event(db, admin.id, "login_failed_locked", request)
+            admin.locked_until = (
+                datetime.now(timezone.utc) + timedelta(minutes=15)
+            )
+
+            _record_admin_login_event(
+                db, admin.id, "login_failed_locked", request
+            )
+
             lockout_email_sent = send_otp_email(
                 admin.email,
                 "Admin account locked after 5 failed login attempts",
             )
+
             if not lockout_email_sent:
-                logging.getLogger("app.auth").warning("Admin lockout notification email could not be sent.")
+                logging.getLogger("app.auth").warning(
+                    "Admin lockout notification email could not be sent."
+                )
         else:
-            _record_admin_login_event(db, admin.id, "login_failed", request)
+            _record_admin_login_event(
+                db, admin.id, "login_failed", request
+            )
+
         db.commit()
+
     _record_failed_login(db, identifier, security)
-    raise HTTPException(status_code=400, detail="Invalid ID/Email or Password.")
+
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid ID/Email or Password.",
+    )
 
 
 @app.post("/api/admin/login/2fa/email-code")
