@@ -1,0 +1,39 @@
+.about-page {
+  --about-hero-background: #ffffff;
+  --about-hero-heading: #0f172a;
+  --about-hero-text: #334155;
+  --about-hero-label: #047857;
+  --about-hero-border: #e2e8f0;
+  --about-hero-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.about-hero-card {
+  background-color: var(--about-hero-background);
+  border: 1px solid var(--about-hero-border);
+  box-shadow: var(--about-hero-shadow);
+}
+
+.about-hero-card h1 {
+  color: var(--about-hero-heading);
+}
+
+.about-hero-label {
+  color: var(--about-hero-label);
+}
+
+.about-hero-description {
+  color: var(--about-hero-text);
+}
+
+@media (max-width: 767px) {
+  .about-page {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}

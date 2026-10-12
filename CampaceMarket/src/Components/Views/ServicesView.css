@@ -1,0 +1,39 @@
+.services-page {
+  --services-hero-background: #ffffff;
+  --services-hero-heading: #0f172a;
+  --services-hero-text: #334155;
+  --services-hero-label: #047857;
+  --services-hero-border: #e2e8f0;
+  --services-hero-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.services-hero-card {
+  background-color: var(--services-hero-background);
+  border: 1px solid var(--services-hero-border);
+  box-shadow: var(--services-hero-shadow);
+}
+
+.services-hero-card h1 {
+  color: var(--services-hero-heading);
+}
+
+.services-hero-label {
+  color: var(--services-hero-label);
+}
+
+.services-hero-description {
+  color: var(--services-hero-text);
+}
+
+@media (max-width: 767px) {
+  .services-page {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+}

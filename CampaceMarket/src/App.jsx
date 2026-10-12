@@ -661,6 +661,8 @@ function AppContent() {
             ? 'app-main-content w-full min-w-0 flex-1'
             : isHomeView
               ? 'app-main-content w-full min-w-0 flex-1 px-0'
+              : ['about', 'services', 'contact'].includes(currentView)
+                ? 'app-main-content w-full min-w-0 flex-1 px-0'
               : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0 lg:pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">

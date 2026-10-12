@@ -2353,3 +2353,43 @@ Traceback (most recent call last):
     sock.connect(sa)
     ~~~~~~~~~~~~^^^^
 TimeoutError: timed out
+2026-10-09 08:48:55,434 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\Lab 3\Documents\Campus-market\backend\app\main.py", line 3107, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 726, in login
+    self.ehlo_or_helo_if_needed()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 620, in ehlo_or_helo_if_needed
+    if not (200 <= self.ehlo()[0] <= 299):
+                   ~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 461, in ehlo
+    (code, msg) = self.getreply()
+                  ~~~~~~~~~~~~~^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-09 08:49:07,482 ERROR Failed to send student notification email: [Errno 11001] getaddrinfo failed
+Traceback (most recent call last):
+  File "C:\Users\Lab 3\Documents\Campus-market\backend\app\main.py", line 3105, in _send_student_notification_email
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+         ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 263, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 350, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 320, in _get_socket
+    return socket.create_connection((host, port), timeout,
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+                                    self.source_address)
+                                    ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 844, in create_connection
+    for res in getaddrinfo(host, port, 0, SOCK_STREAM):
+               ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Lab 3\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 983, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 11001] getaddrinfo failed

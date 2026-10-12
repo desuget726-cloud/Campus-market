@@ -184,6 +184,94 @@ html:has(.student-dashboard-content) body {
   background: rgba(100, 116, 139, 0.6);
 }
 
+@media (min-width: 901px) {
+  .admin-dashboard-shell {
+    height: calc(100vh - var(--header-h));
+    height: calc(100dvh - var(--header-h));
+  }
+
+  .admin-dashboard-layout[data-admin-sidebar-layout] {
+    display: grid;
+    grid-template-columns: var(--admin-sidebar-width, 288px) minmax(0, 1fr);
+    align-items: stretch;
+    transition: grid-template-columns 250ms ease;
+  }
+
+  .admin-dashboard-layout[data-admin-sidebar-layout] .admin-dashboard-sidebar {
+    display: flex !important;
+    position: sticky;
+    top: calc(var(--header-h) + 16px);
+    z-index: 40;
+    align-self: flex-start;
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    height: calc(100vh - var(--header-h) - 32px);
+    height: calc(100dvh - var(--header-h) - 32px);
+    padding: 1.5rem;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-dashboard-sidebar {
+    padding: 0.5rem;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-brand {
+    justify-content: center;
+    gap: 0;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-brand img,
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-brand button {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-item {
+    justify-content: center;
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-item-label {
+    display: none;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-item svg {
+    flex: 0 0 auto;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-sidebar-menu {
+    padding-right: 0;
+  }
+
+  .admin-sidebar-tooltip {
+    position: fixed;
+    z-index: 1000;
+    transform: translateY(-50%);
+    pointer-events: none;
+    white-space: nowrap;
+    border-radius: 0.5rem;
+    background: #111c3a;
+    padding: 0.5rem 0.75rem;
+    color: white;
+    font-size: 0.75rem;
+    font-weight: 600;
+    box-shadow: 0 8px 20px rgb(15 23 42 / 20%);
+  }
+
+  #admin-mobile-navigation,
+  .admin-sidebar-backdrop,
+  .admin-dashboard-mobile-toggle {
+    display: none !important;
+  }
+
+  .admin-dashboard-layout[data-admin-sidebar-layout] .admin-dashboard-content {
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+  }
+}
+
 .admin-data-table-wrapper {
   width: 100%;
   max-width: 100%;

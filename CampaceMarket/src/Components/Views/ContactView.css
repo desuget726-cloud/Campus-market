@@ -1,0 +1,41 @@
+.contact-page {
+  --contact-page-gutter: 24px;
+  --contact-card-gap: 24px;
+
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  margin: 0 auto;
+  padding-right: var(--contact-page-gutter);
+  padding-left: var(--contact-page-gutter);
+}
+
+.contact-hero-description {
+  max-width: 700px;
+}
+
+.contact-cards-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: var(--contact-card-gap);
+}
+
+.contact-card {
+  min-width: 0;
+}
+
+.contact-details a {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 899px) {
+  .contact-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .contact-page {
+    --contact-page-gutter: 16px;
+  }
+}

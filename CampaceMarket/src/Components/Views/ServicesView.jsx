@@ -1,3 +1,5 @@
+import './ServicesView.css';
+
 const coreServices = [
   {
     icon: '💳',
@@ -37,14 +39,12 @@ const features = [
 ];
 
 const ServicesView = () => (
-  <main className="space-y-8 pb-8 bg-slate-50 text-slate-900">
-    <section className="relative overflow-hidden rounded-[32px] bg-slate-950 px-6 py-12 text-white shadow-xl sm:px-10 lg:px-14 lg:py-16">
-      <div className="absolute -right-24 -top-28 h-72 w-72 rounded-full bg-sky-500/20 blur-3xl" />
-      <div className="absolute -bottom-32 left-1/3 h-72 w-72 rounded-full bg-emerald-500/15 blur-3xl" />
+  <main className="services-page space-y-8 pb-8 bg-slate-50 text-slate-900">
+    <section className="services-hero-card relative overflow-hidden rounded-[32px] px-6 py-12 sm:px-10 lg:px-14 lg:py-16">
       <div className="relative max-w-4xl animate-fade-in">
-        <p className="text-xs font-bold uppercase tracking-[0.28em] text-emerald-300">Campus commerce, connected</p>
+        <p className="services-hero-label text-xs font-bold uppercase tracking-[0.28em]">Campus commerce, connected</p>
         <h1 className="mt-4 text-4xl font-black tracking-tight sm:text-5xl">Our Services</h1>
-        <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
+        <p className="services-hero-description mt-5 max-w-2xl text-base leading-7 sm:text-lg">
           Practical digital services that make buying, selling, communicating, and completing trades within the university community simpler and safer.
         </p>
       </div>
@@ -58,9 +58,9 @@ const ServicesView = () => (
         </div>
         <span className="text-sm font-semibold text-slate-400">Built for campus life</span>
       </div>
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid items-stretch gap-5 lg:grid-cols-3">
         {coreServices.map((service) => (
-          <article key={service.title} className={`group rounded-[28px] border p-7 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-lg ${service.tone}`}>
+          <article key={service.title} className={`group flex h-full flex-col rounded-[28px] border p-7 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-lg ${service.tone}`}>
             <div className={`flex h-14 w-14 items-center justify-center rounded-2xl text-2xl text-white shadow-sm transition duration-300 group-hover:scale-105 ${service.iconTone}`} aria-hidden="true">
               {service.icon}
             </div>

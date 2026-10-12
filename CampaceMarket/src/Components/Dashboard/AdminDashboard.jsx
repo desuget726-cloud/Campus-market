@@ -849,7 +849,21 @@ function AdminAccountsPanel({ user }) {
 function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('adminSidebarCollapsed') === 'true';
+    } catch (error) {
+      console.warn('Unable to read the admin sidebar preference from localStorage.', error);
+      return false;
+    }
+  });
+  const [desktopSidebarTooltip, setDesktopSidebarTooltip] = useState(null);
   const activeDesktopSidebarItemRef = useRef(null);
+  const userGrowthChartRef = useRef(null);
+  const salesTrendChartRef = useRef(null);
+  const [userGrowthChartWidth, setUserGrowthChartWidth] = useState(100);
+  const [salesTrendChartWidth, setSalesTrendChartWidth] = useState(660);
   const [isReady, setIsReady] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileForm, setProfileForm] = useState({
@@ -1885,9 +1899,13 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     ...productUploadsTrend.map((value) => Number(value) || 0),
     1,
   );
-  const userGrowthSvgPath = generateSvgPath(userGrowthTrend, lineMaxValue);
-  const productUploadsSvgPath = generateSvgPath(productUploadsTrend, lineMaxValue);
-  const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, lineMaxValue);
+  const userGrowthSvgPath = generateSvgPath(userGrowthTrend, lineMaxValue, userGrowthChartWidth);
+  const productUploadsSvgPath = generateSvgPath(productUploadsTrend, lineMaxValue, userGrowthChartWidth);
+  const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, lineMaxValue, userGrowthChartWidth);
+  const salesChartViewWidth = Math.max(salesTrendChartWidth, 320);
+  const salesChartPlotWidth = salesChartViewWidth - 106;
+  const salesChartPlotStart = 58;
+  const salesChartPlotEnd = salesChartViewWidth - 48;
   const salesTrendMaxRevenue = Math.max(
     ...salesTrendData.map((item) => Number(item.revenue) || 0),
     1,
@@ -1933,6 +1951,34 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   useEffect(() => {
     activeDesktopSidebarItemRef.current?.scrollIntoView({ block: 'nearest' });
   }, [activeTab]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('adminSidebarCollapsed', String(isDesktopSidebarCollapsed));
+    } catch (error) {
+      console.warn('Unable to save the admin sidebar preference to localStorage.', error);
+    }
+  }, [isDesktopSidebarCollapsed]);
+
+  useEffect(() => {
+    const updateChartWidths = () => {
+      const userGrowthWidth = Math.max(1, (userGrowthChartRef.current?.clientWidth ?? 148) - 48);
+      const salesWidth = Math.max(1, (salesTrendChartRef.current?.clientWidth ?? 708) - 48);
+      setUserGrowthChartWidth((currentWidth) => currentWidth === userGrowthWidth ? currentWidth : userGrowthWidth);
+      setSalesTrendChartWidth((currentWidth) => currentWidth === salesWidth ? currentWidth : salesWidth);
+    };
+
+    updateChartWidths();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateChartWidths);
+      return () => window.removeEventListener('resize', updateChartWidths);
+    }
+
+    const chartObserver = new ResizeObserver(updateChartWidths);
+    if (userGrowthChartRef.current) chartObserver.observe(userGrowthChartRef.current);
+    if (salesTrendChartRef.current) chartObserver.observe(salesTrendChartRef.current);
+    return () => chartObserver.disconnect();
+  }, [activeTab, isDesktopSidebarCollapsed, isReady]);
 
   useEffect(() => {
     fetchDashboardOverview();
@@ -2324,13 +2370,13 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   };
 
   const handleTabClick = (tabId) => {
+    setIsSidebarOpen(false);
     if (tabId === 'logout') {
       onLogout?.();
       return;
     }
     setActiveTab(tabId);
     onTabChange?.(tabId);
-    setIsSidebarOpen(false);
   };
 
   const handleAddStudentSubmit = async (event) => {
@@ -3640,10 +3686,10 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
             {/* 4 Interactive SVG/CSS Charts Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
+              <div ref={userGrowthChartRef} className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">User Growth & Product Uploads</h3>
                 <div className="relative h-44 w-full mt-2">
-                  <svg className="h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+                  <svg className="h-full w-full" viewBox={`0 0 ${userGrowthChartWidth} 100`} preserveAspectRatio="none">
                     <defs>
                       <linearGradient id="growthGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
@@ -3664,7 +3710,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                 </div>
               </div>
 
-              <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
+              <div ref={salesTrendChartRef} className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b pb-2">
                   <h3 className="text-md font-bold text-slate-900">Sales & Revenue Trend</h3>
                   <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-1" aria-label="Sales trend range">
@@ -3701,7 +3747,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                   <div className="w-full">
                     <svg
                       className="h-44 w-full overflow-visible"
-                      viewBox="0 0 660 190"
+                      viewBox={`0 0 ${salesChartViewWidth} 190`}
                       role="img"
                       aria-label={`Sales revenue and order count for the last ${salesTrendRange} months`}
                     >
@@ -3714,15 +3760,15 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                           : `ETB ${Math.round(revenueTick).toLocaleString()}`;
                         return (
                           <g key={`sales-tick-${tick}`}>
-                            <line x1="58" y1={y} x2="612" y2={y} stroke="#e2e8f0" strokeWidth="1" />
+                            <line x1={salesChartPlotStart} y1={y} x2={salesChartPlotEnd} y2={y} stroke="#e2e8f0" strokeWidth="1" />
                             <text x="52" y={y + 3} textAnchor="end" fill="#64748b" fontSize="9">{revenueLabel}</text>
-                            <text x="618" y={y + 3} fill="#64748b" fontSize="9">{ordersTick}</text>
+                            <text x={salesChartPlotEnd + 6} y={y + 3} fill="#64748b" fontSize="9">{ordersTick}</text>
                           </g>
                         );
                       })}
                       {salesTrendData.map((item, index) => {
-                        const step = 554 / salesTrendData.length;
-                        const x = 58 + (index + 0.5) * step;
+                        const step = salesChartPlotWidth / salesTrendData.length;
+                        const x = salesChartPlotStart + (index + 0.5) * step;
                         const revenue = Number(item.revenue) || 0;
                         const orders = Number(item.orders) || 0;
                         const barHeight = (revenue / salesTrendMaxRevenue) * 140;
@@ -3753,8 +3799,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                       {salesTrendData.length > 0 && (
                         <polyline
                           points={salesTrendData.map((item, index) => {
-                            const step = 554 / salesTrendData.length;
-                            const x = 58 + (index + 0.5) * step;
+                            const step = salesChartPlotWidth / salesTrendData.length;
+                            const x = salesChartPlotStart + (index + 0.5) * step;
                             const orders = Number(item.orders) || 0;
                             const y = 160 - (orders / salesTrendMaxOrders) * 140;
                             return `${x},${y}`;
@@ -7532,21 +7578,35 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
   return (
     <div className="admin-dashboard-shell flex min-h-[calc(100dvh-4rem)] flex-col bg-slate-50 text-slate-900 lg:min-h-0">
-      <div className="flex flex-1 flex-col items-start gap-3 px-3 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:px-4 lg:py-4">
+      <div
+        className="admin-dashboard-layout flex flex-1 flex-col items-start gap-3 px-3 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:px-4 lg:py-4"
+        data-admin-sidebar-layout
+        data-sidebar-collapsed={isDesktopSidebarCollapsed}
+        style={{ '--admin-sidebar-width': isDesktopSidebarCollapsed ? '72px' : '288px' }}
+      >
         {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
-        <aside className="admin-dashboard-sidebar relative hidden lg:flex lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl">
+        <aside
+          data-collapsed={isDesktopSidebarCollapsed}
+          className="admin-dashboard-sidebar relative hidden lg:flex lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl"
+        >
           {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
-          <div className="relative z-10 flex shrink-0 items-start gap-3 overflow-hidden">
+          <div className="admin-sidebar-brand relative z-10 flex shrink-0 items-start justify-between gap-3 overflow-hidden">
             {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
             <img src={logs} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
             <button
               type="button"
-              onClick={() => setIsSidebarOpen(false)}
-              className="rounded-lg p-2 text-slate-300 transition hover:bg-white/10 hover:text-white lg:hidden"
-              aria-label="Close admin navigation"
+              onClick={() => {
+                setIsDesktopSidebarCollapsed((collapsed) => !collapsed);
+                setDesktopSidebarTooltip(null);
+              }}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-300 transition hover:bg-white/10 hover:text-white"
+              aria-label={isDesktopSidebarCollapsed ? 'Expand admin navigation' : 'Collapse admin navigation'}
+              aria-expanded={!isDesktopSidebarCollapsed}
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                {isDesktopSidebarCollapsed
+                  ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5l-7 7 7 7" />}
               </svg>
             </button>
           </div>
@@ -7560,12 +7620,29 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                   ref={isActive ? activeDesktopSidebarItemRef : null}
                   type="button"
                   onClick={() => handleTabClick(tab.id)}
-                  className={`mb-2 flex w-full shrink-0 items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
+                  onMouseEnter={(event) => {
+                    if (isDesktopSidebarCollapsed) {
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      setDesktopSidebarTooltip({ label: tab.label, top: bounds.top + bounds.height / 2, left: bounds.right + 12 });
+                    }
+                  }}
+                  onMouseLeave={() => setDesktopSidebarTooltip(null)}
+                  onFocus={(event) => {
+                    if (isDesktopSidebarCollapsed) {
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      setDesktopSidebarTooltip({ label: tab.label, top: bounds.top + bounds.height / 2, left: bounds.right + 12 });
+                    }
+                  }}
+                  onBlur={() => setDesktopSidebarTooltip(null)}
+                  aria-label={tab.label}
+                  title={isDesktopSidebarCollapsed ? tab.label : undefined}
+                  data-tooltip={tab.label}
+                  className={`admin-sidebar-item group mb-2 flex w-full shrink-0 items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
                     ? 'bg-[#1d4ed8] text-white shadow-md'
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
                     }`}
                 >
-                  <span className="flex items-center gap-2">{tab.label}{tab.id === 'disputes' && openDisputeCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{openDisputeCount}</span>}</span>
+                  <span className="admin-sidebar-item-label flex items-center gap-2">{tab.label}{tab.id === 'disputes' && openDisputeCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{openDisputeCount}</span>}</span>
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
                     className={`h-5 w-5 ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-white'}`}
@@ -7580,6 +7657,15 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               );
             })}
           </nav>
+          {isDesktopSidebarCollapsed && desktopSidebarTooltip && (
+            <span
+              role="tooltip"
+              className="admin-sidebar-tooltip"
+              style={{ top: desktopSidebarTooltip.top, left: desktopSidebarTooltip.left }}
+            >
+              {desktopSidebarTooltip.label}
+            </span>
+          )}
         </aside>
 
         <aside id="admin-mobile-navigation" className={`fixed left-0 top-[72px] bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
@@ -7619,7 +7705,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         </aside>
         {
           isSidebarOpen && (
-            <div onClick={() => setIsSidebarOpen(false)} className="fixed top-[72px] bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
+            <div onClick={() => setIsSidebarOpen(false)} className="admin-sidebar-backdrop fixed top-[72px] bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
           )
         }
 
@@ -7627,13 +7713,13 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         {/* Start content directly below the global navbar; the former empty hero card is removed. */}
         <main className="admin-dashboard-content min-w-0 flex-1 overflow-x-hidden pb-8 pt-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:pt-2 lg:pr-2">
 
-          <div className="mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:hidden">
+          <div className="admin-dashboard-mobile-toggle mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:hidden">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
               aria-controls="admin-mobile-navigation"
               aria-expanded={isSidebarOpen}
-              aria-label="Open admin navigation"
+              aria-label={isSidebarOpen ? 'Close admin navigation' : 'Open admin navigation'}
               className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-900 text-white"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">

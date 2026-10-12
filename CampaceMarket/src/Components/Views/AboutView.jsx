@@ -9,6 +9,7 @@ import {
   MessageCircle,
   Sparkles,
 } from 'lucide-react';
+import './AboutView.css';
 
 const badges = [
   { label: 'Eco-Friendly', icon: Leaf, tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
@@ -40,10 +41,8 @@ const technologies = [
 ];
 
 const AboutView = ({ onNavigate }) => (
-  <main className="space-y-8 pb-8 text-slate-900">
-    <section className="relative overflow-hidden rounded-[32px] bg-slate-950 px-6 py-12 text-white shadow-xl sm:px-10 lg:px-14 lg:py-16">
-      <div className="absolute -right-20 -top-24 h-64 w-64 rounded-full bg-emerald-500/20 blur-3xl" />
-      <div className="absolute -bottom-32 left-1/3 h-72 w-72 rounded-full bg-sky-500/15 blur-3xl" />
+  <main className="about-page space-y-8 pb-8 text-slate-900">
+    <section className="about-hero-card relative overflow-hidden rounded-[32px] px-6 py-12 sm:px-10 lg:px-14 lg:py-16">
       <div className="relative max-w-3xl">
         <div className="flex flex-wrap gap-2">
           {badges.map((badge) => (
@@ -53,9 +52,9 @@ const AboutView = ({ onNavigate }) => (
             </span>
           ))}
         </div>
-        <p className="mt-8 text-xs font-bold uppercase tracking-[0.28em] text-emerald-300">About Campus Marketplace</p>
+        <p className="about-hero-label mt-8 text-xs font-bold uppercase tracking-[0.28em]">About Campus Marketplace</p>
         <h1 className="mt-3 max-w-2xl text-4xl font-black tracking-tight sm:text-5xl">A smarter way to trade on campus.</h1>
-        <p className="mt-5 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">
+        <p className="about-hero-description mt-5 max-w-2xl text-base leading-7 sm:text-lg">
           Campus Marketplace is a trusted peer-to-peer platform for university communities. Avoid expensive retail prices by buying directly from other verified students.
         </p>
       </div>
