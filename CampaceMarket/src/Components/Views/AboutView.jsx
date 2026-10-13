@@ -11,11 +11,11 @@ import {
 } from 'lucide-react';
 import './AboutView.css';
 
-const badges = [
-  { label: 'Eco-Friendly', icon: Leaf, tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
-  { label: 'Peer-to-Peer', icon: Handshake, tone: 'border-sky-200 bg-sky-50 text-sky-700' },
-  { label: 'Affordable', icon: BadgeDollarSign, tone: 'border-amber-200 bg-amber-50 text-amber-700' },
-];
+// const badges = [
+//   { label: 'Eco-Friendly', icon: Leaf, tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
+//   { label: 'Peer-to-Peer', icon: Handshake, tone: 'border-sky-200 bg-sky-50 text-sky-700' },
+//   { label: 'Affordable', icon: BadgeDollarSign, tone: 'border-amber-200 bg-amber-50 text-amber-700' },
+// ];
 
 const steps = [
   { number: '01', title: 'Register', text: 'Create your verified student account', color: 'bg-emerald-500' },
@@ -44,18 +44,18 @@ const AboutView = ({ onNavigate }) => (
   <main className="about-page space-y-8 pb-8 text-slate-900">
     <section className="about-hero-card relative overflow-hidden rounded-[32px] px-6 py-12 sm:px-10 lg:px-14 lg:py-16">
       <div className="relative max-w-3xl">
-        <div className="flex flex-wrap gap-2">
+        {/* <div className="flex flex-wrap gap-2">
           {badges.map((badge) => (
             <span key={badge.label} className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${badge.tone}`}>
               <badge.icon size={14} strokeWidth={2.5} aria-hidden="true" />
               {badge.label}
             </span>
           ))}
-        </div>
+        </div> */}
         <p className="about-hero-label mt-8 text-xs font-bold uppercase tracking-[0.28em]">About Campus Marketplace</p>
         <h1 className="mt-3 max-w-2xl text-4xl font-black tracking-tight sm:text-5xl">A smarter way to trade on campus.</h1>
         <p className="about-hero-description mt-5 max-w-2xl text-base leading-7 sm:text-lg">
-          Campus Marketplace is a trusted peer-to-peer platform for university communities. Avoid expensive retail prices by buying directly from other verified students.
+         UniXchange is a trusted peer-to-peer platform for university communities. Avoid expensive retail prices by buying directly from other verified students.
         </p>
       </div>
     </section>
@@ -111,7 +111,7 @@ const AboutView = ({ onNavigate }) => (
       </div>
     </section>
 
-    <section className="flex flex-col gap-5 rounded-[28px] bg-emerald-600 p-7 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
+    <section className="flex flex-col gap-5 rounded-[28px] bg-white-600 p-7 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
       <div>
         <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-100">Ready to trade smarter?</p>
         <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the campus exchange.</h2>
