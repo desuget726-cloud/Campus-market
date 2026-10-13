@@ -113,7 +113,7 @@ const AboutView = ({ onNavigate }) => (
 
     <section className="flex flex-col gap-5 rounded-[28px] bg-white-600 p-7 text-salt-600 shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
       <div>
-        <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-100">Ready to trade smarter?</p>
+        <p className="text-xs font-bold uppercase tracking-[0.25em] text-salt-600">Ready to trade smarter?</p>
         <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the campus exchange.</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-emerald-50">Buy from verified students, sell what you no longer need, and keep every exchange close to campus.</p>
       </div>
