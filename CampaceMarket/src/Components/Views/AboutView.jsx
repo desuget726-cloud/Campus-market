@@ -111,7 +111,7 @@ const AboutView = ({ onNavigate }) => (
       </div>
     </section>
 
-    <section className="flex flex-col gap-5 rounded-[28px] bg-white-600 p-7 text-white shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
+    <section className="flex flex-col gap-5 rounded-[28px] bg-white-600 p-7 text-salt-600 shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
       <div>
         <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-100">Ready to trade smarter?</p>
         <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the campus exchange.</h2>
