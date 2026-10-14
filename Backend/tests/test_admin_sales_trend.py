@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -34,7 +34,7 @@ class AdminSalesTrendEndpointTests(unittest.TestCase):
         Base.metadata.drop_all(bind=self.engine)
         Base.metadata.create_all(bind=self.engine)
         self.db = self.session_factory()
-        now = datetime.now()
+        now = main_module._analytics_local_now()
         current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         self.db.add_all([
             Order(
@@ -127,7 +127,7 @@ class AdminSalesTrendEndpointTests(unittest.TestCase):
         self.assertTrue(all(len(row["month"]) == 7 for row in payload))
         self.assertTrue(all({"month", "label", "revenue", "orders"} <= row.keys() for row in payload))
         self.assertTrue(all(row["revenue"] == 0 and row["orders"] == 0 for row in payload[:-1]))
-        self.assertEqual(payload[-1]["month"], datetime.now().strftime("%Y-%m"))
+        self.assertEqual(payload[-1]["month"], main_module._analytics_local_now().strftime("%Y-%m"))
         self.assertEqual(payload[-1]["revenue"], 2961.0)
         self.assertEqual(payload[-1]["orders"], 2)
 
@@ -137,6 +137,50 @@ class AdminSalesTrendEndpointTests(unittest.TestCase):
         )
         self.assertEqual(twelve_month_response.status_code, 200)
         self.assertEqual(len(twelve_month_response.json()), 12)
+
+    def test_range_sales_trend_uses_completed_paid_order_revenue_and_zero_fills(self):
+        older_sale_month = main_module._analytics_local_now().replace(day=1) - timedelta(days=1)
+        older_sale_month = older_sale_month.replace(day=1) - timedelta(days=1)
+        older_sale_month = older_sale_month.replace(day=1)
+        self.db.query(Order).filter(
+            Order.student_id.in_(("student-1", "student-2"))
+        ).update({Order.paid_at: older_sale_month}, synchronize_session=False)
+        self.db.add(Order(
+            student_id="student-6",
+            product_id=6,
+            title="Today's paid completed order",
+            price="ETB 125",
+            quantity=1,
+            pickup_code=1006,
+            status="Completed",
+            payment_status="Successful",
+            paid_at=main_module._analytics_local_now(),
+        ))
+        self.db.commit()
+
+        expected_lengths = {"7d": 7, "30d": 30, "year": 12}
+        responses = {}
+        for period, expected_length in expected_lengths.items():
+            response = self.client.get(
+                f"/api/admin/analytics/sales-trend?range={period}",
+                headers={"Authorization": "Bearer test-admin-token"},
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(set(payload), {"labels", "revenue"})
+            self.assertEqual(len(payload["labels"]), expected_length)
+            self.assertEqual(len(payload["revenue"]), expected_length)
+            self.assertTrue(all(isinstance(value, (int, float)) for value in payload["revenue"]))
+            responses[period] = payload
+
+        self.assertEqual(responses["7d"]["revenue"][:-1], [0.0] * 6)
+        self.assertEqual(responses["7d"]["revenue"][-1], 125.0)
+        self.assertEqual(sum(responses["30d"]["revenue"]), 125.0)
+        self.assertEqual(sum(responses["year"]["revenue"]), 3086.0)
+
+        with patch.dict(os.environ, {"CHAPA_SECRET_KEY": ""}):
+            kpi_revenue = main_module.get_admin_analytics(db=self.db)["total_revenue"]
+        self.assertEqual(sum(responses["year"]["revenue"]), kpi_revenue)
 
     def test_requires_an_admin_session(self):
         response = self.client.get("/api/admin/analytics/sales-trend")

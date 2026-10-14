@@ -9,6 +9,13 @@ import { adminApiGet, getStoredAccessToken } from '../../api/apiClient';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { getAdminSettings, invalidateAdminSettingsCache } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
+import {
+  analyticsSalesPeriods,
+  buildAnalyticsRevenueChart,
+  changeAnalyticsPeriod,
+  fetchAnalyticsSales,
+  getAnalyticsPeriodButtonClass,
+} from '../../utils/analyticsSalesTrend';
 import logs from '../../assets/logs.png';
 import logo1 from '../../assets/logo1.jpg';
 
@@ -1712,6 +1719,10 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const [salesTrendData, setSalesTrendData] = useState([]);
   const [salesTrendLoading, setSalesTrendLoading] = useState(true);
   const [salesTrendError, setSalesTrendError] = useState('');
+  const [period, setPeriod] = useState('7d');
+  const [analyticsSalesData, setAnalyticsSalesData] = useState({ labels: [], revenue: [] });
+  const [analyticsSalesLoading, setAnalyticsSalesLoading] = useState(true);
+  const [analyticsSalesError, setAnalyticsSalesError] = useState('');
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1751,6 +1762,35 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     fetchSalesTrend();
     return () => controller.abort();
   }, [salesTrendRange]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadAnalyticsSales = async () => {
+      setAnalyticsSalesLoading(true);
+      setAnalyticsSalesError('');
+      try {
+        const token = getAdminSessionToken();
+        const data = await fetchAnalyticsSales(
+          period,
+          token,
+          API_BASE_URL,
+          fetch,
+          controller.signal,
+        );
+        setAnalyticsSalesData(data);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error('Failed to fetch analytics sales data:', error);
+        setAnalyticsSalesData({ labels: [], revenue: [] });
+        setAnalyticsSalesError(error.message || 'Unable to load sales data.');
+      } finally {
+        if (!controller.signal.aborted) setAnalyticsSalesLoading(false);
+      }
+    };
+
+    loadAnalyticsSales();
+    return () => controller.abort();
+  }, [period]);
 
   const fetchDashboardOverview = async () => {
     setDashboardMetricsLoading(true);
@@ -6311,15 +6351,15 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       }
       case 'analytics': {
         const analyticsRegistrations = Array.isArray(metrics.registrations) ? metrics.registrations : userGrowthTrend;
-        const analyticsRevenue = Array.isArray(metrics.monthlyRevenue) ? metrics.monthlyRevenue : revenueTrend;
+        const analyticsRevenue = analyticsSalesData.revenue;
         const registrationChartMax = Math.max(...analyticsRegistrations.map((value) => Number(value) || 0), 1);
-        const revenueChartMax = Math.max(...analyticsRevenue.map((value) => Number(value) || 0), 1);
         const registrationPath = generateSvgPath(analyticsRegistrations, registrationChartMax, 560, 130, 20);
         const registrationAreaPath = generateSvgAreaPath(analyticsRegistrations, registrationChartMax, 560, 130, 20);
-        const revenuePath = generateSvgPath(analyticsRevenue, revenueChartMax, 560, 130, 20);
-        const revenueAreaPath = generateSvgAreaPath(analyticsRevenue, revenueChartMax, 560, 130, 20);
+        const { pts, path: revenuePath, areaPath: revenueAreaPath } = buildAnalyticsRevenueChart(
+          analyticsSalesData.labels,
+          analyticsRevenue,
+        );
         const registrationLabels = metrics.registrationLabels?.length ? metrics.registrationLabels : analyticsRegistrations.map((_, index) => `Day ${index + 1}`);
-        const analyticsMonths = metrics.monthsLabels?.length ? metrics.monthsLabels : trendMonths;
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
@@ -6359,40 +6399,56 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                     <h3 className="mt-1 text-xl font-black text-slate-950">Sales & Revenue</h3>
                   </div>
                   <div className="flex items-center gap-2 rounded-full bg-slate-100 p-1">
-                    {['7 Days', '30 Days', 'This Year'].map((period, index) => (
+                    {analyticsSalesPeriods.map(({ key, label }) => (
                       <button
-                        key={period}
+                        key={key}
                         type="button"
-                        className={`rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] ${index === 0 ? 'bg-[#111c3a] text-white' : 'text-slate-600'}`}
+                        aria-pressed={period === key}
+                        onClick={() => changeAnalyticsPeriod(key, setPeriod)}
+                        className={getAnalyticsPeriodButtonClass(period, key)}
                       >
-                        {period}
+                        {label}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                <svg viewBox="0 0 640 160" className="h-64 w-full" preserveAspectRatio="none">
-                  <defs>
-                    <linearGradient id="salesBg" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.18" />
-                      <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.02" />
-                    </linearGradient>
-                  </defs>
+                {analyticsSalesLoading ? (
+                  <div className="flex h-64 items-center justify-center text-center text-sm font-semibold text-slate-500" role="status">
+                    Loading sales data...
+                  </div>
+                ) : analyticsSalesError ? (
+                  <div className="flex h-64 items-center justify-center px-4 text-center text-sm font-semibold text-rose-600" role="alert">
+                    Unable to load sales data: {analyticsSalesError}
+                  </div>
+                ) : !pts.length ? (
+                  <div className="flex h-64 items-center justify-center text-center text-sm font-semibold text-slate-500">
+                    No sales data
+                  </div>
+                ) : (
+                  <svg viewBox="0 0 640 160" className="h-64 w-full">
+                    <defs>
+                      <linearGradient id="salesBg" x1="0" x2="0" y1="0" y2="1">
+                        <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.18" />
+                        <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.02" />
+                      </linearGradient>
+                    </defs>
 
-                  {[0, 1, 2, 3, 4].map((line) => (
-                    <line key={line} x1="20" x2="600" y1={30 + line * 25} y2={30 + line * 25} stroke="#e2e8f0" strokeDasharray="4 8" />
-                  ))}
+                    {[0, 1, 2, 3, 4].map((line) => (
+                      <line key={line} x1="20" x2="600" y1={30 + line * 25} y2={30 + line * 25} stroke="#e2e8f0" strokeDasharray="4 8" />
+                    ))}
 
-                  <path d={revenueAreaPath} fill="url(#salesBg)" opacity="0.7" />
-                  <path d={revenuePath} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
+                    <path d={revenueAreaPath} fill="url(#salesBg)" opacity="0.7" />
+                    <path d={revenuePath} fill="none" stroke="#4f46e5" strokeWidth="4" strokeLinecap="round" />
 
-                  {analyticsMonths.map((label, index) => (
-                    <g key={label}>
-                      <circle cx={analyticsRevenue.length > 1 ? 40 + index * (520 / (analyticsRevenue.length - 1)) : 300} cy={110 - ((Number(analyticsRevenue[index]) || 0) / revenueChartMax) * 90} r="4" fill="#4f46e5" />
-                      <text x={40 + index * 104} y="155" fill="#64748b" fontSize="11" textAnchor="middle">{label}</text>
-                    </g>
-                  ))}
-                </svg>
+                    {pts.map(({ x, y, label }, index) => (
+                      <g key={`${label}-${index}`}>
+                        <circle cx={x} cy={y} r="4" fill="#4f46e5" />
+                        <text x={x} y="155" fill="#64748b" fontSize="11" textAnchor="middle">{label}</text>
+                      </g>
+                    ))}
+                  </svg>
+                )}
               </div>
 
               <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">

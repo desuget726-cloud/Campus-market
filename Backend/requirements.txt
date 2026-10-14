@@ -16,6 +16,7 @@ Pillow
 requests
 scikit-learn
 sqlalchemy<2.1
+tzdata
 uvicorn[standard]
 cloudinary
 user-agents

@@ -31,6 +31,11 @@ from sqlalchemy import Numeric as SQLNumeric, String, and_, case, cast as sql_ca
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
 from app.password_security import hash_password, verify_password
+from app.sales_analytics import (
+    analytics_local_now,
+    build_sales_trend_response,
+    get_sales_trend_buckets,
+)
 from typing import Optional, List, Dict, Tuple, Any, Callable, Literal, cast
 from dataclasses import dataclass
 import shutil
@@ -15002,15 +15007,34 @@ def _completed_paid_order_filters():
     )
 
 
+def _analytics_local_now():
+    return analytics_local_now()
+
+
 @app.get("/api/admin/analytics/sales-trend")
 def get_admin_sales_trend(
     months: int = Query(6, ge=1, le=12),
+    period: Optional[str] = Query(None, alias="range", regex="^(7d|30d|year)$"),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
     _require_admin(authorization, None, db)
 
-    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    local_now = _analytics_local_now()
+    if period:
+        buckets = get_sales_trend_buckets(period, local_now)
+        sales_date = func.coalesce(Order.paid_at, Order.created_at)
+        sales_rows = db.query(
+            sales_date,
+            _completed_order_revenue_expression(),
+        ).filter(
+            *_completed_paid_order_filters(),
+            sales_date >= buckets.start,
+            sales_date < buckets.end,
+        ).all()
+        return build_sales_trend_response(buckets, sales_rows)
+
+    current_month = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     month_rows = []
     for month_offset in range(months - 1, -1, -1):
         absolute_month = current_month.year * 12 + current_month.month - 1 - month_offset
