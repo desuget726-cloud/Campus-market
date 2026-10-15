@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Navbar from './Components/Navbars/Navbar';
+import TopBar from './Components/Navbars/TopBar';
 import RegisterForm from './Components/Authontication/RegisterForm';
 import LoginForm from './Components/Authontication/LoginForm';
 import HomeView from './Components/Home/HomeView';
@@ -615,6 +616,7 @@ function AppContent() {
         }}
       />
       <PaymentSuccessToast />
+      {!['login', 'register'].includes(currentView) && <TopBar onNavigate={handleNavigate} />}
       {!['login', 'register'].includes(currentView) && (
         <Navbar
           variant={isDashboardView ? 'dashboard' : 'public'}
