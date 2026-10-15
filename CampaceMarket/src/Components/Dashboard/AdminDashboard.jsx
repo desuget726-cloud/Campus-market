@@ -856,6 +856,11 @@ function AdminAccountsPanel({ user }) {
 function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  useEffect(() => {
+    const toggleSidebar = () => setIsSidebarOpen((isOpen) => !isOpen);
+    window.addEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
+    return () => window.removeEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
+  }, []);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -7724,7 +7729,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           )}
         </aside>
 
-        <aside id="admin-mobile-navigation" className={`fixed left-0 top-[72px] bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <aside id="admin-mobile-navigation" className={`fixed left-0 top-[72px] bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 max-md:w-[85%] max-md:max-w-[320px] lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
           {/* The mobile header uses the same relative/clipped containment as desktop. */}
           <div className="relative z-10 flex min-h-0 items-start gap-3 overflow-hidden">
             <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
@@ -7761,7 +7766,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         </aside>
         {
           isSidebarOpen && (
-            <div onClick={() => setIsSidebarOpen(false)} className="admin-sidebar-backdrop fixed top-[72px] bottom-0 left-0 right-0 z-40 bg-slate-900/40 backdrop-blur-xs lg:hidden" />
+            <div onClick={() => setIsSidebarOpen(false)} className="admin-sidebar-backdrop fixed top-[72px] bottom-0 left-0 right-0 z-40 bg-slate-950/70 backdrop-blur-xs md:bg-slate-900/40 lg:hidden" />
           )
         }
 
@@ -7769,14 +7774,14 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         {/* Start content directly below the global navbar; the former empty hero card is removed. */}
         <main className="admin-dashboard-content min-w-0 flex-1 overflow-x-hidden pb-8 pt-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:pt-2 lg:pr-2">
 
-          <div className="admin-dashboard-mobile-toggle mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm lg:hidden">
+          <div className="admin-dashboard-mobile-toggle mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm md:p-3 lg:hidden">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
               aria-controls="admin-mobile-navigation"
               aria-expanded={isSidebarOpen}
               aria-label={isSidebarOpen ? 'Close admin navigation' : 'Open admin navigation'}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-900 text-white"
+              className="hidden h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-900 text-white md:grid"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />

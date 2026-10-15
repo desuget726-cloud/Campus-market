@@ -89,6 +89,20 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     <header ref={headerRef} className="site-navbar sticky top-0 z-50 h-[72px] w-full shrink-0 border-b border-blue-900 text-white">
       <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
+        {isDashboardLayout && isAdmin && (
+          <button
+            type="button"
+            aria-label="Open admin navigation"
+            aria-controls="admin-mobile-navigation"
+            onClick={() => window.dispatchEvent(new Event('campace:toggle-dashboard-sidebar'))}
+            className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-white/15 text-white md:hidden"
+          >
+            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        )}
+
         <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">
           <div className="flex shrink-0 cursor-pointer items-center gap-2 max-[500px]:gap-1" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
             <img
@@ -96,7 +110,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               alt="UniXchange logo"
               className="notranslate h-11 w-11 shrink-0 rounded-full border-2 border-white/80 bg-white/90 object-cover p-1 shadow-md sm:h-14 sm:w-14"
             />
-            <span className="notranslate whitespace-nowrap text-[15px] font-black tracking-tight text-white max-[359px]:hidden sm:text-[18px] md:text-[2rem]">UniXchange</span>
+            <span className={`notranslate whitespace-nowrap text-[15px] font-black tracking-tight text-white max-[359px]:hidden sm:text-[18px] md:text-[2rem] ${isDashboardLayout && isAdmin ? 'hidden md:inline' : ''}`}>UniXchange</span>
           </div>
         </div>
 
