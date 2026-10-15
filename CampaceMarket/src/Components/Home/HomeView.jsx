@@ -693,7 +693,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                   </div>
                 ) : (
                   <div ref={allProductsSectionRef} className="min-w-0">
-                    <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
+                    <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
                       {visibleProducts.map((product, idx) => (
                         <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
                           <div className="min-w-0">
