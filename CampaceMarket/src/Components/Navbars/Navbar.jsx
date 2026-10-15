@@ -8,6 +8,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [activeMobilePage, setActiveMobilePage] = useState(() => {
+    const initialPage = window.location.pathname.replace(/\/+$/, '').split('/').pop();
+    return ['about', 'services', 'contact'].includes(initialPage) ? initialPage : 'home';
+  });
   const [profileUser, setProfileUser] = useState(user);
   const languageMenuRef = useRef(null);
   const headerRef = useRef(null);
@@ -319,8 +323,15 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
       </div>
 
       {!isDashboardLayout && isMobileMenuOpen && (
-        <aside id="mobile-navigation" className="absolute left-0 right-0 top-full z-50 border-t border-blue-900 bg-slate-900 p-4 text-white shadow-xl md:hidden" aria-label="Mobile navigation">
-            <nav className="flex flex-col gap-1">
+        <>
+          <button
+            type="button"
+            aria-label="Close mobile navigation"
+            onClick={() => setIsMobileMenuOpen(false)}
+            className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          />
+          <aside id="mobile-navigation" className="absolute left-0 right-0 top-full z-50 mx-3 mt-2 w-auto rounded-xl bg-slate-900 p-2 text-white shadow-lg md:hidden" aria-label="Mobile navigation">
+            <nav className="flex flex-col gap-0">
               {[
                 ['Home', 'home'],
                 ['About', 'about'],
@@ -331,23 +342,26 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   key={view}
                   type="button"
                   onClick={() => {
+                    setActiveMobilePage(view);
                     setIsMobileMenuOpen(false);
                     onNavigate(view);
                   }}
-                  className="min-h-[44px] rounded-xl px-4 py-3 text-left text-base font-semibold text-slate-200 transition hover:bg-slate-800 hover:text-blue-400"
+                  aria-current={activeMobilePage === view ? 'page' : undefined}
+                  className={`flex min-h-[48px] items-center rounded-lg px-4 text-left text-base font-semibold text-white transition hover:bg-white/10 ${activeMobilePage === view ? 'bg-white/15' : ''}`}
                 >
                   {label}
                 </button>
               ))}
             </nav>
-            <div className="mt-2 flex flex-col gap-1 border-t border-slate-800 pt-2">
+            <div className="my-2 border-t border-white/15" />
+            <div className="flex flex-col gap-2 px-4">
               <button
                 type="button"
                 onClick={() => {
                   onNavigate('login');
                   setIsMobileMenuOpen(false);
                 }}
-                className="min-h-[44px] py-2 text-left text-base font-semibold text-white transition-colors hover:text-blue-400"
+                className="min-h-[48px] w-full rounded-lg border border-white/40 text-center font-semibold text-white transition-colors hover:bg-white/10"
               >
                 {t('navbar.login')}
               </button>
@@ -357,12 +371,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   onNavigate('register');
                   setIsMobileMenuOpen(false);
                 }}
-                className="min-h-[44px] py-2 text-left text-base font-semibold text-white transition-colors hover:text-blue-400"
+                className="min-h-[48px] w-full rounded-lg bg-white text-center font-bold text-sky-700 transition-colors hover:bg-sky-50"
               >
                 {t('navbar.signup')}
               </button>
             </div>
-        </aside>
+          </aside>
+        </>
       )}
     </header>
   );
