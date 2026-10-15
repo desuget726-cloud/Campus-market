@@ -693,11 +693,11 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                   </div>
                 ) : (
                   <div ref={allProductsSectionRef} className="min-w-0">
-                    <div className="grid min-w-0 gap-3 sm:gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+                    <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-[repeat(auto-fill,minmax(260px,1fr))]">
                       {visibleProducts.map((product, idx) => (
                         <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
                           <div className="min-w-0">
-                            <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
+                            <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover md:aspect-[4/3] md:rounded-none" />
                             <div className="flex min-w-0 flex-col p-2 sm:p-4">
                               <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
                                 <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category}</span>
@@ -707,15 +707,15 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                               <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
                             </div>
                           </div>
-                          <div className="mt-auto min-w-0 p-3 pt-0 sm:p-4 sm:pt-0">
+                          <div className="mt-auto min-w-0 p-2 pt-0 sm:p-4 sm:pt-0">
                             <div className="flex min-w-0 flex-col gap-2 border-t border-slate-50 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                              <CompactEtbPrice value={product.price} language={language} className="min-w-0 whitespace-nowrap text-sm font-semibold text-slate-900 sm:text-base" />
+                              <CompactEtbPrice value={product.price} language={language} className="min-w-0 whitespace-nowrap text-sm font-bold text-slate-900 sm:text-base sm:font-semibold" />
                               <button
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   openProduct(product);
                                 }}
-                                className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold transition-colors sm:inline-flex sm:w-auto"
+                                className="btn-primary inline-flex min-h-[40px] w-full shrink-0 cursor-pointer items-center justify-center rounded-full px-3 py-1.5 text-xs font-semibold transition-colors sm:w-auto"
                               >
                                 View Details
                               </button>
