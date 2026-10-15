@@ -10,13 +10,9 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [profileUser, setProfileUser] = useState(user);
   const languageMenuRef = useRef(null);
+  const headerRef = useRef(null);
   const { t, language, setLanguage } = useLanguage();
   const isDashboardLayout = variant === 'dashboard';
-  useEffect(() => {
-    const openMobileNavigation = () => setIsMobileMenuOpen(true);
-    window.addEventListener('campace:open-public-mobile-navigation', openMobileNavigation);
-    return () => window.removeEventListener('campace:open-public-mobile-navigation', openMobileNavigation);
-  }, []);
   const effectiveRole = String(userRole || user?.role || 'student').toLowerCase().trim().replace(/_/g, ' ');
   const isAdmin = ['admin', 'sub admin', 'super admin', 'superadministrator'].includes(effectiveRole);
   const displayUser = isAdmin ? { ...user, ...profileUser } : user;
@@ -52,6 +48,17 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isLanguageMenuOpen]);
 
   useEffect(() => {
+    if (!isMobileMenuOpen) return undefined;
+
+    const closeOnOutsidePointer = (event) => {
+      if (!headerRef.current?.contains(event.target)) setIsMobileMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, [isMobileMenuOpen]);
+
+  useEffect(() => {
     if (!isAdmin) return undefined;
 
     let cancelled = false;
@@ -79,7 +86,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
 
   return (
-    <header className="site-navbar sticky top-0 z-[100] h-[72px] w-full shrink-0 border-b border-blue-900 text-white">
+    <header ref={headerRef} className="site-navbar sticky top-0 z-50 h-[72px] w-full shrink-0 border-b border-blue-900 text-white">
       <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
         <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">
@@ -152,6 +159,26 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               </div>
             )}
           </div>
+          {(!isDashboardLayout || !isAdmin) && (
+            <button
+              type="button"
+              aria-label={isDashboardLayout ? 'Open sidebar' : 'Toggle mobile navigation'}
+              aria-expanded={!isDashboardLayout && isMobileMenuOpen}
+              aria-controls={isDashboardLayout ? 'student-mobile-navigation' : 'mobile-navigation'}
+              onClick={() => {
+                if (isDashboardLayout) {
+                  window.dispatchEvent(new Event('campace:toggle-dashboard-sidebar'));
+                  return;
+                }
+                setIsMobileMenuOpen((isOpen) => !isOpen);
+              }}
+              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-white/15 text-white transition hover:bg-white/25 md:hidden"
+            >
+              <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+          )}
           {user ? (
             // Logged In Dropdown View
             <div className="relative flex min-w-0 max-w-full items-center gap-2 sm:gap-3 max-[400px]:gap-1">
@@ -278,19 +305,8 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
       </div>
 
       {!isDashboardLayout && isMobileMenuOpen && (
-        <>
-          <button
-            type="button"
-            aria-label="Close mobile navigation"
-            onClick={() => setIsMobileMenuOpen(false)}
-            className="fixed inset-0 z-40 bg-slate-950/50 md:hidden"
-          />
-          <aside id="mobile-navigation" className="fixed inset-y-0 left-0 z-50 w-64 bg-slate-900 p-6 text-white shadow-2xl animate-slide-in md:hidden" aria-label="Mobile navigation">
-            <div className="flex items-center justify-between border-b border-slate-700 pb-5">
-              <span className="text-lg font-bold">Campus Menu</span>
-              <button type="button" onClick={() => setIsMobileMenuOpen(false)} aria-label="Close menu" className="rounded-lg px-2 py-1 text-2xl leading-none text-slate-300 transition hover:bg-slate-800 hover:text-white">✕</button>
-            </div>
-            <nav className="mt-8 flex flex-col gap-2">
+        <aside id="mobile-navigation" className="absolute left-0 right-0 top-full z-50 border-t border-blue-900 bg-slate-900 p-4 text-white shadow-xl md:hidden" aria-label="Mobile navigation">
+            <nav className="flex flex-col gap-1">
               {[
                 ['Home', 'home'],
                 ['About', 'about'],
@@ -304,20 +320,20 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                     setIsMobileMenuOpen(false);
                     onNavigate(view);
                   }}
-                  className="rounded-xl px-4 py-3 text-left text-base font-semibold text-slate-200 transition hover:bg-slate-800 hover:text-blue-400"
+                  className="min-h-[44px] rounded-xl px-4 py-3 text-left text-base font-semibold text-slate-200 transition hover:bg-slate-800 hover:text-blue-400"
                 >
                   {label}
                 </button>
               ))}
             </nav>
-            <div className="border-t border-slate-800 pt-6 mt-auto flex flex-col gap-3">
+            <div className="mt-2 flex flex-col gap-1 border-t border-slate-800 pt-2">
               <button
                 type="button"
                 onClick={() => {
                   onNavigate('login');
                   setIsMobileMenuOpen(false);
                 }}
-                className="text-left text-base font-semibold text-white hover:text-blue-400 transition-colors py-2 block w-full"
+                className="min-h-[44px] py-2 text-left text-base font-semibold text-white transition-colors hover:text-blue-400"
               >
                 {t('navbar.login')}
               </button>
@@ -327,13 +343,12 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   onNavigate('register');
                   setIsMobileMenuOpen(false);
                 }}
-                className="text-left text-base font-semibold text-white hover:text-blue-400 transition-colors py-2 block w-full"
+                className="min-h-[44px] py-2 text-left text-base font-semibold text-white transition-colors hover:text-blue-400"
               >
                 {t('navbar.signup')}
               </button>
             </div>
-          </aside>
-        </>
+        </aside>
       )}
     </header>
   );

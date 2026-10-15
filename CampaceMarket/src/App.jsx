@@ -634,26 +634,6 @@ function AppContent() {
           }}
         />
       )}
-      {!['login', 'register'].includes(currentView) && (!isDashboardView || currentView === 'student-dashboard') && (
-        <button
-          type="button"
-          aria-label="Open sidebar"
-          aria-controls={isDashboardView ? 'student-mobile-navigation' : 'mobile-navigation'}
-          onClick={() => {
-            window.dispatchEvent(new Event(
-              isDashboardView
-                ? 'campace:toggle-dashboard-sidebar'
-                : 'campace:open-public-mobile-navigation',
-            ));
-          }}
-          className="hamburger-btn fixed left-0 top-[70px] z-[999] h-12 w-11 items-center justify-center rounded-r-lg bg-[#1a1a2e] text-white shadow-lg transition hover:bg-slate-800"
-        >
-          <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <path d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        </button>
-      )}
-
       <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
         <main className={isStudentMessagesView
           ? 'app-main-content app-main-content--messages min-h-0 min-w-0 w-full flex-1 overflow-hidden'

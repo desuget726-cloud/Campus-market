@@ -121,8 +121,10 @@ const getStudentAccessToken = (user) => {
 function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages }) {
   const { t, language } = useLanguage();
   const contentContainerClass = 'w-full px-4 sm:px-6 lg:px-10 2xl:px-16';
+  const PAGE_SIZE = 12;
   const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [isLoadErrorDismissed, setIsLoadErrorDismissed] = useState(false);
@@ -138,6 +140,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [recommendationsRetryKey, setRecommendationsRetryKey] = useState(0);
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const aiScrollRef = useRef(null);
+  const allProductsSectionRef = useRef(null);
   const latestProductsRequestRef = useRef(0);
   const lastProductRequestRef = useRef({});
   const searchDebounceTimeoutRef = useRef(null);
@@ -326,6 +329,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const performSearch = async (query) => {
     const trimmedSearch = query.trim();
     const department = user?.department || user?.college || user?.departmentName || '';
+    setVisibleCount(PAGE_SIZE);
     setSearchedTitle(trimmedSearch ? t('home.resultsFor').replace('{query}', trimmedSearch) : '');
     if (!trimmedSearch) {
       await fetchProducts({ department: department || undefined });
@@ -354,12 +358,14 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
 
   const clearSearch = () => {
     setSearchQuery('');
+    setVisibleCount(PAGE_SIZE);
     setSearchedTitle('');
     scheduleSearch('');
   };
 
   const handleCategoryClick = async (categoryName) => {
     if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+    setVisibleCount(PAGE_SIZE);
     setIsDirectoryOpen(false);
     setSearchQuery('');
     const department = user?.department || user?.college || user?.departmentName || '';
@@ -370,6 +376,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
 
   const handleSubCategoryClick = async (subCategoryName, categoryName) => {
     if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+    setVisibleCount(PAGE_SIZE);
     setIsDirectoryOpen(false);
     setSearchQuery(subCategoryName);
     const department = user?.department || user?.college || user?.departmentName || '';
@@ -379,9 +386,19 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   };
 
   const retryLastProductRequest = () => fetchProducts(lastProductRequestRef.current);
+  const visibleProducts = searchResults.slice(0, visibleCount);
   const listingFailureMessage = loadError?.kind === 'offline'
     ? t('home.noConnection')
     : t('home.listingsFailure');
+
+  const handleShowMoreProducts = () => {
+    setVisibleCount((current) => Math.min(current + PAGE_SIZE, searchResults.length));
+  };
+
+  const handleShowLessProducts = () => {
+    setVisibleCount(PAGE_SIZE);
+    allProductsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   return (
     <div className="w-full">
@@ -675,36 +692,51 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                     {searchQuery.trim() && <button type="button" onClick={clearSearch} className="mt-4 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">{t('home.clearSearch')}</button>}
                   </div>
                 ) : (
-                  <div className="grid min-w-0 gap-3 sm:gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
-                    {searchResults.map((product, idx) => (
-                      <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
-                        <div className="min-w-0">
-                          <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
-                          <div className="flex min-w-0 flex-col p-2 sm:p-4">
-                            <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
-                              <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category}</span>
-                              {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
+                  <div ref={allProductsSectionRef} className="min-w-0">
+                    <div className="grid min-w-0 gap-3 sm:gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+                      {visibleProducts.map((product, idx) => (
+                        <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
+                          <div className="min-w-0">
+                            <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
+                            <div className="flex min-w-0 flex-col p-2 sm:p-4">
+                              <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
+                                <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category}</span>
+                                {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
+                              </div>
+                              <h4 className="mt-1 line-clamp-2 break-words text-sm leading-tight text-slate-900 sm:line-clamp-1 sm:leading-normal sm:font-semibold">{product.title}</h4>
+                              <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
                             </div>
-                            <h4 className="mt-1 line-clamp-2 break-words text-sm leading-tight text-slate-900 sm:line-clamp-1 sm:leading-normal sm:font-semibold">{product.title}</h4>
-                            <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
                           </div>
-                        </div>
-                        <div className="mt-auto min-w-0 p-3 pt-0 sm:p-4 sm:pt-0">
-                          <div className="flex min-w-0 flex-col gap-2 border-t border-slate-50 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                            <CompactEtbPrice value={product.price} language={language} className="min-w-0 whitespace-nowrap text-sm font-semibold text-slate-900 sm:text-base" />
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openProduct(product);
-                              }}
-                              className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold transition-colors sm:inline-flex sm:w-auto"
-                            >
-                              View Details
-                            </button>
+                          <div className="mt-auto min-w-0 p-3 pt-0 sm:p-4 sm:pt-0">
+                            <div className="flex min-w-0 flex-col gap-2 border-t border-slate-50 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                              <CompactEtbPrice value={product.price} language={language} className="min-w-0 whitespace-nowrap text-sm font-semibold text-slate-900 sm:text-base" />
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openProduct(product);
+                                }}
+                                className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-semibold transition-colors sm:inline-flex sm:w-auto"
+                              >
+                                View Details
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      </article>
-                    ))}
+                        </article>
+                      ))}
+                    </div>
+
+                    {searchResults.length > PAGE_SIZE && (
+                      <div className="mt-8 mb-12 flex flex-col items-center gap-2">
+                        <p className="text-sm text-slate-500">Showing {visibleCount} of {searchResults.length}</p>
+                        <button
+                          type="button"
+                          onClick={visibleCount < searchResults.length ? handleShowMoreProducts : handleShowLessProducts}
+                          className="btn-primary rounded-full px-4 py-2 text-sm font-semibold transition"
+                        >
+                          {visibleCount < searchResults.length ? 'Show More Products' : 'Show Less'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
