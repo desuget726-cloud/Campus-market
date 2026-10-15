@@ -120,7 +120,7 @@ const getStudentAccessToken = (user) => {
 
 function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages }) {
   const { t, language } = useLanguage();
-  const contentContainerClass = 'mx-auto w-full max-w-[1920px] px-4 sm:px-6 lg:px-10 2xl:px-16';
+  const contentContainerClass = 'w-full px-4 sm:px-6 lg:px-10 2xl:px-16';
   const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -511,7 +511,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
               />
             )}
 
-            <div className="grid gap-8 md:grid-cols-[280px_1fr]">
+            <div className="grid gap-8 xl:grid-cols-[280px_minmax(0,1fr)]">
               <aside className={`fixed left-3 top-[136px] z-50 h-[min(70vh,600px)] min-h-0 w-[260px] max-w-[280px] -translate-x-[calc(100%+1rem)] overflow-hidden rounded-xl bg-white p-0 shadow-[0_4px_20px_rgba(0,0,0,0.1)] transition-transform duration-300 md:sticky md:top-[88px] md:z-30 md:h-fit md:w-auto md:max-w-none md:translate-x-0 md:overflow-visible md:rounded-none md:bg-transparent md:p-0 md:shadow-none ${isDirectoryOpen ? 'translate-x-0' : ''}`} onMouseLeave={() => setHoveredCategoryId(null)}>
                 <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_4px_20px_rgba(0,0,0,0.1)] md:h-auto md:min-h-[500px] md:overflow-visible md:rounded-[24px] md:shadow-sm">
                   <div className="flex shrink-0 items-center justify-between border-b pb-2 md:block">
@@ -650,7 +650,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                 {loading ? (
                   <section className="notranslate rounded-[24px] border border-slate-200 bg-white p-5 sm:p-8" role="status">
                     <p className="text-center text-sm font-semibold text-slate-600">{t('home.listingsLoading')}</p>
-                    <div aria-hidden="true" className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                    <div aria-hidden="true" className="mt-5 grid min-w-0 gap-2 sm:gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
                       {Array.from({ length: 8 }, (_, index) => (
                         <div key={index} className="animate-pulse overflow-hidden rounded-xl border border-slate-200 bg-white sm:rounded-2xl">
                           <div className="aspect-square bg-slate-100 sm:aspect-[4/3]" />
@@ -675,7 +675,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                     {searchQuery.trim() && <button type="button" onClick={clearSearch} className="mt-4 rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">{t('home.clearSearch')}</button>}
                   </div>
                 ) : (
-                  <div className="grid min-w-0 grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+                  <div className="grid min-w-0 gap-3 sm:gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
                     {searchResults.map((product, idx) => (
                       <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
                         <div className="min-w-0">

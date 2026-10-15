@@ -26,57 +26,59 @@ const Footer = ({ onNavigate }) => {
 
   return (
     <footer className="w-full border-t border-slate-800 bg-sky-600 px-4 py-12 text-sm text-slate-300 sm:px-6 lg:px-8">
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-4">
-        {/* <div>
-          <button type="button" onClick={() => navigate('home')} className="flex items-center gap-3 text-left">
-            <img src={dg} alt="DG Market logo" className="h-14 w-14 rounded-2xl object-cover ring-2 ring-white/30" />
-            <span className="text-xl font-black tracking-tight">DG Market</span>
-          </button>
-          <p className="mt-4 max-w-xs leading-6 text-blue-100">Your trusted campus marketplace for buying, selling, and exchanging with confidence.</p>
-        </div> */}
+      <div className="w-full px-[60px]">
+        <div className="flex w-full flex-col gap-10 md:flex-row md:justify-between">
+          {/* <div>
+            <button type="button" onClick={() => navigate('home')} className="flex items-center gap-3 text-left">
+              <img src={dg} alt="DG Market logo" className="h-14 w-14 rounded-2xl object-cover ring-2 ring-white/30" />
+              <span className="text-xl font-black tracking-tight">DG Market</span>
+            </button>
+            <p className="mt-4 max-w-xs leading-6 text-blue-100">Your trusted campus marketplace for buying, selling, and exchanging with confidence.</p>
+          </div> */}
 
-        <nav aria-label="Footer quick links">
-          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Quick Links</h2>
-          <div className="mt-4 grid gap-3">
-            {[
-              ['Home', 'home'],
-              ['About', 'about'],
-              ['Services', 'services'],
-              ['Contact', 'contact'],
-              ['Dashboard', 'student-dashboard'],
-            ].map(([label, view]) => (
-              <button key={view} type="button" onClick={() => navigate(view)} className="w-fit text-left text-white transition-colors hover:text-blue-200">{label}</button>
-            ))}
-          </div>
-        </nav>
+          <nav aria-label="Footer quick links">
+            <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Quick Links</h2>
+            <div className="mt-4 grid gap-3">
+              {[
+                ['Home', 'home'],
+                ['About', 'about'],
+                ['Services', 'services'],
+                ['Contact', 'contact'],
+                ['Dashboard', 'student-dashboard'],
+              ].map(([label, view]) => (
+                <button key={view} type="button" onClick={() => navigate(view)} className="w-fit text-left text-white transition-colors hover:text-blue-200">{label}</button>
+              ))}
+            </div>
+          </nav>
 
-        <nav aria-label="Footer legal links">
-          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Legal</h2>
-          <div className="mt-4 grid gap-3">
-            <button type="button" onClick={() => navigate('terms')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Terms of Service</button>
-            <button type="button" onClick={() => navigate('privacy')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Privacy Policy</button>
-            <button type="button" onClick={() => navigate('refund-dispute')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Refund / Dispute Policy</button>
-          </div>
-        </nav>
+          <nav aria-label="Footer legal links">
+            <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Legal</h2>
+            <div className="mt-4 grid gap-3">
+              <button type="button" onClick={() => navigate('terms')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Terms of Service</button>
+              <button type="button" onClick={() => navigate('privacy')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Privacy Policy</button>
+              <button type="button" onClick={() => navigate('refund-dispute')} className="w-fit text-left text-white transition-colors hover:text-blue-200">Refund / Dispute Policy</button>
+            </div>
+          </nav>
 
-        <div>
-          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Contact</h2>
-          <div className="mt-4 grid gap-3 text-blue-50">
-            <a href="mailto:desuget726@gmail.com" className="w-fit transition-colors hover:text-white">desuget726@gmail.com</a>
-            <a href="tel:+251962714305" className="w-fit transition-colors hover:text-white">0962714305</a>
-          </div>
-          <div className="mt-5 flex gap-3">
-            {socialLinks.map((social) => (
-              <a key={social.label} href={social.href} target={social.href.startsWith('http') ? '_blank' : undefined} rel={social.href.startsWith('http') ? 'noreferrer' : undefined} aria-label={social.label} title={social.label} className="flex h-10 w-10 items-center justify-center rounded-xl border border-blue-300/50 text-blue-50 transition-colors hover:border-white hover:bg-white/10 hover:text-white">
-                <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">{social.icon}</svg>
-              </a>
-            ))}
+          <div>
+            <h2 className="font-bold uppercase tracking-[0.16em] text-blue-100">Contact</h2>
+            <div className="mt-4 grid gap-3 text-blue-50">
+              <a href="mailto:desuget726@gmail.com" className="w-fit transition-colors hover:text-white">desuget726@gmail.com</a>
+              <a href="tel:+251962714305" className="w-fit transition-colors hover:text-white">0962714305</a>
+            </div>
+            <div className="mt-5 flex gap-3">
+              {socialLinks.map((social) => (
+                <a key={social.label} href={social.href} target={social.href.startsWith('http') ? '_blank' : undefined} rel={social.href.startsWith('http') ? 'noreferrer' : undefined} aria-label={social.label} title={social.label} className="flex h-10 w-10 items-center justify-center rounded-xl border border-blue-300/50 text-blue-50 transition-colors hover:border-white hover:bg-white/10 hover:text-white">
+                  <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">{social.icon}</svg>
+                </a>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="mx-auto mt-10 flex max-w-7xl flex-col gap-4 border-t border-blue-400/40 pt-5 text-xs text-blue-100 sm:flex-row sm:items-center sm:justify-between">
-        <p>© 2026 DG Market. All rights reserved.</p>
+      <div className="mt-10 flex w-full items-center justify-between gap-4 border-t border-white/20 px-[60px] pt-5 text-xs text-blue-100">
+        <p className="text-left">© 2026 DG Market. All rights reserved.</p>
         <div className="notranslate flex items-center gap-2 font-semibold" aria-label="Language switcher">
           <button type="button" aria-pressed={language === 'en'} onClick={() => setLanguage('en')} className={language === 'en' ? 'text-white underline underline-offset-4' : 'text-blue-200 hover:text-white'}>English</button>
           <span aria-hidden="true">|</span>
