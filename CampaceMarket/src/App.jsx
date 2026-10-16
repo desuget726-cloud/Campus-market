@@ -616,7 +616,7 @@ function AppContent() {
         }}
       />
       <PaymentSuccessToast />
-      {!['login', 'register'].includes(currentView) && <TopBar onNavigate={handleNavigate} />}
+      {!['login', 'register'].includes(currentView) && !hasUser && !isRestoringStudentSession && <TopBar onNavigate={handleNavigate} />}
       {!['login', 'register'].includes(currentView) && (
         <Navbar
           variant={isDashboardView ? 'dashboard' : 'public'}
