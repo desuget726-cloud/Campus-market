@@ -20,7 +20,7 @@ const coreServices = [
   {
     icon: '📈',
     eyebrow: 'AI assisted',
-    title: 'AI-Assisted Price Suggestions',
+    title: 'AI-Assisted  Suggestions',
     text: 'TF-IDF and Cosine Similarity help suggest prices and categorize listings.',
     tone: 'border-indigo-200 bg-indigo-50/70',
     iconTone: 'bg-indigo-500',

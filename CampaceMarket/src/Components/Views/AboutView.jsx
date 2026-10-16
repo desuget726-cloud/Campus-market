@@ -52,10 +52,10 @@ const AboutView = ({ onNavigate }) => (
             </span>
           ))}
         </div> */}
-        <p className="about-hero-label mt-8 text-xs font-bold uppercase tracking-[0.28em]">About Campus Marketplace</p>
-        <h1 className="mt-3 max-w-2xl text-4xl font-black tracking-tight sm:text-5xl">A smarter way to trade on campus.</h1>
+        <p className="about-hero-label mt-8 text-xs font-bold uppercase tracking-[0.28em]">About UniXchange</p>
+        <h1 className="mt-3 max-w-2xl text-4xl font-black tracking-tight sm:text-5xl">A smarter way to trade on University.</h1>
         <p className="about-hero-description mt-5 max-w-2xl text-base leading-7 sm:text-lg">
-         UniXchange is a trusted peer-to-peer platform for university communities. Avoid expensive retail prices by buying directly from other verified students.
+         UniXchange is a trusted peer-to-peer platform for university Students. Avoid expensive retail prices by buying directly from other verified students.
         </p>
       </div>
     </section>
@@ -98,7 +98,7 @@ const AboutView = ({ onNavigate }) => (
     <section>
       <div className="mb-6">
         <p className="text-xs font-bold uppercase tracking-[0.25em] text-emerald-600">Why Choose Us?</p>
-        <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Designed for confident campus commerce.</h2>
+        <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">Designed for confident University commerce.</h2>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {benefits.map((benefit) => (
@@ -114,8 +114,8 @@ const AboutView = ({ onNavigate }) => (
     <section className="flex flex-col gap-5 rounded-[28px] bg-white-600 p-7 text-salt-600 shadow-lg sm:flex-row sm:items-center sm:justify-between sm:p-9">
       <div>
         <p className="text-xs font-bold uppercase tracking-[0.25em] text-salt-600">Ready to trade smarter?</p>
-        <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the campus exchange.</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-emerald-50">Buy from verified students, sell what you no longer need, and keep every exchange close to campus.</p>
+        <h2 className="mt-2 text-3xl font-black tracking-tight">Create your account and join the University exchange.</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-emerald-50">Buy from verified students, sell what you no longer need, and keep every exchange close to University.</p>
       </div>
       <button type="button" onClick={() => onNavigate?.('signup')} className="btn-primary inline-flex shrink-0 items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-black transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-emerald-600">
         Create Your Account

@@ -17,7 +17,7 @@ const ContactView = ({ user }) => {
     <>
       <section className="contact-page py-8 lg:py-12">
         <div className="rounded-[28px] bg-white-950 px-6 py-10 text-slate-900 shadow-xl sm:px-10">
-          <p className="text-sm font-bold uppercase tracking-[0.2em] text-slate-900">Campace Market support</p>
+          <p className="text-sm font-bold uppercase tracking-[0.2em] text-slate-900">UniXchange support</p>
           <h2 className="mt-3 text-4xl font-black tracking-tight sm:text-5xl">Contact Us</h2>
           <p className="contact-hero-description mt-4 text-base leading-7 text-slate-900">Questions about payments, orders, accounts, or campus safety? We are here to help you trade with confidence.</p>
           <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -33,7 +33,7 @@ const ContactView = ({ user }) => {
               <a className="block rounded-2xl bg-slate-50 p-4 transition hover:bg-emerald-50" href="mailto:desuget726@gmail.com"><strong className="block text-slate-900">Email</strong>desuget726@gmail.com</a>
               <a className="block rounded-2xl bg-slate-50 p-4 transition hover:bg-emerald-50" href="tel:+251962714305"><strong className="block text-slate-900">Phone</strong>0962714305</a>
               <a className="block rounded-2xl bg-slate-50 p-4 transition hover:bg-emerald-50" href="https://t.me/+pMJYhK3QZv4xYmZk" target="_blank" rel="noreferrer"><strong className="block text-slate-900">Telegram</strong>https://t.me/+pMJYhK3QZv4xYmZk</a>
-              <a className="block rounded-2xl bg-slate-50 p-4 transition hover:bg-emerald-50" href="https://wa.me/251962714305" target="_blank" rel="noreferrer"><strong className="block text-slate-900">WhatsApp</strong>Chat with Campace Market support</a>
+              <a className="block rounded-2xl bg-slate-50 p-4 transition hover:bg-emerald-50" href="https://wa.me/251962714305" target="_blank" rel="noreferrer"><strong className="block text-slate-900">WhatsApp</strong>Chat with UniXchange support</a>
             </div>
           </div>
 
