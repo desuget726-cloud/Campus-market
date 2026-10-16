@@ -10,8 +10,8 @@ const TopBar = ({ onNavigate }) => {
     <aside className="top-bar">
       <div className="top-bar-inner">
         <div className="top-bar-group top-bar-contacts">
-          <a className="top-bar-link" href="tel:+251962714305">+251 962714305</a>
-          <a className="top-bar-link" href="mailto:desuget726@gmail.com">desuget726@gmail.com</a>
+          <a className="top-bar-link" href="tel:+251962714305">Calls:+251 962714305</a>
+          <a className="top-bar-link" href="mailto:desuget726@gmail.com">Contact Email:desuget726@gmail.com</a>
         </div>
         <nav className="top-bar-group top-bar-links" aria-label="Helpful links">
           <a className="top-bar-link" href="#about" onClick={(event) => navigate(event, 'about')}>How it works</a>
