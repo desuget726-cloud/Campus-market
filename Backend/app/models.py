@@ -675,6 +675,18 @@ class Message(Base):
     product = relationship("Product", back_populates="messages")
 
 
+class MessageBlock(Base):
+    __tablename__ = "message_blocks"
+    __table_args__ = (
+        UniqueConstraint("blocker_id", "blocked_id", name="uq_message_blocks_direction"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    blocker_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    blocked_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class PasswordReset(Base):
     __tablename__ = "password_resets"
 

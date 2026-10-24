@@ -52,6 +52,14 @@ export const translations = {
             login: 'Login',
             signup: 'Signup'
         },
+        messages: {
+            blockUser: 'Block User',
+            unblockUser: 'Unblock User',
+            confirmBlock: 'Block this user? You can unblock them later.',
+            conversationBlocked: "You can't send messages in this conversation.",
+            messagingDisabled: 'Messaging disabled',
+            typeMessage: 'Type a message...'
+        },
         sellerHub: {
             productManagement: 'Product Management',
             backToOverview: 'Back to Overview'
@@ -308,6 +316,8 @@ export const translations = {
             checkoutCompleted: 'Order placed successfully.',
             aiResponseReady: 'AI response received.',
             attachmentUploaded: 'Attachment sent successfully.',
+            userBlocked: 'User blocked successfully.',
+            userUnblocked: 'User unblocked successfully.',
             ownProductAction: 'You cannot buy or save your own product.'
         }
     },
@@ -330,6 +340,14 @@ export const translations = {
             tryAgain: 'እንደገና ሞክር',
             dismiss: 'ዝጋ',
             developmentHint: 'የልማት ሁነታ፦ የጀርባ አገልጋዩን ያረጋግጡ።'
+        },
+        messages: {
+            blockUser: 'ተጠቃሚውን አግድ',
+            unblockUser: 'ተጠቃሚውን እገዳ አንሳ',
+            confirmBlock: 'ይህን ተጠቃሚ ማገድ ይፈልጋሉ? በኋላ እገዳውን ማንሳት ይችላሉ።',
+            conversationBlocked: 'በዚህ ውይይት ውስጥ መልዕክት መላክ አይችሉም።',
+            messagingDisabled: 'መልዕክት መላክ ተሰናክሏል',
+            typeMessage: 'መልዕክት ይጻፉ...'
         },
         productDetails: {
             loginRequired: 'መግባት ያስፈልጋል',
@@ -484,7 +502,9 @@ export const translations = {
             discardUnsavedPreferences: 'ያልተቀመጡ የማሳወቂያ ለውጦች አሉ። ሳያስቀምጡ ከዚህ ትር መውጣት ይፈልጋሉ?',
             ownProductAction: 'የራስዎን ምርት መግዛት ወይም ወደ ተወዳጆች ማስቀመጥ አይችሉም።',
             notificationsRead: 'ማሳወቂያዎች እንደተነበቡ ተመልክተዋል።',
-            notificationsDeleted: 'ማሳወቂያ ተሰርዟል።'
+            notificationsDeleted: 'ማሳወቂያ ተሰርዟል።',
+            userBlocked: 'ተጠቃሚው ታግዷል።',
+            userUnblocked: 'የተጠቃሚው እገዳ ተነስቷል።'
         },
         auth: {
             oauthErrors: {

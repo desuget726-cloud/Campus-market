@@ -86,7 +86,7 @@ except (ImportError, OSError):
 # ßêüßêëßèòßê¥ ßï¿ßï│ßë│ßëñßï¥ ßê░ßèòßîáßê¿ßïªßë╜ (Models) ßèÑßèô ßê¢ßîêßèôßè¢ßïÄßë╜ßèò ßè¿ßêîßêÄßë╣ ßìïßï¡ßêÄßë╜ ßèÑßèòßîáßê½ßêêßèò
 from .models import (
     Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
-    Notification, Message, WishlistItem, CartItem, Order, Transaction,
+    Notification, Message, MessageBlock, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
     AdminSession, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
 )
@@ -10655,6 +10655,98 @@ def create_student_notification(request: NotificationCreate, db: Session = Depen
 # --- Real-Time Chat & Messaging ---
 # ==========================================
 
+def _message_block_pairs_for_student(db: Session, student_id: str, partner_ids: List[str]) -> set[tuple[str, str]]:
+    if not partner_ids:
+        return set()
+
+    blocks = db.query(MessageBlock).filter(
+        or_(
+            and_(
+                MessageBlock.blocker_id == student_id,
+                MessageBlock.blocked_id.in_(partner_ids),
+            ),
+            and_(
+                MessageBlock.blocked_id == student_id,
+                MessageBlock.blocker_id.in_(partner_ids),
+            ),
+        )
+    ).all()
+    return {(block.blocker_id, block.blocked_id) for block in blocks}
+
+
+@app.post("/api/messages/block/{user_id}")
+def block_student(
+    user_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    blocker = _student_from_authorization(authorization, db)
+    blocked_id = _validate_student_id(db, user_id, field_name="user_id")
+    if blocker.student_id == blocked_id:
+        raise HTTPException(status_code=400, detail="You cannot block yourself.")
+
+    existing_block = db.query(MessageBlock).filter(
+        MessageBlock.blocker_id == blocker.student_id,
+        MessageBlock.blocked_id == blocked_id,
+    ).first()
+    if existing_block:
+        block_pairs = _message_block_pairs_for_student(db, blocker.student_id, [blocked_id])
+        return {
+            "success": True,
+            "blocked_by_me": (blocker.student_id, blocked_id) in block_pairs,
+            "blocked_me": (blocked_id, blocker.student_id) in block_pairs,
+        }
+
+    db.add(MessageBlock(blocker_id=blocker.student_id, blocked_id=blocked_id))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if not db.query(MessageBlock).filter(
+            MessageBlock.blocker_id == blocker.student_id,
+            MessageBlock.blocked_id == blocked_id,
+        ).first():
+            raise
+    block_pairs = _message_block_pairs_for_student(db, blocker.student_id, [blocked_id])
+    return {
+        "success": True,
+        "blocked_by_me": (blocker.student_id, blocked_id) in block_pairs,
+        "blocked_me": (blocked_id, blocker.student_id) in block_pairs,
+    }
+
+
+@app.delete("/api/messages/block/{user_id}")
+def unblock_student(
+    user_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    blocker = _student_from_authorization(authorization, db)
+    blocked_id = _validate_student_id(db, user_id, field_name="user_id")
+    if blocker.student_id == blocked_id:
+        raise HTTPException(status_code=400, detail="You cannot unblock yourself.")
+
+    existing_block = db.query(MessageBlock).filter(
+        MessageBlock.blocker_id == blocker.student_id,
+        MessageBlock.blocked_id == blocked_id,
+    ).first()
+    if existing_block:
+        db.delete(existing_block)
+        db.commit()
+    elif db.query(MessageBlock).filter(
+        MessageBlock.blocker_id == blocked_id,
+        MessageBlock.blocked_id == blocker.student_id,
+    ).first():
+        raise HTTPException(status_code=404, detail="Block not found.")
+
+    block_pairs = _message_block_pairs_for_student(db, blocker.student_id, [blocked_id])
+    return {
+        "success": True,
+        "blocked_by_me": (blocker.student_id, blocked_id) in block_pairs,
+        "blocked_me": (blocked_id, blocker.student_id) in block_pairs,
+    }
+
+
 @app.get("/api/student/messages/conversations")
 def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
     """Fetch all unique conversation partners with details, last message, unread count."""
@@ -10693,11 +10785,14 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
             ORDER BY last_timestamp DESC
         """), {"student_id": student_id}).fetchall()
         
+        partner_ids = [row[0] for row in results if row[0]]
+        block_pairs = _message_block_pairs_for_student(db, student_id, partner_ids)
         conversations = []
         for row in results:
             partner_id = row[0]
             if not partner_id:
                 continue
+            last_timestamp = row[7]
             
             conversations.append({
                 "id": f"conv-{partner_id}",
@@ -10710,8 +10805,10 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
                 "avatar": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=80",
                 "status": "online" if manager.is_online(partner_id) else "offline",
                 "lastMessage": row[6] or "No messages yet",
-                "timestamp": row[7].isoformat() if row[7] else "Just now",
+                "timestamp": last_timestamp.isoformat() if hasattr(last_timestamp, "isoformat") else str(last_timestamp or "Just now"),
                 "unread": int(row[8]) if row[8] else 0,
+                "blocked_by_me": (student_id, partner_id) in block_pairs,
+                "blocked_me": (partner_id, student_id) in block_pairs,
             })
         
         return {
@@ -10773,6 +10870,8 @@ def get_product_inquiries(
             Student.student_id.in_(latest_by_partner.keys())
         ).all()
     } if latest_by_partner else {}
+    partner_ids = list(latest_by_partner)
+    block_pairs = _message_block_pairs_for_student(db, seller_id, partner_ids)
     conversations = []
     for partner_id, message in latest_by_partner.items():
         partner = partners.get(partner_id)
@@ -10791,6 +10890,8 @@ def get_product_inquiries(
             "lastMessage": message.message_text or "No messages yet",
             "timestamp": message.created_at.isoformat() if message.created_at else "Just now",
             "unread": unread_by_partner.get(partner_id, 0),
+            "blocked_by_me": (seller_id, partner_id) in block_pairs,
+            "blocked_me": (partner_id, seller_id) in block_pairs,
             "product": {
                 "id": product.id,
                 "title": product.title,
@@ -11119,6 +11220,19 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
             if not receiver:
                 await websocket.send_json({"success": False, "error": "Recipient not found."})
                 continue
+            block_pairs = _message_block_pairs_for_student(db, student_id, [receiver_id])
+            blocked_by_me = (student_id, receiver_id) in block_pairs
+            blocked_me = (receiver_id, student_id) in block_pairs
+            if blocked_by_me or blocked_me:
+                await websocket.send_json({
+                    "type": "message_blocked",
+                    "success": False,
+                    "error": "You can't send messages in this conversation.",
+                    "receiver_id": receiver_id,
+                    "blocked_by_me": blocked_by_me,
+                    "blocked_me": blocked_me,
+                })
+                continue
 
             if product_id is not None:
                 try:
@@ -11244,6 +11358,15 @@ def send_student_message(
 
     if validated_sender_id == validated_receiver_id:
         raise HTTPException(status_code=400, detail="Cannot send a message to yourself.")
+    block_pairs = _message_block_pairs_for_student(db, validated_sender_id, [validated_receiver_id])
+    if (
+        (validated_sender_id, validated_receiver_id) in block_pairs
+        or (validated_receiver_id, validated_sender_id) in block_pairs
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can't send messages in this conversation.",
+        )
 
     if not request.message_text or not request.message_text.strip():
         raise HTTPException(status_code=400, detail="Message text is required.")

@@ -364,17 +364,7 @@ function StudentDashboard({
   const [reportReason, setReportReason] = useState('');
   const [reportStatus, setReportStatus] = useState('');
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
-  const [blockedConversations, setBlockedConversations] = useState({});
-  const [blockedUsers, setBlockedUsers] = useState(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const savedBlockedUsers = JSON.parse(window.localStorage.getItem('campaceBlockedUsers') || '[]');
-      return Array.isArray(savedBlockedUsers) ? savedBlockedUsers.map(String) : [];
-    } catch (error) {
-      console.warn('Unable to load blocked users:', error);
-      return [];
-    }
-  });
+  const [isUpdatingConversationBlock, setIsUpdatingConversationBlock] = useState(false);
   const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
   const socketRef = useRef(null);
   const activePeerIdRef = useRef('');
@@ -3581,11 +3571,10 @@ function StudentDashboard({
   }, [activeChatMessages, productDetails]);
 
   const activeConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0] || null;
-  const isActiveConversationBlocked = Boolean(activeConversation?.id && blockedConversations[activeConversation.id]);
+  const isActiveConversationBlocked = Boolean(activeConversation?.blocked_by_me || activeConversation?.blocked_me);
   const filteredConversations = conversationsList.filter((conversation) => {
     if (initialMessagesProductId && !conversationsLoaded) return false;
-    const partnerId = String(conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, ''));
-    return !blockedUsers.includes(partnerId) && String(conversation.name || '').toLowerCase().includes(conversationSearch.trim().toLowerCase());
+    return String(conversation.name || '').toLowerCase().includes(conversationSearch.trim().toLowerCase());
   });
   const visibleChatMessages = initialMessagesProductId && !conversationsLoaded
     ? []
@@ -3614,6 +3603,23 @@ function StudentDashboard({
         const packet = JSON.parse(event.data);
         const incoming = packet?.data || packet;
         const eventType = incoming?.type || incoming?.event;
+        if (eventType === 'message_blocked') {
+          const blockedPartnerId = String(incoming.receiver_id || activePeerIdRef.current);
+          setConversationsList((previousConversations) => previousConversations.map((conversation) => {
+            const conversationStudentId = String(
+              conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, '')
+            );
+            return conversationStudentId === blockedPartnerId
+              ? {
+                ...conversation,
+                blocked_by_me: Boolean(incoming.blocked_by_me),
+                blocked_me: Boolean(incoming.blocked_me),
+              }
+              : conversation;
+          }));
+          notifyError(incoming.error || "You can't send messages in this conversation.", 'student-chat-blocked');
+          return;
+        }
         if (eventType === 'online_status') {
           const presenceStudentId = String(incoming.student_id || '');
           const presenceStatus = incoming.status === 'online' ? 'online' : 'offline';
@@ -3859,13 +3865,6 @@ function StudentDashboard({
     }
   };
 
-  const persistBlockedUsers = (nextBlockedUsers) => {
-    setBlockedUsers(nextBlockedUsers);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('campaceBlockedUsers', JSON.stringify(nextBlockedUsers));
-    }
-  };
-
   const handleViewProductFromChat = (productId) => {
     if (!productId) return;
     setActiveTab('buyer');
@@ -3908,31 +3907,86 @@ function StudentDashboard({
     handleViewProductFromChat(productId);
   };
 
-  const handleBlockUser = (partnerId, partnerName) => {
+  const handleBlockUser = async (partnerId) => {
     const normalizedPartnerId = String(partnerId || '').trim();
-    if (!normalizedPartnerId || blockedUsers.includes(normalizedPartnerId)) return;
-    const shouldBlock = typeof window === 'undefined' || window.confirm(`Block ${partnerName || normalizedPartnerId}?`);
+    if (!normalizedPartnerId || isUpdatingConversationBlock) return;
+    const shouldBlock = typeof window === 'undefined' || window.confirm(t('messages.confirmBlock'));
     if (!shouldBlock) return;
 
-    persistBlockedUsers([...blockedUsers, normalizedPartnerId]);
-    setBlockedConversations((previous) => ({ ...previous, [`conv-${normalizedPartnerId}`]: true }));
-    setTypingInput('');
-    setShowChatDropdown(false);
-    showConversationList();
-    setActiveConversationId('');
+    const token = getStudentSessionToken();
+    if (!token) {
+      notifyError(new Error('Your session has expired. Please sign in again.'), 'student-chat-block');
+      return;
+    }
+
+    setIsUpdatingConversationBlock(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/messages/block/${encodeURIComponent(normalizedPartnerId)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to block this user.');
+
+      setConversationsList((previousConversations) => previousConversations.map((conversation) => {
+        const conversationStudentId = String(
+          conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, '')
+        );
+        return conversationStudentId === normalizedPartnerId
+          ? {
+            ...conversation,
+            blocked_by_me: Boolean(data.blocked_by_me),
+            blocked_me: Boolean(data.blocked_me),
+          }
+          : conversation;
+      }));
+      setTypingInput('');
+      notifySuccess(studentToast('userBlocked'), 'student-chat-block');
+    } catch (error) {
+      console.error('Unable to block chat user:', error);
+      notifyError(error, 'student-chat-block');
+    } finally {
+      setIsUpdatingConversationBlock(false);
+    }
   };
 
-  const handleUnblockUser = (partnerId, partnerName) => {
+  const handleUnblockUser = async (partnerId) => {
     const normalizedPartnerId = String(partnerId || '').trim();
-    const shouldUnblock = typeof window === 'undefined' || window.confirm(`Unblock ${partnerName || normalizedPartnerId}?`);
-    if (!shouldUnblock) return;
+    if (!normalizedPartnerId || isUpdatingConversationBlock) return;
+    const token = getStudentSessionToken();
+    if (!token) {
+      notifyError(new Error('Your session has expired. Please sign in again.'), 'student-chat-unblock');
+      return;
+    }
 
-    persistBlockedUsers(blockedUsers.filter((blockedUserId) => blockedUserId !== normalizedPartnerId));
-    setBlockedConversations((previous) => {
-      const nextBlockedConversations = { ...previous };
-      delete nextBlockedConversations[`conv-${normalizedPartnerId}`];
-      return nextBlockedConversations;
-    });
+    setIsUpdatingConversationBlock(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/messages/block/${encodeURIComponent(normalizedPartnerId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to unblock this user.');
+
+      setConversationsList((previousConversations) => previousConversations.map((conversation) => {
+        const conversationStudentId = String(
+          conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, '')
+        );
+        return conversationStudentId === normalizedPartnerId
+          ? {
+            ...conversation,
+            blocked_by_me: Boolean(data.blocked_by_me),
+            blocked_me: Boolean(data.blocked_me),
+          }
+          : conversation;
+      }));
+      notifySuccess(studentToast('userUnblocked'), 'student-chat-unblock');
+    } catch (error) {
+      console.error('Unable to unblock chat user:', error);
+      notifyError(error, 'student-chat-unblock');
+    } finally {
+      setIsUpdatingConversationBlock(false);
+    }
   };
 
   const handleReportSubmit = async (event) => {
@@ -3976,7 +4030,7 @@ function StudentDashboard({
     }
   };
 
-  const handleChatMenuAction = (action) => {
+  const handleChatMenuAction = async (action) => {
     setShowChatDropdown(false);
 
     if (action === 'profile') {
@@ -4000,9 +4054,13 @@ function StudentDashboard({
       return;
     }
 
-    if (action === 'block') {
+    if (action === 'block' || action === 'unblock') {
       const partnerId = activeConversation?.studentId || activeConversation?.student_id || String(activeConversation?.id || '').replace(/^conv-/, '');
-      handleBlockUser(partnerId, activeConversation?.name);
+      if (action === 'block') {
+        await handleBlockUser(partnerId);
+      } else {
+        await handleUnblockUser(partnerId);
+      }
     }
 
     if (action === 'delete') {
@@ -5540,7 +5598,16 @@ function StudentDashboard({
                             <button type="button" onClick={() => handleChatMenuAction('profile')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">View Profile</button>
                             <button type="button" onClick={() => handleChatMenuAction('product')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">View Product</button>
                             <button type="button" onClick={() => handleChatMenuAction('report')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Report User</button>
-                            <button type="button" onClick={() => handleChatMenuAction('block')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-700">Block User</button>
+                            {!activeConversation?.blocked_me && (
+                              <button
+                                type="button"
+                                disabled={isUpdatingConversationBlock}
+                                onClick={() => handleChatMenuAction(activeConversation?.blocked_by_me ? 'unblock' : 'block')}
+                                className="w-full rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:text-slate-200 dark:hover:bg-slate-700"
+                              >
+                                {activeConversation?.blocked_by_me ? t('messages.unblockUser') : t('messages.blockUser')}
+                              </button>
+                            )}
                             <button type="button" onClick={() => handleChatMenuAction('delete')} className="w-full rounded-xl px-3 py-2 text-left text-sm text-rose-600 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-950/40">Delete Conversation</button>
                           </div>
                         )}
@@ -5750,7 +5817,7 @@ function StudentDashboard({
                       )}
                       {isActiveConversationBlocked && (
                         <p className="mb-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200" role="status">
-                          Messaging is disabled because this conversation is blocked.
+                          {t('messages.conversationBlocked')}
                         </p>
                       )}
                       <div className="space-y-2">
@@ -5812,7 +5879,7 @@ function StudentDashboard({
                               }
                             }}
                             disabled={isActiveConversationBlocked}
-                            placeholder={isActiveConversationBlocked ? 'Messaging disabled' : 'Type a message...'}
+                            placeholder={isActiveConversationBlocked ? t('messages.messagingDisabled') : t('messages.typeMessage')}
                             className="min-w-0 flex-1 border-0 bg-transparent px-2 py-2 text-sm text-slate-800 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white"
                           />
                           <button type="button" onClick={sendChatMessage} disabled={isActiveConversationBlocked || !typingInput.trim()} className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg font-bold shadow-sm disabled:cursor-not-allowed disabled:opacity-50" aria-label="Send message">➤</button>
@@ -5986,8 +6053,6 @@ function StudentDashboard({
                 currentWalletBalance={currentWalletBalance}
                 transactionLedger={transactionLedger}
                 onNavigate={setActiveTab}
-                blockedUsers={blockedUsers}
-                onUnblockUser={handleUnblockUser}
               />
             )}
 
