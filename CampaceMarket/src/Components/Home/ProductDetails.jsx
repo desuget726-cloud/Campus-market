@@ -1085,9 +1085,9 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
               <h3 id="how-buying-works-heading" className="text-lg font-black text-emerald-950">{t('productDetails.buyer.howBuyingWorks')}</h3>
               <ol className="mt-3 space-y-2 text-sm font-semibold leading-6 text-emerald-900">
                 <li>1. {t('productDetails.buyer.steps.chat')}</li>
-                <li>2. {t('productDetails.buyer.steps.meetInspect')}</li>
+                <li>2. {t('productDetails.buyer.steps.checkItem')}</li>
                 <li>3. {t('productDetails.buyer.steps.payWallet')}</li>
-                <li>4. {t('productDetails.buyer.steps.reportProblem')}</li>
+                <li>4. {t('productDetails.buyer.steps.keepReceipt')}</li>
               </ol>
             </section>
           )}

@@ -140,12 +140,14 @@ export const translations = {
                 moreFromSeller: 'More from this seller',
                 similarProducts: 'Similar Products',
                 howBuyingWorks: 'How buying works',
-                protectionNote: 'Pay only after inspecting the item. Report problems within 24 hours.',
+                protectionNote: 'Pay only after inspecting the item.',
                 sendMessage: 'Send Message',
                 steps: {
-                    chat: 'Chat',
+                    chat: 'Chat: Agree on availability, price, and meeting place and time.',
+                    checkItem: 'Check the item: Make sure it matches the photos and description.',
+                    keepReceipt: 'Keep your receipt: Download it from your Orders page after payment.',
                     meetInspect: 'Meet and inspect',
-                    payWallet: 'Pay with wallet',
+                    payWallet: 'Pay with wallet: Pay only after you agree on the item, and only inside the platform.',
                     reportProblem: 'Report a problem within 24 hours'
                 }
             },
@@ -352,12 +354,14 @@ export const translations = {
                 moreFromSeller: 'ከዚህ ሻጭ ተጨማሪ',
                 similarProducts: 'ተመሳሳይ ምርቶች',
                 howBuyingWorks: 'ግዢ እንዴት ይሰራል',
-                protectionNote: 'እቃውን ከመመርመርዎ በፊት አይክፈሉ። ችግር ካለ በ24 ሰዓታት ውስጥ ያሳውቁ።',
+                protectionNote: 'እቃውን ከመመርመርዎ በኋላ ብቻ ይክፈሉ።',
                 sendMessage: 'መልዕክት ላክ',
                 steps: {
-                    chat: 'ውይይት ያድርጉ',
+                    chat: 'ውይይት፦ እቃው መኖሩን፣ ዋጋውን፣ የመገናኛ ቦታና ሰዓትን ይስማሙ።',
+                    checkItem: 'እቃውን ያረጋግጡ፦ ከፎቶዎቹና ከመግለጫው ጋር መጣጣሙን ያረጋግጡ።',
+                    keepReceipt: 'ደረሰኝዎን ይያዙ፦ ከከፈሉ በኋላ ከትዕዛዞች ገጽዎ ያውርዱት።',
                     meetInspect: 'ተገናኝተው እቃውን ይመርምሩ',
-                    payWallet: 'በኪስ ቦርሳ ይክፈሉ',
+                    payWallet: 'በኪስ ቦርሳ ይክፈሉ፦ በእቃው ላይ ከተስማሙ በኋላ ብቻ፣ እና በመድረኩ ውስጥ ብቻ ይክፈሉ።',
                     reportProblem: 'ችግር ካለ በ24 ሰዓታት ውስጥ ያሳውቁ'
                 }
             },

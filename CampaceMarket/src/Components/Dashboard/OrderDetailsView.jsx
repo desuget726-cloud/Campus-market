@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { IMAGE_PLACEHOLDER, resolveImageUrl, SHOW_REPORT_PROBLEM } from '../../config';
 import { isOrderRefunded, shouldShowReceiptActions } from '../../utils/orderReceiptState';
 
 const TIMELINE = [
@@ -388,7 +388,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div><p className="text-sm text-slate-500">Handover</p><p className="mt-1 text-sm font-semibold text-slate-700">Inspect the item together before the buyer pays.</p></div>
         </div>
-        {isBuyer && canDispute && <button type="button" onClick={() => onRaiseDispute?.(order)} className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-black text-rose-700 hover:bg-rose-100">Report a problem (within 24 hours)</button>}
+        {SHOW_REPORT_PROBLEM && isBuyer && canDispute && <button type="button" onClick={() => onRaiseDispute?.(order)} className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-black text-rose-700 hover:bg-rose-100">Report a problem (within 24 hours)</button>}
       </section>
 
       <section className="overflow-visible rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">

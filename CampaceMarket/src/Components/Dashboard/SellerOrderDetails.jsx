@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { IMAGE_PLACEHOLDER, resolveImageUrl, SHOW_REPORT_PROBLEM } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 
 const formatEtb = (value, language) => (
@@ -252,7 +252,7 @@ function SellerOrderDetails({
         </ol>
       </section>
 
-      <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+      {SHOW_REPORT_PROBLEM && <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
         <h2 className="text-xl font-black text-slate-950">{t('sellerOrders.dispute')}</h2>
         {dispute ? (
           <div className="mt-4 space-y-3">
@@ -333,7 +333,7 @@ function SellerOrderDetails({
             </p>
           </div>
         )}
-      </section>
+      </section>}
     </div>
   );
 }
