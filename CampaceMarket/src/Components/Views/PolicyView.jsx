@@ -22,11 +22,11 @@ const policyContent = {
     'refund-dispute': {
         eyebrow: 'Buyer protection',
         title: 'Refund / Dispute Policy',
-        intro: 'This placeholder describes how DG Market will review disputes and escrow-related refund requests.',
+        intro: 'Report a problem with a completed wallet payment within 24 hours so the marketplace team can review it.',
         sections: [
             ['Open a dispute', 'Submit the order details, a clear description, and any screenshots or receipts through the support form as soon as an issue occurs.'],
-            ['Review process', 'DG Market may contact both parties, review marketplace records, and hold or release escrow funds while the case is assessed.'],
-            ['Resolution', 'Approved refunds, partial refunds, or fund releases will follow the final decision and the transaction evidence available to the marketplace team.'],
+            ['Review process', 'When a report is filed in time, available seller proceeds are frozen while the marketplace team reviews the order and evidence.'],
+            ['Resolution', 'An administrator may refund the buyer, release frozen proceeds to the seller, or split the frozen amount.'],
         ],
     },
 };

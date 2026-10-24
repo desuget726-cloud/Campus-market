@@ -4,9 +4,9 @@ from typing import Generator
 from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from .config import get_seller_acceptance_hours
 
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("MYSQL_URL")
 if not DATABASE_URL:
@@ -66,14 +66,46 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _add_column_if_missing(table_name: str, column_name: str, column_definition: str) -> None:
+    inspector = inspect(engine)
+    if column_name in {
+        column["name"] for column in inspector.get_columns(table_name)
+    }:
+        return
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(
+                f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_definition}"
+            ))
+    except SQLAlchemyError:
+        inspector = inspect(engine)
+        if column_name not in {
+            column["name"] for column in inspector.get_columns(table_name)
+        }:
+            raise
+
+
 def init_db() -> None:
     """Create database tables for all models inheriting from `Base`.
 
     Call this from an application startup event or a separate setup script.
     """
-    dispute_table = Base.metadata.tables.get("disputes")
-    tables = [table for table in Base.metadata.sorted_tables if table is not dispute_table]
+    tables = Base.metadata.sorted_tables
+    if engine.dialect.name == "mysql" and "students" in inspect(engine).get_table_names():
+        with engine.connect() as connection:
+            student_id_charset, student_id_collation = connection.execute(text(
+                "SELECT CHARACTER_SET_NAME, COLLATION_NAME "
+                "FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'students' AND COLUMN_NAME = 'student_id'"
+            )).one()
+        for table in tables:
+            if any(foreign_key.target_fullname == "students.student_id" for foreign_key in table.foreign_keys):
+                table.dialect_options["mysql"]["charset"] = student_id_charset
+                table.dialect_options["mysql"]["collate"] = student_id_collation
     Base.metadata.create_all(bind=engine, tables=tables)
+    inspector = inspect(engine)
     if "admin_login_history" in inspect(engine).get_table_names():
         login_history_columns = {
             column["name"] for column in inspect(engine).get_columns("admin_login_history")
@@ -85,47 +117,68 @@ def init_db() -> None:
         }
         for column_name, column_definition in missing_login_history_columns.items():
             if column_name not in login_history_columns:
+                _add_column_if_missing(
+                    "admin_login_history", column_name, column_definition
+                )
+    if "wallets" in inspector.get_table_names():
+        wallet_columns = {column["name"] for column in inspector.get_columns("wallets")}
+        if "frozen_balance" not in wallet_columns:
+            _add_column_if_missing(
+                "wallets",
+                "frozen_balance",
+                "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
+            )
+        if engine.dialect.name == "mysql":
+            wallet_checks = {
+                constraint["name"]
+                for constraint in inspect(engine).get_check_constraints("wallets")
+            }
+            with engine.connect() as connection:
+                has_negative_balance = connection.execute(
+                    text("SELECT 1 FROM wallets WHERE balance < 0 LIMIT 1")
+                ).first()
+            if "ck_wallets_nonnegative_balance" not in wallet_checks and not has_negative_balance:
                 with engine.begin() as connection:
                     connection.execute(text(
-                        f"ALTER TABLE admin_login_history ADD COLUMN `{column_name}` {column_definition}"
+                        "ALTER TABLE wallets ADD CONSTRAINT ck_wallets_nonnegative_balance CHECK (balance >= 0)"
                     ))
-    if dispute_table is not None:
-        with engine.begin() as connection:
-            connection.execute(text("""
-                CREATE TABLE IF NOT EXISTS disputes (
-                    id INT PRIMARY KEY AUTO_INCREMENT,
-                    order_id INT NOT NULL,
-                    buyer_id VARCHAR(50) NOT NULL,
-                    seller_id VARCHAR(50) NOT NULL,
-                    reason VARCHAR(120) NOT NULL,
-                    description TEXT NOT NULL,
-                    evidence_image VARCHAR(500) NULL,
-                    seller_response TEXT NULL,
-                    seller_evidence VARCHAR(500) NULL,
-                    previous_order_status VARCHAR(50) NOT NULL,
-                    status VARCHAR(30) NOT NULL DEFAULT 'OPEN',
-                    resolution VARCHAR(30) NULL,
-                    resolved_by INT NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    resolved_at DATETIME NULL,
-                    INDEX ix_disputes_order_status (order_id, status),
-                    INDEX ix_disputes_status_created (status, created_at),
-                    INDEX ix_disputes_buyer_id (buyer_id),
-                    INDEX ix_disputes_seller_id (seller_id)
-                )
-            """))
+    if "disputes" in inspector.get_table_names():
+        dispute_columns = {column["name"] for column in inspector.get_columns("disputes")}
+        if "post_payment" not in dispute_columns:
+            _add_column_if_missing(
+                "disputes", "post_payment", "BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        if "frozen_amount" not in dispute_columns:
+            _add_column_if_missing(
+                "disputes",
+                "frozen_amount",
+                "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
+            )
+    if "payment_idempotency" in inspector.get_table_names():
+        idempotency_columns = {column["name"] for column in inspector.get_columns("payment_idempotency")}
+        if "product_id" not in idempotency_columns:
+            _add_column_if_missing(
+                "payment_idempotency", "product_id", "INT NULL"
+            )
     inspector = inspect(engine)
     if "reviews" in inspector.get_table_names():
         review_constraints = {
             constraint["name"]
             for constraint in inspector.get_unique_constraints("reviews")
         }
-        if "uq_reviews_order_student" not in review_constraints:
+        review_indexes = {
+            index["name"]
+            for index in inspector.get_indexes("reviews")
+            if index.get("unique")
+        }
+        if (
+            "uq_reviews_order_student" not in review_constraints
+            and "uq_reviews_order_student" not in review_indexes
+        ):
             with engine.begin() as connection:
                 connection.execute(text(
-                    "ALTER TABLE reviews ADD CONSTRAINT uq_reviews_order_student "
-                    "UNIQUE (order_id, student_id)"
+                    "CREATE UNIQUE INDEX uq_reviews_order_student "
+                    "ON reviews (order_id, student_id)"
                 ))
     if "notifications" in inspector.get_table_names():
         notification_columns = {
@@ -138,10 +191,9 @@ def init_db() -> None:
         }
         for column_name, column_definition in missing_notification_columns.items():
             if column_name not in notification_columns:
-                with engine.begin() as connection:
-                    connection.execute(text(
-                        f"ALTER TABLE notifications ADD COLUMN `{column_name}` {column_definition}"
-                    ))
+                _add_column_if_missing(
+                    "notifications", column_name, column_definition
+                )
         notification_indexes = {
             index["name"] for index in inspect(engine).get_indexes("notifications")
         }
@@ -154,13 +206,13 @@ def init_db() -> None:
     if "products" in inspector.get_table_names() and "condition" not in {
         column["name"] for column in inspector.get_columns("products")
     }:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE products ADD COLUMN `condition` VARCHAR(50) NULL"))
+        _add_column_if_missing("products", "condition", "VARCHAR(50) NULL")
     if "products" in inspector.get_table_names() and "views" not in {
         column["name"] for column in inspector.get_columns("products")
     }:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE products ADD COLUMN views INT NOT NULL DEFAULT 0"))
+        _add_column_if_missing(
+            "products", "views", "INT NOT NULL DEFAULT 0"
+        )
     if "products" in inspector.get_table_names():
         product_columns = {column["name"] for column in inspector.get_columns("products")}
         missing_product_columns = {
@@ -168,11 +220,31 @@ def init_db() -> None:
             "pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
             "pickup_hours": "VARCHAR(120) NOT NULL DEFAULT '08:00-17:00'",
             "image_notes": "TEXT NULL",
+            "seller_id": "VARCHAR(50) NULL",
         }
         for column_name, column_definition in missing_product_columns.items():
             if column_name not in product_columns:
-                with engine.begin() as connection:
-                    connection.execute(text(f"ALTER TABLE products ADD COLUMN `{column_name}` {column_definition}"))
+                _add_column_if_missing(
+                    "products", column_name, column_definition
+                )
+        if "seller_id" not in product_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE products SET seller_id = seller "
+                    "WHERE seller IS NOT NULL AND EXISTS "
+                    "(SELECT 1 FROM students WHERE students.student_id = products.seller)"
+                ))
+    if "students" in inspector.get_table_names():
+        student_columns = {column["name"] for column in inspector.get_columns("students")}
+        missing_student_columns = {
+            "pay_failed_attempts": "INT NOT NULL DEFAULT 0",
+            "pay_locked_until": "DATETIME NULL",
+        }
+        for column_name, column_definition in missing_student_columns.items():
+            if column_name not in student_columns:
+                _add_column_if_missing(
+                    "students", column_name, column_definition
+                )
     if "product_views" in inspector.get_table_names():
         product_view_columns = {column["name"] for column in inspector.get_columns("product_views")}
         missing_product_view_columns = {
@@ -181,10 +253,9 @@ def init_db() -> None:
         }
         for column_name, column_definition in missing_product_view_columns.items():
             if column_name not in product_view_columns:
-                with engine.begin() as connection:
-                    connection.execute(text(
-                        f"ALTER TABLE product_views ADD COLUMN `{column_name}` {column_definition}"
-                    ))
+                _add_column_if_missing(
+                    "product_views", column_name, column_definition
+                )
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         missing_columns = {
@@ -193,60 +264,43 @@ def init_db() -> None:
         }
         for column_name, column_definition in missing_columns.items():
             if column_name not in report_columns:
-                with engine.begin() as connection:
-                    connection.execute(text(f"ALTER TABLE reports ADD COLUMN `{column_name}` {column_definition}"))
+                _add_column_if_missing("reports", column_name, column_definition)
     if "orders" in inspector.get_table_names():
         order_columns = {column["name"] for column in inspector.get_columns("orders")}
         missing_order_columns = {
-            "pickup_code": "INT NOT NULL DEFAULT 1000",
-            "buyer_confirmed": "BOOLEAN NOT NULL DEFAULT FALSE",
-            "seller_confirmed": "BOOLEAN NOT NULL DEFAULT FALSE",
             "is_funds_released": "BOOLEAN NOT NULL DEFAULT FALSE",
             "hidden_by_buyer": "BOOLEAN NOT NULL DEFAULT FALSE",
             "dispute_reason": "TEXT NULL",
             "platform_fee": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
             "seller_commission": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
             "paid_at": "DATETIME NULL",
-            "seller_accept_deadline": "DATETIME NULL",
+            "completed_at": "DATETIME NULL",
             "expired_at": "DATETIME NULL",
             "refund_status": "VARCHAR(20) NOT NULL DEFAULT 'none'",
             "refund_reference": "VARCHAR(100) NULL",
             "refund_attempts": "INT NOT NULL DEFAULT 0",
-            "seller_reminder_12h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
-            "seller_reminder_22h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
-            "seller_reminder_6h_sent": "BOOLEAN NOT NULL DEFAULT FALSE",
             "rejection_reason": "VARCHAR(30) NULL",
             "rejection_note": "TEXT NULL",
         }
         for column_name, column_definition in missing_order_columns.items():
             if column_name not in order_columns:
-                with engine.begin() as connection:
-                    connection.execute(text(
-                        f"ALTER TABLE orders ADD COLUMN `{column_name}` {column_definition}"
-                    ))
-        acceptance_hours = get_seller_acceptance_hours()
-        deadline_expression = (
-            f"DATE_ADD(COALESCE(paid_at, created_at), INTERVAL {acceptance_hours} HOUR)"
-            if engine.dialect.name == "mysql"
-            else f"DATETIME(COALESCE(paid_at, created_at), '+{acceptance_hours} hours')"
-        )
-        with engine.begin() as connection:
-            connection.execute(text(
-                "UPDATE orders SET paid_at = COALESCE(paid_at, created_at), "
-                f"seller_accept_deadline = {deadline_expression} "
-                "WHERE LOWER(status) = 'pending' AND LOWER(payment_status) = 'successful' "
-                "AND seller_accept_deadline IS NULL"
-            ))
-        order_indexes = {index["name"] for index in inspect(engine).get_indexes("orders")}
-        if "ix_orders_status_seller_accept_deadline" not in order_indexes:
+                _add_column_if_missing(
+                    "orders", column_name, column_definition
+                )
+        order_indexes = {
+            index["name"] for index in inspect(engine).get_indexes("orders")
+        }
+        seller_orders_index = "ix_orders_seller_status_completed_at"
+        if seller_orders_index not in order_indexes:
             with engine.begin() as connection:
                 connection.execute(text(
-                    "CREATE INDEX ix_orders_status_seller_accept_deadline "
-                    "ON orders (status, seller_accept_deadline)"
+                    f"CREATE INDEX {seller_orders_index} "
+                    "ON orders (seller_id, status, completed_at)"
                 ))
     if "students" in inspector.get_table_names():
         student_columns = {column["name"] for column in inspector.get_columns("students")}
         missing_student_columns = {
+            "has_password": "BOOLEAN NOT NULL DEFAULT TRUE",
             "two_factor_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
             "notif_msg_inapp": "BOOLEAN NOT NULL DEFAULT TRUE",
             "notif_msg_email": "BOOLEAN NOT NULL DEFAULT TRUE",
@@ -256,13 +310,20 @@ def init_db() -> None:
             "notif_pay_email": "BOOLEAN NOT NULL DEFAULT TRUE",
             "notif_browser_enabled": "BOOLEAN NOT NULL DEFAULT FALSE",
             "preferred_pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
-            "missed_acceptance_count": "INT NOT NULL DEFAULT 0",
             "suspended_until": "DATETIME NULL",
+            "pay_failed_attempts": "INT NOT NULL DEFAULT 0",
+            "pay_locked_until": "DATETIME NULL",
         }
         for column_name, column_definition in missing_student_columns.items():
             if column_name not in student_columns:
-                with engine.begin() as connection:
-                    connection.execute(text(f"ALTER TABLE students ADD COLUMN `{column_name}` {column_definition}"))
+                _add_column_if_missing(
+                    "students", column_name, column_definition
+                )
+        if "has_password" not in student_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE students SET has_password = FALSE WHERE UPPER(student_id) LIKE 'OAUTH-%'"
+                ))
         # Update existing records to set default values for notifications
         with engine.begin() as connection:
             connection.execute(text(

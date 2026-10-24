@@ -1,5 +1,11 @@
 # Campace Market
 
+## Wallet payments at handover
+
+Orders are created only when a buyer pays the seller from their wallet at handover. Chapa is used for wallet top-ups only; a successful wallet payment credits the seller and immediately completes the order.
+
+The frontend creates and reuses one idempotency key for each product-and-quantity payment intent. It keeps that key when the request outcome is uncertain, and only discards it after a definitive response or when the buyer changes the intent. Retrying with the same key returns the original order without moving money again; using a different key represents a separate payment attempt.
+
 ## Google OAuth setup
 
 Google sign-in is handled by the FastAPI backend using Authorization Code flow with PKCE.

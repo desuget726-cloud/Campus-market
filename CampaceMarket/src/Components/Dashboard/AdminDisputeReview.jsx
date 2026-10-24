@@ -143,8 +143,8 @@ export default function AdminDisputeReview({ user, onCountChange }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [pendingDecision, setPendingDecision] = useState(null);
+  const [splitRefundAmount, setSplitRefundAmount] = useState('');
   const [resolving, setResolving] = useState(false);
-  const [retryingRefund, setRetryingRefund] = useState(false);
 
   const request = useCallback(async (path, options = {}) => {
     const token = getSessionToken(user);
@@ -217,32 +217,21 @@ export default function AdminDisputeReview({ user, onCountChange }) {
     try {
       await request(`/api/admin/disputes/${selectedDispute.id}/resolve`, {
         method: 'PATCH',
-        body: JSON.stringify({ decision: pendingDecision }),
+        body: JSON.stringify({
+          decision: pendingDecision,
+          ...(pendingDecision === 'SPLIT' ? { amount: splitRefundAmount } : {}),
+        }),
       });
       setDisputes((current) => current.filter((item) => item.id !== selectedDispute.id));
       setSelectedDispute(null);
       setPendingDecision(null);
       onCountChange?.(disputes.length - 1);
       await loadDisputes();
-      notifySuccess(pendingDecision === 'BUYER' ? 'Buyer refunded successfully.' : 'Funds released to seller successfully.', 'admin-dispute-resolve');
+      notifySuccess(pendingDecision === 'BUYER' ? 'Buyer refunded successfully.' : pendingDecision === 'SPLIT' ? 'Dispute split resolved successfully.' : 'Funds released to seller successfully.', 'admin-dispute-resolve');
     } catch (resolveError) {
       notifyError(resolveError, 'admin-dispute-resolve');
     } finally {
       setResolving(false);
-    }
-  };
-
-  const retryRefund = async () => {
-    if (!selectedDispute?.order_id || retryingRefund) return;
-    setRetryingRefund(true);
-    try {
-      await request(`/api/admin/orders/${selectedDispute.order_id}/retry-refund`, { method: 'POST' });
-      await loadDisputes();
-      notifySuccess('Refund retry completed.', 'admin-dispute-refund-retry');
-    } catch (retryError) {
-      notifyError(retryError, 'admin-dispute-refund-retry');
-    } finally {
-      setRetryingRefund(false);
     }
   };
 
@@ -253,7 +242,7 @@ export default function AdminDisputeReview({ user, onCountChange }) {
           <div>
             <p className="text-xs font-black uppercase tracking-[0.2em] text-rose-600">Trust & Safety</p>
             <h2 className="mt-2 text-3xl font-black text-slate-950">Dispute Review</h2>
-            <p className="mt-2 text-sm text-slate-500">Review active buyer and seller claims before releasing escrow.</p>
+            <p className="mt-2 text-sm text-slate-500">Review buyer reports and resolve frozen seller wallet proceeds.</p>
           </div>
           <div className="flex flex-wrap gap-3">
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search disputes" className="rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-sky-500" />
@@ -320,24 +309,27 @@ export default function AdminDisputeReview({ user, onCountChange }) {
         <div className="mt-5 grid gap-4 rounded-2xl border border-slate-200 p-5 sm:grid-cols-3">
           <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Order</p><p className="mt-1 font-black">#{selectedDispute.order?.id || selectedDispute.order_id}</p></div>
           <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Price</p><p className="mt-1 font-black">{selectedDispute.order?.price || 'Unknown'}</p></div>
-          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Escrow amount</p><p className="mt-1 font-black">{formatMoney(selectedDispute.order?.escrow_amount)}</p></div>
+          <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Seller proceeds frozen</p><p className="mt-1 font-black">{formatMoney(selectedDispute.frozen_amount)}</p></div>
           <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Order status</p><p className="mt-1 font-black">{selectedDispute.order?.status || 'Unknown'}</p></div>
           <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Expired at</p><p className="mt-1 font-black">{formatDate(selectedDispute.order?.expired_at)}</p></div>
           <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Refund status</p><p className="mt-1 font-black">{selectedDispute.order?.refund_status || 'none'}</p></div>
           <div><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Refund attempts</p><p className="mt-1 font-black">{selectedDispute.order?.refund_attempts ?? 0}</p></div>
           <div className="sm:col-span-2"><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Refund reference</p><p className="mt-1 break-all font-black">{selectedDispute.order?.refund_reference || 'None'}</p></div>
         </div>
-        {selectedDispute.reason === 'refund_not_received' && selectedDispute.order?.refund_status !== 'succeeded' && (
-          <div className="mt-5 flex justify-end">
-            <button type="button" onClick={retryRefund} disabled={retryingRefund} className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-black text-amber-900 hover:bg-amber-100 disabled:opacity-50">
-              {retryingRefund ? 'Retrying refund...' : 'Retry refund'}
-            </button>
+        {selectedDispute.post_payment ? (
+          <div className="mt-6 flex flex-wrap justify-end gap-3">
+            <button type="button" onClick={() => setPendingDecision('BUYER')} className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700">Refund Buyer</button>
+            <button type="button" onClick={() => { setSplitRefundAmount(''); setPendingDecision('SPLIT'); }} className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm font-black text-amber-900 hover:bg-amber-100">Split funds</button>
+            <button type="button" onClick={() => setPendingDecision('SELLER')} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-black text-white hover:bg-emerald-700">Release to Seller</button>
           </div>
+        ) : (
+          <p className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">
+            This legacy dispute is available for historical review; wallet resolution is only available for post-payment disputes.
+          </p>
         )}
-        <div className="mt-6 flex flex-wrap justify-end gap-3"><button type="button" onClick={() => setPendingDecision('BUYER')} className="rounded-xl bg-rose-600 px-5 py-3 text-sm font-black text-white hover:bg-rose-700">Refund Buyer</button><button type="button" onClick={() => setPendingDecision('SELLER')} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-black text-white hover:bg-emerald-700">Release to Seller</button></div>
       </div>}
 
-      {pendingDecision && <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-950/60 p-4"><div role="dialog" aria-modal="true" className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"><p className="text-xs font-black uppercase tracking-[0.2em] text-rose-600">Confirm resolution</p><h3 className="mt-2 text-2xl font-black">{pendingDecision === 'BUYER' ? 'Refund the buyer?' : 'Release funds to the seller?'}</h3><p className="mt-3 text-sm leading-6 text-slate-600">This permanently resolves dispute #{selectedDispute?.id} and changes the escrow outcome for order #{selectedDispute?.order_id}.</p><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setPendingDecision(null)} disabled={resolving} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold">Cancel</button><button type="button" onClick={resolveDispute} disabled={resolving} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-50">{resolving ? 'Resolving...' : 'Confirm resolution'}</button></div></div></div>}
+      {pendingDecision && <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-950/60 p-4"><div role="dialog" aria-modal="true" className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"><p className="text-xs font-black uppercase tracking-[0.2em] text-rose-600">Confirm resolution</p><h3 className="mt-2 text-2xl font-black">{pendingDecision === 'BUYER' ? 'Refund the buyer?' : pendingDecision === 'SPLIT' ? 'Split the payment?' : 'Release funds to the seller?'}</h3>{pendingDecision === 'SPLIT' && <label className="mt-4 block text-sm font-bold text-slate-700">Refund amount to buyer (ETB)<input type="number" min="0" step="0.01" value={splitRefundAmount} onChange={(event) => setSplitRefundAmount(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2" /></label>}<p className="mt-3 text-sm leading-6 text-slate-600">This permanently resolves dispute #{selectedDispute?.id} for order #{selectedDispute?.order_id}.</p><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setPendingDecision(null)} disabled={resolving} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-bold">Cancel</button><button type="button" onClick={resolveDispute} disabled={resolving || (pendingDecision === 'SPLIT' && splitRefundAmount === '')} className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-black text-white disabled:opacity-50">{resolving ? 'Resolving...' : 'Confirm resolution'}</button></div></div></div>}
     </div>
   );
 }

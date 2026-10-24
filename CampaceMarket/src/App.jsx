@@ -16,10 +16,12 @@ import SuccessModal from './Components/Authontication/SuccessModal';
 import AuthInfoModal from './Components/Authontication/AuthInfoModal';
 import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
 import { LanguageProvider } from './context/LanguageContext';
+import { CartProvider } from './context/CartContext';
 import toast, { Toaster } from 'react-hot-toast';
 import { API_BASE_URL } from './config';
 import { getAdminSettings } from './api/adminSettings';
 import { clearPendingProductAction, getPendingProductAction } from './utils/productActionState';
+import { parseOrderDashboardLink } from './utils/orderDashboardLink';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
@@ -76,6 +78,7 @@ function AppContent() {
     if (typeof window === 'undefined') return 'home';
     try {
       const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+      if (pathname === '/dashboard') return 'student-dashboard';
       if (pathname === '/login') return 'login';
       if (pathname === '/signup' || pathname === '/register') return 'register';
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
@@ -128,7 +131,11 @@ function AppContent() {
       return 'dashboard';
     }
   });
-  const [studentTab, setStudentTab] = useState('home');
+  const [studentTab, setStudentTab] = useState(() => (
+    typeof window === 'undefined'
+      ? 'home'
+      : parseOrderDashboardLink(window.location.href)?.tab || 'home'
+  ));
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
@@ -450,6 +457,19 @@ function AppContent() {
   const isHomeView = currentView === 'home';
 
   const handleNavigate = (view, params = {}) => {
+    const dashboardLink = typeof view === 'string' ? parseOrderDashboardLink(view) : null;
+    if (dashboardLink) {
+      setStudentTab(dashboardLink.tab);
+      setCurrentView('student-dashboard');
+      const nextUrl = new URL(view, window.location.origin);
+      const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const destination = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+      if (destination !== currentUrl) {
+        window.history.pushState({ dashboardOrderId: dashboardLink.orderId }, '', destination);
+      }
+      return;
+    }
+
     if (view === 'login' || view === 'register' || view === 'signup') {
       if (user) {
         setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
@@ -460,7 +480,11 @@ function AppContent() {
     }
 
     if (view === 'product-details' || view === 'ProductDetails') {
-      setPendingProductId(params.productId ?? params.product_id ?? null);
+      const productId = params.productId ?? params.product_id ?? null;
+      setPendingProductId(productId);
+      setPendingProductAction(params.action === 'pay' && productId
+        ? { returnTo: String(productId), action: 'pay', quantity: 1 }
+        : null);
       setCurrentView('home');
       return;
     }
@@ -515,6 +539,32 @@ function AppContent() {
   };
 
   useEffect(() => {
+    const syncViewFromHistory = () => {
+      const dashboardLink = parseOrderDashboardLink(window.location.href);
+      if (dashboardLink) {
+        setStudentTab(dashboardLink.tab);
+        setCurrentView('student-dashboard');
+        return;
+      }
+
+      const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+      if (pathname === '/dashboard') {
+        setStudentTab('home');
+        setCurrentView('student-dashboard');
+      } else if (pathname === '/login') {
+        setCurrentView('login');
+      } else if (pathname === '/signup' || pathname === '/register') {
+        setCurrentView('register');
+      } else if (!pathname || pathname === '/') {
+        setCurrentView('home');
+      }
+    };
+
+    window.addEventListener('popstate', syncViewFromHistory);
+    return () => window.removeEventListener('popstate', syncViewFromHistory);
+  }, []);
+
+  useEffect(() => {
     if (!hasUser || !['login', 'register'].includes(currentView)) return;
     setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
   }, [activeRole, currentView, hasUser]);
@@ -552,6 +602,7 @@ function AppContent() {
   };
 
   return (
+    <CartProvider user={user}>
     <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-screen' : ''}`}>
       <Toaster
         position="top-right"
@@ -761,6 +812,7 @@ function AppContent() {
         />
       )}
     </div>
+    </CartProvider>
   );
 }
 

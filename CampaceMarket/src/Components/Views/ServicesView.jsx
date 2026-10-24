@@ -5,7 +5,7 @@ const coreServices = [
     icon: '💳',
     eyebrow: 'Chapa powered',
     title: 'Secure Online Payments',
-    text: 'Integrated Chapa payments let students fund wallets and complete checkouts. Deposits are held as pending until Chapa confirms the transaction.',
+    text: 'Use Chapa to top up your wallet. At handover, wallet payment goes directly to the seller and creates a completed order.',
     tone: 'border-emerald-200 bg-emerald-50/70',
     iconTone: 'bg-emerald-500',
   },
@@ -33,9 +33,9 @@ const features = [
   ['🛡', 'Student Verification', 'Academic ID verification keeps the campus directory safe.'],
   ['💬', 'Real-time WebSocket Chat', 'Instant messaging with online and offline status indicators.'],
   ['🤖', 'Smart AI Recommendations', "A tailored item feed based on the student's department."],
-  ['📦', 'Order Fulfillment Tracker', 'Multi-step trade workflow tracking from placed to pickup.'],
+  ['📦', 'Order and Dispute History', 'Completed wallet payments and post-payment dispute tracking.'],
   ['🔔', 'In-App Notifications and Alerts', 'In-app alerts for orders, messages, and wallet loads.'],
-  ['💳', 'Secure Wallet Integration', 'Seamless top-ups via Chapa and secure checkouts.'],
+  ['💳', 'Secure Wallet Integration', 'Top up with Chapa, then pay sellers directly from your wallet at handover.'],
 ];
 
 const ServicesView = () => (

@@ -1,6 +1,6 @@
 export const PENDING_PRODUCT_ACTION_KEY = 'campacePendingProductAction';
 
-const validActions = new Set(['addToCart', 'showContact', 'wishlist']);
+const validActions = new Set(['addToCart', 'showContact', 'wishlist', 'pay']);
 
 export function savePendingProductAction(intent, storage = window.sessionStorage) {
     if (!intent?.returnTo || !validActions.has(intent.action)) return false;

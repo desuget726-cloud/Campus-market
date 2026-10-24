@@ -1,7 +1,7 @@
 import io
 import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -10,83 +10,19 @@ from sqlalchemy.sql import visitors
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
-from app.order_lifecycle import (
-    apply_buyer_receipt_confirmation,
-    apply_seller_order_action,
-    claim_seller_timeout_refund,
-    payout_release_allowed,
-    seller_acceptance_is_open,
-)
 from app.main import (
     _build_seller_listing_analytics,
     _derived_dispute_thread,
-    _escrow_hold_refund_amount,
     _prepare_dispute_evidence_value,
     _product_has_orders,
     _resolve_pickup_location,
-    _restock_product_for_order,
     _should_show_in_my_products,
     get_seller_sales_analytics,
 )
 from app import main as main_module
 
 
-def make_order():
-    return SimpleNamespace(
-        status="Pending",
-        pickup_code=4821,
-        buyer_confirmed=False,
-        seller_confirmed=False,
-        active_dispute=False,
-    )
-
-
 class OrderLifecycleTests(unittest.TestCase):
-    def test_seller_acceptance_is_open_before_deadline(self):
-        now = datetime(2026, 9, 29, 12, 0)
-        self.assertTrue(seller_acceptance_is_open(now + timedelta(seconds=1), now))
-
-    def test_seller_acceptance_is_closed_at_or_after_deadline(self):
-        now = datetime(2026, 9, 29, 12, 0)
-        self.assertFalse(seller_acceptance_is_open(now, now))
-        self.assertFalse(seller_acceptance_is_open(now - timedelta(seconds=1), now))
-
-    def test_seller_can_accept_before_deadline(self):
-        order = make_order()
-        order.seller_accept_deadline = datetime.now() + timedelta(hours=1)
-
-        apply_seller_order_action(order, "accept")
-
-        self.assertEqual(order.status, "Processing")
-
-    def test_seller_cannot_accept_after_deadline(self):
-        order = make_order()
-        order.seller_accept_deadline = datetime.now() - timedelta(seconds=1)
-
-        with self.assertRaises(HTTPException) as error:
-            apply_seller_order_action(order, "accept")
-
-        self.assertEqual(error.exception.status_code, 409)
-        self.assertEqual(error.exception.detail, "Order expired or already handled")
-
-    def test_repeated_timeout_job_claim_does_not_double_refund(self):
-        order = SimpleNamespace(refund_status="none", refund_attempts=0)
-
-        self.assertTrue(claim_seller_timeout_refund(order))
-        self.assertFalse(claim_seller_timeout_refund(order))
-        self.assertEqual(order.refund_attempts, 1)
-
-    def test_failed_timeout_refund_can_retry_until_three_attempts(self):
-        order = SimpleNamespace(refund_status="none", refund_attempts=0)
-
-        for expected_attempt in range(1, 4):
-            self.assertTrue(claim_seller_timeout_refund(order))
-            self.assertEqual(order.refund_attempts, expected_attempt)
-            order.refund_status = "failed"
-
-        self.assertFalse(claim_seller_timeout_refund(order))
-        self.assertEqual(order.refund_attempts, 3)
-
     def test_direct_student_id_profile_edit_is_rejected(self):
         student = SimpleNamespace(student_id="OAUTH-875D73CE2C")
         original_auth = main_module._student_from_authorization
@@ -181,104 +117,6 @@ class OrderLifecycleTests(unittest.TestCase):
         self.assertEqual(result["stats"]["total_orders"], 1)
         self.assertEqual(sum(point["total"] for point in result["points"]), 1000)
         self.assertEqual(sum(point["orders"] for point in result["points"]), 1)
-
-    def test_complete_order_requires_both_confirmations(self):
-        order = make_order()
-
-        apply_seller_order_action(order, "accept")
-        apply_seller_order_action(order, "ready")
-        apply_seller_order_action(order, "handover", 4821)
-
-        self.assertEqual(order.status, "Ready for Pickup")
-        self.assertTrue(order.seller_confirmed)
-        self.assertFalse(order.buyer_confirmed)
-        self.assertFalse(payout_release_allowed(order))
-
-        apply_buyer_receipt_confirmation(order)
-
-        self.assertEqual(order.status, "Completed")
-        self.assertTrue(order.buyer_confirmed)
-        self.assertTrue(payout_release_allowed(order))
-
-    def test_buyer_cannot_confirm_before_seller_handover(self):
-        order = make_order()
-        apply_seller_order_action(order, "accept")
-        apply_seller_order_action(order, "ready")
-
-        with self.assertRaises(HTTPException) as error:
-            apply_buyer_receipt_confirmation(order)
-
-        self.assertEqual(error.exception.status_code, 409)
-        self.assertEqual(order.status, "Ready for Pickup")
-        self.assertFalse(payout_release_allowed(order))
-
-    def test_seller_cannot_skip_states_or_reuse_code(self):
-        order = make_order()
-
-        with self.assertRaises(HTTPException):
-            apply_seller_order_action(order, "ready")
-
-        apply_seller_order_action(order, "accept")
-        apply_seller_order_action(order, "ready")
-
-        with self.assertRaises(HTTPException) as error:
-            apply_seller_order_action(order, "handover", 1234)
-        self.assertEqual(error.exception.status_code, 400)
-
-        apply_seller_order_action(order, "handover", 4821)
-        with self.assertRaises(HTTPException) as error:
-            apply_seller_order_action(order, "handover", 4821)
-        self.assertEqual(error.exception.status_code, 409)
-
-    def test_buyer_cannot_confirm_twice(self):
-        order = make_order()
-        apply_seller_order_action(order, "accept")
-        apply_seller_order_action(order, "ready")
-        apply_seller_order_action(order, "handover", 4821)
-        apply_buyer_receipt_confirmation(order)
-
-        with self.assertRaises(HTTPException) as error:
-            apply_buyer_receipt_confirmation(order)
-        self.assertEqual(error.exception.status_code, 409)
-
-    def test_open_dispute_blocks_receipt_and_payout(self):
-        order = make_order()
-        order.status = "Disputed"
-        order.active_dispute = True
-
-        with self.assertRaises(HTTPException) as error:
-            apply_buyer_receipt_confirmation(order)
-
-        self.assertEqual(error.exception.status_code, 409)
-        self.assertFalse(payout_release_allowed(order))
-
-    def test_resolved_order_can_be_paid_out_after_dispute(self):
-        order = make_order()
-        order.status = "Completed"
-        order.buyer_confirmed = True
-        order.seller_confirmed = True
-        order.active_dispute = False
-
-        self.assertTrue(payout_release_allowed(order))
-
-    def test_refund_amount_matches_escrow_hold_for_multiple_units(self):
-        order = SimpleNamespace(quantity=3, price="200")
-        escrow_hold = SimpleNamespace(amount="600.00")
-
-        refund_amount = _escrow_hold_refund_amount(escrow_hold)
-
-        self.assertEqual(refund_amount, 600)
-        self.assertNotEqual(refund_amount, 200)
-        self.assertEqual(order.quantity * 200, refund_amount)
-
-    def test_restock_restores_order_quantity_and_availability(self):
-        product = SimpleNamespace(stock=0, status="Sold")
-        order = SimpleNamespace(quantity=3)
-
-        _restock_product_for_order(product, order)
-
-        self.assertEqual(product.stock, 3)
-        self.assertEqual(product.status, "Approved")
 
     def test_explicit_pickup_location_wins_over_category_fallback(self):
         product = SimpleNamespace(

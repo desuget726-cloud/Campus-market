@@ -3,19 +3,11 @@ import {
   BadgeDollarSign,
   CheckCircle2,
   CreditCard,
-  Handshake,
-  Leaf,
   MapPin,
   MessageCircle,
   Sparkles,
 } from 'lucide-react';
 import './AboutView.css';
-
-// const badges = [
-//   { label: 'Eco-Friendly', icon: Leaf, tone: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
-//   { label: 'Peer-to-Peer', icon: Handshake, tone: 'border-sky-200 bg-sky-50 text-sky-700' },
-//   { label: 'Affordable', icon: BadgeDollarSign, tone: 'border-amber-200 bg-amber-50 text-amber-700' },
-// ];
 
 const steps = [
   { number: '01', title: 'Register', text: 'Create your verified student account', color: 'bg-emerald-500' },
@@ -29,29 +21,13 @@ const benefits = [
   { icon: Sparkles, title: 'Smart Recommendations', text: 'AI recommends relevant products based on your department and interests.', tone: 'border-indigo-200 bg-indigo-50/70' },
   { icon: BadgeDollarSign, title: 'Affordable', text: 'Student-friendly prices without the high markups of traditional retail.', tone: 'border-amber-200 bg-amber-50/70' },
   { icon: MapPin, title: 'Campus-Based', text: 'Designed specifically for convenient university communities and pickup points.', tone: 'border-rose-200 bg-rose-50/70' },
-  { icon: CreditCard, title: 'Secure Payments', text: 'Payments are held in escrow via Chapa until both the buyer and seller confirm the exchange.', tone: 'border-cyan-200 bg-cyan-50/70' },
-];
-
-const technologies = [
-  ['Frontend', 'React.js'],
-  ['Backend', 'FastAPI'],
-  ['Database', 'MySQL'],
-  ['AI Engine', 'Scikit-learn'],
-  ['Payments Gateway', 'Chapa'],
+  { icon: CreditCard, title: 'Secure Payments', text: 'Buyers pay from their wallet at handover; successful payment goes directly to the seller and completes the order.', tone: 'border-cyan-200 bg-cyan-50/70' },
 ];
 
 const AboutView = ({ onNavigate }) => (
   <main className="about-page space-y-8 pb-8 text-slate-900">
     <section className="about-hero-card relative overflow-hidden rounded-[32px] px-6 py-12 sm:px-10 lg:px-14 lg:py-16">
       <div className="relative max-w-3xl">
-        {/* <div className="flex flex-wrap gap-2">
-          {badges.map((badge) => (
-            <span key={badge.label} className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-bold ${badge.tone}`}>
-              <badge.icon size={14} strokeWidth={2.5} aria-hidden="true" />
-              {badge.label}
-            </span>
-          ))}
-        </div> */}
         <p className="about-hero-label mt-8 text-xs font-bold uppercase tracking-[0.28em]">About UniXchange</p>
         <h1 className="mt-3 max-w-2xl text-4xl font-black tracking-tight sm:text-5xl">A smarter way to trade on University.</h1>
         <p className="about-hero-description mt-5 max-w-2xl text-base leading-7 sm:text-lg">
@@ -123,23 +99,6 @@ const AboutView = ({ onNavigate }) => (
       </button>
     </section>
 
-    {/* <footer className="rounded-[28px] border border-slate-200 bg-slate-900 p-7 text-white shadow-lg sm:p-9">
-      <div className="flex flex-col gap-2 border-b border-slate-700 pb-6 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.25em] text-sky-300">Technology Stack</p>
-          <h2 className="mt-2 text-2xl font-black">The foundation behind the platform.</h2>
-        </div>
-        <span className="text-sm font-semibold text-slate-400">DG Market</span>
-      </div>
-      <div className="grid gap-3 pt-6 sm:grid-cols-2 lg:grid-cols-5">
-        {technologies.map(([label, value]) => (
-          <div key={label} className="rounded-2xl border border-slate-700 bg-slate-800/70 p-4">
-            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{label}</p>
-            <p className="mt-2 font-bold text-white">{value}</p>
-          </div>
-        ))}
-      </div>
-    </footer> */}
   </main>
 );
 

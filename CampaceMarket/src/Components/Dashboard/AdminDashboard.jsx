@@ -164,6 +164,30 @@ function StatusBadge({ status, className = '', ...props }) {
   );
 }
 
+const LEGACY_PREPAYMENT_ORDER_STATUSES = new Set([
+  'pending',
+  'processing',
+  'accepted',
+  'waiting acceptance',
+  'waiting for acceptance',
+  'ready for pickup',
+  'ready to meet',
+  'out for delivery',
+  'cancelled',
+  'canceled',
+  'rejected',
+  'returned',
+  'expired',
+]);
+
+const getAdminOrderStatusLabel = (status) => {
+  const normalized = String(status || '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+  if (LEGACY_PREPAYMENT_ORDER_STATUSES.has(normalized)) return 'Legacy order';
+  if (normalized === 'completed') return 'Completed';
+  if (normalized === 'disputed') return 'Disputed';
+  return String(status || 'Unknown');
+};
+
 function AdminTable({ children, className = '', tableClassName = '' }) {
   return (
     <div className={`admin-data-table-wrapper w-full max-w-full overflow-x-auto rounded-2xl ${className}`}>
@@ -1034,18 +1058,14 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   }, [user?.role]);
 
   const calculatedOrderMetrics = useMemo(() => {
-    const processingStatuses = new Set(['Processing', 'Pending', 'Ready for Pickup', 'Out for Delivery']);
-    const cancelledStatuses = new Set(['Cancelled', 'Returned']);
-    const processing = ordersList.filter((order) => processingStatuses.has(order.order_status)).length;
+    const legacyOrders = ordersList.filter((order) => getAdminOrderStatusLabel(order.order_status) === 'Legacy order').length;
     const completedOrders = ordersList.filter((order) => order.order_status === 'Completed');
-    const cancelled = ordersList.filter((order) => cancelledStatuses.has(order.order_status)).length;
     const totalSalesAmount = completedOrders.reduce((total, order) => total + (Number(order.total_amount) || 0), 0);
 
     return {
       totalOrders: ordersList.length,
-      processing,
+      legacyOrders,
       completed: completedOrders.length,
-      cancelled,
       totalSales: `${totalSalesAmount.toLocaleString('en-US')} ETB`,
     };
   }, [ordersList]);
@@ -1962,7 +1982,23 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const hasSalesTrendData = salesTrendData.some(
     (item) => Number(item.revenue) > 0 || Number(item.orders) > 0,
   );
-  const overviewOrderStatus = metrics.order_status_breakdown ?? [];
+  const overviewOrderStatus = (Array.isArray(metrics.order_status_breakdown) ? metrics.order_status_breakdown : [])
+    .reduce((statuses, status) => {
+      const label = getAdminOrderStatusLabel(status.label);
+      const existing = statuses.find((entry) => entry.label === label);
+      if (!existing) {
+        statuses.push({ ...status, label });
+        return statuses;
+      }
+
+      if (status.value !== undefined) {
+        existing.value = (Number(existing.value) || 0) + (Number(status.value) || 0);
+      }
+      if (status.percentage !== undefined) {
+        existing.percentage = (Number(existing.percentage) || 0) + (Number(status.percentage) || 0);
+      }
+      return statuses;
+    }, []);
   const overviewCategories = metrics.popular_categories ?? [];
   const collegeActivity = metrics.college_activity ?? [];
   const trendMonths = (Array.isArray(metrics.trends?.months) ? metrics.trends.months : getDynamicMonths()).slice(-6);
@@ -2326,27 +2362,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     }
   };
 
-  const handleRetryOrderRefund = async (orderId) => {
-    const token = getAdminSessionToken();
-    if (!token) {
-      notifyError(new Error('A valid admin session is required.'), `admin-order-refund-${orderId}`);
-      return;
-    }
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/orders/${orderId}/retry-refund`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || 'Refund retry failed.');
-      await fetchOrdersData();
-      setSelectedOrderDetails(null);
-      notifySuccess('Refund completed.', `admin-order-refund-${orderId}`);
-    } catch (error) {
-      notifyError(error, `admin-order-refund-${orderId}`);
-    }
-  };
-
   const handleRetryPaymentVerification = async () => {
     const txRef = selectedPaymentDetail?.chapa_reference || selectedPaymentDetail?.transaction_id;
     if (!txRef || paymentVerificationLoading) return;
@@ -2368,49 +2383,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       notifyError(error, `admin-payment-verify-${txRef}`);
     } finally {
       setPaymentVerificationLoading(false);
-    }
-  };
-
-  const handleOrderUpdate = async (orderId, updatedOrderStatus, updatedPaymentStatus) => {
-    const order = ordersList.find(item => item.id === orderId);
-    if (!order) return;
-
-    const previousOrderStatus = order.order_status;
-    const previousPaymentStatus = order.payment_status;
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/orders/${orderId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_status: updatedOrderStatus,
-          payment_status: updatedPaymentStatus,
-          pickup_location: order.pickup_location || 'Main Library'
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || 'Failed to persist order status update');
-      }
-
-      setOrdersList(prev => prev.map(item => item.id === orderId ? {
-        ...item,
-        order_status: updatedOrderStatus,
-        payment_status: updatedPaymentStatus
-      } : item));
-
-      refreshAuditLogs();
-      setSelectedOrderDetails(null);
-      notifySuccess('Order status updated successfully.', `admin-order-update-${orderId}`);
-    } catch (err) {
-      console.error('Error saving order status updates:', err);
-      notifyError(err, `admin-order-update-${orderId}`);
-      setOrdersList(prev => prev.map(item => item.id === orderId ? {
-        ...item,
-        order_status: previousOrderStatus,
-        payment_status: previousPaymentStatus
-      } : item));
     }
   };
 
@@ -5362,7 +5334,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
             (order.seller_id || order.seller || '').toLowerCase().includes(query) ||
             (order.product_title || order.item || '').toLowerCase().includes(query);
 
-          const matchesStatus = orderFilterStatus === 'All' || order.order_status === orderFilterStatus;
+          const matchesStatus = orderFilterStatus === 'All' || getAdminOrderStatusLabel(order.order_status) === orderFilterStatus;
           const matchesRefund = orderFilterRefund === 'All' || (
             orderFilterRefund === 'Expired / Refund failed' &&
             (['Expired', 'Refunded'].includes(order.order_status) || order.refund_status === 'failed')
@@ -5386,11 +5358,8 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
 
         const getOrderStatusBadge = (status) => {
           if (status === 'Completed') return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
-          if (status === 'Pending' || status === 'Processing') return 'bg-amber-100 text-amber-700 border border-amber-200';
-          if (status === 'Cancelled' || status === 'Returned') return 'bg-rose-100 text-rose-700 border border-rose-200';
           if (status === 'Disputed') return 'bg-rose-100 text-rose-700 border border-rose-200';
-          if (status === 'Ready for Pickup') return 'bg-sky-100 text-sky-700 border border-sky-200';
-          if (status === 'Out for Delivery') return 'bg-violet-100 text-violet-700 border border-violet-200';
+          if (status === 'Legacy order') return 'bg-slate-100 text-slate-600 border border-slate-200';
           return 'bg-slate-100 text-slate-600 border border-slate-200';
         };
 
@@ -5408,7 +5377,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <h2 className="text-2xl font-black text-slate-900">Order Operations Dashboard</h2>
-                  <p className="mt-1 text-sm text-slate-600">Track student orders, fulfillment progress, payment confirmation, and pickup logistics across the marketplace.</p>
+                  <p className="mt-1 text-sm text-slate-600">Review completed wallet payments, post-payment disputes, and historical orders.</p>
                 </div>
                 <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-700">
                   <span>💰</span>
@@ -5421,22 +5390,18 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-4 min-[420px]:grid-cols-2 xl:grid-cols-3">
               <div className="rounded-[24px] border border-slate-200 bg-slate-100/70 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total Orders</p>
                 <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.totalOrders.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-amber-100 bg-amber-50 p-5 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Processing / Pending</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.processing.toLocaleString()}</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-600">Legacy Orders</p>
+                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.legacyOrders.toLocaleString()}</p>
               </div>
               <div className="rounded-[24px] border border-emerald-100 bg-emerald-50 p-5 shadow-sm">
                 <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Completed</p>
                 <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.completed.toLocaleString()}</p>
-              </div>
-              <div className="rounded-[24px] border border-rose-100 bg-rose-50 p-5 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-700">Cancelled</p>
-                <p className="mt-3 text-3xl font-black text-slate-950">{calculatedOrderMetrics.cancelled.toLocaleString()}</p>
               </div>
             </div>
 
@@ -5468,14 +5433,9 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Order Status: All</option>
-                  <option value="Pending">Pending</option>
-                  <option value="Processing">Processing</option>
-                  <option value="Ready for Pickup">Ready for Pickup</option>
-                  <option value="Out for Delivery">Out for Delivery</option>
-                  <option value="Disputed">Disputed</option>
+                  <option value="Legacy order">Legacy order</option>
                   <option value="Completed">Completed</option>
-                  <option value="Cancelled">Cancelled</option>
-                  <option value="Returned">Returned</option>
+                  <option value="Disputed">Disputed</option>
                 </select>
 
                 <select
@@ -5494,7 +5454,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                   onChange={(e) => setOrderFilterRefund(e.target.value)}
                   className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
-                  <option value="All">Expiry / Refund: All</option>
+                  <option value="All">Legacy expiry / refund: All</option>
                   <option value="Expired / Refund failed">Expired / Refund failed</option>
                 </select>
               </div>
@@ -5529,7 +5489,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                         <td className="px-4 py-4 font-black text-slate-950">{order.price || `${Number(order.total_amount ?? 0).toLocaleString('en-ET')} ETB`}</td>
                         <td className="px-4 py-4">
                           <span className={`rounded-full px-3 py-1 text-xs font-bold ${getOrderStatusBadge(order.order_status)}`}>
-                            {order.order_status}
+                            {getAdminOrderStatusLabel(order.order_status)}
                           </span>
                         </td>
                         <td className="px-4 py-4">
@@ -5546,15 +5506,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                             >
                               View
                             </button>
-                            {order.refund_status === 'failed' && (
-                              <button
-                                type="button"
-                                onClick={() => handleRetryOrderRefund(order.id)}
-                                className="rounded-full bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-700"
-                              >
-                                Retry refund
-                              </button>
-                            )}
                           </div>
                         </td>
                       </tr>
@@ -5624,7 +5575,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Fulfillment Status</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedOrderDetails.order_status}</p>
+                      <p className="mt-2 text-base font-black text-slate-900">{getAdminOrderStatusLabel(selectedOrderDetails.order_status)}</p>
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
                       <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Refund Status</p>
@@ -5632,7 +5583,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                       {selectedOrderDetails.refund_reference && <p className="mt-1 break-all text-xs text-slate-500">{selectedOrderDetails.refund_reference}</p>}
                     </div>
                     <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Expiry Reason</p>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Legacy Expiry Reason</p>
                       <p className="mt-2 text-base font-black text-slate-900">{selectedOrderDetails.expiry_reason || 'Not expired'}</p>
                       {selectedOrderDetails.expired_at && <p className="mt-1 text-xs text-slate-500">{new Date(selectedOrderDetails.expired_at).toLocaleString()}</p>}
                     </div>
@@ -5644,72 +5595,20 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                       <div><p className="text-xs font-bold text-slate-500">Reason</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.dispute_reason || 'Not provided'}</p></div>
                       <div><p className="text-xs font-bold text-slate-500">Status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.dispute_status}</p></div>
                       <div><p className="text-xs font-bold text-slate-500">Created date</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.dispute_created_at ? new Date(selectedOrderDetails.dispute_created_at).toLocaleString() : 'Unavailable'}</p></div>
-                      <div><p className="text-xs font-bold text-slate-500">Escrow status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.escrow_status || 'Unavailable'}</p></div>
+                      <div><p className="text-xs font-bold text-slate-500">Legacy escrow status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.escrow_status || 'Unavailable'}</p></div>
                       <div><p className="text-xs font-bold text-slate-500">Seller payout status</p><p className="mt-1 font-black text-slate-900">{selectedOrderDetails.seller_payout_status || 'Unavailable'}</p></div>
                     </div>
                     <div className="mt-4 rounded-xl bg-white p-4"><p className="text-xs font-bold text-slate-500">Description</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{selectedOrderDetails.dispute_description || 'No description provided.'}</p></div>
                     {selectedOrderDetails.seller_response && <div className="mt-4 rounded-xl bg-white p-4"><p className="text-xs font-bold text-slate-500">Seller response</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-700">{selectedOrderDetails.seller_response}</p></div>}
                   </div>}
 
-                  <div className="mt-6 grid gap-4 md:grid-cols-2">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Update Order Status</label>
-                      <select
-                        value={selectedOrderDetails.order_status}
-                        onChange={(e) => setSelectedOrderDetails({ ...selectedOrderDetails, order_status: e.target.value })}
-                        className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
-                      >
-                        <option value="Pending">Pending</option>
-                        <option value="Processing">Processing</option>
-                        <option value="Ready for Pickup">Ready for Pickup</option>
-                        <option value="Out for Delivery">Out for Delivery</option>
-                        <option value="Disputed">Disputed</option>
-                        <option value="Completed" disabled={['OPEN', 'UNDER_REVIEW'].includes(String(selectedOrderDetails.dispute_status || '').toUpperCase())}>Completed</option>
-                        <option value="Cancelled">Cancelled</option>
-                        <option value="Returned">Returned</option>
-                      </select>
-                    </div>
-
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Update Payment Status</label>
-                      <select
-                        value={selectedOrderDetails.payment_status || selectedOrderDetails.pay_status}
-                        onChange={(e) => setSelectedOrderDetails({ ...selectedOrderDetails, payment_status: e.target.value })}
-                        className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
-                      >
-                        <option value="Pending">Pending</option>
-                        <option value="Successful">Successful</option>
-                        <option value="Failed">Failed</option>
-                        <option value="Refunded">Refunded</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {['OPEN', 'UNDER_REVIEW'].includes(String(selectedOrderDetails.dispute_status || '').toUpperCase()) && <p className="mt-3 text-sm font-semibold text-rose-700">Resolve the active dispute using Refund Buyer or Release to Seller before completing this order.</p>}
-
                   <div className="mt-6 flex justify-end gap-3">
-                    {selectedOrderDetails.refund_status === 'failed' && (
-                      <button
-                        type="button"
-                        onClick={() => handleRetryOrderRefund(selectedOrderDetails.id)}
-                        className="rounded-full bg-amber-600 px-5 py-3 text-sm font-bold text-white hover:bg-amber-700"
-                      >
-                        Retry refund
-                      </button>
-                    )}
                     <button
                       type="button"
                       onClick={() => setSelectedOrderDetails(null)}
                       className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50"
                     >
                       Close
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleOrderUpdate(selectedOrderDetails.id, selectedOrderDetails.order_status, selectedOrderDetails.payment_status || selectedOrderDetails.pay_status)}
-                      className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800"
-                    >
-                      Save Changes
                     </button>
                   </div>
                 </div>
@@ -7498,7 +7397,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                     <div className="mt-3 grid gap-3 sm:grid-cols-2">
                       {[
                         ['automaticVerification', 'Automatic payment verification (checks Chapa webhook signature)'],
-                        ['duplicateTransactionProtection', 'Duplicate transaction protection (prevents double checkout)'],
+                        ['duplicateTransactionProtection', 'Duplicate transaction protection (prevents repeat wallet payments)'],
                         ['adminApprovalForRefunds', 'Admin approval for refunds'],
                         ['auditLogging', 'Payment changes recorded in Audit Logs'],
                       ].map(([key, label]) => (

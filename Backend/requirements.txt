@@ -1,5 +1,6 @@
 apscheduler
 bcrypt
+argon2-cffi
 cryptography
 deep-translator
 fastapi

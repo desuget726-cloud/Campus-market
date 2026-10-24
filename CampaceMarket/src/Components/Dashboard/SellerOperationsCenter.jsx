@@ -1,5 +1,7 @@
-import { useEffect, useMemo, useReducer, useState } from "react";
-import OrderDetailsView from "./OrderDetailsView";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import SellerOrderDetails from "./SellerOrderDetails";
+import SellerCompletedOrders from "./SellerCompletedOrders";
+import { useSellerOrders } from '../../hooks/useSellerOrders';
 import { notifyError, notifySuccess } from '../../utils/notify';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
@@ -50,6 +52,36 @@ const normalizeSellerInsight = (listing) => {
   };
 };
 
+const getSellerSessionToken = (user) => {
+  const directToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
+  if (directToken) return directToken;
+  if (typeof window === "undefined") return "";
+  try {
+    const session = JSON.parse(window.localStorage.getItem("campaceSession") || "{}");
+    return session?.user?.access_token
+      || session?.access_token
+      || session?.user?.accessToken
+      || session?.user?.token
+      || session?.user?.session_token
+      || session?.user?.sessionToken
+      || session?.accessToken
+      || session?.token
+      || session?.session_token
+      || session?.sessionToken
+      || "";
+  } catch {
+    return "";
+  }
+};
+
+const getInitialSellerHubView = () => {
+  if (typeof window === "undefined") return SELLER_HUB_VIEWS.overview;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("tab") === "seller" && params.get("section") === "orders"
+    ? SELLER_HUB_VIEWS.operations
+    : SELLER_HUB_VIEWS.overview;
+};
+
 function SellerOperationsCenter({
   user,
   sellerData,
@@ -57,10 +89,7 @@ function SellerOperationsCenter({
   sellerOrdersLoading,
   sellerOrdersError,
   onRefreshOrders,
-  onRefreshWallet,
   myListings,
-  setSellerData,
-  setSellerDashboardData,
   onAddProduct,
   onNavigate: onTabNavigate,
   onViewProduct,
@@ -70,10 +99,12 @@ function SellerOperationsCenter({
   onTogglePause,
   onMarkAsSold,
   openOrderId,
-  onOpenOrderHandled,
+  onOpenSellerOrder,
+  onBackToSellerOrders,
+  onOpenSellerChat,
 }) {
   const { t } = useLanguage();
-  const [activeHubView, dispatchHubView] = useReducer(sellerHubViewReducer, SELLER_HUB_VIEWS.overview);
+  const [activeHubView, dispatchHubView] = useReducer(sellerHubViewReducer, null, getInitialSellerHubView);
   const [chartRange, setChartRange] = useState("3 Months");
   const [salesAnalytics, setSalesAnalytics] = useState({
     points: [],
@@ -83,10 +114,6 @@ function SellerOperationsCenter({
     comparisons: {},
   });
   const [salesAnalyticsLoading, setSalesAnalyticsLoading] = useState(false);
-  const [pickupCodes, setPickupCodes] = useState({});
-  const [rejectReasons, setRejectReasons] = useState({});
-  const [rejectNotes, setRejectNotes] = useState({});
-  const [completionState, setCompletionState] = useState({});
   const [disputeResponseState, setDisputeResponseState] = useState({});
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [selectedOrderLoading, setSelectedOrderLoading] = useState(false);
@@ -94,13 +121,17 @@ function SellerOperationsCenter({
   const [viewedProductId, setViewedProductId] = useState(null);
   const [productActionState, setProductActionState] = useState({});
   const [productActionFeedback, setProductActionFeedback] = useState(null);
-  const [clockNow, setClockNow] = useState(Date.now());
   const { overview: showOverview, productManagement: showProductManagement, operations: showOperations } = getSellerHubSections(activeHubView);
+  const sessionToken = getSellerSessionToken(user);
+  const {
+    filters: sellerOrderFilters,
+    updateFilters: updateSellerOrderFilters,
+    pageData: completedOrderPage,
+    loading: completedOrdersLoading,
+    error: completedOrdersError,
+    retry: retryCompletedOrders,
+  } = useSellerOrders({ token: sessionToken, enabled: showOperations });
 
-  useEffect(() => {
-    const intervalId = window.setInterval(() => setClockNow(Date.now()), 60000);
-    return () => window.clearInterval(intervalId);
-  }, []);
   const dashboardStats = sellerDashboardData?.stats || {};
   const dashboardAlerts = sellerDashboardData?.alerts || {};
   const payoutStatus = String(
@@ -205,10 +236,9 @@ function SellerOperationsCenter({
       waiting_acceptance: "waiting for acceptance",
       accepted: "accepted",
       processing: "processing",
-      "ready for pickup": "ready for pickup",
-      ready_for_pickup: "ready for pickup",
-      "out for delivery": "ready for pickup",
-      out_for_delivery: "ready for pickup",
+      "ready for pickup": "in progress",
+      ready_for_pickup: "in progress",
+      "ready to meet": "in progress",
       completed: "completed",
       success: "completed",
       successful: "completed",
@@ -223,34 +253,28 @@ function SellerOperationsCenter({
     return aliases[normalized] || normalized || "pending";
   };
 
-  const incomingOrderStatuses = new Set([
+  const completedOrderStatuses = new Set(["completed", "sold"]);
+  const legacyOrderStatuses = new Set([
     "pending",
     "waiting for acceptance",
     "accepted",
     "processing",
-    "ready for pickup",
+    "in progress",
+    "cancelled",
+    "rejected",
+    "expired",
   ]);
-  const completedOrderStatuses = new Set(["completed", "sold"]);
-  const cancelledOrderStatuses = new Set(["cancelled"]);
 
   const incomingOrders = orders.filter((order) =>
-    incomingOrderStatuses.has(normalizeOrderStatus(order.status)),
+    legacyOrderStatuses.has(normalizeOrderStatus(order.status)),
   );
-  const completedOrders = orders.filter((order) =>
-    completedOrderStatuses.has(normalizeOrderStatus(order.status)),
-  );
-  const pendingActionOrders = incomingOrders.filter((order) => {
-    const normalized = normalizeOrderStatus(order.status);
-    return ["pending", "waiting for acceptance", "accepted"].includes(normalized);
-  });
-
   const getOrderBadgeConfig = (orderStatus) => {
     const normalized = normalizeOrderStatus(orderStatus);
 
-    if (["pending", "waiting for acceptance", "accepted", "processing", "ready for pickup"].includes(normalized)) {
+    if (legacyOrderStatuses.has(normalized)) {
       return {
-        label: normalized === "completed" ? "Completed" : normalized === "cancelled" ? "Cancelled" : normalized === "waiting for acceptance" ? "Waiting for Acceptance" : normalized === "ready for pickup" ? "Ready for Pickup" : normalized.charAt(0).toUpperCase() + normalized.slice(1),
-        className: "border border-amber-200 bg-amber-100 text-amber-800",
+        label: "Legacy order",
+        className: "border border-slate-200 bg-slate-100 text-slate-700",
       };
     }
 
@@ -258,20 +282,6 @@ function SellerOperationsCenter({
       return {
         label: "Sold",
         className: "border border-emerald-200 bg-emerald-100 text-emerald-700",
-      };
-    }
-
-    if (["rejected", "expired"].includes(normalized)) {
-      return {
-        label: normalized === "rejected" ? "Rejected" : "Expired",
-        className: "border border-rose-200 bg-rose-100 text-rose-700",
-      };
-    }
-
-    if (cancelledOrderStatuses.has(normalized)) {
-      return {
-        label: "Cancelled",
-        className: "border border-rose-200 bg-rose-100 text-rose-700",
       };
     }
 
@@ -314,44 +324,10 @@ function SellerOperationsCenter({
     onTabNavigate?.(target, payload);
   };
 
-  const updateOrder = (order, status, confirmation = {}) => {
-    const orderId = String(order.id ?? order.order_id ?? order.orderId);
-    setSellerData((previous) => ({
-      ...previous,
-      incomingOrders: (previous.incomingOrders || []).map((item) =>
-        String(item.id ?? item.order_id ?? item.orderId) === orderId
-          ? { ...item, status, ...confirmation }
-          : item,
-      ),
-    }));
-    setSellerDashboardData?.((previous) => ({
-      ...previous,
-      received_orders: (previous.received_orders || []).map((item) =>
-        String(item.id ?? item.order_id ?? item.orderId) === orderId
-          ? { ...item, status, ...confirmation }
-          : item,
-      ),
-    }));
-  };
-
-  const getSessionToken = () => {
-    let token = user?.access_token || user?.accessToken || "";
-    if (!token && typeof window !== "undefined") {
-      try {
-        const session = JSON.parse(
-          window.localStorage.getItem("campaceSession") || "{}",
-        );
-        token =
-          session?.user?.access_token ||
-          session?.access_token ||
-          session?.user?.accessToken ||
-          "";
-      } catch {
-        token = "";
-      }
-    }
-    return token;
-  };
+  const getSessionToken = useCallback(
+    () => getSellerSessionToken(user),
+    [user],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -389,7 +365,7 @@ function SellerOperationsCenter({
     return () => {
       cancelled = true;
     };
-  }, [chartRange, user?.studentId]);
+  }, [chartRange, getSessionToken]);
 
   useEffect(() => {
     const analyticsSection = document.querySelectorAll("#seller-analytics")[0];
@@ -485,12 +461,12 @@ function SellerOperationsCenter({
     }
   }, [advisor, salesAnalytics, salesAnalyticsLoading]);
 
-  const fetchSellerOrderDetails = async (orderId) => {
+  const fetchSellerOrderDetails = useCallback(async (orderId) => {
     setSelectedOrderLoading(true);
     setSelectedOrderError("");
     try {
       const response = await fetch(
-        `${API_BASE_URL}/api/student/orders/detail/${encodeURIComponent(orderId)}`,
+        `${API_BASE_URL}/api/seller/orders/${encodeURIComponent(orderId)}`,
         {
           headers: { Authorization: `Bearer ${getSessionToken()}` },
         },
@@ -504,115 +480,17 @@ function SellerOperationsCenter({
     } finally {
       setSelectedOrderLoading(false);
     }
-  };
+  }, [getSessionToken]);
 
   useEffect(() => {
-    if (!openOrderId) return;
-    setSelectedOrder({ id: openOrderId });
-    fetchSellerOrderDetails(openOrderId);
-    onOpenOrderHandled?.();
-  }, [openOrderId]);
-
-  const performSellerAction = async (order, action, providedCode = "", rejection = {}) => {
-    const orderId = order.id ?? order.order_id ?? order.orderId;
-    const inputCode = String(providedCode || pickupCodes[orderId] || "").trim();
-    if (action === "handover" && !/^\d{4}$/.test(inputCode)) {
-      setCompletionState((previous) => ({
-        ...previous,
-        [orderId]: { error: "Enter the buyer pickup code." },
-      }));
+    if (!openOrderId) {
+      setSelectedOrder(null);
       return;
     }
-
-    setCompletionState((previous) => ({
-      ...previous,
-      [orderId]: { loading: true },
-    }));
-    try {
-      const latestOrderResponse = await fetch(
-        `${API_BASE_URL}/api/student/orders/detail/${encodeURIComponent(orderId)}`,
-        {
-          headers: { Authorization: `Bearer ${getSessionToken()}` },
-        },
-      );
-      const latestOrder = await latestOrderResponse.json().catch(() => ({}));
-      if (!latestOrderResponse.ok)
-        throw new Error(
-          latestOrder.detail || "Unable to refresh the order status.",
-        );
-
-      const latestStatus = String(latestOrder.status || "")
-        .trim()
-        .toLowerCase();
-      const expectedStatus = {
-        accept: "pending",
-        reject: "pending",
-        ready: "processing",
-        handover: "ready for pickup",
-      }[action];
-      if (expectedStatus && latestStatus !== expectedStatus) {
-        updateOrder(order, latestOrder.status, {
-          buyer_confirmed: latestOrder.buyer_confirmed,
-          seller_confirmed: latestOrder.seller_confirmed,
-          is_funds_released: latestOrder.is_funds_released,
-        });
-        setSelectedOrder((previous) =>
-          previous?.id === latestOrder.id ? latestOrder : previous,
-        );
-        await onRefreshOrders?.();
-        setCompletionState((previous) => ({
-          ...previous,
-          [orderId]: { success: `Order is already ${latestOrder.status}.` },
-        }));
-        return;
-      }
-
-      const response = await fetch(
-        action === "reject"
-          ? `${API_BASE_URL}/api/student/orders/${orderId}/reject`
-          : `${API_BASE_URL}/api/student/orders/${orderId}/seller-action`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${getSessionToken()}`,
-          },
-          body: JSON.stringify(action === "reject" ? rejection : {
-            action,
-            ...(action === "handover" ? { input_code: Number(inputCode) } : {}),
-          }),
-        },
-      );
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(result.detail || "Unable to update order.");
-      }
-
-      updateOrder(order, result.status, {
-        buyer_confirmed: result.buyer_confirmed,
-        seller_confirmed: result.seller_confirmed,
-        is_funds_released: result.is_funds_released,
-        payment_status: result.payment_status,
-        refund_status: result.refund_reference ? "succeeded" : order.refund_status,
-        rejection_reason: rejection.reason,
-        rejection_note: rejection.note,
-      });
-      await onRefreshOrders?.();
-      await onRefreshWallet?.();
-      await fetchSellerOrderDetails(orderId);
-      setCompletionState((previous) => ({
-        ...previous,
-        [orderId]: { success: result.message || "Order updated." },
-      }));
-      notifySuccess(result.message || "Order updated successfully.", `student-seller-order-${orderId}-${action}`);
-    } catch (error) {
-      setCompletionState((previous) => ({
-        ...previous,
-        [orderId]: { error: error.message || "Unable to update order." },
-      }));
-      notifyError(error, `student-seller-order-${orderId}-${action}`);
-    }
-  };
+    dispatchHubView({ type: 'open-operations' });
+    setSelectedOrder({ id: openOrderId });
+    fetchSellerOrderDetails(openOrderId);
+  }, [fetchSellerOrderDetails, openOrderId]);
 
   const respondToDispute = async (dispute, responseTextOverride = "", evidenceFiles = []) => {
     const state = disputeResponseState[dispute.id] || {};
@@ -665,175 +543,38 @@ function SellerOperationsCenter({
     }
   };
 
-  const orderAction = (order) => {
-    const status = String(order.status || "Pending")
-      .trim()
-      .toLowerCase();
-    const orderId = order.id ?? order.order_id ?? order.orderId;
-    const state = completionState[orderId] || {};
-    return (
-      <div className="flex min-w-0 flex-col gap-2 md:min-w-[220px]">
-        {status === "pending" && (
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() => performSellerAction(order, "accept")}
-              disabled={state.loading}
-              className="self-start rounded-full bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:bg-slate-300"
-            >
-              Accept Order
-            </button>
-            <label htmlFor={`reject-reason-${orderId}`} className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
-              Rejection reason
-            </label>
-            <select
-              id={`reject-reason-${orderId}`}
-              value={rejectReasons[orderId] || ""}
-              onChange={(event) => setRejectReasons((previous) => ({ ...previous, [orderId]: event.target.value }))}
-              disabled={state.loading}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900"
-            >
-              <option value="">Choose a reason</option>
-              <option value="out_of_stock">Out of stock</option>
-              <option value="already_sold">Already sold</option>
-              <option value="other">Other</option>
-            </select>
-            {rejectReasons[orderId] === "other" && (
-              <textarea
-                aria-label={`Optional rejection note for order ${orderId}`}
-                value={rejectNotes[orderId] || ""}
-                onChange={(event) => setRejectNotes((previous) => ({ ...previous, [orderId]: event.target.value }))}
-                disabled={state.loading}
-                maxLength={500}
-                placeholder="Optional note"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-              />
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                const reason = rejectReasons[orderId];
-                if (!reason) {
-                  setCompletionState((previous) => ({ ...previous, [orderId]: { error: "Choose a rejection reason." } }));
-                  return;
-                }
-                const confirmed = typeof window === "undefined" || window.confirm(`Reject order #${orderId} and refund the buyer?`);
-                if (confirmed) performSellerAction(order, "reject", "", { reason, note: rejectNotes[orderId] || null });
-              }}
-              disabled={state.loading}
-              className="self-start rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:bg-slate-100"
-            >
-              Reject Order
-            </button>
-          </div>
-        )}
-        {status === "processing" && (
-          <button
-            type="button"
-            onClick={() => performSellerAction(order, "ready")}
-            disabled={state.loading}
-            className="self-start rounded-full bg-sky-500 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600 disabled:bg-slate-300"
-          >
-            Mark Ready for Pickup
-          </button>
-        )}
-        {status === "ready for pickup" && !order.seller_confirmed && (
-          <>
-            <label
-              htmlFor={`pickup-code-${orderId}`}
-              className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500"
-            >
-              Buyer pickup code
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <input
-                id={`pickup-code-${orderId}`}
-                type="text"
-                inputMode="numeric"
-                maxLength={4}
-                value={pickupCodes[orderId] || ""}
-                onChange={(event) =>
-                  setPickupCodes((previous) => ({
-                    ...previous,
-                    [orderId]: event.target.value
-                      .replace(/\D/g, "")
-                      .slice(0, 4),
-                  }))
-                }
-                disabled={state.loading}
-                placeholder="4-digit code"
-                className="w-32 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold tracking-[0.15em] text-slate-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-100"
-              />
-              <button
-                type="button"
-                onClick={() => performSellerAction(order, "handover")}
-                disabled={
-                  state.loading ||
-                  String(pickupCodes[orderId] || "").length !== 4
-                }
-                className="rounded-lg bg-emerald-500 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:bg-slate-300"
-              >
-                {state.loading ? "Confirming..." : "Confirm Handover"}
-              </button>
-            </div>
-          </>
-        )}
-        {order.seller_confirmed && status !== "completed" && (
-          <p className="text-xs font-semibold text-amber-700">
-            Handover confirmed. Waiting for buyer receipt confirmation.
-          </p>
-        )}
-        {status === "completed" && (
-          <span className="text-xs font-semibold text-emerald-600">
-            Completed and paid out
-          </span>
-        )}
-        {state.error && (
-          <p className="text-xs font-bold text-rose-600">{state.error}</p>
-        )}
-        {state.success && (
-          <p className="animate-pulse text-xs font-bold text-emerald-600">
-            {state.success}
-          </p>
-        )}
-      </div>
-    );
-  };
-
-  const sellerDeadlineCountdown = (deadline) => {
-    const remainingMs = new Date(deadline).getTime() - clockNow;
-    if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "Deadline passed";
-    const totalMinutes = Math.ceil(remainingMs / 60000);
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    return hours > 0 ? `${hours}h ${minutes}m remaining` : `${minutes}m remaining`;
-  };
+  const orderAction = () => <span className="text-xs font-semibold text-emerald-700">Completed and paid</span>;
 
   if (selectedOrder) {
     return (
-      <OrderDetailsView
+      <SellerOrderDetails
+        key={selectedOrder.id}
         order={selectedOrder}
-        role="seller"
         loading={selectedOrderLoading}
         error={selectedOrderError}
-        onBack={() => setSelectedOrder(null)}
-        onRefresh={() => fetchSellerOrderDetails(selectedOrder.id)}
-        onSellerAction={(order, action, inputCode, rejection) =>
-          performSellerAction(order, action, inputCode, rejection)
-        }
+        onBack={() => {
+          setSelectedOrder(null);
+          onBackToSellerOrders?.();
+        }}
+        onRetry={() => fetchSellerOrderDetails(selectedOrder.id)}
         onDisputeResponse={respondToDispute}
+        onOpenChat={onOpenSellerChat}
       />
     );
   }
 
   return (
     <div data-dashboard-view="seller" className="min-w-0 w-full max-w-full space-y-6 [&>*]:min-w-0 [&>*]:max-w-full">
-      {orders.length > 0 && (
+      {completedOrderPage.items.length > 0 && (
         <button
           type="button"
           onClick={() => {
-            setSelectedOrder({ id: orders[0].id ?? orders[0].order_id });
-            fetchSellerOrderDetails(orders[0].id ?? orders[0].order_id);
+            const orderId = completedOrderPage.items[0].id;
+            if (onOpenSellerOrder) onOpenSellerOrder(orderId);
+            else {
+              setSelectedOrder({ id: orderId });
+              fetchSellerOrderDetails(orderId);
+            }
           }}
           className="rounded-full bg-slate-900 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700"
         >
@@ -953,9 +694,9 @@ function SellerOperationsCenter({
             "text-amber-600",
           ],
           [
-            "Pending Orders",
-            Number(dashboardStats.pending_orders ?? pendingActionOrders.length),
-            `${Number(dashboardAlerts.pending_orders ?? pendingActionOrders.length)} require action`,
+            "Legacy Orders",
+            Number(dashboardStats.pending_orders ?? incomingOrders.length),
+            "Historical records; no seller action",
             "◔",
             "text-rose-600",
           ],
@@ -987,12 +728,8 @@ function SellerOperationsCenter({
       </div>}
 
       {showOverview && <section className="rounded-[24px] border border-amber-200 bg-amber-50 p-5">
-        <h3 className="font-black text-amber-950">Action Required</h3>
+        <h3 className="font-black text-amber-950">Listing attention</h3>
         <div className="mt-3 flex flex-wrap gap-3 text-sm font-semibold text-amber-800">
-          <span>
-            ⚠ {Number(dashboardAlerts.pending_orders ?? pendingActionOrders.length)}{" "}
-            order(s) waiting for acceptance
-          </span>
           <span>
             ⚠ {Number(dashboardAlerts.unapproved_products ?? counts.pending)}{" "}
             product(s) pending admin approval
@@ -1278,10 +1015,10 @@ function SellerOperationsCenter({
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-                Fulfillment Queue
+                Legacy Order History
               </p>
               <h3 className="mt-1 text-xl font-black text-slate-950">
-                Incoming Customer Orders
+                Historical Customer Orders
               </h3>
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
@@ -1298,7 +1035,7 @@ function SellerOperationsCenter({
             </p>
           ) : incomingOrders.length === 0 ? (
             <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
-              No incoming customer orders need your action yet.
+              No legacy customer orders.
             </p>
           ) : (
             <div className="mt-5 overflow-x-auto">
@@ -1311,7 +1048,7 @@ function SellerOperationsCenter({
                     <th className="px-3 py-3">Amount</th>
                     <th className="px-3 py-3">Payment</th>
                     <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Pickup</th>
+                    <th className="px-3 py-3">Handover</th>
                     <th className="px-3 py-3">Action</th>
                   </tr>
                 </thead>
@@ -1358,15 +1095,7 @@ function SellerOperationsCenter({
                           </span>
                         </td>
                         <td className="px-3 py-4 text-slate-600">
-                          <p>{order.pickup_location || "Student Center"}</p>
-                          <p className="mt-1 text-xs">
-                            {order.required_seller_action || "Review order"}
-                          </p>
-                          {normalizeOrderStatus(order.status) === "pending" && order.seller_accept_deadline && (
-                            <p className="mt-2 text-xs font-bold text-amber-700">
-                              Accept within {sellerDeadlineCountdown(order.seller_accept_deadline)}
-                            </p>
-                          )}
+                          <p>Historical record; no seller action required</p>
                         </td>
                         <td className="px-3 py-4">{orderAction(order)}</td>
                       </tr>
@@ -1378,70 +1107,21 @@ function SellerOperationsCenter({
           )}
         </section>
 
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">
-                Order History
-              </p>
-              <h3 className="mt-1 text-xl font-black text-slate-950">
-                Completed Orders
-              </h3>
-            </div>
-            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
-              {completedOrders.length} orders
-            </span>
-          </div>
-          {completedOrders.length === 0 ? (
-            <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
-              No completed orders yet.
-            </p>
-          ) : (
-            <div className="mt-5 overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                  <tr>
-                    <th className="px-3 py-3">Order</th>
-                    <th className="px-3 py-3">Customer</th>
-                    <th className="px-3 py-3">Product</th>
-                    <th className="px-3 py-3">Amount</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Completed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {completedOrders.map((order) => {
-                    const badge = getOrderBadgeConfig(order.status);
-                    return (
-                      <tr key={order.id ?? order.order_id} className="border-b border-slate-100">
-                        <td className="px-3 py-4 font-bold text-slate-900">
-                          {order.id ?? order.order_id}
-                        </td>
-                        <td className="px-3 py-4 text-slate-600">
-                          {order.buyer_name || order.buyer_id || "Student"}
-                        </td>
-                        <td className="px-3 py-4 text-slate-700">
-                          {order.product_title || order.title || "Campus product"}
-                        </td>
-                        <td className="px-3 py-4 font-bold text-slate-900">
-                          {formatSellerEtb(order.price)}
-                        </td>
-                        <td className="px-3 py-4">
-                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
-                            {badge.label}
-                          </span>
-                        </td>
-                        <td className="px-3 py-4 text-xs text-slate-500">
-                          {order.updated_at ? new Date(order.updated_at).toLocaleDateString() : order.created_at ? new Date(order.created_at).toLocaleDateString() : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+        <SellerCompletedOrders
+          pageData={completedOrderPage}
+          filters={sellerOrderFilters}
+          loading={completedOrdersLoading}
+          error={completedOrdersError}
+          onRetry={retryCompletedOrders}
+          onFilterChange={updateSellerOrderFilters}
+          onOpenOrder={(orderId) => {
+            if (onOpenSellerOrder) onOpenSellerOrder(orderId);
+            else {
+              setSelectedOrder({ id: orderId });
+              fetchSellerOrderDetails(orderId);
+            }
+          }}
+        />
 
         <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
           <section

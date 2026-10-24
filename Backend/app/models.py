@@ -2,7 +2,7 @@
 from decimal import Decimal
 from datetime import datetime, timezone
 import uuid
-from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -41,12 +41,14 @@ class Student(Base):
     email = Column(String(100), unique=True, index=True, nullable=False)
     phone = Column(String(20), nullable=True)
     password = Column(String(255), nullable=False)
+    has_password = Column(Boolean, default=True, nullable=False)
     college = Column(String(150), nullable=True)
     department = Column(String(150), nullable=True)
     wallet_balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    pay_failed_attempts = Column(Integer, default=0, nullable=False)
+    pay_locked_until = Column(DateTime, nullable=True)
     status = Column(String(50), default="Active", nullable=False)
     restriction_reason = Column(Text, nullable=True)
-    missed_acceptance_count = Column(Integer, default=0, nullable=False)
     suspended_until = Column(DateTime, nullable=True)
     is_verified = Column(Boolean, default=False, nullable=False)
     two_factor_enabled = Column(Boolean, default=False, nullable=False)
@@ -189,11 +191,13 @@ class PayoutTransaction(Base):
 
 class Wallet(Base):
     __tablename__ = "wallets"
+    __table_args__ = (CheckConstraint("balance >= 0", name="ck_wallets_nonnegative_balance"),)
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), unique=True, nullable=False, index=True)
     balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
     held_balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    frozen_balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -233,6 +237,7 @@ class Product(Base):
     image = Column(Text, nullable=True)
     description = Column(String(500), nullable=True)
     seller = Column(String(100), nullable=True)
+    seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, index=True)
     negotiable = Column(Boolean, default=False, nullable=False)
     pickup_location = Column(String(255), default="Student Center", nullable=False)
     pickup_hours = Column(String(120), default="08:00-17:00", nullable=False)
@@ -301,7 +306,7 @@ class CartItem(Base):
 class Order(Base):
     __tablename__ = "orders"
     __table_args__ = (
-        Index("ix_orders_status_seller_accept_deadline", "status", "seller_accept_deadline"),
+        Index("ix_orders_seller_status_completed_at", "seller_id", "status", "completed_at"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -324,22 +329,16 @@ class Order(Base):
     buyer_phone = Column(String(20), nullable=True)
     quantity = Column(Integer, default=1, nullable=False)
     status = Column(String(50), default="Processing", nullable=False)
-    pickup_code = Column(Integer, nullable=False)
     pickup_location = Column(String(255), default="Student Center", nullable=False)
     payment_status = Column(String(50), default="Successful", nullable=False)
     reviewed = Column(Boolean, default=False, nullable=False)
-    buyer_confirmed = Column(Boolean, default=False, nullable=False)
-    seller_confirmed = Column(Boolean, default=False, nullable=False)
     is_funds_released = Column(Boolean, default=False, nullable=False)
     paid_at = Column(DateTime, nullable=True)
-    seller_accept_deadline = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
     expired_at = Column(DateTime, nullable=True)
     refund_status = Column(String(20), default="none", nullable=False)
     refund_reference = Column(String(100), nullable=True)
     refund_attempts = Column(Integer, default=0, nullable=False)
-    seller_reminder_12h_sent = Column(Boolean, default=False, nullable=False)
-    seller_reminder_22h_sent = Column(Boolean, default=False, nullable=False)
-    seller_reminder_6h_sent = Column(Boolean, default=False, nullable=False)
     rejection_reason = Column(String(30), nullable=True)
     rejection_note = Column(Text, nullable=True)
     hidden_by_buyer = Column(Boolean, default=False, nullable=False)
@@ -371,6 +370,8 @@ class Dispute(Base):
     previous_order_status = Column(String(50), nullable=False)
     status = Column(String(30), nullable=False, default="OPEN", index=True)
     resolution = Column(String(30), nullable=True)
+    frozen_amount = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    post_payment = Column(Boolean, default=False, nullable=False)
     resolved_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -380,6 +381,18 @@ class Dispute(Base):
     buyer = relationship("Student", foreign_keys=[buyer_id])
     seller = relationship("Student", foreign_keys=[seller_id])
     resolver = relationship("Admin", foreign_keys=[resolved_by])
+
+
+class PaymentIdempotency(Base):
+    __tablename__ = "payment_idempotency"
+
+    id = Column(Integer, primary_key=True, index=True)
+    idempotency_key = Column(String(255), unique=True, nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    buyer_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True, index=True)
+    transaction_id = Column(String(50), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 class Transaction(Base):
     __tablename__ = "transactions"

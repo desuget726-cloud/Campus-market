@@ -11,8 +11,8 @@ from .models import Student, Transaction, Wallet
 
 logger = logging.getLogger("app.wallets")
 
-CREDIT_TRANSACTION_TYPES = {"Wallet Deposit", "Refund", "Escrow Release"}
-DEBIT_TRANSACTION_TYPES = {"Product Purchase", "Wallet Withdrawal", "Escrow Hold", "Seller Payout"}
+CREDIT_TRANSACTION_TYPES = {"Wallet Deposit", "Refund", "Escrow Release", "Product Sale", "Dispute Release"}
+DEBIT_TRANSACTION_TYPES = {"Product Purchase", "Wallet Withdrawal", "Escrow Hold", "Seller Payout", "Dispute Hold"}
 
 
 def _money(value: object) -> Decimal:

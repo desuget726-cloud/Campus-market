@@ -4,6 +4,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Check, Pencil, X } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { useCart } from '../../context/CartContext';
 import { notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
 import SellerOperationsCenter from './SellerOperationsCenter';
 import OrderDetailsView from './OrderDetailsView';
@@ -13,10 +14,11 @@ import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '.
 import { getAdminSettings } from '../../api/adminSettings';
 import { isOrderRefunded } from '../../utils/orderReceiptState';
 import { shouldReduceUnreadNotificationCount } from '../../utils/notificationState';
+import { buildOrderDashboardUrl, parseOrderDashboardLink } from '../../utils/orderDashboardLink';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
-const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'refund']);
-const DEBIT_TRANSACTION_TYPES = new Set(['wallet withdrawal', 'seller payout', 'product purchase', 'escrow hold']);
+const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'product sale', 'dispute release', 'refund']);
+const DEBIT_TRANSACTION_TYPES = new Set(['wallet withdrawal', 'seller payout', 'product purchase', 'dispute hold', 'escrow hold']);
 const EDIT_WINDOW_MINUTES = 15;
 const MAX_CHAT_MESSAGE_LENGTH = 1000;
 const disputeReasons = [
@@ -24,20 +26,13 @@ const disputeReasons = [
   'Wrong item',
   'Item damaged',
   'Item differs from description',
-  'Seller did not show up',
   'Other',
 ];
 
 const isDisputeEligibleOrder = (order) => {
   const normalizedStatus = String(order?.status || '').trim().toLowerCase().replace(/[_\s]+/g, ' ');
-  return ['ready for pickup', 'item received', 'out for delivery', 'delivery', 'pickup'].includes(normalizedStatus);
+  return normalizedStatus === 'completed' && Boolean(order?.can_report_problem);
 };
-const isTimeoutRefundDisputeEligible = (order) => (
-  String(order?.status || '').trim().toLowerCase() === 'expired'
-  && String(order?.refund_status || '').toLowerCase() !== 'succeeded'
-  && order?.expired_at
-  && Date.now() - new Date(order.expired_at).getTime() > 15 * 60 * 1000
-);
 
 const universityStructure = {
   "College of Computing and Informatics (CCI)": [
@@ -154,6 +149,9 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 
 function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, appUnreadNotificationCount = 0 }) {
   const { t, language } = useLanguage();
+  const initialOrderDashboardLink = typeof window === 'undefined'
+    ? null
+    : parseOrderDashboardLink(window.location.href);
   const studentToast = (key) => t(`studentToast.${key}`);
   const getStudentSessionToken = useCallback(() => {
     const userToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
@@ -185,12 +183,21 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return () => window.removeEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
   }, []);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [clockNow, setClockNow] = useState(Date.now());
-  const [activeTab, setActiveTab] = useState(() => getConversationIdFromUrl() ? 'messages' : initialTab); // የጎን መቆጣጠሪያ ታብ
+  const [activeTab, setActiveTab] = useState(() => (
+    initialOrderDashboardLink?.tab || (getConversationIdFromUrl() ? 'messages' : initialTab)
+  )); // የጎን መቆጣጠሪያ ታብ
   const messagesViewRef = useRef(null);
   const [messagesViewHeight, setMessagesViewHeight] = useState(null);
-  const [buyerTab, setBuyerTab] = useState('search'); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
-  const [settingsTab, setSettingsTab] = useState('account');
+  const [buyerTab, setBuyerTab] = useState(() => (
+    initialOrderDashboardLink?.tab === 'buyer' && initialOrderDashboardLink.section
+      ? initialOrderDashboardLink.section
+      : 'search'
+  )); // የገዢዎች ንዑስ ታብ (Search, Wishlist, Cart, Orders, Payments)
+  const [settingsTab, setSettingsTab] = useState(() => {
+    const requestedTab = window.sessionStorage.getItem('campusmarket:settings-tab');
+    window.sessionStorage.removeItem('campusmarket:settings-tab');
+    return requestedTab || 'account';
+  });
   const [isNotificationPrefsDirty, setIsNotificationPrefsDirty] = useState(false);
 
   const [notifications, setNotifications] = useState([]);
@@ -359,6 +366,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
   const socketRef = useRef(null);
   const activePeerIdRef = useRef('');
+  const sellerChatParticipantsRef = useRef({});
   const paymentVerificationStartedRef = useRef(false);
   const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
@@ -392,9 +400,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   // የገዢው ዳሽቦርድ መረጃዎችን ከዳታቤዝ ለመጥራት የተዘጋጁ ስቴቶች (Buyer States)
   const [wishlist, setWishlist] = useState([]);
-  const [cart, setCart] = useState([]);
-  const [cartPlatformFee, setCartPlatformFee] = useState(0);
-  const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const { items: cart, setItems: setCart } = useCart();
   const [wishlistBadgeCount, setWishlistBadgeCount] = useState(0);
   const [cartBadgeCount, setCartBadgeCount] = useState(0);
   const [orders, setOrders] = useState([]);
@@ -406,11 +412,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [orderDetailsError, setOrderDetailsError] = useState('');
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
+  const [orderNavigationMessage, setOrderNavigationMessage] = useState('');
+  const initialOrderNavigationHandledRef = useRef(false);
 
-  useEffect(() => {
-    const intervalId = window.setInterval(() => setClockNow(Date.now()), 60000);
-    return () => window.clearInterval(intervalId);
-  }, []);
   const [paymentInfo, setPaymentInfo] = useState({ balance: 0.00, recentTx: 'No transactions yet' });
   const payoutStatusTrackerRef = useRef({
     studentId: '',
@@ -507,12 +511,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [disputeEvidenceFiles, setDisputeEvidenceFiles] = useState([]);
   const [isSubmittingDispute, setIsSubmittingDispute] = useState(false);
   const [disputeFeedback, setDisputeFeedback] = useState('');
-  const [receiptState, setReceiptState] = useState({});
   const [paymentReceiptState, setPaymentReceiptState] = useState({});
   const [printingReceiptOrderId, setPrintingReceiptOrderId] = useState(null);
   const printWindowRef = useRef(null);
   const printStartedRef = useRef(false);
-  const [revealedPickupCodes, setRevealedPickupCodes] = useState({});
   const [myListings, setMyListings] = useState([]);
   const [sellerDashboardData, setSellerDashboardData] = useState({
     stats: {
@@ -555,17 +557,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     return Number.isFinite(numeric) ? numeric : 0;
   };
 
-  const normalizeCheckoutPrice = (possiblePrice) => {
-    if (typeof possiblePrice === 'number') return possiblePrice;
-    if (!possiblePrice) return 0;
-
-    const priceText = String(possiblePrice).trim();
-    const numeric = parseFloat(priceText.replace(/[^0-9.]/g, ''));
-    if (!Number.isFinite(numeric)) return 0;
-
-    return /\$|usd/i.test(priceText) ? numeric * 56 : numeric;
-  };
-
   const formatETB = (value) => {
     const numeric = Number(value ?? 0);
     if (!Number.isFinite(numeric)) return '0 ETB';
@@ -578,15 +569,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     const normalized = raw.toLowerCase();
     if (normalized.includes('complete')) return 'Completed';
     if (normalized.includes('disput')) return 'Disputed';
-    if (normalized.includes('ready')) return 'Ready for Pickup';
+    if (normalized.includes('ready')) return 'In Progress';
     if (normalized.includes('process')) return 'Processing';
     if (normalized.includes('placed')) return 'Order Placed';
     return raw;
   };
 
   const normalizePaymentStatus = (value) => {
-    const raw = String(value || 'Successful').trim();
-    if (!raw) return 'Successful';
+    const raw = String(value || 'Pending').trim();
+    if (!raw) return 'Pending';
     const normalized = raw.toLowerCase();
     if (normalized.includes('fail')) return 'Failed';
     if (normalized.includes('pend')) return 'Pending';
@@ -647,19 +638,12 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       : message
   );
 
-  const cartTotal = cart.reduce(
-    (total, item) => total + normalizeCheckoutPrice(item.price) * Number(item.quantity || 1),
-    0
-  );
   const derivedCartItemCount = cart.length;
   const cartItemCount = cartBadgeCount || derivedCartItemCount;
   const wishlistCount = wishlistBadgeCount || wishlist.length;
   const orderCount = orders.length;
   const currentWalletBalance = Number(walletBalance ?? paymentInfo?.balance ?? 0);
   const heldWalletBalance = Number(paymentInfo?.heldBalance || 0);
-  const platformFee = cartPlatformFee;
-  const checkoutTotal = cartTotal + platformFee;
-  const walletHasSufficientFunds = currentWalletBalance > 0 && currentWalletBalance >= checkoutTotal;
   const withdrawalEntryBlocked = currentWalletBalance <= 0 || Boolean(activeWithdrawal);
   const withdrawAmountValue = Number(withdrawAmount);
   const withdrawExceedsBalance = withdrawAmount !== '' && Number.isFinite(withdrawAmountValue) && withdrawAmountValue > currentWalletBalance;
@@ -742,12 +726,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${studentId}`),
         fetch(`${API_BASE_URL}/api/student/cart?student_id=${studentId}`),
         fetch(`${API_BASE_URL}/api/student/orders?student_id=${encodeURIComponent(studentId)}`, {
+          cache: 'no-store',
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
         fetch(`${API_BASE_URL}/api/student/orders?student_id=${encodeURIComponent(studentId)}&hidden=true`, {
+          cache: 'no-store',
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
-        fetch(`${API_BASE_URL}/api/student/payments?student_id=${studentId}`, { cache: 'no-store' }),
+        fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}`, { cache: 'no-store' }),
       ]);
 
       if (wishRes.ok) {
@@ -991,7 +977,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       ...(includeBuyerEmail ? [['Buyer Email', receipt.buyer_email || 'N/A']] : []),
       ['Seller', receipt.seller_name],
       ['Order status', String(receipt.order_status || '').toUpperCase()],
-      ['Escrow', String(receipt.escrow_status || '').toUpperCase()],
+      ['Payment status', String(receipt.payment_status || '').toUpperCase()],
     ];
     if (receipt.dispute_status) rows.push(['Dispute', receipt.dispute_status]);
     if (receipt.refund_amount !== null && receipt.refund_amount !== undefined) {
@@ -1059,8 +1045,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     });
 
     let y = pdf.lastAutoTable.finalY + 8;
-    const escrowMessage = String(receipt.escrow_message || 'Keep this receipt for your records.');
-    const messageLines = pdf.splitTextToSize(escrowMessage, 176);
+    const paymentMessage = String(receipt.payment_message || 'Keep this receipt for your records.');
+    const messageLines = pdf.splitTextToSize(paymentMessage, 176);
     const noteHeight = Math.max(18, messageLines.length * 4 + 8);
     if (y + noteHeight + 20 > 287) {
       pdf.addPage();
@@ -1122,6 +1108,20 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setPrintingReceiptOrderId(orderId);
   };
 
+  const updateOrderDashboardUrl = (orderId, tab) => {
+    const nextUrl = new URL(buildOrderDashboardUrl(orderId, tab), window.location.origin);
+    const currentUrl = new URL(window.location.href);
+    ['orders_page', 'orders_search', 'orders_date_from', 'orders_date_to'].forEach((key) => {
+      const value = currentUrl.searchParams.get(key);
+      if (value) nextUrl.searchParams.set(key, value);
+    });
+    const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    const nextHref = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+    if (currentHref !== nextHref) {
+      window.history.pushState({ ...window.history.state, dashboardOrderId: String(orderId) }, '', nextHref);
+    }
+  };
+
   const handleDisputeNotification = async ({ order_id: orderId }) => {
     const token = getStudentSessionToken();
     try {
@@ -1146,7 +1146,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   const handleOrderNotification = async (orderId) => {
     const numericOrderId = Number(orderId);
-    if (!Number.isInteger(numericOrderId) || numericOrderId <= 0) return;
+    if (!Number.isInteger(numericOrderId) || numericOrderId <= 0) {
+      setBuyerTab('orders');
+      setActiveTab('buyer');
+      setOrderNavigationMessage('This order link has an invalid order id. Your orders are shown below.');
+      return;
+    }
+    setSelectedOrder(null);
+    setOrderNavigationMessage('');
     const token = getStudentSessionToken();
     try {
       const response = await fetch(`${API_BASE_URL}/api/student/orders/detail/${encodeURIComponent(numericOrderId)}`, {
@@ -1159,14 +1166,72 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
         setSelectedOrder(data);
         setBuyerTab('orders');
         setActiveTab('buyer');
+        updateOrderDashboardUrl(numericOrderId, 'buyer');
       } else {
         setPendingSellerOrderId(numericOrderId);
         setActiveTab('seller');
+        updateOrderDashboardUrl(numericOrderId, 'seller');
       }
     } catch (error) {
-      setOrdersError(error.message || 'Unable to load order details.');
+      setSelectedOrder(null);
+      setPendingSellerOrderId(null);
+      setBuyerTab('orders');
+      setActiveTab('buyer');
+      setOrderNavigationMessage(error.message || 'Unable to load this order. Your orders are shown below.');
     }
   };
+
+  useEffect(() => {
+    if (initialOrderNavigationHandledRef.current) return;
+    const orderLink = parseOrderDashboardLink(window.location.href);
+    if (!orderLink || orderLink.section !== 'orders') return;
+    initialOrderNavigationHandledRef.current = true;
+    if (orderLink.tab === 'seller') {
+      setActiveTab('seller');
+      setPendingSellerOrderId(orderLink.orderId);
+      return;
+    }
+    if (orderLink.tab === 'buyer') setBuyerTab('orders');
+    if (!orderLink.orderId) {
+      setBuyerTab('orders');
+      setActiveTab('buyer');
+      setOrderNavigationMessage(orderLink.hasOrderParameter
+        ? 'This order link has an invalid order id. Your orders are shown below.'
+        : 'This link does not include an order id. Your orders are shown below.');
+      return;
+    }
+    void handleOrderNotification(orderLink.orderId);
+    // This runs once for the order link present when the dashboard mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const syncOrderFromHistory = () => {
+      const orderLink = parseOrderDashboardLink(window.location.href);
+      if (!orderLink || orderLink.section !== 'orders') return;
+      if (orderLink.tab === 'seller') {
+        setActiveTab('seller');
+        setPendingSellerOrderId(orderLink.orderId);
+        return;
+      }
+      if (orderLink.tab === 'buyer') setBuyerTab('orders');
+      setActiveTab(orderLink.tab);
+      if (!orderLink.orderId) {
+        setBuyerTab('orders');
+        setActiveTab('buyer');
+        setOrderNavigationMessage(orderLink.hasOrderParameter
+          ? 'This order link has an invalid order id. Your orders are shown below.'
+          : 'This link does not include an order id. Your orders are shown below.');
+        return;
+      }
+      void handleOrderNotification(orderLink.orderId);
+    };
+
+    window.addEventListener('popstate', syncOrderFromHistory);
+    return () => window.removeEventListener('popstate', syncOrderFromHistory);
+    // The history handler always reads the current location; the order loader is stable for this mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined' || paymentVerificationStartedRef.current) return;
@@ -1455,25 +1520,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   };
 
   const studentId = user?.studentId || user?.student_id || user?.username || user?.email || '';
-
-  useEffect(() => {
-    if (!studentId || cart.length === 0) {
-      setCartPlatformFee(0);
-      return undefined;
-    }
-
-    let cancelled = false;
-    fetch(`${API_BASE_URL}/api/student/cart?student_id=${encodeURIComponent(studentId)}`)
-      .then(async (response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (!cancelled && data) setCartPlatformFee(Number(data.platform_fee) || 0);
-      })
-      .catch((error) => console.error('Error fetching cart fee preview:', error));
-
-    return () => {
-      cancelled = true;
-    };
-  }, [studentId, cart]);
 
   useEffect(() => {
     if (!studentId) return;
@@ -2326,8 +2372,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     if (!targetOrderId || !reason || !description || isSubmittingDispute) return;
 
     const currentOrder = orders.find((order) => Number(order.id) === targetOrderId);
-    if (!isDisputeEligibleOrder(currentOrder) && !isTimeoutRefundDisputeEligible(currentOrder)) {
-      const message = 'Disputes can only be raised once an order is ready for pickup or the item has been received.';
+    if (!isDisputeEligibleOrder(currentOrder)) {
+      const message = 'You can report a problem within 24 hours after payment is completed.';
       setDisputeFeedback(message);
       notifyInfo(message);
       return;
@@ -2381,39 +2427,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     }
   };
 
-  const handleConfirmItemReceived = async (order) => {
-    const orderId = Number(order.id);
-    const token = user?.access_token || user?.accessToken || '';
-    setReceiptState((previous) => ({ ...previous, [orderId]: { loading: true } }));
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/student/orders/${orderId}/confirm-received`, {
-        method: 'POST',
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.detail || 'Unable to confirm receipt.');
-      setOrders((previous) => previous.map((item) => (
-        Number(item.id) === orderId
-          ? {
-            ...item,
-            status: result.status,
-            fulfillment_status: result.status,
-            buyer_confirmed: result.buyer_confirmed,
-            seller_confirmed: result.seller_confirmed,
-            is_funds_released: result.is_funds_released,
-          }
-          : item
-      )));
-      await fetchOrderDetails(orderId);
-      await fetchBuyerDashboardData();
-      setReceiptState((previous) => ({ ...previous, [orderId]: { success: result.message || 'Item received.' } }));
-      notifySuccess(studentToast('receiptConfirmed'), `student-receipt-${orderId}`);
-    } catch (error) {
-      setReceiptState((previous) => ({ ...previous, [orderId]: { error: error.message || 'Unable to confirm receipt.' } }));
-      notifyError(error, `student-receipt-${orderId}`);
-    }
-  };
-
   function selectConversation(conversationId) {
     const url = new URL(window.location.href);
     const currentConversationId = url.searchParams.get('conversation');
@@ -2428,6 +2441,68 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setActiveConversationId(conversationId);
     setMobileChatView('chat');
   }
+
+  const openSellerOrder = (orderId) => {
+    const listUrl = new URL(window.location.href);
+    listUrl.searchParams.set('tab', 'seller');
+    listUrl.searchParams.set('section', 'orders');
+    listUrl.searchParams.delete('order');
+    const listHistoryState = { ...window.history.state };
+    delete listHistoryState.dashboardOrderId;
+    window.history.replaceState(
+      listHistoryState,
+      '',
+      `${listUrl.pathname}${listUrl.search}${listUrl.hash}`,
+    );
+    setActiveTab('seller');
+    setPendingSellerOrderId(Number(orderId));
+    updateOrderDashboardUrl(orderId, 'seller');
+  };
+
+  const backToSellerOrders = () => {
+    setPendingSellerOrderId(null);
+    setActiveTab('seller');
+    if (window.history.state?.dashboardOrderId) {
+      window.history.back();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', 'seller');
+    url.searchParams.set('section', 'orders');
+    url.searchParams.delete('order');
+    window.history.replaceState(window.history.state, '', url);
+  };
+
+  const openSellerChat = (conversationId, buyer = {}) => {
+    const partnerId = String(conversationId || '').replace(/^conv-/, '');
+    sellerChatParticipantsRef.current[conversationId] = buyer;
+    setConversationsList((previous) => (
+      previous.some((conversation) => conversation.id === conversationId)
+        ? previous
+        : [...previous, {
+          id: conversationId,
+          studentId: partnerId,
+          name: buyer.name || 'Student',
+          department: buyer.department || '',
+          unread: 0,
+          messages: [],
+        }]
+    ));
+    const url = new URL(window.location.href);
+    url.searchParams.delete('order');
+    url.searchParams.delete('section');
+    url.searchParams.set('tab', 'messages');
+    url.searchParams.set('conversation', conversationId);
+    window.history.pushState(
+      { ...window.history.state, dashboardConversation: conversationId },
+      '',
+      url,
+    );
+    shouldAutoScrollRef.current = true;
+    setActiveConversationId(conversationId);
+    setMobileChatView('chat');
+    setActiveTab('messages');
+  };
 
   function showConversationList() {
     setMobileChatView('list');
@@ -2502,7 +2577,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
       const res = await fetch(`${API_BASE_URL}/api/payment/initialize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getStudentSessionToken() ? { Authorization: 'Bearer ' + getStudentSessionToken() } : {}),
+        },
         body: JSON.stringify(payload)
       });
 
@@ -2520,7 +2598,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
       }
 
       if (data.checkout_url) {
-        notifyInfo('Payment is awaiting confirmation after checkout.', 'student-payment-initialize');
+        notifyInfo('Wallet top-up is awaiting Chapa confirmation.', 'student-payment-initialize');
         window.location.href = data.checkout_url;
         return;
       }
@@ -3225,57 +3303,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     aiAbortControllerRef.current?.abort();
   };
 
-  const handleCheckout = async () => {
-    if (!verifiedStudent || isCheckingOut) return;
-    setIsCheckingOut(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/student/cart/checkout`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${getStudentSessionToken()}`,
-        },
-        body: JSON.stringify({ student_id: user.studentId })
-      });
-      const result = await res.json().catch(() => null);
-      if (res.ok) {
-        setCartMessage('Checkout successful.');
-        notifySuccess(studentToast('checkoutCompleted'), 'student-checkout');
-        setCart([]);
-        const nextWalletBalance = Number(result?.wallet_balance);
-        if (Number.isFinite(nextWalletBalance)) {
-          walletBalanceRef.current = nextWalletBalance;
-          setWalletBalance(nextWalletBalance);
-          setPaymentInfo((prev) => ({
-            ...prev,
-            balance: nextWalletBalance,
-            recentTx: `Checkout complete for ${formatETB(result?.total || 0)}`
-          }));
-        }
-        await fetchBuyerDashboardData();
-        setBuyerTab('orders');
-      } else {
-        setCartMessage(result?.detail || result?.message || 'Checkout could not be completed.');
-        notifyError({ detail: result?.detail || result?.message || 'Checkout could not be completed.' }, 'student-checkout');
-      }
-    } catch (err) {
-      console.error("Error completing checkout:", err);
-      setCartMessage('Connection error. Please try again.');
-      notifyError(err, 'student-checkout');
-    } finally {
-      setIsCheckingOut(false);
-    }
-  };
-
-  const walletShortfall = Math.max(0, checkoutTotal - currentWalletBalance);
-
-  const handleTopUpFromCart = () => {
-    const nextDeposit = Math.ceil(walletShortfall || 500);
-    setBuyerTab('payments');
-    setDepositAmount(String(nextDeposit));
-    setDepositError('');
-  };
-
   const safeNotifications = Array.isArray(notifications) ? notifications : [];
   const [productDetails, setProductDetails] = useState({});
   const productFetchesRef = useRef(new Set());
@@ -3292,16 +3319,24 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
           if (data.conversations && Array.isArray(data.conversations)) {
             const requestedConversationId = getConversationIdFromUrl();
             const restoredConversation = data.conversations.find((conversation) => String(conversation.id) === String(requestedConversationId));
-            const selectedConversation = restoredConversation || data.conversations[0] || null;
-            setConversationsList(data.conversations);
+            const requestedParticipant = sellerChatParticipantsRef.current[requestedConversationId];
+            const syntheticConversation = requestedConversationId && !restoredConversation
+              ? {
+                id: requestedConversationId,
+                studentId: String(requestedConversationId).replace(/^conv-/, ''),
+                name: requestedParticipant?.name || 'Student',
+                department: requestedParticipant?.department || '',
+                unread: 0,
+                messages: [],
+              }
+              : null;
+            const selectedConversation = restoredConversation || syntheticConversation || data.conversations[0] || null;
+            setConversationsList(syntheticConversation
+              ? [...data.conversations, syntheticConversation]
+              : data.conversations);
             setActiveConversationId(selectedConversation?.id || '');
             setActiveChatMessages(selectedConversation?.messages || []);
-            setMobileChatView(restoredConversation ? 'chat' : 'list');
-            if (requestedConversationId && !restoredConversation) {
-              const url = new URL(window.location.href);
-              url.searchParams.delete('conversation');
-              window.history.replaceState(window.history.state, '', url);
-            }
+            setMobileChatView(requestedConversationId ? 'chat' : 'list');
           }
         }
       } catch (error) {
@@ -3811,6 +3846,19 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     onNavigate?.('product-details', { productId });
   };
 
+  const canPayProductFromChat = (product) => {
+    const buyerId = String(user?.studentId || user?.student_id || '').trim().toLowerCase();
+    const sellerId = String(product?.seller_id || '').trim().toLowerCase();
+    return Boolean(buyerId && sellerId && buyerId !== sellerId && Number(product?.stock ?? 1) > 0);
+  };
+
+  const handlePayProductFromChat = (productId) => {
+    if (!productId) return;
+    setActiveTab('buyer');
+    setBuyerTab('search');
+    onNavigate?.('product-details', { productId, action: 'pay' });
+  };
+
   const handleProductCardKeyDown = (event, productId) => {
     if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter' || event.key === ' ') {
@@ -4318,7 +4366,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   }}
                   onRaiseDispute={(order) => {
                     if (!isDisputeEligibleOrder(order)) {
-                      const message = 'Disputes can only be raised once an order is ready for pickup or the item has been received.';
+                      const message = 'You can report a problem within 24 hours after payment is completed.';
                       setDisputeFeedback(message);
                       notifyInfo(message);
                       return;
@@ -4330,7 +4378,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     setDisputeEvidenceFiles([]);
                     setDisputeFeedback('');
                   }}
-                  onConfirmReceived={handleConfirmItemReceived}
                   paymentReceipt={paymentReceiptState[selectedOrder.id]?.data}
                   supportEmail={receiptSupportEmail}
                   paymentReceiptLoading={paymentReceiptState[selectedOrder.id]?.loading}
@@ -4348,19 +4395,16 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-600">Order dispute</p>
-                      <h4 id="dispute-modal-title" className="mt-2 text-2xl font-bold text-slate-900">Why are you raising a dispute?</h4>
+                      <h4 id="dispute-modal-title" className="mt-2 text-2xl font-bold text-slate-900">Report a problem with this payment</h4>
                     </div>
                     <button type="button" onClick={() => { setDisputeOrderId(null); setDisputeEvidenceFiles([]); }} className="rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-500 hover:bg-slate-50">Close</button>
                   </div>
                   <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">
-                    {disputeReason === 'refund_not_received'
-                      ? 'Report a seller-timeout refund that has not reached your wallet.'
-                      : 'Disputes are only available once the order is marked as Ready for Pickup or the item has been received.'}
+                    "You can report an issue within 24 hours after payment. The seller's received amount will be frozen while an admin reviews it."
                   </div>
                   <label className="mt-5 block text-sm font-semibold text-slate-700" htmlFor="dispute-reason">Reason</label>
                   <select id="dispute-reason" required value={disputeReason} onChange={(event) => setDisputeReason(event.target.value)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none focus:border-rose-400 focus:bg-white">
                     <option value="">Select a reason</option>
-                    <option value="refund_not_received">Refund not received</option>
                     {disputeReasons.map((reason) => <option key={reason} value={reason}>{reason}</option>)}
                   </select>
                   <label className="mt-4 block text-sm font-semibold text-slate-700" htmlFor="dispute-description">Description/details</label>
@@ -4498,10 +4542,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                           {searchResults.map((item) => {
                             const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
-                            const sellerPayoutBlocked = String(item.seller_payout_status || '').trim().toLowerCase() !== 'active';
                             const isOwnProduct = String(user?.studentId || user?.student_id || '').trim().toLowerCase() === String(item.seller_id || item.seller || '').trim().toLowerCase();
                             const isOutOfStock = Number.isFinite(Number(item.stock)) && Number(item.stock) <= 0;
-                            const purchaseBlocked = sellerPayoutBlocked || isOwnProduct || isOutOfStock;
+                            const purchaseBlocked = isOwnProduct || isOutOfStock;
                             const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
                             const backendOrigin = `${API_BASE_URL}`;
                             let displayImage = fallbackImage;
@@ -4559,8 +4602,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                     <>
                                       {isOutOfStock ? (
                                         <span className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700">Out of Stock</span>
-                                      ) : sellerPayoutBlocked && <span className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[10px] font-bold leading-4 text-amber-800">Seller Payout Setup Required - Purchase Disabled</span>}
+                                      ) : null}
                                       <div className="grid grid-cols-1 gap-2">
+                                        {!isOutOfStock && canPayProductFromChat(item) && (
+                                          <button
+                                            type="button"
+                                            onClick={(event) => { event.stopPropagation(); handlePayProductFromChat(item.id); }}
+                                            className="w-full rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                                          >
+                                            Pay with wallet
+                                          </button>
+                                        )}
                                         {!isOutOfStock && <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToCartFromSearch(item.id); }} disabled={purchaseBlocked} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">Add to Cart</button>}
                                         {isInWishlist ? (
                                           <button type="button" onClick={(event) => event.stopPropagation()} disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
@@ -4586,7 +4638,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Your Wishlist</h3>
-                        <p className="text-sm text-slate-500">Keep your shortlisted campus essentials ready for checkout.</p>
+                        <p className="text-sm text-slate-500">Keep a shortlist of items to discuss with sellers before meeting to pay.</p>
                       </div>
                       <div className="flex items-center gap-3">
                         {wishlist.length > 1 && (
@@ -4606,7 +4658,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-10 text-center">
                         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-sky-100 text-3xl">💡</div>
                         <p className="mt-5 text-lg font-semibold text-slate-900">Your wishlist is empty</p>
-                        <p className="mt-2 text-sm text-slate-500">Save items you like and they will appear here for quick checkout.</p>
+                        <p className="mt-2 text-sm text-slate-500">Save items you like and review them before meeting the seller to pay.</p>
                       </div>
                     ) : (
                       <div className="mt-6 space-y-4">
@@ -4688,7 +4740,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Your Shopping Cart</h3>
-                        <p className="text-sm text-slate-500">Review items before checkout and remove anything you no longer need.</p>
+                        <p className="text-sm text-slate-500">Review saved items and remove anything you no longer need.</p>
                       </div>
                       {cartMessage && <p className="rounded-full bg-emerald-50 px-4 py-2 text-sm text-emerald-700">{cartMessage}</p>}
                     </div>
@@ -4766,67 +4818,10 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                           })}
                         </div>
 
-                        <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-5">
-                          <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                            <span>Invoice</span>
-                            <span className={`rounded-full px-2 py-1 text-[10px] ${walletHasSufficientFunds ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                              {walletHasSufficientFunds ? 'Funds Available' : 'Low Balance'}
-                            </span>
-                          </div>
-
-                          <div className="mt-5 space-y-3 text-sm text-slate-700">
-                            <div className="flex items-center justify-between">
-                              <span>Subtotal</span>
-                              <span className="font-semibold text-slate-900">{formatETB(cartTotal)}</span>
-                            </div>
-                            <div className="flex items-center justify-between">
-                              <span>Platform Fee</span>
-                              <span className="font-semibold text-slate-900">{formatETB(platformFee)}</span>
-                            </div>
-                            <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-base font-bold text-slate-900">
-                              <span>Total</span>
-                              <span>{formatETB(checkoutTotal)}</span>
-                            </div>
-                            {!walletHasSufficientFunds && (
-                              <p className="text-sm font-semibold text-amber-700">
-                                Insufficient balance. Please top up your wallet.
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="mt-5 rounded-2xl border border-sky-100 bg-sky-50 p-3">
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-sky-700">Wallet Check</p>
-                            <div className="mt-2 flex items-center justify-between">
-                              <span className="text-sm text-slate-600">Student Wallet</span>
-                              <span className="text-lg font-bold text-slate-900">{formatETB(currentWalletBalance)}</span>
-                            </div>
-                            <p className={`mt-2 text-xs font-medium ${walletHasSufficientFunds ? 'text-emerald-700' : 'text-amber-700'}`}>
-                              {walletHasSufficientFunds ? 'Sufficient funds to complete checkout securely.' : `Top up ${formatETB(walletShortfall)} to complete this purchase.`}
-                            </p>
-                          </div>
-
-                          <div className="mt-5 space-y-3">
-                            {!verifiedStudent && (
-                              <p className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-800">
-                                ID verification is required to complete purchases.
-                              </p>
-                            )}
-                            <button
-                              onClick={handleCheckout}
-                              disabled={!verifiedStudent || !cart.length || currentWalletBalance <= 0 || currentWalletBalance < checkoutTotal || isCheckingOut}
-                              className="btn-primary w-full rounded-full py-3.5 font-bold transition"
-                            >
-                              {isCheckingOut ? 'Processing...' : walletHasSufficientFunds ? 'Pay with Wallet' : 'Insufficient Wallet Balance'}
-                            </button>
-
-                            <button
-                              onClick={handleTopUpFromCart}
-                              disabled={!verifiedStudent}
-                              className="w-full rounded-full bg-sky-600 py-3.5 font-bold text-white hover:bg-sky-700 transition disabled:cursor-not-allowed disabled:bg-slate-300"
-                            >
-                              Top Up via Chapa
-                            </button>
-                          </div>
+                        <div className="rounded-[28px] border border-emerald-200 bg-emerald-50 p-5">
+                          <p className="text-sm font-bold text-emerald-900">Payments happen on the product page after you inspect the item with the seller.</p>
+                          <p className="mt-2 text-sm text-emerald-800">No order or charge is created from your cart.</p>
+                          <button type="button" onClick={() => { setBuyerTab('search'); setActiveTab('buyer'); }} className="mt-4 rounded-full bg-emerald-700 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-800">Browse products</button>
                         </div>
                       </div>
                     )}
@@ -4839,7 +4834,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <h3 className="border-b border-slate-200 pb-2 text-xl font-bold text-slate-900">Your Orders</h3>
-                        <p className="mt-3 text-sm text-slate-500">Track fulfillment, pickup details, and post-purchase feedback for every order.</p>
+                        <p className="mt-3 text-sm text-slate-500">Review completed purchases and report a problem within the payment window.</p>
                       </div>
                       <div className="flex flex-wrap items-center justify-end gap-2">
                         <button type="button" onClick={() => handleOrdersViewChange(false)} className={`rounded-full px-4 py-2 text-sm font-bold ${!showHiddenOrders ? 'bg-slate-900 text-white' : 'border border-slate-300 text-slate-700 hover:bg-slate-100'}`}>All Orders</button>
@@ -4848,6 +4843,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         {disputeFeedback && <p className="rounded-full bg-rose-50 px-4 py-2 text-sm text-rose-700">{disputeFeedback}</p>}
                       </div>
                     </div>
+
+                    {orderNavigationMessage && <p role="alert" className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800">{orderNavigationMessage}</p>}
 
                     {ordersLoading ? (
                       <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-8 text-center text-sm font-semibold text-slate-600">Loading your orders...</div>
@@ -4872,24 +4869,11 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                       <div className="space-y-5">
                         {orders.map((order) => {
                           const orderStatus = normalizeOrderStatus(order.fulfillment_status || order.status || 'Processing');
-                          const orderStatusLabel = orderStatus === 'Pending' ? 'Order Placed' : orderStatus;
-                          const paymentStatus = normalizePaymentStatus(order.payment_status || order.paymentStatus || order.pay_status || 'Successful');
+                          const orderStatusLabel = orderStatus === 'Pending' ? 'Legacy order' : orderStatus;
+                          const paymentStatus = normalizePaymentStatus(order.payment_status || order.paymentStatus || order.pay_status || 'Pending');
                           const sellerId = order.seller_id || order.sellerId || order.seller;
                           const sellerName = order.seller_name || order.sellerName || order.seller || 'Campus Seller';
-                          const pickupLocation = order.pickup_location || order.pickupLocation || 'Student Center';
-                          const deadlineTimestamp = order.seller_accept_deadline ? new Date(order.seller_accept_deadline).getTime() : 0;
-                          const isWaitingForSeller = orderStatus === 'Pending' && deadlineTimestamp > clockNow;
                           const refunded = isOrderRefunded(order);
-                          const hoursUntilExpiry = deadlineTimestamp > clockNow
-                            ? Math.max(1, Math.ceil((deadlineTimestamp - clockNow) / 3600000))
-                            : 0;
-                          const timelineSteps = ['Order Placed', 'Payment Successful', 'Processing', 'Ready for Pickup', 'Item Received', 'Buyer Confirmed + Seller Confirmed', 'Completed'];
-                          let currentStep = paymentStatus === 'Successful' ? 1 : 0;
-                          if (['Processing', 'Ready for Pickup', 'Completed'].includes(orderStatus)) currentStep = Math.max(currentStep, 2);
-                          if (['Ready for Pickup', 'Completed'].includes(orderStatus) || order.seller_confirmed) currentStep = Math.max(currentStep, 3);
-                          if (order.buyer_confirmed) currentStep = Math.max(currentStep, 4);
-                          if (order.buyer_confirmed && order.seller_confirmed) currentStep = orderStatus === 'Completed' ? 6 : 5;
-                          const currentFillIndex = Math.max(0, Math.min(timelineSteps.length - 1, currentStep));
 
                           return (
                             <div key={order.id} className="rounded-[28px] border border-slate-200 bg-slate-50 p-5 shadow-sm">
@@ -4907,11 +4891,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 </div>
                               </div>
 
-                              {isWaitingForSeller && (
-                                <p className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-bold text-amber-800">
-                                  Waiting for seller (expires in {hoursUntilExpiry} h)
-                                </p>
-                              )}
                               {refunded && (
                                 <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
                                   <p className="font-black">Refund confirmation</p>
@@ -4949,34 +4928,6 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                 </div>
                               </div>
 
-                              <div className="mt-5 rounded-2xl border border-slate-200 bg-white p-4">
-                                <div className="flex items-center justify-between gap-3">
-                                  <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pickup Location</p>
-                                  <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">{pickupLocation}</span>
-                                </div>
-                                <p className="mt-3 text-sm text-slate-600">Collect your item from <span className="font-semibold text-slate-800">{pickupLocation}</span> on campus.</p>
-                              </div>
-
-                              {orderStatus === 'Ready for Pickup' && (
-                                <div className="mt-5 rounded-2xl border-2 border-amber-300 bg-amber-50 p-5">
-                                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                                    <div>
-                                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-700">Pickup Code</p>
-                                      {revealedPickupCodes[order.id] ? <p className="mt-2 text-4xl font-black tracking-[0.3em] text-amber-950">{String(order.pickup_code ?? '').padStart(4, '0')}</p> : <button type="button" onClick={() => setRevealedPickupCodes((previous) => ({ ...previous, [order.id]: true }))} className="mt-2 rounded-full bg-amber-500 px-4 py-2 text-sm font-bold text-white hover:bg-amber-600">I received and inspected the item</button>}
-                                    </div>
-                                    <p className="max-w-md text-sm font-semibold leading-6 text-amber-900">Reveal and give this code to the seller only after you have received and inspected the item.</p>
-                                  </div>
-                                </div>
-                              )}
-
-                              {orderStatus === 'Ready for Pickup' && (
-                                <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
-                                  {order.seller_confirmed ? <><p className="text-sm font-semibold text-sky-900">Seller confirmed the handover. Confirm that you received the item in the expected condition.</p><button type="button" onClick={() => handleConfirmItemReceived(order)} disabled={receiptState[order.id]?.loading} className="mt-3 rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-600 disabled:bg-slate-300">{receiptState[order.id]?.loading ? 'Confirming...' : 'Confirm Item Received'}</button></> : <p className="text-sm font-semibold text-sky-800">Waiting for the seller to confirm handover with your pickup code.</p>}
-                                  {receiptState[order.id]?.error && <p className="mt-2 text-sm font-bold text-rose-600">{receiptState[order.id].error}</p>}
-                                  {receiptState[order.id]?.success && <p className="mt-2 text-sm font-bold text-emerald-600">{receiptState[order.id].success}</p>}
-                                </div>
-                              )}
-
                               {orderStatus === 'Completed' && (
                                 <div className="mt-5 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-800">
                                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-xl font-bold text-white" aria-hidden="true">✓</span>
@@ -4987,59 +4938,26 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                               {orderStatus === 'Disputed' && (
                                 <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-4">
                                   <p className="text-sm font-semibold text-rose-800">An Admin is reviewing this case.</p>
-                                  <p className="mt-1 text-sm text-rose-700">Confirm Pickup is disabled while this dispute is active.</p>
-                                  <button
-                                    type="button"
-                                    disabled
-                                    className="mt-3 rounded-full border border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed"
-                                  >
-                                    Confirm Pickup
-                                  </button>
+                                  <p className="mt-1 text-sm text-rose-700">The seller's received amount is frozen until resolution.</p>
                                 </div>
                               )}
 
-                              {(isDisputeEligibleOrder(order) || isTimeoutRefundDisputeEligible(order)) && (
+                              {isDisputeEligibleOrder(order) && (
                                 <button
                                   type="button"
                                   onClick={() => {
                                     setSelectedOrder(order);
                                     setDisputeOrderId(order.id);
-                                    setDisputeReason(isTimeoutRefundDisputeEligible(order) ? 'refund_not_received' : '');
+                                    setDisputeReason('');
                                     setDisputeDescription('');
                                     setDisputeFeedback('');
                                   }}
                                   className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
                                 >
-                                  {isTimeoutRefundDisputeEligible(order) ? 'Report refund problem' : 'Raise Dispute'}
+                                  Report a problem
                                 </button>
                               )}
 
-                              <div className="mt-6">
-                                <p className="mb-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Trade Progress</p>
-                                <div className="grid gap-3 md:grid-cols-4">
-                                  {timelineSteps.map((step, index) => {
-                                    const isActive = index <= currentFillIndex;
-                                    const isCurrent = index === currentFillIndex;
-
-                                    return (
-                                      <div key={`${order.id}-${step}`} className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                          <span className={`flex h-3 w-3 items-center justify-center rounded-full ${isActive ? 'bg-emerald-500' : 'bg-slate-300'}`} />
-                                          <span className={`text-[11px] font-semibold ${isActive ? 'text-slate-900' : 'text-slate-400'}`}>{step}</span>
-                                        </div>
-                                        {index < timelineSteps.length - 1 && (
-                                          <div className={`mt-2 h-1.5 w-full rounded-full ${isActive ? 'bg-emerald-500' : 'bg-slate-200'}`} />
-                                        )}
-                                        {isCurrent && (
-                                          <span className="mt-2 flex justify-center">
-                                            <span className="inline-flex rounded-full bg-sky-50 px-2 py-1 text-[10px] font-semibold text-sky-700">Current</span>
-                                          </span>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
 
                               {orderStatus === 'Completed' && (
                                 <div className="mt-6 rounded-[24px] border border-emerald-200 bg-emerald-50 p-4">
@@ -5292,10 +5210,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 sellerOrdersLoading={sellerOrdersLoading}
                 sellerOrdersError={sellerOrdersError}
                 onRefreshOrders={fetchSellerDashboardData}
-                onRefreshWallet={fetchBuyerDashboardData}
-                setSellerDashboardData={setSellerDashboardData}
                 myListings={myListings}
-                setSellerData={setSellerData}
                 onPayoutAccountUpdated={async () => {
                   const account = await refreshPayoutAccount();
                   if (returnToWithdrawAfterPayoutSetup && account) {
@@ -5326,7 +5241,9 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                   setBuyerTab('payments');
                 }}
                 openOrderId={pendingSellerOrderId}
-                onOpenOrderHandled={() => setPendingSellerOrderId(null)}
+                onOpenSellerOrder={openSellerOrder}
+                onBackToSellerOrders={backToSellerOrders}
+                onOpenSellerChat={openSellerChat}
               />
             )}
 
@@ -5737,6 +5654,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                                       View Product
                                     </button>
                                   </div>
+                                  {canPayProductFromChat(product) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handlePayProductFromChat(message.productId)}
+                                      className="mt-2 w-full rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                                    >
+                                      Pay with wallet
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             )}
@@ -5754,6 +5680,18 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                             </div>
                             <button type="button" onClick={() => handleViewProductFromChat(activeConversation.product.id)} className="btn-primary shrink-0 rounded-full px-3 py-2 text-xs font-semibold">View Product</button>
                           </div>
+                          {canPayProductFromChat({
+                            ...activeConversation.product,
+                            ...(productDetails[activeConversation.product.id] || {}),
+                          }) && (
+                            <button
+                              type="button"
+                              onClick={() => handlePayProductFromChat(activeConversation.product.id)}
+                              className="mt-3 w-full rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                            >
+                              Pay with wallet
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
@@ -5937,7 +5875,34 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                 unreadCount={unreadCount}
                 isMarkingRead={isMarkingRead}
                 onMarkAllRead={handleMarkAllNotificationsRead}
-                onNavigate={(tab) => setActiveTab(tab)}
+                onNavigate={(target) => {
+                  const orderLink = parseOrderDashboardLink(target);
+                  if (!orderLink) {
+                    setActiveTab(target);
+                    return;
+                  }
+                  if (orderLink.tab === 'seller') {
+                    if (orderLink.section === 'orders' && orderLink.orderId) {
+                      openSellerOrder(orderLink.orderId);
+                    } else {
+                      setActiveTab('seller');
+                      setPendingSellerOrderId(null);
+                    }
+                    return;
+                  }
+                  if (orderLink.tab === 'buyer') setBuyerTab('orders');
+                  setActiveTab(orderLink.tab);
+                  if (orderLink.section !== 'orders') return;
+                  if (orderLink.orderId) {
+                    void handleOrderNotification(orderLink.orderId);
+                  } else {
+                    setBuyerTab('orders');
+                    setActiveTab('buyer');
+                    setOrderNavigationMessage(orderLink.hasOrderParameter
+                      ? 'This order link has an invalid order id. Your orders are shown below.'
+                      : 'This link does not include an order id. Your orders are shown below.');
+                  }
+                }}
                 onBuyerOrders={() => {
                   setBuyerTab('orders');
                   setActiveTab('buyer');

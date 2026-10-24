@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
+from fastapi import HTTPException
 
 from app import main as main_module
 from app.database import Base
@@ -193,6 +194,23 @@ class WalletWithdrawalTests(unittest.TestCase):
         self.assertEqual(response["status"], "Processing")
         self.assertEqual(self.wallet.held_balance, Decimal("150.00"))
         self.assertNotIn("Successful", response["status"])
+
+    def test_frozen_wallet_funds_cannot_be_withdrawn(self):
+        self.wallet.balance = Decimal("0.00")
+        self.wallet.frozen_balance = Decimal("150.00")
+        self.student.wallet_balance = Decimal("0.00")
+        self.db.commit()
+        adapter = StubPayoutAdapter()
+        auth, get_adapter, email = self._patch_withdraw_dependencies(adapter)
+        with self._settings(), auth, get_adapter, email:
+            with self.assertRaises(HTTPException) as error:
+                self._withdraw(amount="100.00")
+
+        self.assertIn("Insufficient wallet balance", error.exception.detail)
+        self.assertEqual(self.wallet.balance, Decimal("0.00"))
+        self.assertEqual(self.wallet.frozen_balance, Decimal("150.00"))
+        self.assertEqual(adapter.create_calls, 0)
+        self.assertEqual(self.db.query(PayoutTransaction).count(), 0)
 
     def test_successful_verify_endpoint_releases_hold(self):
         adapter = StubPayoutAdapter(

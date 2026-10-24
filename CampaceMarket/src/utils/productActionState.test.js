@@ -52,3 +52,20 @@ test('guest add-to-cart redirects to login and restores its product action once'
     assert.equal(restoreCompleted, true);
     assert.equal(getPendingProductAction(storage), null);
 });
+
+test('chat payment action opens the selected product payment flow', async () => {
+    const storage = createStorage();
+    const intent = { returnTo: 42, action: 'pay', quantity: 1 };
+    assert.equal(startProductActionLogin(intent, () => {}, storage), true);
+
+    const pendingAction = getPendingProductAction(storage);
+    let paymentOpened = false;
+    await restorePendingProductAction(pendingAction, {
+        pay: async (action) => {
+            paymentOpened = action.returnTo === '42';
+        },
+    }, () => clearPendingProductAction(storage));
+
+    assert.equal(paymentOpened, true);
+    assert.equal(getPendingProductAction(storage), null);
+});

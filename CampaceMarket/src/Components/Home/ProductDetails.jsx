@@ -1,8 +1,10 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
+import { useCart } from '../../context/CartContext';
 import { restorePendingProductAction, startProductActionLogin } from '../../utils/productActionState';
+import { buildOrderDashboardUrl } from '../../utils/orderDashboardLink';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const getStudentAccessToken = (student) => {
@@ -31,15 +33,18 @@ const parseProductImages = (image) => {
 
 function ProductDetails({ product, currentUser, pendingAction, onPendingActionHandled, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const { t } = useLanguage();
+  const { items: cartItems, setItems: setCartItems, loadedStudentId: cartStudentId, loading: cartLoading, error: cartError } = useCart();
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [chatStatus, setChatStatus] = useState('');
   const [cartStatus, setCartStatus] = useState('');
+  const [cartAdding, setCartAdding] = useState(false);
+  const [cartQuantityUpdating, setCartQuantityUpdating] = useState(false);
   const [chatLoading, setChatLoading] = useState(false);
   const [isChatEnabled, setIsChatEnabled] = useState(true);
-  const [messageText, setMessageText] = useState('');
+  const [chatDraft, setChatDraft] = useState({ productId: '', text: '', initialized: false });
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
-  const [selectedQuantity, setSelectedQuantity] = useState(1);
+  const [quantitySelection, setQuantitySelection] = useState({ productId: '', quantity: 1 });
   const [allowStudentReports, setAllowStudentReports] = useState(false);
   const [showReportForm, setShowReportForm] = useState(false);
   const [reportText, setReportText] = useState('');
@@ -48,15 +53,87 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const [reportLoading, setReportLoading] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
   const [showShareMenu, setShowShareMenu] = useState(false);
-  const [isWishlisted, setIsWishlisted] = useState(false);
-  const [wishlistItemId, setWishlistItemId] = useState(null);
+  const [wishlistState, setWishlistState] = useState({
+    studentId: '',
+    productId: '',
+    isWishlisted: false,
+    itemId: null,
+    loaded: false,
+  });
   const [wishlistStatus, setWishlistStatus] = useState('');
-  const [wishlistLoadedFor, setWishlistLoadedFor] = useState('');
   const [guestActionIntent, setGuestActionIntent] = useState(null);
   const [offerAmount, setOfferAmount] = useState('');
+  const [showPayModal, setShowPayModal] = useState(false);
+  const [paySummary, setPaySummary] = useState(null);
+  const [payPassword, setPayPassword] = useState('');
+  const [payError, setPayError] = useState('');
+  const [payMissingAmount, setPayMissingAmount] = useState('');
+  const [payAttemptsLeft, setPayAttemptsLeft] = useState(null);
+  const [payRetryAfterSeconds, setPayRetryAfterSeconds] = useState(null);
+  const [payLoading, setPayLoading] = useState(false);
+  const [topUpLoading, setTopUpLoading] = useState(false);
+  const [payResult, setPayResult] = useState(null);
   const [reportReasons, setReportReasons] = useState([]);
   const restoredActionRef = useRef('');
+  const cartAddInFlightRef = useRef(false);
+  const payAttemptKeyRef = useRef(null);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
+  const item = detailedProduct || product;
+  const availableStock = Math.max(0, Number(item?.stock ?? 1));
+  const currentStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim().toLowerCase();
+  const productSellerId = String(item?.seller_id || item?.seller || '').trim().toLowerCase();
+  const isOwnProduct = Boolean(currentStudentId && productSellerId && currentStudentId === productSellerId);
+  const buyerStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim();
+  const cartLoaded = Boolean(buyerStudentId && cartStudentId === buyerStudentId && !cartLoading && !cartError);
+  const cartItem = cartLoaded
+    ? cartItems.find((cartEntry) => String(cartEntry.product_id) === String(product?.id))
+    : null;
+  const isInCart = Boolean(cartItem);
+  const productId = String(product?.id || '');
+  const selectedQuantity = isInCart
+    ? Number(cartItem.quantity || 1)
+    : quantitySelection.productId === productId
+      ? quantitySelection.quantity
+      : 1;
+  const setSelectedQuantity = (nextQuantity) => {
+    const previousQuantity = quantitySelection.productId === productId
+      ? quantitySelection.quantity
+      : 1;
+    setQuantitySelection({
+      productId,
+      quantity: typeof nextQuantity === 'function' ? nextQuantity(previousQuantity) : nextQuantity,
+    });
+    payAttemptKeyRef.current = null;
+  };
+  const currentWishlistStudentId = String(currentUser?.studentId || currentUser?.student_id || '');
+  const currentWishlistProductId = String(item?.id || product?.id || '');
+  const wishlistMatchesCurrent = Boolean(
+    currentWishlistStudentId
+    && currentWishlistProductId
+    && wishlistState.studentId === currentWishlistStudentId
+    && wishlistState.productId === currentWishlistProductId,
+  );
+  const isWishlisted = wishlistMatchesCurrent && wishlistState.isWishlisted;
+  const wishlistItemId = wishlistMatchesCurrent ? wishlistState.itemId : null;
+  const wishlistLoadedFor = wishlistMatchesCurrent && wishlistState.loaded
+    ? currentWishlistStudentId
+    : '';
+  const productTitleForChat = String(item?.title || '').trim();
+  const defaultChatMessage = productTitleForChat
+    ? `Hi, I am interested in buying your ${productTitleForChat}. Is it still available?`
+    : '';
+  const chatDraftMatchesCurrent = chatDraft.productId === productId && chatDraft.initialized;
+  const messageText = chatDraftMatchesCurrent ? chatDraft.text : defaultChatMessage;
+  const setMessageText = (nextText) => {
+    const currentText = chatDraft.productId === productId && chatDraft.initialized
+      ? chatDraft.text
+      : defaultChatMessage;
+    setChatDraft({
+      productId,
+      initialized: true,
+      text: typeof nextText === 'function' ? nextText(currentText) : nextText,
+    });
+  };
 
   useEffect(() => {
     if (!product?.id) return;
@@ -81,12 +158,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
   useEffect(() => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
-    if (!studentId || !product?.id) {
-      setIsWishlisted(false);
-      setWishlistItemId(null);
-      setWishlistLoadedFor('');
-      return undefined;
-    }
+    if (!studentId || !product?.id) return undefined;
 
     let active = true;
     fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${encodeURIComponent(studentId)}`)
@@ -94,15 +166,25 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       .then((items) => {
         const match = (Array.isArray(items) ? items : []).find((wishlistItem) => String(wishlistItem.product_id) === String(product.id));
         if (active) {
-          setIsWishlisted(Boolean(match));
-          setWishlistItemId(match?.id || null);
+          setWishlistState({
+            studentId: String(studentId),
+            productId: String(product.id),
+            isWishlisted: Boolean(match),
+            itemId: match?.id || null,
+            loaded: true,
+          });
         }
       })
       .catch(() => {
-        if (active) setIsWishlisted(false);
-      })
-      .finally(() => {
-        if (active) setWishlistLoadedFor(String(studentId));
+        if (active) {
+          setWishlistState({
+            studentId: String(studentId),
+            productId: String(product.id),
+            isWishlisted: false,
+            itemId: null,
+            loaded: true,
+          });
+        }
       });
 
     return () => {
@@ -111,7 +193,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   }, [currentUser?.studentId, currentUser?.student_id, product?.id]);
 
   useEffect(() => {
-    setSelectedQuantity(1);
+    payAttemptKeyRef.current = null;
   }, [product?.id]);
 
   useEffect(() => {
@@ -156,13 +238,6 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       active = false;
     };
   }, []);
-
-  useEffect(() => {
-    const productTitle = String(detailedProduct?.title || product?.title || '').trim();
-    if (!productTitle) return;
-
-    setMessageText((previousMessage) => previousMessage || `Hi, I am interested in buying your ${productTitle}. Is it still available?`);
-  }, [product?.id, product?.title, detailedProduct?.title]);
 
   const handleStartChat = async () => {
     if (!isChatEnabled) {
@@ -230,7 +305,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         Authorization: `Bearer ${session.access_token || session.user?.access_token || ''}`,
       },
       body: JSON.stringify({
-        student_id: currentUser.studentId,
+        student_id: buyerStudentId,
         product_id: Number(productId),
         quantity: Number(quantity),
       }),
@@ -238,33 +313,240 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      throw new Error(data.detail || 'Unable to add this product to your cart.');
+      const detail = data.detail;
+      throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to add this product to your cart.');
     }
+    return data;
   };
 
   const handleAddToCart = async (requestedQuantity = selectedQuantity) => {
-    const studentId = String(currentUser?.studentId || '').trim();
+    const studentId = buyerStudentId;
     if (!studentId) {
       setGuestActionIntent({ action: 'addToCart', quantity: selectedQuantity });
       return;
     }
+    if (!cartLoaded) return;
     if (isOwnProduct) {
       setCartStatus(t('studentToast.ownProductAction'));
       return;
     }
+    if (isInCart || cartAddInFlightRef.current) return;
 
+    cartAddInFlightRef.current = true;
+    setCartAdding(true);
     setCartStatus('');
     try {
       const quantity = typeof requestedQuantity === 'number' ? requestedQuantity : selectedQuantity;
-      await handleAddToCartFromSearch(item?.id || product?.id, quantity);
+      const data = await handleAddToCartFromSearch(item?.id || product?.id, quantity);
+      const addedItem = {
+        ...item,
+        id: data.item?.id,
+        product_id: data.item?.product_id ?? Number(productId),
+        student_id: data.item?.student_id ?? studentId,
+        quantity: data.item?.quantity ?? quantity,
+      };
+      setCartItems((previous) => [
+        ...previous.filter((cartEntry) => String(cartEntry.product_id) !== productId),
+        addedItem,
+      ]);
       setCartStatus('Product added to cart successfully.');
     } catch (error) {
-      setCartStatus(error.message === 'You cannot buy or save your own product.'
-        ? t('studentToast.ownProductAction')
-        : error.message || 'Unable to add this product to your cart.');
+      const detail = error.message;
+      setCartStatus(typeof detail === 'string' ? detail : 'Unable to add this product to your cart.');
       console.error(error);
+    } finally {
+      cartAddInFlightRef.current = false;
+      setCartAdding(false);
     }
   };
+
+  const handleQuantityChange = async (nextQuantity) => {
+    const previousQuantity = isInCart ? selectedQuantity : quantitySelection.productId === productId ? quantitySelection.quantity : 1;
+    const requestedQuantity = typeof nextQuantity === 'function' ? nextQuantity(previousQuantity) : nextQuantity;
+    const quantity = Math.max(1, Math.min(availableStock, Number(requestedQuantity)));
+    if (!isInCart) {
+      setSelectedQuantity(quantity);
+      return;
+    }
+    if (!cartItem || cartQuantityUpdating || quantity === selectedQuantity) return;
+
+    setCartQuantityUpdating(true);
+    setCartStatus('');
+    try {
+      const token = getStudentAccessToken(currentUser);
+      const response = await fetch(`${API_BASE_URL}/api/student/cart/${cartItem.id}/quantity`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ quantity }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to update cart quantity.');
+      }
+      setCartItems((previous) => previous.map((entry) => (
+        entry.id === cartItem.id
+          ? { ...entry, quantity: data.item?.quantity ?? quantity }
+          : entry
+      )));
+    } catch (error) {
+      setCartStatus(error.message || 'Unable to update cart quantity.');
+      console.error(error);
+    } finally {
+      setCartQuantityUpdating(false);
+    }
+  };
+
+  const refreshPaySummary = useCallback(async () => {
+    const token = getStudentAccessToken(currentUser);
+    const response = await fetch(
+      `${API_BASE_URL}/api/products/${encodeURIComponent(item?.id || product?.id)}/pay-summary?quantity=${selectedQuantity}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = data.detail;
+      throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to load payment details.');
+    }
+    setPaySummary(data);
+    setPayError('');
+    return data;
+  }, [currentUser, item?.id, product?.id, selectedQuantity]);
+
+  const openPayModal = async () => {
+    if (!currentUser?.studentId && !currentUser?.student_id) {
+      setGuestActionIntent({ action: 'pay', quantity: selectedQuantity });
+      return;
+    }
+    setPayResult(null);
+    setPayPassword('');
+    setPayError('');
+    setPayMissingAmount('');
+    setShowPayModal(true);
+    try {
+      await refreshPaySummary();
+    } catch (error) {
+      setPayError(error.message || 'Unable to load payment details.');
+    }
+  };
+
+  const submitProductPayment = async (event) => {
+    event.preventDefault();
+    if (!payPassword || payLoading || paySummary?.needs_password_setup) return;
+    setPayLoading(true);
+    setPayError('');
+    setPayMissingAmount('');
+    const token = getStudentAccessToken(currentUser);
+    // Reuse the key for uncertain retries; only a new intent or definitive response creates another.
+    const payIntent = `${String(currentUser?.studentId || currentUser?.student_id || '')}:${String(item?.id || product?.id || '')}:${selectedQuantity}`;
+    const storageKey = `campacePayAttempt:${payIntent}`;
+    const clearPaymentAttempt = () => {
+      payAttemptKeyRef.current = null;
+      try {
+        window.sessionStorage.removeItem(storageKey);
+      } catch (error) {
+        console.error('Unable to clear the completed payment attempt key.', error);
+      }
+    };
+    try {
+      const previousAttempt = payAttemptKeyRef.current;
+      const storedKey = window.sessionStorage.getItem(storageKey);
+      const requestKey = previousAttempt?.intent === payIntent
+        ? previousAttempt.key
+        : storedKey || `pay-${window.crypto?.randomUUID?.() || `${Date.now()}-${window.crypto?.getRandomValues?.(new Uint32Array(1))?.[0] || 'attempt'}`}`;
+      window.sessionStorage.setItem(storageKey, requestKey);
+      payAttemptKeyRef.current = { intent: payIntent, key: requestKey };
+      const response = await fetch(`${API_BASE_URL}/api/products/${encodeURIComponent(item?.id || product?.id)}/pay`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': requestKey,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ password: payPassword, quantity: selectedQuantity }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        if (response.status >= 400 && response.status < 500) {
+          clearPaymentAttempt();
+        }
+        if (detail?.code === 'PASSWORD_NOT_SET') {
+          setPaySummary((current) => ({
+            ...current,
+            needs_password_setup: true,
+            setup_message: detail.message,
+          }));
+        }
+        if (detail?.code === 'INSUFFICIENT_BALANCE') setPayMissingAmount(detail.missing || '');
+        setPayAttemptsLeft(Number.isInteger(detail?.attempts_left) ? detail.attempts_left : null);
+        setPayRetryAfterSeconds(Number.isFinite(detail?.retry_after_seconds) ? detail.retry_after_seconds : null);
+        setPayError(typeof detail === 'string' ? detail : detail?.message || 'Unable to complete wallet payment.');
+        return;
+      }
+      setPayResult(data);
+      setPayPassword('');
+      clearPaymentAttempt();
+      await refreshPaySummary().catch(() => {});
+    } catch (error) {
+      setPayError(error.message || 'Connection error. Retry this payment to safely check its status.');
+    } finally {
+      setPayLoading(false);
+    }
+  };
+
+  const handleTopUpMissingBalance = async () => {
+    if (!payMissingAmount || topUpLoading) return;
+    const studentId = currentUser?.studentId || currentUser?.student_id;
+    if (!studentId) return;
+    const checkoutWindow = window.open('about:blank', '_blank');
+    if (!checkoutWindow) {
+      setPayError('Allow pop-ups to open Chapa checkout, then try again.');
+      return;
+    }
+    checkoutWindow.opener = null;
+    setTopUpLoading(true);
+    setPayError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/payment/initialize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getStudentAccessToken(currentUser) ? { Authorization: 'Bearer ' + getStudentAccessToken(currentUser) } : {}),
+        },
+        body: JSON.stringify({
+          student_id: studentId,
+          amount: payMissingAmount,
+          ...(currentUser?.email ? { email: currentUser.email } : {}),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.checkout_url) {
+        checkoutWindow.close();
+        const detail = data.detail;
+        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to start Chapa top-up.');
+      }
+      checkoutWindow.location.href = data.checkout_url;
+      setPayError('Complete Chapa checkout in the new tab, then return here and refresh your wallet summary.');
+    } catch (error) {
+      checkoutWindow.close();
+      setPayError(error.message || 'Unable to start Chapa top-up.');
+    } finally {
+      setTopUpLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showPayModal) return undefined;
+    const refreshWhenReturning = () => {
+      refreshPaySummary().catch((error) => setPayError(error.message || 'Unable to refresh wallet balance.'));
+    };
+    window.addEventListener('focus', refreshWhenReturning);
+    return () => window.removeEventListener('focus', refreshWhenReturning);
+  }, [showPayModal, refreshPaySummary]);
 
   const handleToggleWishlist = async () => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
@@ -289,8 +571,13 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         throw new Error(error.detail || 'Unable to update wishlist.');
       }
       const data = isWishlisted ? {} : await response.json().catch(() => ({}));
-      setIsWishlisted((previous) => !previous);
-      setWishlistItemId(data.id || null);
+      setWishlistState({
+        studentId: currentWishlistStudentId,
+        productId: currentWishlistProductId,
+        isWishlisted: !isWishlisted,
+        itemId: data.id || null,
+        loaded: true,
+      });
       const statusMessage = isWishlisted ? 'Removed from wishlist.' : 'Added to wishlist.';
       setWishlistStatus(statusMessage);
       toast.success(statusMessage);
@@ -326,12 +613,19 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     wishlist: async () => {
       if (!isWishlisted) await handleToggleWishlist();
     },
+    pay: () => openPayModal(),
   }, onPendingActionHandled));
+  const clearPendingAction = useEffectEvent(() => onPendingActionHandled?.());
 
   useEffect(() => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
     if (!pendingAction || !studentId || String(pendingAction.returnTo) !== String(product?.id)) return;
+    if (['addToCart', 'pay'].includes(pendingAction.action) && !cartLoaded) return;
     if (pendingAction.action === 'wishlist' && wishlistLoadedFor !== String(studentId)) return;
+    if (pendingAction.action === 'pay' && !isInCart) {
+      clearPendingAction();
+      return;
+    }
 
     const actionKey = `${pendingAction.returnTo}:${pendingAction.action}:${pendingAction.quantity}`;
     if (restoredActionRef.current === actionKey) return;
@@ -340,7 +634,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     runPendingAction(pendingAction).catch((error) => {
       setCartStatus(error.message || 'Unable to restore this product action.');
     });
-  }, [currentUser, pendingAction, product?.id, wishlistLoadedFor]);
+  }, [currentUser, pendingAction, product?.id, wishlistLoadedFor, cartLoaded, isInCart]);
 
   const handleMakeOffer = () => {
     const amount = offerAmount.trim() || '[amount]';
@@ -404,13 +698,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     }
   };
 
-  const item = detailedProduct || product;
-  const sellerPayoutBlocked = String(item?.seller_payout_status || '').trim().toLowerCase() !== 'active';
-  const currentStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim().toLowerCase();
-  const productSellerId = String(item?.seller_id || item?.seller || '').trim().toLowerCase();
-  const isOwnProduct = Boolean(currentStudentId && productSellerId && currentStudentId === productSellerId);
-  const availableStock = Math.max(0, Number(item?.stock ?? 1));
-  const purchaseBlocked = sellerPayoutBlocked || isOwnProduct || availableStock === 0 || selectedQuantity > availableStock;
+  const purchaseBlocked = isOwnProduct || availableStock === 0 || selectedQuantity > availableStock;
 
   const productTitle = String(item?.title || '').trim();
   const displayTitle = productTitle.length >= 3
@@ -573,21 +861,39 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
             {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable</div>}
             <div className="mt-5 flex items-center justify-center gap-4">
-              <button type="button" onClick={() => setSelectedQuantity((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
+              <button type="button" onClick={() => handleQuantityChange((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1 || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
               <span className="min-w-8 text-center text-lg font-black text-slate-900">{selectedQuantity}</span>
-              <button type="button" onClick={() => setSelectedQuantity((value) => Math.min(availableStock, value + 1))} disabled={selectedQuantity >= availableStock} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Increase quantity">+</button>
+              <button type="button" onClick={() => handleQuantityChange((value) => Math.min(availableStock, value + 1))} disabled={selectedQuantity >= availableStock || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Increase quantity">+</button>
             </div>
             <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>
             {itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
             {availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
-            <button
-              type="button"
-              onClick={handleAddToCart}
-              disabled={purchaseBlocked}
-              className="btn-primary mt-5 w-full rounded-full py-3.5 text-sm font-semibold transition"
-            >
-              Add to Cart
-            </button>
+            {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
+              <button
+                type="button"
+                onClick={openPayModal}
+                disabled={availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating}
+                className="mt-5 w-full rounded-full bg-emerald-600 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Pay with wallet
+              </button>
+            )}
+            {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
+              <button
+                type="button"
+                onClick={handleAddToCart}
+                disabled={purchaseBlocked || cartAdding}
+                className="btn-primary mt-5 w-full rounded-full py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {cartAdding ? 'Adding...' : 'Add to Cart'}
+              </button>
+            )}
+            {!isOwnProduct && buyerStudentId && cartLoading && !cartLoaded && (
+              <button type="button" disabled className="mt-5 w-full rounded-full bg-slate-200 py-3.5 text-sm font-semibold text-slate-500">
+                Checking cart...
+              </button>
+            )}
+            {!isOwnProduct && buyerStudentId && cartError && <p className="mt-3 text-sm text-rose-700">Unable to verify your cart. Please refresh and try again.</p>}
             {cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
           </section>
 
@@ -650,11 +956,6 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   This is your material. You cannot purchase your own material.
                 </span>
               )}
-              {sellerPayoutBlocked && !isOwnProduct && (
-                <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">
-                  Seller Payout Setup Required - Purchase Disabled
-                </span>
-              )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
               )}
@@ -704,7 +1005,13 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <p className="text-xs font-semibold text-slate-500">Price</p>
             <p className="truncate text-lg font-extrabold text-slate-900">{formattedPrice}</p>
           </div>
-          <button type="button" onClick={handleAddToCart} disabled={purchaseBlocked} className="btn-primary shrink-0 rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">Add to Cart</button>
+          {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
+            <button type="button" onClick={openPayModal} disabled={availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating} className="shrink-0 rounded-full bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">Pay with wallet</button>
+          )}
+          {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
+            <button type="button" onClick={handleAddToCart} disabled={purchaseBlocked || cartAdding} className="btn-primary shrink-0 rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">{cartAdding ? 'Adding...' : 'Add to Cart'}</button>
+          )}
+          {!isOwnProduct && buyerStudentId && cartLoading && !cartLoaded && <button type="button" disabled className="shrink-0 rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-500">Checking cart...</button>}
         </div>
         {cartStatus && <p className="mx-auto mt-1 w-full max-w-7xl px-1 text-xs text-blue-700">{cartStatus}</p>}
       </div>
@@ -719,6 +1026,69 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                 <button type="button" autoFocus onClick={handleGuestLogin} className="notranslate rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">{t('productDetails.login')}</button>
               </div>
             </div>
+          </section>
+        </div>
+      )}
+      {showPayModal && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="wallet-pay-title" className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">At the handover</p>
+                <h2 id="wallet-pay-title" className="mt-2 text-2xl font-black text-slate-950">Pay with wallet</h2>
+              </div>
+              <button type="button" onClick={() => setShowPayModal(false)} disabled={payLoading} className="rounded-full border border-slate-200 px-3 py-1 text-xl font-bold text-slate-500 hover:bg-slate-50 disabled:opacity-50" aria-label="Close payment dialog">×</button>
+            </div>
+            {payResult ? (
+              <div className="mt-6 space-y-4">
+                <p className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 font-bold text-emerald-800">
+                  Payment completed. Order #{payResult.order_id} is Completed.
+                </p>
+                <p className="text-sm text-slate-600">You can report a problem within 24 hours if needed.</p>
+                <button type="button" onClick={() => { setShowPayModal(false); onNavigate?.(buildOrderDashboardUrl(payResult.order_id)); }} className="w-full rounded-full bg-slate-900 py-3 font-bold text-white hover:bg-slate-800">View my orders</button>
+              </div>
+            ) : (
+              <>
+                {paySummary && (
+                  <dl className="mt-6 space-y-3 rounded-2xl bg-slate-50 p-4 text-sm">
+                    <div className="flex justify-between gap-4"><dt className="text-slate-500">Item</dt><dd className="text-right font-bold text-slate-900">{paySummary.title}</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-slate-500">Unit price</dt><dd className="font-bold text-slate-900">{paySummary.unit_price} ETB</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-slate-500">Quantity</dt><dd className="font-bold text-slate-900">{selectedQuantity}</dd></div>
+                    <div className="flex justify-between gap-4 border-t border-slate-200 pt-3"><dt className="font-bold text-slate-700">Total</dt><dd className="font-black text-slate-950">{paySummary.total} ETB</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-slate-500">Seller</dt><dd className="font-bold text-slate-900">{paySummary.seller_name}</dd></div>
+                    <div className="flex justify-between gap-4"><dt className="text-slate-500">Wallet balance</dt><dd className="font-bold text-slate-900">{paySummary.wallet_balance} ETB</dd></div>
+                  </dl>
+                )}
+                {paySummary?.needs_password_setup && (
+                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <p className="text-sm font-semibold text-amber-900">{paySummary.setup_message}</p>
+                    <button type="button" onClick={() => {
+                      window.sessionStorage.setItem('campusmarket:settings-tab', 'security');
+                      setShowPayModal(false);
+                      onNavigate?.('student-dashboard', { tab: 'settings' });
+                    }} className="mt-3 rounded-full bg-amber-700 px-4 py-2 text-sm font-bold text-white hover:bg-amber-800">Go to Settings &gt; Security</button>
+                  </div>
+                )}
+                {payError && <p role="alert" className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{payError}</p>}
+                {payAttemptsLeft !== null && <p className="mt-2 text-sm font-bold text-rose-700">{payAttemptsLeft} password attempt{payAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
+                {payRetryAfterSeconds !== null && <p className="mt-2 text-sm font-bold text-rose-700">Try again in {Math.ceil(payRetryAfterSeconds / 60)} minute{Math.ceil(payRetryAfterSeconds / 60) === 1 ? '' : 's'}.</p>}
+                {payMissingAmount && (
+                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <p className="text-sm font-bold text-amber-900">You need {payMissingAmount} ETB more.</p>
+                    <button type="button" onClick={handleTopUpMissingBalance} disabled={topUpLoading} className="mt-3 rounded-full bg-amber-700 px-4 py-2 text-sm font-bold text-white hover:bg-amber-800 disabled:opacity-50">{topUpLoading ? 'Opening Chapa…' : 'Top up with Chapa'}</button>
+                    <button type="button" onClick={() => refreshPaySummary().catch((error) => setPayError(error.message))} className="ml-2 mt-3 rounded-full border border-amber-400 px-4 py-2 text-sm font-bold text-amber-900 hover:bg-amber-100">Refresh balance</button>
+                  </div>
+                )}
+                {!paySummary && <p className="mt-5 text-sm text-slate-500">Loading payment summary…</p>}
+                {paySummary && !paySummary.needs_password_setup && (
+                  <form onSubmit={submitProductPayment} className="mt-5 space-y-4">
+                    <label className="block text-sm font-bold text-slate-700" htmlFor="wallet-payment-password">Your app login password</label>
+                    <input id="wallet-payment-password" type="password" autoComplete="current-password" value={payPassword} onChange={(event) => setPayPassword(event.target.value)} required disabled={payLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
+                    <button type="submit" disabled={payLoading || !payPassword} className="w-full rounded-full bg-emerald-600 py-3.5 text-sm font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{payLoading ? 'Processing payment…' : `Pay ${paySummary.total} ETB`}</button>
+                  </form>
+                )}
+              </>
+            )}
           </section>
         </div>
       )}

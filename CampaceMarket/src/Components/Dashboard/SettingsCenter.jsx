@@ -542,8 +542,8 @@ function SettingsCenter({
                 setSecurityMessage('');
                 setSecurityError('');
 
-                if (!securityForm.currentPassword || !securityForm.newPassword || !securityForm.confirmPassword) {
-                    setSecurityError('Please complete all password fields.');
+                if (!securityForm.newPassword || !securityForm.confirmPassword) {
+                    setSecurityError('Enter and confirm your new password.');
                     return;
                 }
 
@@ -568,7 +568,7 @@ function SettingsCenter({
                             ...(token ? { Authorization: `Bearer ${token}` } : {}),
                         },
                         body: JSON.stringify({
-                            current_password: securityForm.currentPassword,
+                            current_password: securityForm.currentPassword || null,
                             new_password: securityForm.newPassword,
                             confirm_password: securityForm.confirmPassword,
                         }),
@@ -680,8 +680,9 @@ function SettingsCenter({
                     <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
                         <form onSubmit={handlePasswordSubmit} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                             <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Password</p>
+                            <p className="mt-2 text-sm leading-6 text-slate-600">Google-only accounts do not have an app password yet. Create one here before paying at handover. If you already have an app password, enter it below to change it.</p>
                             <div className="mt-4 space-y-4">
-                                <Field label="Current Password">
+                                <Field label="Current Password (if already set)">
                                     <input type="password" value={securityForm.currentPassword} onChange={(event) => setSecurityForm((previous) => ({ ...previous, currentPassword: event.target.value }))} className={inputClass} placeholder="Enter current password" />
                                 </Field>
                                 <Field label="New Password">

@@ -104,14 +104,15 @@ const getOrderId = (notification) => {
 
 const getNotificationAction = (notification, category) => {
     const type = String(notification.type || "").toUpperCase();
+    const actionLabel = notification.actionLabel ?? notification.action_label;
+    const actionUrl = notification.actionUrl ?? notification.action_url;
+    if (actionUrl) return { label: actionLabel || "View Order →", url: actionUrl };
+
     const paymentId = notification.paymentId ?? notification.payment_id;
     if (type === "PAYMENT" && paymentId !== undefined && paymentId !== null && paymentId !== "") {
         return { label: "View Payment →", url: null };
     }
 
-    const actionLabel = notification.actionLabel ?? notification.action_label;
-    const actionUrl = notification.actionUrl ?? notification.action_url;
-    if (actionLabel && actionUrl) return { label: actionLabel, url: actionUrl };
     if (category === "Orders") {
         return {
             label: getDisputeTarget(notification) ? "View Dispute →" : "View Order →",

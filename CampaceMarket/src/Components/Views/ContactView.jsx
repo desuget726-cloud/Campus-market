@@ -5,7 +5,7 @@ import './ContactView.css';
 const faqs = [
   ['How do I get a refund?', 'Open a support ticket with your order details. We will review the transaction and apply the marketplace refund policy.'],
   ['What if a seller does not deliver?', 'Keep the conversation on Campace Market, then open a Dispute ticket with the order number and any evidence.'],
-  ['How does escrow protect my payment?', 'Your payment is held until the order is handed over and confirmed, so the seller is not paid before the transaction is complete.'],
+  ['When is a marketplace order created?', 'Only after you pay the seller from your wallet at handover. If you do not meet or decide not to buy, no order is created and no money is charged.'],
   ['How do I report a scam or dispute?', 'Choose Dispute or Other in the support form and attach screenshots, receipts, or relevant messages.'],
   ['How quickly will I hear back?', 'The support team typically responds within 24 hours.'],
 ];

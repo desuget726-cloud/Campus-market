@@ -73,7 +73,6 @@ class AdminPaymentsEndpointTests(unittest.TestCase):
             price=product.price,
             seller_id=None,
             status="Pending",
-            pickup_code=1234,
         )
         self.db.add(order)
         self.db.flush()
