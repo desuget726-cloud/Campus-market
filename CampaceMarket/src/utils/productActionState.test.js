@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     clearPendingProductAction,
+    buildProductReturnTo,
     getPendingProductAction,
+    getProductIdFromReturnTo,
+    normalizeInternalReturnTo,
     PENDING_PRODUCT_ACTION_KEY,
     restorePendingProductAction,
     startProductActionLogin,
@@ -68,4 +71,30 @@ test('chat payment action opens the selected product payment flow', async () => 
 
     assert.equal(paymentOpened, true);
     assert.equal(getPendingProductAction(storage), null);
+});
+
+test('product return destinations are internal and identify the product after login', () => {
+    const returnTo = buildProductReturnTo(42);
+    assert.equal(returnTo, '/?productId=42');
+    assert.equal(normalizeInternalReturnTo(returnTo), returnTo);
+    assert.equal(getProductIdFromReturnTo(returnTo), '42');
+    assert.equal(normalizeInternalReturnTo('https://outside.example/'), null);
+    assert.equal(normalizeInternalReturnTo('//outside.example/'), null);
+    assert.equal(normalizeInternalReturnTo('/\\outside.example/'), null);
+    assert.equal(getProductIdFromReturnTo('/?productId=invalid'), null);
+});
+
+test('report and send-message actions can be restored without silently discarding their intent', async () => {
+    const storage = createStorage();
+    for (const action of ['report', 'sendMessage']) {
+        assert.equal(startProductActionLogin({ returnTo: 42, action }, () => {}, storage), true);
+        const pendingAction = getPendingProductAction(storage);
+        assert.equal(pendingAction.action, action);
+        let restored = false;
+        await restorePendingProductAction(pendingAction, {
+            [action]: () => { restored = true; },
+        }, () => clearPendingProductAction(storage));
+        assert.equal(restored, true);
+        assert.equal(getPendingProductAction(storage), null);
+    }
 });

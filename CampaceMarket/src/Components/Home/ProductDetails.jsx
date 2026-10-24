@@ -3,10 +3,31 @@ import toast from 'react-hot-toast';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
-import { restorePendingProductAction, startProductActionLogin } from '../../utils/productActionState';
+import {
+  buildProductReturnTo,
+  restorePendingProductAction,
+  startProductActionLogin,
+} from '../../utils/productActionState';
 import { buildOrderDashboardUrl } from '../../utils/orderDashboardLink';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+const formatRelativeTime = (value, language) => {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return '';
+
+  const seconds = Math.round((timestamp - Date.now()) / 1000);
+  const units = [
+    ['year', 60 * 60 * 24 * 365],
+    ['month', 60 * 60 * 24 * 30],
+    ['day', 60 * 60 * 24],
+    ['hour', 60 * 60],
+    ['minute', 60],
+    ['second', 1],
+  ];
+  const [unit, unitSeconds] = units.find(([, size]) => Math.abs(seconds) >= size) || units[units.length - 1];
+  return new Intl.RelativeTimeFormat(language === 'am' ? 'am' : 'en', { numeric: 'auto' })
+    .format(Math.round(seconds / unitSeconds), unit);
+};
 const getStudentAccessToken = (student) => {
   const userToken = student?.access_token || student?.accessToken || student?.token || student?.session_token || student?.sessionToken;
   if (userToken) return userToken;
@@ -32,7 +53,7 @@ const parseProductImages = (image) => {
 };
 
 function ProductDetails({ product, currentUser, pendingAction, onPendingActionHandled, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { items: cartItems, setItems: setCartItems, loadedStudentId: cartStudentId, loading: cartLoading, error: cartError } = useCart();
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
@@ -68,7 +89,6 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     loaded: false,
   });
   const [wishlistStatus, setWishlistStatus] = useState('');
-  const [guestActionIntent, setGuestActionIntent] = useState(null);
   const [offerAmount, setOfferAmount] = useState('');
   const [showPayModal, setShowPayModal] = useState(false);
   const [paySummary, setPaySummary] = useState(null);
@@ -84,6 +104,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const restoredActionRef = useRef('');
   const cartAddInFlightRef = useRef(false);
   const payAttemptKeyRef = useRef(null);
+  const messageInputRef = useRef(null);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
   const hasDetailsForCurrentProduct = String(detailedProduct?.id) === String(product?.id);
   const item = hasDetailsForCurrentProduct ? detailedProduct : product;
@@ -143,6 +164,14 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       productId,
       initialized: true,
       text: typeof nextText === 'function' ? nextText(currentText) : nextText,
+    });
+  };
+  const requireLogin = (action, quantity = 1) => {
+    startProductActionLogin({ returnTo: product?.id, action, quantity }, () => {
+      onNavigate?.('login', {
+        returnTo: buildProductReturnTo(product?.id),
+        message: t('productDetails.loginPrompt'),
+      });
     });
   };
 
@@ -260,6 +289,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   }, []);
 
   const handleStartChat = async () => {
+    if (!buyerStudentId) {
+      requireLogin('sendMessage');
+      return;
+    }
     if (!isChatEnabled) {
       setChatStatus('Chat is currently disabled by the administrator.');
       return;
@@ -342,7 +375,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const handleAddToCart = async (requestedQuantity = selectedQuantity) => {
     const studentId = buyerStudentId;
     if (!studentId) {
-      setGuestActionIntent({ action: 'addToCart', quantity: selectedQuantity });
+      requireLogin('addToCart', selectedQuantity);
       return;
     }
     if (!cartLoaded) return;
@@ -438,7 +471,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
   const openPayModal = async () => {
     if (!currentUser?.studentId && !currentUser?.student_id) {
-      setGuestActionIntent({ action: 'pay', quantity: selectedQuantity });
+      requireLogin('pay', selectedQuantity);
       return;
     }
     setPayResult(null);
@@ -571,7 +604,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const handleToggleWishlist = async () => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
     if (!studentId) {
-      setGuestActionIntent({ action: 'wishlist', quantity: 1 });
+      requireLogin('wishlist');
       return;
     }
 
@@ -613,18 +646,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const handleShowContact = () => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
     if (!studentId) {
-      setGuestActionIntent({ action: 'showContact', quantity: 1 });
+      requireLogin('showContact');
       return;
     }
     setShowPhone((previous) => !previous);
-  };
-
-  const handleGuestLogin = () => {
-    if (!guestActionIntent) return;
-    startProductActionLogin({ ...guestActionIntent, returnTo: product?.id }, () => {
-      setGuestActionIntent(null);
-      onNavigate?.('login');
-    });
   };
 
   const runPendingAction = useEffectEvent((action) => restorePendingProductAction(action, {
@@ -634,6 +659,8 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       if (!isWishlisted) await handleToggleWishlist();
     },
     pay: () => openPayModal(),
+    report: () => setShowReportForm(true),
+    sendMessage: () => messageInputRef.current?.focus(),
   }, onPendingActionHandled));
   const clearPendingAction = useEffectEvent(() => onPendingActionHandled?.());
 
@@ -827,7 +854,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const formattedPrice = Number.isFinite(priceValue)
     ? `${priceValue.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`
     : 'Negotiable';
-  const campusLocation = String(item?.pickup_location || '').trim() || 'Student Center';
+  const campusLocation = String(item?.pickup_location || '').trim();
   const galleryEntries = (Array.isArray(item?.images) ? item.images : []).map((image) => (
     typeof image === 'string' ? { url: image, note: null } : image
   ));
@@ -843,7 +870,24 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const reviews = Array.isArray(item?.reviews) ? item.reviews : [];
   const reviewCount = Number(item?.review_count || reviews.length);
   const similarProducts = Array.isArray(item?.similar_products) ? item.similar_products : [];
+  const moreFromSeller = Array.isArray(item?.more_from_seller) ? item.more_from_seller.slice(0, 4) : [];
   const responseTimeHours = Number(item?.seller_response_time_hours);
+  const sellerTypicalResponseTimeHours = Number(item?.seller_typical_response_time_hours);
+  const sellerReviewCount = Number(item?.seller_review_count || 0);
+  const sellerAverageRating = Number(item?.seller_average_rating || 0);
+  const viewCount = Number(item?.views ?? item?.stats?.views ?? 0);
+  const postedRelativeTime = item?.created_at ? formatRelativeTime(item.created_at, language) : '';
+  const postedFullDate = item?.created_at
+    ? new Date(item.created_at).toLocaleString(language === 'am' ? 'am-ET' : 'en-ET')
+    : '';
+  const sellerMemberSince = item?.seller_member_since
+    ? new Date(item.seller_member_since).toLocaleDateString(language === 'am' ? 'am-ET' : 'en-ET', { year: 'numeric', month: 'long' })
+    : '';
+  const typicalResponseTime = Number.isFinite(sellerTypicalResponseTimeHours) && sellerTypicalResponseTimeHours > 0
+    ? sellerTypicalResponseTimeHours < 1
+      ? t('productDetails.buyer.responseUnderHour')
+      : `${Math.round(sellerTypicalResponseTimeHours)} ${t('productDetails.buyer.responseHours')}`
+    : t('productDetails.buyer.responseUnavailable');
   const isNegotiable = item?.negotiable === true;
   const pickupHours = item?.pickup_hours;
   const additionalSpecifications = [
@@ -916,10 +960,21 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
               )}
             </div>
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-y border-slate-100 py-3 text-xs font-semibold text-slate-500 sm:text-sm">
-              <span>{campusLocation}</span>
-              {pickupHours && <span>{pickupHours}</span>}
-              <span>Posted {item.created_at ? new Date(item.created_at).toLocaleDateString() : 'recently'}</span>
-              <span>{Number(item.views || 0)} people viewed this listing</span>
+              {showBuyerView ? (
+                <>
+                  {campusLocation && <span>{t('productDetails.buyer.handover')}: {campusLocation}</span>}
+                  {pickupHours && <span>{t('productDetails.buyer.availableHours')}: {pickupHours}</span>}
+                  <span title={postedFullDate}>{t('productDetails.buyer.posted')} {postedRelativeTime || t('productDetails.buyer.recently')}</span>
+                  <span>{viewCount} {t('productDetails.buyer.peopleViewed')}</span>
+                </>
+              ) : (
+                <>
+                  <span>{campusLocation || 'Student Center'}</span>
+                  {pickupHours && <span>{pickupHours}</span>}
+                  <span>Posted {item.created_at ? new Date(item.created_at).toLocaleDateString() : 'recently'}</span>
+                  <span>{viewCount} people viewed this listing</span>
+                </>
+              )}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {[item.condition || 'Used', item.category || 'General', item.subcategory || 'General'].map((chip) => (
@@ -965,7 +1020,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
           {similarProducts.length > 0 && (
             <section className="order-7 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:order-none" aria-labelledby="similar-products-heading">
-              <h2 id="similar-products-heading" className="text-xl font-black text-slate-900">Similar Products</h2>
+              <h2 id="similar-products-heading" className="text-xl font-black text-slate-900">{t('productDetails.buyer.similarProducts')}</h2>
               <div className="mt-4 grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
                 {similarProducts.map((similar) => (
                   <button key={similar.id} type="button" onClick={() => onNavigate?.('product-details', { productId: similar.id })} className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white text-left shadow-sm transition hover:shadow-md">
@@ -986,6 +1041,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
           <section className="order-2 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm lg:order-none">
             <span className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Price</span>
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
+            {showBuyerView && <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold leading-5 text-emerald-800">{t('productDetails.buyer.protectionNote')}</p>}
             {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable</div>}
             {showBuyerView && <div className="mt-5 flex items-center justify-center gap-4">
               <button type="button" onClick={() => handleQuantityChange((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1 || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
@@ -1023,6 +1079,18 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             {showBuyerView && buyerStudentId && cartError && <p className="mt-3 text-sm text-rose-700">Unable to verify your cart. Please refresh and try again.</p>}
             {showBuyerView && cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
           </section>
+
+          {showBuyerView && (
+            <section className="min-w-0 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm" aria-labelledby="how-buying-works-heading">
+              <h3 id="how-buying-works-heading" className="text-lg font-black text-emerald-950">{t('productDetails.buyer.howBuyingWorks')}</h3>
+              <ol className="mt-3 space-y-2 text-sm font-semibold leading-6 text-emerald-900">
+                <li>1. {t('productDetails.buyer.steps.chat')}</li>
+                <li>2. {t('productDetails.buyer.steps.meetInspect')}</li>
+                <li>3. {t('productDetails.buyer.steps.payWallet')}</li>
+                <li>4. {t('productDetails.buyer.steps.reportProblem')}</li>
+              </ol>
+            </section>
+          )}
 
           {showOwnerView && (
             <>
@@ -1082,8 +1150,31 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
               <p className="text-sm text-slate-500">Department: {item.seller_dept || item.department || item.seller_department || 'Software Engineering'}</p>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-700">✓ Verified Student</span>
             </div>
-            {reviewCount === 0 && <p className="mt-3 text-xs font-semibold text-slate-500">No reviews yet</p>}
-            {Number.isFinite(responseTimeHours) && responseTimeHours > 0 && <p className="mt-2 text-xs font-semibold text-slate-500">Usually responds within {responseTimeHours < 1 ? 'an hour' : `${Math.round(responseTimeHours)} hours`}</p>}
+            {showBuyerView ? (
+              <dl className="mt-4 grid grid-cols-2 gap-2 text-left text-xs">
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <dt className="font-semibold text-slate-500">{t('productDetails.buyer.sellerRating')}</dt>
+                  <dd className="mt-1 font-black text-slate-900">{sellerReviewCount ? `${sellerAverageRating.toFixed(1)} ★ · ${sellerReviewCount} ${t('productDetails.buyer.reviews')}` : t('productDetails.buyer.noSellerReviews')}</dd>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <dt className="font-semibold text-slate-500">{t('productDetails.buyer.itemsSold')}</dt>
+                  <dd className="mt-1 font-black text-slate-900">{Number(item.seller_items_sold || 0).toLocaleString(language === 'am' ? 'am-ET' : 'en-ET')}</dd>
+                </div>
+                {sellerMemberSince && <div className="rounded-xl bg-slate-50 p-3">
+                  <dt className="font-semibold text-slate-500">{t('productDetails.buyer.memberSince')}</dt>
+                  <dd className="mt-1 font-black text-slate-900">{sellerMemberSince}</dd>
+                </div>}
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <dt className="font-semibold text-slate-500">{t('productDetails.buyer.responseTime')}</dt>
+                  <dd className="mt-1 font-black text-slate-900">{typicalResponseTime}</dd>
+                </div>
+              </dl>
+            ) : (
+              <>
+                {reviewCount === 0 && <p className="mt-3 text-xs font-semibold text-slate-500">No reviews yet</p>}
+                {Number.isFinite(responseTimeHours) && responseTimeHours > 0 && <p className="mt-2 text-xs font-semibold text-slate-500">Usually responds within {responseTimeHours < 1 ? 'an hour' : `${Math.round(responseTimeHours)} hours`}</p>}
+              </>
+            )}
 
             {showBuyerView && <div className="mt-6 space-y-3">
               {/* ስልክ ቁጥር ማሳያ ቁልፍ (Show Contact Button) */}
@@ -1096,7 +1187,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                 <span>{showPhone ? (item.seller_phone || 'Phone unavailable') : 'Show Contact'}</span>
               </button>
 
-              {currentUser && (
+              {currentUser ? (
                 <>
                   <div className="flex items-center justify-between gap-3 text-left">
                     <label htmlFor="seller-message" className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Message to seller</label>
@@ -1104,6 +1195,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   </div>
                   <textarea
                     id="seller-message"
+                    ref={messageInputRef}
                     value={messageText}
                     onChange={(event) => setMessageText(event.target.value)}
                     placeholder={isChatEnabled ? 'Write a message to the seller...' : 'Chat is currently disabled by the administrator'}
@@ -1127,6 +1219,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   </button>
                   {isNegotiable && <div className="flex items-center gap-2"><input type="number" min="1" value={offerAmount} onChange={(event) => setOfferAmount(event.target.value)} placeholder="Offer amount" disabled={isReadOnlyPreview} className="min-w-0 flex-1 rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400 disabled:opacity-50" /><button type="button" onClick={handleMakeOffer} disabled={isReadOnlyPreview} className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50">Make an Offer</button></div>}
                 </>
+              ) : (
+                <button type="button" onClick={() => requireLogin('sendMessage')} className="w-full rounded-full border border-emerald-700 py-3.5 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50">
+                  {t('productDetails.buyer.sendMessage')}
+                </button>
               )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
@@ -1134,9 +1230,28 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             </div>}
           </section>
 
-          {showBuyerView && !isReadOnlyPreview && allowStudentReports && currentUser && (
+          {showBuyerView && moreFromSeller.length > 0 && (
+            <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-labelledby="more-from-seller-heading">
+              <h3 id="more-from-seller-heading" className="text-lg font-black text-slate-900">{t('productDetails.buyer.moreFromSeller')}</h3>
+              <div className="mt-3 space-y-3">
+                {moreFromSeller.map((other) => (
+                  <button key={other.id} type="button" onClick={() => onNavigate?.('product-details', { productId: other.id })} className="flex w-full items-center gap-3 rounded-xl border border-slate-100 p-2 text-left transition hover:bg-slate-50">
+                    <img src={resolveImageUrl(other.image || fallbackImage)} alt={other.title || 'Seller listing'} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-14 w-16 shrink-0 rounded-lg object-cover" />
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-bold text-slate-900">{other.title}</span>
+                      <span className="mt-1 block text-xs font-bold text-emerald-700">{other.price ? `${Number(other.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {showBuyerView && !isReadOnlyPreview && allowStudentReports && (
             <section className="order-5 min-w-0 lg:order-none">
-              {!showReportForm ? (
+              {!currentUser ? (
+                <button type="button" onClick={() => requireLogin('report')} className="text-sm font-semibold text-rose-700 underline underline-offset-2 hover:text-rose-800">🚩 Report/Flag Product</button>
+              ) : !showReportForm ? (
                 <button type="button" onClick={() => setShowReportForm(true)} className="text-sm font-semibold text-rose-700 underline underline-offset-2 hover:text-rose-800">🚩 Report/Flag Product</button>
               ) : (
                 <form onSubmit={handleSubmitReport} className="space-y-3 rounded-2xl border border-rose-200 bg-white p-4 shadow-sm">
@@ -1205,20 +1320,6 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button type="button" onClick={() => setShowDeleteConfirmation(false)} disabled={ownerActionLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700">{t('productDetails.owner.cancel')}</button>
               <button type="button" onClick={deleteOwnerListing} disabled={ownerActionLoading} className="rounded-full bg-rose-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{ownerActionLoading ? t('productDetails.owner.deleting') : t('productDetails.owner.confirmDeleteAction')}</button>
-            </div>
-          </section>
-        </div>
-      )}
-      {guestActionIntent && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4">
-          <section role="dialog" aria-modal="true" aria-labelledby="guest-action-title" className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-            <div className="notranslate">
-              <h2 id="guest-action-title" className="text-lg font-bold text-slate-900 dark:text-white">{t('productDetails.loginRequired')}</h2>
-              <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{t('productDetails.loginPrompt')}</p>
-              <div className="mt-6 flex justify-end gap-3">
-                <button type="button" onClick={() => setGuestActionIntent(null)} className="notranslate rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">{t('productDetails.cancel')}</button>
-                <button type="button" autoFocus onClick={handleGuestLogin} className="notranslate rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700">{t('productDetails.login')}</button>
-              </div>
             </div>
           </section>
         </div>

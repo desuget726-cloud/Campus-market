@@ -1756,7 +1756,7 @@ class ProductStatusUpdate(BaseModel):
 
 
 class StudentProductUpdate(BaseModel):
-    student_id: str
+    student_id: Optional[str] = None
     title: Optional[str] = None
     category: Optional[str] = None
     subcategory: Optional[str] = None
@@ -8298,11 +8298,20 @@ def get_product_detail(
         db.query(Student).filter(Student.student_id == viewer_id.strip()).first() if viewer_id else None
     )
     visitor_cookie = request.cookies.get("campace_viewer") if request else None
-    visitor_key = f"student:{viewer.student_id}" if viewer else f"session:{visitor_cookie or secrets.token_urlsafe(24)}"
-    if not viewer or not seller_id or viewer.student_id != seller_id:
+    is_new_visitor_cookie = not visitor_cookie
+    if is_new_visitor_cookie:
+        visitor_cookie = secrets.token_urlsafe(24)
+    visitor_identity = f"student:{viewer.student_id}" if viewer else f"session:{visitor_cookie}"
+    today_start = datetime.combine(datetime.now().date(), time.min)
+    visitor_key = f"{visitor_identity}:{today_start.date().isoformat()}"
+    if not _is_product_owner(db, product, viewer):
+        daily_view_identity = [ProductView.visitor_key.in_((visitor_identity, visitor_key))]
+        if viewer:
+            daily_view_identity.append(ProductView.viewer_id == viewer.student_id)
         existing_view = db.query(ProductView).filter(
             ProductView.product_id == product.id,
-            ProductView.visitor_key == visitor_key,
+            ProductView.viewed_at >= today_start,
+            or_(*daily_view_identity),
         ).first()
         if not existing_view:
             db.add(ProductView(
@@ -8312,8 +8321,8 @@ def get_product_detail(
                 viewed_at=datetime.now(),
             ))
             product.views = int(product.views or 0) + 1
-    if not visitor_cookie and response:
-        response.set_cookie("campace_viewer", visitor_key.removeprefix("session:"), max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
+    if is_new_visitor_cookie and response:
+        response.set_cookie("campace_viewer", visitor_cookie, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
 
     review_rows = db.query(Review, Student).join(
         Student, Student.student_id == Review.student_id
@@ -8332,6 +8341,25 @@ def get_product_detail(
     ]
     average_rating = round(sum(item["rating"] for item in review_items) / len(review_items), 1) if review_items else 0
 
+    seller_rating_summary = (0, 0)
+    seller_items_sold = 0
+    seller_member_since = seller.created_at if seller else None
+    if seller_id:
+        seller_rating_summary = db.query(
+            func.avg(Review.rating),
+            func.count(Review.id),
+        ).join(
+            Order, Order.id == Review.order_id
+        ).filter(
+            Order.seller_id == seller_id,
+        ).first() or (0, 0)
+        seller_items_sold = db.query(
+            func.coalesce(func.sum(Order.quantity), 0),
+        ).filter(
+            Order.seller_id == seller_id,
+            func.lower(Order.status) == "completed",
+        ).scalar() or 0
+
     try:
         image_notes = json.loads(product.image_notes or "[]")
     except (TypeError, json.JSONDecodeError):
@@ -8342,33 +8370,80 @@ def get_product_detail(
         for index, image_url in enumerate(image_values) if image_url
     ]
 
-    similar_query = _public_marketplace_product_query(db).filter(
-        Product.id != product.id,
-    )
-    if product.category:
-        similar_query = similar_query.filter(Product.category == product.category)
-    if product.subcategory:
-        similar_query = similar_query.filter(Product.subcategory == product.subcategory)
     excluded_seller_values = {value for value in (seller_id, seller.name if seller else None, viewer.student_id if viewer else None) if value}
-    if excluded_seller_values:
-        similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
-    similar_products = similar_query.order_by(Product.created_at.desc()).limit(8).all()
+    similar_products = []
+    current_price = _parse_price_to_etb(product.price)
+    if is_owner:
+        similar_query = _public_marketplace_product_query(db).filter(Product.id != product.id)
+        if product.category:
+            similar_query = similar_query.filter(Product.category == product.category)
+        if product.subcategory:
+            similar_query = similar_query.filter(Product.subcategory == product.subcategory)
+        if excluded_seller_values:
+            similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
+        similar_products = similar_query.order_by(Product.created_at.desc()).limit(8).all()
+    elif product.category and current_price > 0:
+        similar_query = db.query(Product).filter(
+            Product.id != product.id,
+            Product.category == product.category,
+            func.lower(Product.status) == "approved",
+            Product.stock > 0,
+        )
+        if excluded_seller_values:
+            similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
+        similar_products = [
+            candidate
+            for candidate in similar_query.order_by(Product.created_at.desc()).all()
+            if current_price * 0.3 <= _parse_price_to_etb(candidate.price) <= current_price * 3
+        ][:8]
+
+    seller_values = {value for value in (seller_id, seller.name if seller else None) if value}
+    more_from_seller = []
+    if seller_values:
+        more_from_seller = db.query(Product).filter(
+            Product.id != product.id,
+            Product.seller.in_(seller_values),
+            func.lower(Product.status) == "approved",
+            Product.stock > 0,
+        ).order_by(Product.created_at.desc()).limit(4).all()
 
     response_hours = []
     if seller_id:
         messages = db.query(Message).filter(
-            Message.product_id == product.id,
             or_(Message.sender_id == seller_id, Message.receiver_id == seller_id),
-        ).order_by(Message.created_at.asc()).all()
-        for index, message in enumerate(messages):
+        ).order_by(Message.created_at.asc(), Message.id.asc()).all()
+        listing_messages = [message for message in messages if message.product_id == product.id]
+        for index, message in enumerate(listing_messages):
             if message.sender_id == seller_id:
                 continue
-            seller_reply = next(
-                candidate for candidate in messages[index + 1:]
+            seller_reply = next((
+                candidate for candidate in listing_messages[index + 1:]
                 if candidate.sender_id == seller_id and candidate.receiver_id == message.sender_id
-            ) if any(candidate.sender_id == seller_id and candidate.receiver_id == message.sender_id for candidate in messages[index + 1:]) else None
+            ), None)
             if seller_reply and message.created_at and seller_reply.created_at:
                 response_hours.append((seller_reply.created_at - message.created_at).total_seconds() / 3600)
+
+        seller_response_hours = []
+        pending_buyer_messages = {}
+        for message in messages:
+            if message.receiver_id == seller_id and message.sender_id != seller_id:
+                pending_buyer_messages.setdefault(message.sender_id, message)
+            elif message.sender_id == seller_id:
+                buyer_message = pending_buyer_messages.pop(message.receiver_id, None)
+                if buyer_message and buyer_message.created_at and message.created_at:
+                    seller_response_hours.append((message.created_at - buyer_message.created_at).total_seconds() / 3600)
+        seller_response_hours.sort()
+    else:
+        seller_response_hours = []
+    if seller_response_hours:
+        middle = len(seller_response_hours) // 2
+        typical_response_hours = (
+            seller_response_hours[middle]
+            if len(seller_response_hours) % 2
+            else (seller_response_hours[middle - 1] + seller_response_hours[middle]) / 2
+        )
+    else:
+        typical_response_hours = None
 
     db.commit()
 
@@ -8384,7 +8459,6 @@ def get_product_detail(
         "description": product.description,
         "seller": product.seller,
         "seller_id": seller_id,
-        "seller_phone": seller.phone if seller else None,
         "seller_name": seller.name if seller else product.seller,
         "seller_dept": seller.department if seller else None,
         "seller_payout_status": _seller_payout_status(db, product.seller),
@@ -8396,6 +8470,11 @@ def get_product_detail(
         "reviews": review_items,
         "average_rating": average_rating,
         "review_count": len(review_items),
+        "seller_average_rating": round(float(seller_rating_summary[0] or 0), 1),
+        "seller_review_count": int(seller_rating_summary[1] or 0),
+        "seller_items_sold": int(seller_items_sold),
+        "seller_member_since": seller_member_since,
+        "views": int(product.views or 0),
         "similar_products": [
             {
                 "id": similar.id,
@@ -8405,11 +8484,25 @@ def get_product_detail(
                 "price": similar.price,
                 "image": _normalize_product_image(similar.image),
                 "description": similar.description,
+                "pickup_location": similar.pickup_location,
             }
             for similar in similar_products
         ],
+        "more_from_seller": [
+            {
+                "id": other.id,
+                "title": other.title,
+                "price": other.price,
+                "image": _normalize_product_image(other.image),
+                "pickup_location": other.pickup_location,
+            }
+            for other in more_from_seller
+        ],
         "seller_response_time_hours": round(sum(response_hours) / len(response_hours), 1) if response_hours else None,
+        "seller_typical_response_time_hours": round(typical_response_hours, 1) if typical_response_hours is not None else None,
     }
+    if authenticated_student:
+        result["seller_phone"] = seller.phone if seller else None
     result["is_owner"] = is_owner
     if is_owner:
         result["stats"] = {

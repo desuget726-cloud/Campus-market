@@ -149,7 +149,6 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 
 function StudentDashboard({
   user,
-  onLogout,
   initialTab = 'home',
   initialProductToEdit = null,
   onInitialProductEditHandled,
@@ -762,20 +761,12 @@ function StudentDashboard({
         setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : 0);
       }
 
-      if (orderRes.status === 401 || hiddenOrderRes.status === 401) {
-        setOrders([]);
-        setHiddenOrdersCount(0);
-        setOrdersError('Your student session has expired. Please sign in again.');
-        onLogout?.();
-        return;
-      }
-
       if (orderRes.ok) {
         const orderData = await orderRes.json();
         setOrders(Array.isArray(orderData) ? orderData : []);
       } else {
         const errorData = await orderRes.json().catch(() => ({}));
-        setOrdersError(orderRes.status === 401 ? 'Your student session has expired. Please sign in again.' : (errorData.detail || 'Unable to load your orders.'));
+        setOrdersError(errorData.detail || 'Unable to load your orders.');
       }
 
       if (hiddenOrderRes.ok) {
@@ -1440,10 +1431,6 @@ function StudentDashboard({
       });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        if (response.status === 401) {
-          onLogout?.();
-          throw new Error('Your student session has expired. Please sign in again.');
-        }
         throw new Error(errorData.detail || 'Failed to load seller dashboard data');
       }
       const data = await response.json();
@@ -2762,11 +2749,6 @@ function StudentDashboard({
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await response.json().catch(() => ({}));
-      if (response.status === 401) {
-        setWithdrawError('Your student session has expired. Please sign in again.');
-        onLogout?.();
-        return;
-      }
       if (!response.ok) throw new Error(data?.detail || 'Unable to refresh payout status.');
       setActiveWithdrawal(data?.active_payout || null);
       setWithdrawError(data?.active_payout?.status === 'pending_approval'
@@ -4894,7 +4876,16 @@ function StudentDashboard({
                     {ordersLoading ? (
                       <div className="rounded-[28px] border border-slate-200 bg-slate-50 p-8 text-center text-sm font-semibold text-slate-600">Loading your orders...</div>
                     ) : ordersError ? (
-                      <div className="rounded-[28px] border border-rose-200 bg-rose-50 p-8 text-center text-sm font-semibold text-rose-700">{ordersError}</div>
+                      <div role="alert" className="rounded-[28px] border border-rose-200 bg-rose-50 p-8 text-center text-sm font-semibold text-rose-700">
+                        <p>{ordersError}</p>
+                        <button
+                          type="button"
+                          onClick={() => loadOrdersView(showHiddenOrders)}
+                          className="mt-4 rounded-full border border-rose-300 bg-white px-5 py-2 text-sm font-bold text-rose-700 hover:bg-rose-100"
+                        >
+                          Retry
+                        </button>
+                      </div>
                     ) : orders.length === 0 ? (
                       <div className="rounded-[28px] border border-dashed border-emerald-200 bg-emerald-50 p-8 text-center">
                         <p className="text-lg font-semibold text-slate-900">{showHiddenOrders ? 'No hidden orders' : 'No orders yet'}</p>

@@ -1,6 +1,33 @@
 export const PENDING_PRODUCT_ACTION_KEY = 'campacePendingProductAction';
 
-const validActions = new Set(['addToCart', 'showContact', 'wishlist', 'pay']);
+const validActions = new Set(['addToCart', 'showContact', 'wishlist', 'pay', 'report', 'sendMessage']);
+const INTERNAL_RETURN_TO_ORIGIN = 'https://campace.internal';
+
+export function normalizeInternalReturnTo(value) {
+    if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return null;
+
+    try {
+        const url = new URL(value, INTERNAL_RETURN_TO_ORIGIN);
+        if (url.origin !== INTERNAL_RETURN_TO_ORIGIN) return null;
+        return `${url.pathname}${url.search}${url.hash}`;
+    } catch {
+        return null;
+    }
+}
+
+export function buildProductReturnTo(productId) {
+    const id = String(productId ?? '').trim();
+    if (!/^\d+$/.test(id)) return '/';
+    return `/?productId=${encodeURIComponent(id)}`;
+}
+
+export function getProductIdFromReturnTo(value) {
+    const returnTo = normalizeInternalReturnTo(value);
+    if (!returnTo) return null;
+    const url = new URL(returnTo, INTERNAL_RETURN_TO_ORIGIN);
+    const productId = url.pathname === '/' ? url.searchParams.get('productId') : null;
+    return /^\d+$/.test(productId || '') ? productId : null;
+}
 
 export function savePendingProductAction(intent, storage = window.sessionStorage) {
     if (!intent?.returnTo || !validActions.has(intent.action)) return false;

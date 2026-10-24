@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Navbar from './Components/Navbars/Navbar';
 import TopBar from './Components/Navbars/TopBar';
 import RegisterForm from './Components/Authontication/RegisterForm';
@@ -17,11 +17,17 @@ import AuthInfoModal from './Components/Authontication/AuthInfoModal';
 import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
 import { LanguageProvider } from './context/LanguageContext';
 import { CartProvider } from './context/CartContext';
-import toast, { Toaster } from 'react-hot-toast';
+import { Toaster } from 'react-hot-toast';
 import { API_BASE_URL } from './config';
 import { getAdminSettings } from './api/adminSettings';
-import { clearPendingProductAction, getPendingProductAction } from './utils/productActionState';
+import {
+  clearPendingProductAction,
+  getPendingProductAction,
+  getProductIdFromReturnTo,
+  normalizeInternalReturnTo,
+} from './utils/productActionState';
 import { parseOrderDashboardLink } from './utils/orderDashboardLink';
+import { isSessionExpiryResponse } from './utils/sessionExpiry';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
@@ -138,7 +144,11 @@ function AppContent() {
   ));
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingUsername] = useState('');
-  const [pendingProductId, setPendingProductId] = useState(null);
+  const [pendingProductId, setPendingProductId] = useState(() => (
+    typeof window === 'undefined'
+      ? null
+      : getProductIdFromReturnTo(`${window.location.pathname}${window.location.search}${window.location.hash}`)
+  ));
   const [pendingProductAction, setPendingProductAction] = useState(null);
   const [pendingSellerProductEdit, setPendingSellerProductEdit] = useState(null);
   const [pendingMessagesProductId, setPendingMessagesProductId] = useState(null);
@@ -146,6 +156,7 @@ function AppContent() {
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
   const [showFooterTerms, setShowFooterTerms] = useState(false);
+  const [loginMessage, setLoginMessage] = useState('');
   const [isRestoringStudentSession, setIsRestoringStudentSession] = useState(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -164,29 +175,33 @@ function AppContent() {
   const studentId = userRole === 'student' ? user?.studentId : null;
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
 
-  const handleLogout = async () => {
-    try {
-      await fetch(`${API_BASE_URL}/api/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-    } catch (error) {
+  const handleLogout = () => {
+    void fetch(`${API_BASE_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    }).catch((error) => {
       console.error('Logout request failed:', error);
-    } finally {
-      setUser(null);
-      setUserRole(null);
-      setUnreadCount(0);
-      setCurrentView('home');
-      setDashboardTab('home');
-      setStudentTab('home');
-
-      if (typeof window !== 'undefined') {
-        window.localStorage.removeItem(SESSION_STORAGE_KEY);
-      }
+    });
+    setUser(null);
+    setUserRole(null);
+    setUnreadCount(0);
+    setCurrentView('home');
+    setDashboardTab('home');
+    setStudentTab('home');
+    setLoginMessage('');
+    try {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (error) {
+      console.error('Failed to clear the local session:', error);
     }
   };
 
-  const handleSessionRevoked = () => {
+  const handleApiUnauthorized = useCallback(() => {
+    try {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch (error) {
+      console.error('Failed to clear the expired session:', error);
+    }
     setUser(null);
     setUserRole(null);
     setUnreadCount(0);
@@ -194,38 +209,57 @@ function AppContent() {
     setCurrentView('login');
     setDashboardTab('home');
     setStudentTab('home');
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
-    }
-    toast.error('You were logged out from another device.', { id: 'student-session-revoked' });
-  };
+    setLoginMessage('Session expired, please log in again');
+  }, []);
 
   useEffect(() => {
     const originalFetch = window.fetch;
     const wrappedFetch = async (...args) => {
       const response = await originalFetch.apply(window, args);
-      const requestUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-      let isApiRequest;
-      try {
-        const requestedUrl = new URL(requestUrl, window.location.href);
-        const apiOrigin = new URL(API_BASE_URL, window.location.href).origin;
-        isApiRequest = requestedUrl.origin === apiOrigin && requestedUrl.pathname.startsWith('/api/');
-      } catch {
-        isApiRequest = false;
-      }
-      if (response.status === 401 && activeRole === 'student' && isApiRequest) {
-        window.dispatchEvent(new Event('campace:student-session-revoked'));
+      if (response.status === 401) {
+        const request = args[0] instanceof Request ? args[0] : null;
+        const requestUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || args[0]?.href;
+        const headers = new Headers(request?.headers);
+        new Headers(args[1]?.headers).forEach((value, name) => headers.set(name, value));
+        let storedSessionExists = false;
+        try {
+          const storedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
+          storedSessionExists = Boolean(
+            storedSession?.user
+            && (storedSession?.userRole || storedSession.user.role)
+            && (
+              storedSession.access_token
+              || storedSession.accessToken
+              || storedSession.token
+              || storedSession.user.access_token
+              || storedSession.user.accessToken
+              || storedSession.user.token
+            ),
+          );
+        } catch (error) {
+          console.error('Failed to inspect the stored session after an API 401:', error);
+        }
+
+        if (isSessionExpiryResponse({
+          responseStatus: response.status,
+          requestUrl,
+          apiBaseUrl: API_BASE_URL,
+          storedSessionExists,
+          authorizationHeader: headers.get('Authorization') || '',
+          credentials: args[1]?.credentials || request?.credentials || 'same-origin',
+        })) {
+          window.dispatchEvent(new Event('campace:api-unauthorized'));
+        }
       }
       return response;
     };
-    const onSessionRevoked = () => handleSessionRevoked();
     window.fetch = wrappedFetch;
-    window.addEventListener('campace:student-session-revoked', onSessionRevoked);
+    window.addEventListener('campace:api-unauthorized', handleApiUnauthorized);
     return () => {
       if (window.fetch === wrappedFetch) window.fetch = originalFetch;
-      window.removeEventListener('campace:student-session-revoked', onSessionRevoked);
+      window.removeEventListener('campace:api-unauthorized', handleApiUnauthorized);
     };
-  }, [activeRole]);
+  }, [handleApiUnauthorized]);
 
   useEffect(() => {
     let cancelled = false;
@@ -252,10 +286,7 @@ function AppContent() {
     })
       .then(async (response) => {
         if (cancelled) return;
-        if (response.status === 401) {
-          handleSessionRevoked();
-          return;
-        }
+        if (response.status === 401) return;
         if (!response.ok) return;
 
         const data = await response.json();
@@ -383,6 +414,7 @@ function AppContent() {
   }, [studentId]);
 
   const handleRegisterSuccess = (studentData) => {
+    setLoginMessage('');
     const nextUser = { ...studentData, access_token: studentData?.access_token || studentData?.accessToken || null };
     setUser(nextUser);
     setUserRole('student');
@@ -393,20 +425,24 @@ function AppContent() {
   };
 
   const handleLoginSuccess = (userData, role) => {
+    setLoginMessage('');
     const productAction = getPendingProductAction();
-    const nextView = productAction
-      ? 'home'
-      : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
+    const returnTo = normalizeInternalReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
+    const productId = getProductIdFromReturnTo(returnTo) || productAction?.returnTo || null;
+    const nextView = productId ? 'home' : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
 
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
     setUser(nextUser);
     setUserRole(role);
-    setPendingProductId(productAction?.returnTo || null);
-    setPendingProductAction(productAction);
+    setPendingProductId(productId);
+    setPendingProductAction(productId ? productAction : null);
     setDashboardTab('home');
     setStudentTab('home');
     setCurrentView(nextView);
     setShowSuccessModal(false);
+    if (returnTo) {
+      window.history.replaceState({}, '', returnTo);
+    }
     persistSession(nextUser, role, nextView, 'home', 'home', 'dashboard');
   };
 
@@ -477,7 +513,13 @@ function AppContent() {
         setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
         return;
       }
-      setCurrentView(view === 'signup' ? 'register' : view);
+      const nextView = view === 'signup' ? 'register' : view;
+      setLoginMessage(params.message || '');
+      const returnTo = nextView === 'login' ? normalizeInternalReturnTo(params.returnTo) : null;
+      if (returnTo) {
+        window.history.pushState({}, '', `/login?returnTo=${encodeURIComponent(returnTo)}`);
+      }
+      setCurrentView(nextView);
       return;
     }
 
@@ -708,8 +750,15 @@ function AppContent() {
             <div className="py-8">
               <LoginForm
                 onLoginSuccess={handleLoginSuccess}
-                onCancel={() => setCurrentView('home')}
-                onToggleRegister={() => setCurrentView('register')}
+                sessionExpiredMessage={loginMessage}
+                onCancel={() => {
+                  setLoginMessage('');
+                  setCurrentView('home');
+                }}
+                onToggleRegister={() => {
+                  setLoginMessage('');
+                  setCurrentView('register');
+                }}
               />
             </div>
           )}
@@ -768,10 +817,7 @@ function AppContent() {
           {activeRole === 'admin' && currentView === 'admin-dashboard' && (
             <AdminDashboard
               onLogout={handleLogout}
-              onSessionExpired={() => {
-                handleLogout();
-                setCurrentView('login');
-              }}
+              onSessionExpired={handleApiUnauthorized}
               user={user}
               onUserUpdate={setUser}
               initialTab={adminTab}
@@ -780,7 +826,6 @@ function AppContent() {
           )}
           {!isRestoringStudentSession && activeRole === 'student' && currentView === 'student-dashboard' && (
             <StudentDashboard
-              onLogout={handleLogout}
               user={user}
               initialTab={studentTab}
               initialProductToEdit={pendingSellerProductEdit}
@@ -797,7 +842,6 @@ function AppContent() {
           )}
           {!activeRole && currentView === 'student-dashboard' && (
             <StudentDashboard
-              onLogout={handleLogout}
               user={user}
               initialTab={studentTab}
               initialProductToEdit={pendingSellerProductEdit}

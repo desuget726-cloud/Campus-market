@@ -391,8 +391,8 @@ def test_own_listing_out_of_stock_and_quantity_limit_do_not_move_money(market):
         product.seller = "buyer-1"
         db.commit()
     own_listing = _pay(client, product_id, key="own-listing-key")
-    assert own_listing.status_code == 400
-    assert own_listing.json()["detail"]["code"] == "OWN_LISTING"
+    assert own_listing.status_code == 403
+    assert own_listing.json()["detail"] == "You cannot buy your own listing."
     assert _snapshot(session_factory)["orders"] == 0
 
 

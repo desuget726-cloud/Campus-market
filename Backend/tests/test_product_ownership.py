@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import main as main_module
 from app.database import Base
-from app.models import CartItem, Dispute, Message, Order, Product, Student, WishlistItem
+from app.models import CartItem, Dispute, Message, Order, Product, ProductView, Review, Student, WishlistItem
 
 
 class ProductOwnershipTests(unittest.TestCase):
@@ -59,14 +60,14 @@ class ProductOwnershipTests(unittest.TestCase):
     def tearDown(self):
         self.db.close()
 
-    def add_product(self, seller, title):
+    def add_product(self, seller, title, price="10.00", category="Test", stock=5, status="Approved"):
         product = Product(
             title=title,
-            category="Test",
-            price="10.00",
-            stock=5,
+            category=category,
+            price=price,
+            stock=stock,
             seller=seller,
-            status="Approved",
+            status=status,
         )
         self.db.add(product)
         self.db.flush()
@@ -133,17 +134,33 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 403)
         self.assertEqual(error.exception.detail, main_module.PRODUCT_OWNERSHIP_ERROR)
 
-    def product_detail_for(self, student):
-        request = Request({
-            "type": "http",
-            "method": "GET",
-            "path": f"/api/products/{self.buyers_product.id}",
-            "headers": [],
-            "query_string": b"",
-            "server": ("testserver", 80),
-            "client": ("testclient", 50000),
-            "scheme": "http",
-        })
+    def test_owner_can_update_stock_without_redundant_student_id(self):
+        payload = main_module.StudentProductUpdate(quantity=0, status="Sold")
+
+        with patch.object(main_module, "_student_from_authorization", return_value=self.buyer):
+            result = main_module.update_student_product(
+                self.buyers_product.id,
+                payload,
+                authorization="******",
+                db=self.db,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["product"]["stock"], 0)
+        self.assertEqual(result["product"]["status"], "Sold")
+
+    def product_detail_for(self, student, request=None):
+        if request is None:
+            request = Request({
+                "type": "http",
+                "method": "GET",
+                "path": f"/api/products/{self.buyers_product.id}",
+                "headers": [],
+                "query_string": b"",
+                "server": ("testserver", 80),
+                "client": ("testclient", 50000),
+                "scheme": "http",
+            })
         with patch.object(main_module, "_student_from_authorization", return_value=student):
             return main_module.get_product_detail(
                 self.buyers_product.id,
@@ -170,12 +187,136 @@ class ProductOwnershipTests(unittest.TestCase):
         detail = self.product_detail_for(self.buyer)
 
         self.assertTrue(detail["is_owner"])
+        self.assertEqual(detail["views"], detail["stats"]["views"])
         self.assertEqual(detail["stats"], {
             "views": 7,
             "wishlist_count": 1,
             "inquiries_count": 1,
             "cart_count": 2,
         })
+
+    def test_anonymous_product_details_do_not_include_seller_phone(self):
+        self.buyer.phone = "0912345678"
+        self.db.commit()
+
+        anonymous_detail = self.product_detail_for(None)
+        authenticated_detail = self.product_detail_for(self.seller)
+
+        self.assertNotIn("seller_phone", anonymous_detail)
+        self.assertEqual(authenticated_detail["seller_phone"], "0912345678")
+
+    def test_product_views_exclude_owner_and_dedupe_authenticated_viewer_per_day(self):
+        self.buyers_product.views = 4
+        self.db.commit()
+
+        owner_detail = self.product_detail_for(self.buyer)
+        first_view = self.product_detail_for(self.seller)
+        repeated_view = self.product_detail_for(self.seller)
+        guest_request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/products/{self.buyers_product.id}",
+            "headers": [(b"cookie", b"campace_viewer=guest-one")],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "scheme": "http",
+        })
+        first_guest_view = self.product_detail_for(None, guest_request)
+        repeated_guest_view = self.product_detail_for(None, guest_request)
+
+        self.assertEqual(owner_detail["views"], 4)
+        self.assertEqual(first_view["views"], 5)
+        self.assertEqual(repeated_view["views"], 5)
+        self.assertEqual(first_guest_view["views"], 6)
+        self.assertEqual(repeated_guest_view["views"], 6)
+        self.assertEqual(
+            self.db.query(ProductView).filter(ProductView.product_id == self.buyers_product.id).count(),
+            2,
+        )
+
+    def test_similar_products_match_category_price_and_active_stock(self):
+        products = [
+            self.add_product("another-seller", "Within lower bound", price="3.00"),
+            self.add_product("another-seller", "Within upper bound", price="30.00"),
+            self.add_product("another-seller", "Too cheap", price="2.99"),
+            self.add_product("another-seller", "Too expensive", price="30.01"),
+            self.add_product("another-seller", "Hidden", price="5.00", status="Paused"),
+            self.add_product("another-seller", "Sold out", price="5.00", stock=0),
+            self.add_product("another-seller", "Different category", price="5.00", category="Books"),
+        ]
+        self.db.commit()
+
+        detail = self.product_detail_for(None)
+        similar_ids = {item["id"] for item in detail["similar_products"]}
+
+        self.assertEqual(similar_ids, {
+            self.sellers_product.id,
+            products[0].id,
+            products[1].id,
+        })
+
+    def test_seller_trust_data_is_computed_across_completed_sales_and_messages(self):
+        completed_orders = [
+            Order(
+                student_id=self.seller.student_id,
+                product_id=self.buyers_product.id,
+                title=f"Completed sale {index}",
+                price="20.00",
+                seller_id=self.buyer.student_id,
+                quantity=quantity,
+                status="Completed",
+            )
+            for index, quantity in enumerate((2, 3))
+        ]
+        self.db.add_all(completed_orders)
+        self.db.flush()
+        self.db.add_all([
+            Review(order_id=completed_orders[0].id, student_id=self.seller.student_id, rating=5, comment="Great"),
+            Review(order_id=completed_orders[1].id, student_id=self.seller.student_id, rating=3, comment="Good"),
+        ])
+        message_time = datetime.now() - timedelta(hours=2)
+        self.db.add_all([
+            Message(
+                sender_id=self.seller.student_id,
+                receiver_id=self.buyer.student_id,
+                product_id=self.sellers_product.id,
+                message_text="Is this available?",
+                created_at=message_time,
+            ),
+            Message(
+                sender_id=self.buyer.student_id,
+                receiver_id=self.seller.student_id,
+                product_id=self.sellers_product.id,
+                message_text="Yes.",
+                created_at=message_time + timedelta(minutes=30),
+            ),
+        ])
+        self.db.commit()
+
+        detail = self.product_detail_for(self.buyer)
+
+        self.assertEqual(detail["seller_average_rating"], 4.0)
+        self.assertEqual(detail["seller_review_count"], 2)
+        self.assertEqual(detail["seller_items_sold"], 5)
+        self.assertEqual(detail["seller_member_since"], self.buyer.created_at)
+        self.assertEqual(detail["seller_typical_response_time_hours"], 0.5)
+
+    def test_more_from_seller_is_limited_to_four_active_other_products(self):
+        listings = [
+            self.add_product(self.buyer.student_id, f"Seller listing {index}")
+            for index in range(6)
+        ]
+        self.add_product(self.buyer.student_id, "Hidden seller listing", status="Paused")
+        self.add_product(self.buyer.student_id, "Sold-out seller listing", stock=0)
+        self.db.commit()
+
+        detail = self.product_detail_for(self.buyer)
+        more_from_ids = {item["id"] for item in detail["more_from_seller"]}
+
+        self.assertEqual(len(detail["more_from_seller"]), 4)
+        self.assertNotIn(self.buyers_product.id, more_from_ids)
+        self.assertTrue(more_from_ids.issubset({listing.id for listing in listings} | {self.legacy_name_product.id}))
 
     def test_owner_can_view_only_inquiries_for_their_product(self):
         inquiry = Message(
@@ -225,7 +366,7 @@ class ProductOwnershipTests(unittest.TestCase):
 
         self.assertFalse(detail["is_owner"])
         self.assertNotIn("stats", detail)
-        self.assertNotIn("views", detail)
+        self.assertEqual(detail["views"], self.buyers_product.views)
 
     def test_owner_cannot_pay_for_own_product(self):
         payload = main_module.ProductPaymentRequest(password="test-password", quantity=1)

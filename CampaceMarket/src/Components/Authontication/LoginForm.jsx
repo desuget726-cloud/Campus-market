@@ -8,7 +8,7 @@ import { API_BASE_URL } from '../../config';
 import logs from '../../assets/logs.png';
 import './LoginForm.css';
 
-function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
+function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredMessage = '' }) {
   const { t } = useLanguage();
   const [formData, setFormData] = useState({ studentId: '', password: '' });
   const [error, setError] = useState('');
@@ -507,9 +507,9 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
               <p>Sign in to your Campus Marketplace account.</p>
             </header>
 
-            {error && (
+            {(sessionExpiredMessage || error) && (
               <div className="login-status login-status-error">
-                {error}
+                {sessionExpiredMessage || error}
               </div>
             )}
 
@@ -547,9 +547,9 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel }) {
                     >✕</button>
                   </div>
 
-                  {error && (
+                  {(sessionExpiredMessage || error) && (
                     <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700" role="alert">
-                      {error}
+                      {sessionExpiredMessage || error}
                     </div>
                   )}
 
