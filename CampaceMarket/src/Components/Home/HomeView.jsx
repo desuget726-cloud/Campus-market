@@ -145,6 +145,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const lastProductRequestRef = useRef({});
   const searchDebounceTimeoutRef = useRef(null);
   const hasSignedInUser = Boolean(user);
+  const selectedProductAccessToken = getStudentAccessToken(user);
 
   useEffect(() => () => {
     if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
@@ -271,7 +272,12 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
 
     const fetchSelectedProduct = async () => {
       try {
-        const response = await fetchWithTimeout(apiUrl(`/api/products/${initialProductId}`));
+        const response = await fetchWithTimeout(
+          apiUrl(`/api/products/${initialProductId}`),
+          15000,
+          undefined,
+          { headers: selectedProductAccessToken ? { Authorization: `Bearer ${selectedProductAccessToken}` } : {} },
+        );
         if (!response.ok) throw new Error('Failed to load selected product');
         setSelectedProduct(await response.json());
       } catch (error) {
@@ -280,7 +286,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     };
 
     fetchSelectedProduct();
-  }, [initialProductId, searchResults]);
+  }, [initialProductId, searchResults, selectedProductAccessToken]);
 
   useEffect(() => {
     let cancelled = false;

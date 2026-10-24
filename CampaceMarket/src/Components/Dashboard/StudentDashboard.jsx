@@ -147,7 +147,19 @@ const parseImageSizeBytes = (value, fallback = 5 * 1024 * 1024) => {
 };
 
 
-function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, onUserUpdate, onNavigate, appUnreadNotificationCount = 0 }) {
+function StudentDashboard({
+  user,
+  onLogout,
+  initialTab = 'home',
+  initialProductToEdit = null,
+  onInitialProductEditHandled,
+  initialMessagesProductId = null,
+  onClearProductInquiryFilter,
+  onTabChange,
+  onUserUpdate,
+  onNavigate,
+  appUnreadNotificationCount = 0,
+}) {
   const { t, language } = useLanguage();
   const initialOrderDashboardLink = typeof window === 'undefined'
     ? null
@@ -288,6 +300,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const [activeConversationId, setActiveConversationId] = useState(() => getConversationIdFromUrl() || initialConversations[0]?.id || '');
   const [conversationsList, setConversationsList] = useState(initialConversations);
   const [conversationsLoaded, setConversationsLoaded] = useState(false);
+  const [conversationLoadError, setConversationLoadError] = useState('');
   const [activeChatMessages, setActiveChatMessages] = useState(initialConversations[0]?.messages || []);
   const messagesContainerRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -2924,14 +2937,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setExistingProductImages([]);
   };
 
-  const findSellerProduct = (productOrId) => {
+  const findSellerProduct = useCallback((productOrId) => {
     const productId = typeof productOrId === 'object' ? productOrId?.id : productOrId;
     return [...(sellerDashboardData?.my_listings || []), ...(myListings || [])]
       .find((item) => String(item.id) === String(productId)) ||
       (typeof productOrId === 'object' ? productOrId : null);
-  };
+  }, [sellerDashboardData?.my_listings, myListings]);
 
-  const handleEditProduct = (productOrId) => {
+  const handleEditProduct = useCallback((productOrId) => {
     const product = findSellerProduct(productOrId);
     if (!product?.id) return;
     setEditingProduct(product);
@@ -2954,7 +2967,17 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     setProductError('');
     setProductSuccessMsg('');
     setShowProductModal(true);
-  };
+  }, [findSellerProduct]);
+
+  const lastInitialProductEditRef = useRef(null);
+  useEffect(() => {
+    if (!initialProductToEdit?.id || String(lastInitialProductEditRef.current) === String(initialProductToEdit.id)) return;
+    lastInitialProductEditRef.current = initialProductToEdit.id;
+    setActiveTab('seller');
+    onTabChange?.('seller');
+    handleEditProduct(initialProductToEdit);
+    onInitialProductEditHandled?.();
+  }, [initialProductToEdit, handleEditProduct, onInitialProductEditHandled, onTabChange]);
 
   const updateSellerProduct = async (productOrId, updates, imageChanges = null) => {
     const product = findSellerProduct(productOrId);
@@ -3309,18 +3332,33 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
 
   // Fetch conversations list from backend
   useEffect(() => {
-    if (!user?.studentId) return;
+    if (!user?.studentId) return undefined;
 
     const fetchConversations = async () => {
+      setConversationsLoaded(false);
+      setConversationLoadError('');
+      if (initialMessagesProductId) {
+        setConversationsList([]);
+        setActiveConversationId('');
+        setActiveChatMessages([]);
+      }
       try {
-        const res = await fetch(`${API_BASE_URL}/api/student/messages/conversations?student_id=${user.studentId}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.conversations && Array.isArray(data.conversations)) {
+        const token = getStudentSessionToken();
+        const url = initialMessagesProductId
+          ? `${API_BASE_URL}/api/student/products/${encodeURIComponent(initialMessagesProductId)}/inquiries`
+          : `${API_BASE_URL}/api/student/messages/conversations?student_id=${encodeURIComponent(user.studentId)}`;
+        const res = await fetch(url, {
+          headers: initialMessagesProductId && token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.detail || 'Failed to load conversations.');
+        }
+        if (data.conversations && Array.isArray(data.conversations)) {
             const requestedConversationId = getConversationIdFromUrl();
             const restoredConversation = data.conversations.find((conversation) => String(conversation.id) === String(requestedConversationId));
             const requestedParticipant = sellerChatParticipantsRef.current[requestedConversationId];
-            const syntheticConversation = requestedConversationId && !restoredConversation
+            const syntheticConversation = !initialMessagesProductId && requestedConversationId && !restoredConversation
               ? {
                 id: requestedConversationId,
                 studentId: String(requestedConversationId).replace(/^conv-/, ''),
@@ -3336,14 +3374,14 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
               : data.conversations);
             setActiveConversationId(selectedConversation?.id || '');
             setActiveChatMessages(selectedConversation?.messages || []);
-            setMobileChatView(requestedConversationId ? 'chat' : 'list');
-          }
+            setMobileChatView(initialMessagesProductId && selectedConversation ? 'chat' : requestedConversationId ? 'chat' : 'list');
         }
       } catch (error) {
         console.error('Error fetching conversations:', error);
         setConversationsList([]);
         setActiveConversationId('');
         setMobileChatView('list');
+        if (initialMessagesProductId) setConversationLoadError(error.message || 'Failed to load product inquiries.');
         if (getConversationIdFromUrl()) {
           const url = new URL(window.location.href);
           url.searchParams.delete('conversation');
@@ -3355,7 +3393,8 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
     };
 
     fetchConversations();
-  }, [user?.studentId]);
+    return undefined;
+  }, [user?.studentId, initialMessagesProductId, getStudentSessionToken]);
 
   useEffect(() => {
     const nextUnreadCount = conversationsList.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0);
@@ -3562,9 +3601,15 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
   const activeConversation = conversationsList.find((conversation) => conversation.id === activeConversationId) || conversationsList[0] || null;
   const isActiveConversationBlocked = Boolean(activeConversation?.id && blockedConversations[activeConversation.id]);
   const filteredConversations = conversationsList.filter((conversation) => {
+    if (initialMessagesProductId && !conversationsLoaded) return false;
     const partnerId = String(conversation.studentId || conversation.student_id || String(conversation.id || '').replace(/^conv-/, ''));
     return !blockedUsers.includes(partnerId) && String(conversation.name || '').toLowerCase().includes(conversationSearch.trim().toLowerCase());
   });
+  const visibleChatMessages = initialMessagesProductId && !conversationsLoaded
+    ? []
+    : initialMessagesProductId
+    ? activeChatMessages.filter((message) => String(message.productId) === String(initialMessagesProductId))
+    : activeChatMessages;
 
   useEffect(() => {
     activePeerIdRef.current = String(activeConversation?.studentId || String(activeConversationId || '').replace(/^conv-/, ''));
@@ -5394,12 +5439,22 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         <button
                           type="button"
                           onClick={() => setShowAddChatModal(true)}
+                          disabled={Boolean(initialMessagesProductId)}
                           className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-lg text-slate-600 shadow-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                           aria-label="New chat"
                         >
                           +
                         </button>
                       </div>
+
+                      {initialMessagesProductId && (
+                        <div className="mt-3 flex items-center justify-between gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-900">
+                          <span>{t('productDetails.owner.inquiriesForProduct').replace('{id}', String(initialMessagesProductId))}</span>
+                          <button type="button" onClick={onClearProductInquiryFilter} className="shrink-0 underline underline-offset-2">{t('productDetails.owner.clearFilter')}</button>
+                        </div>
+                      )}
+                      {conversationLoadError && <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800">{conversationLoadError}</p>}
+                      {initialMessagesProductId && !conversationsLoaded && <p className="mt-3 text-sm text-slate-500">Loading product inquiries…</p>}
 
                       <label className="relative mt-4 block">
                         <span className="sr-only">Search conversations</span>
@@ -5502,7 +5557,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     </header>
 
                     <div ref={messagesContainerRef} onScroll={updateAutoScrollPreference} className="messages-scroll-area flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-y-contain bg-gradient-to-b from-slate-50 to-white px-2 py-4 dark:from-slate-900 dark:to-slate-950">
-                      {activeChatMessages.map((message) => {
+                      {visibleChatMessages.map((message) => {
                         const isOwnMessage = message.sender_id
                           ? String(message.sender_id) === String(user?.studentId)
                           : message.sender === 'me';
@@ -5514,7 +5569,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                         const productUnavailable = productDetail?.unavailable === true;
                         const product = productUnavailable ? null : productDetail;
                         const parentMessage = message.reply_to_id
-                          ? activeChatMessages.find((candidate) => String(candidate.id) === String(message.reply_to_id))
+                          ? visibleChatMessages.find((candidate) => String(candidate.id) === String(message.reply_to_id))
                           : null;
 
                         return (
@@ -5697,7 +5752,7 @@ function StudentDashboard({ user, onLogout, initialTab = 'home', onTabChange, on
                     </div>
 
                     <div className="sticky bottom-0 z-10 w-full shrink-0 border-t border-slate-200 bg-white p-3 sm:p-4 dark:border-slate-700 dark:bg-slate-900">
-                      {activeChatMessages.some((message) => message.productId && productDetails[message.productId]?.unavailable) && (
+                      {visibleChatMessages.some((message) => message.productId && productDetails[message.productId]?.unavailable) && (
                         <p className="mb-2 rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300" role="status">
                           This product is no longer available.
                         </p>

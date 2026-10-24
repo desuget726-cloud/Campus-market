@@ -36,6 +36,13 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const { items: cartItems, setItems: setCartItems, loadedStudentId: cartStudentId, loading: cartLoading, error: cartError } = useCart();
   const [showPhone, setShowPhone] = useState(false);
   const [detailedProduct, setDetailedProduct] = useState(null);
+  const [previewAsBuyer, setPreviewAsBuyer] = useState(false);
+  const initialStatus = String(product?.status || '').trim().toLowerCase();
+  const [ownerStockDraft, setOwnerStockDraft] = useState(String(product?.stock ?? 0));
+  const [ownerStatusDraft, setOwnerStatusDraft] = useState(initialStatus === 'sold' ? 'sold-out' : ['paused', 'hidden'].includes(initialStatus) ? 'hidden' : 'active');
+  const [ownerActionStatus, setOwnerActionStatus] = useState('');
+  const [ownerActionLoading, setOwnerActionLoading] = useState(false);
+  const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [chatStatus, setChatStatus] = useState('');
   const [cartStatus, setCartStatus] = useState('');
   const [cartAdding, setCartAdding] = useState(false);
@@ -78,12 +85,16 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const cartAddInFlightRef = useRef(false);
   const payAttemptKeyRef = useRef(null);
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
-  const item = detailedProduct || product;
+  const hasDetailsForCurrentProduct = String(detailedProduct?.id) === String(product?.id);
+  const item = hasDetailsForCurrentProduct ? detailedProduct : product;
   const availableStock = Math.max(0, Number(item?.stock ?? 1));
-  const currentStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim().toLowerCase();
-  const productSellerId = String(item?.seller_id || item?.seller || '').trim().toLowerCase();
-  const isOwnProduct = Boolean(currentStudentId && productSellerId && currentStudentId === productSellerId);
+  const isOwnerStatusLoaded = hasDetailsForCurrentProduct && typeof detailedProduct?.is_owner === 'boolean';
+  const isOwner = isOwnerStatusLoaded && detailedProduct.is_owner === true;
+  const showOwnerView = isOwner && !previewAsBuyer;
+  const showBuyerView = isOwnerStatusLoaded && (!isOwner || previewAsBuyer);
+  const isReadOnlyPreview = isOwner && previewAsBuyer;
   const buyerStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim();
+  const currentUserAccessToken = getStudentAccessToken(currentUser);
   const cartLoaded = Boolean(buyerStudentId && cartStudentId === buyerStudentId && !cartLoading && !cartError);
   const cartItem = cartLoaded
     ? cartItems.find((cartEntry) => String(cartEntry.product_id) === String(product?.id))
@@ -140,21 +151,30 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
     const fetchProductDetails = async () => {
       try {
-        const viewerId = currentUser?.studentId || currentUser?.student_id;
-        const query = viewerId ? `?viewer_id=${encodeURIComponent(viewerId)}` : '';
-        const response = await fetch(`${API_BASE_URL}/api/products/${product.id}${query}`);
+        const response = await fetch(`${API_BASE_URL}/api/products/${product.id}`, {
+          headers: currentUserAccessToken ? { Authorization: `Bearer ${currentUserAccessToken}` } : {},
+        });
         if (!response.ok) {
           throw new Error('Failed to fetch product details');
         }
         const data = await response.json();
         setDetailedProduct(data);
+        setOwnerStockDraft(String(data.stock ?? 0));
+        const status = String(data.status || '').trim().toLowerCase();
+        setOwnerStatusDraft(status === 'sold' ? 'sold-out' : ['paused', 'hidden'].includes(status) ? 'hidden' : 'active');
+        setPreviewAsBuyer(false);
       } catch (error) {
         console.error(error);
       }
     };
 
     fetchProductDetails();
-  }, [product?.id, currentUser?.studentId, currentUser?.student_id]);
+  }, [
+    product?.id,
+    currentUser?.studentId,
+    currentUser?.student_id,
+    currentUserAccessToken,
+  ]);
 
   useEffect(() => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
@@ -326,7 +346,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       return;
     }
     if (!cartLoaded) return;
-    if (isOwnProduct) {
+    if (isOwner) {
       setCartStatus(t('studentToast.ownProductAction'));
       return;
     }
@@ -620,6 +640,11 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   useEffect(() => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
     if (!pendingAction || !studentId || String(pendingAction.returnTo) !== String(product?.id)) return;
+    if (!isOwnerStatusLoaded) return;
+    if (isOwner) {
+      clearPendingAction();
+      return;
+    }
     if (['addToCart', 'pay'].includes(pendingAction.action) && !cartLoaded) return;
     if (pendingAction.action === 'wishlist' && wishlistLoadedFor !== String(studentId)) return;
     if (pendingAction.action === 'pay' && !isInCart) {
@@ -634,7 +659,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     runPendingAction(pendingAction).catch((error) => {
       setCartStatus(error.message || 'Unable to restore this product action.');
     });
-  }, [currentUser, pendingAction, product?.id, wishlistLoadedFor, cartLoaded, isInCart]);
+  }, [currentUser, pendingAction, product?.id, wishlistLoadedFor, cartLoaded, isInCart, isOwnerStatusLoaded, isOwner]);
 
   const handleMakeOffer = () => {
     const amount = offerAmount.trim() || '[amount]';
@@ -698,7 +723,100 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     }
   };
 
-  const purchaseBlocked = isOwnProduct || availableStock === 0 || selectedQuantity > availableStock;
+  const saveOwnerStock = async () => {
+    const quantity = Number(ownerStockDraft);
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      setOwnerActionStatus(t('productDetails.owner.invalidStock'));
+      return;
+    }
+    const status = ownerStatusDraft === 'sold-out' ? 'Sold' : ownerStatusDraft === 'hidden' ? 'Paused' : 'Approved';
+    const nextQuantity = status === 'Sold' ? 0 : quantity;
+    if (status !== 'Sold' && nextQuantity < 1) {
+      setOwnerActionStatus(t('productDetails.owner.stockRequired'));
+      return;
+    }
+    const token = getStudentAccessToken(currentUser);
+    setOwnerActionLoading(true);
+    setOwnerActionStatus('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/student/products/${item.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ quantity: nextQuantity, status }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || t('productDetails.owner.updateFailed'));
+      }
+      setDetailedProduct((previous) => ({ ...previous, ...data.product }));
+      setOwnerStockDraft(String(data.product?.stock ?? nextQuantity));
+      setOwnerStatusDraft(status === 'Sold' ? 'sold-out' : status === 'Paused' ? 'hidden' : 'active');
+      setOwnerActionStatus(t('productDetails.owner.stockSaved'));
+    } catch (error) {
+      setOwnerActionStatus(error.message || t('productDetails.owner.updateFailed'));
+    } finally {
+      setOwnerActionLoading(false);
+    }
+  };
+
+  const toggleListingStatus = async () => {
+    const restoring = ownerStatusDraft !== 'active';
+    const quantity = restoring ? Math.max(1, Number(item.stock) || Number(ownerStockDraft) || 1) : 0;
+    const status = restoring ? 'Approved' : 'Sold';
+    const token = getStudentAccessToken(currentUser);
+    setOwnerActionLoading(true);
+    setOwnerActionStatus('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/student/products/${item.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ quantity, status }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || t('productDetails.owner.updateFailed'));
+      }
+      setDetailedProduct((previous) => ({ ...previous, ...data.product }));
+      setOwnerStockDraft(String(data.product?.stock ?? quantity));
+      setOwnerStatusDraft(restoring ? 'active' : 'sold-out');
+      setOwnerActionStatus(t('productDetails.owner.stockSaved'));
+    } catch (error) {
+      setOwnerActionStatus(error.message || t('productDetails.owner.updateFailed'));
+    } finally {
+      setOwnerActionLoading(false);
+    }
+  };
+
+  const deleteOwnerListing = async () => {
+    const token = getStudentAccessToken(currentUser);
+    setOwnerActionLoading(true);
+    setOwnerActionStatus('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/student/products/${item.id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || t('productDetails.owner.deleteFailed'));
+      }
+      setShowDeleteConfirmation(false);
+      onBack?.();
+    } catch (error) {
+      setShowDeleteConfirmation(false);
+      setOwnerActionStatus(error.message || t('productDetails.owner.deleteFailed'));
+    } finally {
+      setOwnerActionLoading(false);
+    }
+  };
+
+  const purchaseBlocked = !isOwnerStatusLoaded || isOwner || availableStock === 0 || selectedQuantity > availableStock;
 
   const productTitle = String(item?.title || '').trim();
   const displayTitle = productTitle.length >= 3
@@ -779,14 +897,23 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
           <section className="order-3 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:order-none">
             <div className="flex min-w-0 items-start justify-between gap-3">
-              <h1 className="min-w-0 flex-1 text-2xl font-bold text-slate-950">{displayTitle}</h1>
+              <div className="min-w-0 flex-1">
+                <h1 className="text-2xl font-bold text-slate-950">{displayTitle}</h1>
+                {isOwner && <span className="mt-2 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800">{t('productDetails.owner.badge')}</span>}
+              </div>
               <div className="flex shrink-0 items-center gap-2">
-                <button type="button" onClick={handleToggleWishlist} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-2xl ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500`}>{isWishlisted ? '♥' : '♡'}</button>
+                {showBuyerView && <button type="button" onClick={handleToggleWishlist} disabled={isReadOnlyPreview} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-2xl ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500 disabled:opacity-50`}>{isWishlisted ? '♥' : '♡'}</button>}
                 <div className="relative">
                   <button type="button" onClick={() => setShowShareMenu((previous) => !previous)} className="rounded-full border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">↗ Share</button>
                   {showShareMenu && <div className="absolute right-0 z-20 mt-2 w-48 rounded-2xl border border-slate-200 bg-white p-2 text-left shadow-xl"><button type="button" onClick={() => handleShare('copy')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Copy Link</button><button type="button" onClick={() => handleShare('telegram')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Share to Telegram</button><button type="button" onClick={() => handleShare('whatsapp')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Share to WhatsApp</button></div>}
                 </div>
               </div>
+              {isOwner && (
+                <label className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={previewAsBuyer} onChange={(event) => setPreviewAsBuyer(event.target.checked)} />
+                  {t('productDetails.owner.previewAsBuyer')}
+                </label>
+              )}
             </div>
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-y border-slate-100 py-3 text-xs font-semibold text-slate-500 sm:text-sm">
               <span>{campusLocation}</span>
@@ -860,42 +987,91 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <span className="text-xs uppercase tracking-[0.18em] text-slate-500 font-semibold">Price</span>
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
             {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable</div>}
-            <div className="mt-5 flex items-center justify-center gap-4">
+            {showBuyerView && <div className="mt-5 flex items-center justify-center gap-4">
               <button type="button" onClick={() => handleQuantityChange((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1 || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
               <span className="min-w-8 text-center text-lg font-black text-slate-900">{selectedQuantity}</span>
               <button type="button" onClick={() => handleQuantityChange((value) => Math.min(availableStock, value + 1))} disabled={selectedQuantity >= availableStock || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Increase quantity">+</button>
-            </div>
-            <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>
-            {itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
-            {availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
-            {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
+            </div>}
+            {showBuyerView && <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>}
+            {showBuyerView && itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
+            {showBuyerView && availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
+            {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
               <button
                 type="button"
                 onClick={openPayModal}
-                disabled={availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating}
+                disabled={isReadOnlyPreview || availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating}
                 className="mt-5 w-full rounded-full bg-emerald-600 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Pay with wallet
               </button>
             )}
-            {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
+            {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
               <button
                 type="button"
                 onClick={handleAddToCart}
-                disabled={purchaseBlocked || cartAdding}
+                disabled={isReadOnlyPreview || purchaseBlocked || cartAdding}
                 className="btn-primary mt-5 w-full rounded-full py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {cartAdding ? 'Adding...' : 'Add to Cart'}
               </button>
             )}
-            {!isOwnProduct && buyerStudentId && cartLoading && !cartLoaded && (
+            {showBuyerView && buyerStudentId && cartLoading && !cartLoaded && (
               <button type="button" disabled className="mt-5 w-full rounded-full bg-slate-200 py-3.5 text-sm font-semibold text-slate-500">
                 Checking cart...
               </button>
             )}
-            {!isOwnProduct && buyerStudentId && cartError && <p className="mt-3 text-sm text-rose-700">Unable to verify your cart. Please refresh and try again.</p>}
-            {cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
+            {showBuyerView && buyerStudentId && cartError && <p className="mt-3 text-sm text-rose-700">Unable to verify your cart. Please refresh and try again.</p>}
+            {showBuyerView && cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
           </section>
+
+          {showOwnerView && (
+            <>
+              <section className="min-w-0 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 shadow-sm">
+                <h3 className="text-lg font-black text-slate-900">{t('productDetails.owner.listingActions')}</h3>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  <button type="button" onClick={() => onNavigate?.('student-dashboard', { tab: 'seller', editProduct: item })} className="rounded-full bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800">{t('productDetails.owner.editListing')}</button>
+                  <button type="button" onClick={toggleListingStatus} disabled={ownerActionLoading} className="rounded-full border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-800 hover:bg-slate-100 disabled:opacity-50">{ownerStatusDraft === 'active' ? t('productDetails.owner.markSoldUnlist') : t('productDetails.owner.relist')}</button>
+                  <button type="button" onClick={() => setShowDeleteConfirmation(true)} disabled={ownerActionLoading} className="rounded-full border border-rose-300 bg-white px-4 py-3 text-sm font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50 sm:col-span-2">{t('productDetails.owner.deleteListing')}</button>
+                </div>
+                <div className="mt-5 grid grid-cols-2 gap-3">
+                  <label className="text-sm font-semibold text-slate-700">
+                    {t('productDetails.owner.quantity')}
+                    <input type="number" min="0" step="1" value={ownerStockDraft} onChange={(event) => setOwnerStockDraft(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-base" />
+                  </label>
+                  <label className="text-sm font-semibold text-slate-700">
+                    {t('productDetails.owner.status')}
+                    <select value={ownerStatusDraft} onChange={(event) => setOwnerStatusDraft(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-base">
+                      <option value="active">{t('productDetails.owner.active')}</option>
+                      <option value="sold-out">{t('productDetails.owner.soldOut')}</option>
+                      <option value="hidden">{t('productDetails.owner.hidden')}</option>
+                    </select>
+                  </label>
+                </div>
+                <button type="button" onClick={saveOwnerStock} disabled={ownerActionLoading} className="mt-3 w-full rounded-full border border-emerald-700 px-4 py-3 text-sm font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50">{ownerActionLoading ? t('productDetails.owner.saving') : t('productDetails.owner.saveStock')}</button>
+                <button type="button" onClick={() => onNavigateToMessages?.(item.id)} className="mt-3 block text-sm font-bold text-emerald-800 underline underline-offset-2">{t('productDetails.owner.viewInquiries')}</button>
+                {ownerActionStatus && <p role="status" className="mt-3 rounded-xl border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-800">{ownerActionStatus}</p>}
+              </section>
+
+              {item?.stats && (
+                <section className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <h3 className="text-lg font-black text-slate-900">{t('productDetails.owner.listingStats')}</h3>
+                  <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                    {[
+                      ['views', item.stats.views],
+                      ['wishlist', item.stats.wishlist_count],
+                      ['inquiries', item.stats.inquiries_count],
+                      ['cart', item.stats.cart_count],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-xl bg-slate-50 p-3">
+                        <dt className="text-slate-500">{t(`productDetails.owner.stats.${label}`)}</dt>
+                        <dd className="mt-1 text-xl font-black text-slate-900">{Number(value || 0).toLocaleString()}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              )}
+            </>
+          )}
 
           <section className="order-4 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm lg:order-none">
             <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-sky-100 text-3xl font-bold text-sky-700">
@@ -909,10 +1085,11 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             {reviewCount === 0 && <p className="mt-3 text-xs font-semibold text-slate-500">No reviews yet</p>}
             {Number.isFinite(responseTimeHours) && responseTimeHours > 0 && <p className="mt-2 text-xs font-semibold text-slate-500">Usually responds within {responseTimeHours < 1 ? 'an hour' : `${Math.round(responseTimeHours)} hours`}</p>}
 
-            <div className="mt-6 space-y-3">
+            {showBuyerView && <div className="mt-6 space-y-3">
               {/* ስልክ ቁጥር ማሳያ ቁልፍ (Show Contact Button) */}
               <button
                 onClick={handleShowContact}
+                disabled={isReadOnlyPreview}
                 className="w-full rounded-full bg-white border border-slate-800 py-3.5 text-sm font-semibold text-slate-900 hover:bg-slate-50 transition flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>📞</span>
@@ -931,7 +1108,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                     onChange={(event) => setMessageText(event.target.value)}
                     placeholder={isChatEnabled ? 'Write a message to the seller...' : 'Chat is currently disabled by the administrator'}
                     rows={4}
-                    disabled={!isChatEnabled || !verifiedCurrentUser || chatLoading}
+                    disabled={isReadOnlyPreview || !isChatEnabled || !verifiedCurrentUser || chatLoading}
                     className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:bg-white"
                   />
                   {!verifiedCurrentUser && (
@@ -942,27 +1119,22 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   {/* አረንጓዴ የቻት መክፈቻ ቁልፍ (Start Chat Button) */}
                   <button
                     onClick={handleStartChat}
-                    disabled={!isChatEnabled || !verifiedCurrentUser || chatLoading || !messageText.trim()}
+                    disabled={isReadOnlyPreview || !isChatEnabled || !verifiedCurrentUser || chatLoading || !messageText.trim()}
                     className="btn-primary w-full rounded-full py-3.5 text-sm font-semibold transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     <span>💬</span>
                     <span>{chatLoading ? 'Sending...' : 'Send Message & Start Chat'}</span>
                   </button>
-                  {isNegotiable && <div className="flex items-center gap-2"><input type="number" min="1" value={offerAmount} onChange={(event) => setOfferAmount(event.target.value)} placeholder="Offer amount" className="min-w-0 flex-1 rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400" /><button type="button" onClick={handleMakeOffer} className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100">Make an Offer</button></div>}
+                  {isNegotiable && <div className="flex items-center gap-2"><input type="number" min="1" value={offerAmount} onChange={(event) => setOfferAmount(event.target.value)} placeholder="Offer amount" disabled={isReadOnlyPreview} className="min-w-0 flex-1 rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400 disabled:opacity-50" /><button type="button" onClick={handleMakeOffer} disabled={isReadOnlyPreview} className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50">Make an Offer</button></div>}
                 </>
-              )}
-              {isOwnProduct && (
-                <span className="block rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-center text-[10px] font-bold text-amber-800">
-                  This is your material. You cannot purchase your own material.
-                </span>
               )}
               {chatStatus && (
                 <p className="text-sm text-emerald-700">{chatStatus}</p>
               )}
-            </div>
+            </div>}
           </section>
 
-          {allowStudentReports && currentUser && (
+          {showBuyerView && !isReadOnlyPreview && allowStudentReports && currentUser && (
             <section className="order-5 min-w-0 lg:order-none">
               {!showReportForm ? (
                 <button type="button" onClick={() => setShowReportForm(true)} className="text-sm font-semibold text-rose-700 underline underline-offset-2 hover:text-rose-800">🚩 Report/Flag Product</button>
@@ -981,7 +1153,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             </section>
           )}
 
-          <section className="order-6 min-w-0 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm lg:order-none">
+          {showBuyerView && <section className="order-6 min-w-0 rounded-2xl border border-amber-200 bg-amber-50/80 p-4 shadow-sm lg:order-none">
             <h4 className="text-sm font-bold text-amber-900 flex items-center gap-2">
               <span>🛡️</span> Safety Tips
             </h4>
@@ -996,25 +1168,47 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                 Check the item carefully before paying.
               </li>
             </ul>
-          </section>
+          </section>}
+          {showOwnerView && (
+            <section className="min-w-0 rounded-2xl border border-sky-200 bg-sky-50/80 p-4 shadow-sm">
+              <h4 className="text-sm font-bold text-sky-900">{t('productDetails.owner.sellerSafetyTips')}</h4>
+              <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-sky-900">
+                <li>{t('productDetails.owner.safety.inspect')}</li>
+                <li>{t('productDetails.owner.safety.public')}</li>
+                <li>{t('productDetails.owner.safety.wallet')}</li>
+              </ul>
+            </section>
+          )}
         </aside>
       </div>
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur lg:hidden" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}>
+      {showBuyerView && <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur lg:hidden" style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}>
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-3 px-1">
           <div className="min-w-0">
             <p className="text-xs font-semibold text-slate-500">Price</p>
             <p className="truncate text-lg font-extrabold text-slate-900">{formattedPrice}</p>
           </div>
-          {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
-            <button type="button" onClick={openPayModal} disabled={availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating} className="shrink-0 rounded-full bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">Pay with wallet</button>
+          {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
+            <button type="button" onClick={openPayModal} disabled={isReadOnlyPreview || availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating} className="shrink-0 rounded-full bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">Pay with wallet</button>
           )}
-          {!isOwnProduct && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
-            <button type="button" onClick={handleAddToCart} disabled={purchaseBlocked || cartAdding} className="btn-primary shrink-0 rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">{cartAdding ? 'Adding...' : 'Add to Cart'}</button>
+          {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
+            <button type="button" onClick={handleAddToCart} disabled={isReadOnlyPreview || purchaseBlocked || cartAdding} className="btn-primary shrink-0 rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">{cartAdding ? 'Adding...' : 'Add to Cart'}</button>
           )}
-          {!isOwnProduct && buyerStudentId && cartLoading && !cartLoaded && <button type="button" disabled className="shrink-0 rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-500">Checking cart...</button>}
+          {showBuyerView && buyerStudentId && cartLoading && !cartLoaded && <button type="button" disabled className="shrink-0 rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-500">Checking cart...</button>}
         </div>
         {cartStatus && <p className="mx-auto mt-1 w-full max-w-7xl px-1 text-xs text-blue-700">{cartStatus}</p>}
-      </div>
+      </div>}
+      {showDeleteConfirmation && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 p-4">
+          <section role="dialog" aria-modal="true" aria-labelledby="delete-listing-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <h2 id="delete-listing-title" className="text-xl font-black text-slate-950">{t('productDetails.owner.confirmDeleteTitle')}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{t('productDetails.owner.confirmDelete')}</p>
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setShowDeleteConfirmation(false)} disabled={ownerActionLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700">{t('productDetails.owner.cancel')}</button>
+              <button type="button" onClick={deleteOwnerListing} disabled={ownerActionLoading} className="rounded-full bg-rose-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{ownerActionLoading ? t('productDetails.owner.deleting') : t('productDetails.owner.confirmDeleteAction')}</button>
+            </div>
+          </section>
+        </div>
+      )}
       {guestActionIntent && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-4">
           <section role="dialog" aria-modal="true" aria-labelledby="guest-action-title" className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">

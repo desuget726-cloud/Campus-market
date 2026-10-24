@@ -140,6 +140,8 @@ function AppContent() {
   const [pendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(null);
   const [pendingProductAction, setPendingProductAction] = useState(null);
+  const [pendingSellerProductEdit, setPendingSellerProductEdit] = useState(null);
+  const [pendingMessagesProductId, setPendingMessagesProductId] = useState(null);
   const [pendingSellerId, setPendingSellerId] = useState(null);
   const [sessionTimeoutMinutes, setSessionTimeoutMinutes] = useState(30);
   const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
@@ -481,6 +483,7 @@ function AppContent() {
 
     if (view === 'product-details' || view === 'ProductDetails') {
       const productId = params.productId ?? params.product_id ?? null;
+      setPendingMessagesProductId(null);
       setPendingProductId(productId);
       setPendingProductAction(params.action === 'pay' && productId
         ? { returnTo: String(productId), action: 'pay', quantity: 1 }
@@ -521,6 +524,10 @@ function AppContent() {
       }
       if (view === 'student-dashboard') {
         if (params.tab) setStudentTab(params.tab);
+        if (params.editProduct) {
+          setPendingSellerProductEdit(params.editProduct);
+          setStudentTab('seller');
+        }
         setCurrentView('student-dashboard');
         return;
       }
@@ -730,7 +737,8 @@ function AppContent() {
               onAction={(product) => console.log('view', product)}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}
-              onNavigateToMessages={() => {
+              onNavigateToMessages={(productId) => {
+                setPendingMessagesProductId(productId);
                 setStudentTab('messages');
                 setCurrentView('student-dashboard');
               }}
@@ -775,6 +783,10 @@ function AppContent() {
               onLogout={handleLogout}
               user={user}
               initialTab={studentTab}
+              initialProductToEdit={pendingSellerProductEdit}
+              onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
+              initialMessagesProductId={pendingMessagesProductId}
+              onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
               onTabChange={setStudentTab}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}
@@ -788,6 +800,10 @@ function AppContent() {
               onLogout={handleLogout}
               user={user}
               initialTab={studentTab}
+              initialProductToEdit={pendingSellerProductEdit}
+              onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
+              initialMessagesProductId={pendingMessagesProductId}
+              onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
               onTabChange={setStudentTab}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}

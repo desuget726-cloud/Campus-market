@@ -10631,6 +10631,89 @@ def get_student_conversations(student_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to fetch conversations.")
 
 
+@app.get("/api/student/products/{product_id}/inquiries")
+def get_product_inquiries(
+    product_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    """Return the conversation partners who have messaged about a seller's product."""
+    authenticated_student = _student_from_authorization(authorization, db)
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    if not _is_product_owner(db, product, authenticated_student):
+        raise HTTPException(status_code=403, detail="You can only view inquiries for your own products.")
+
+    seller = db.query(Student).filter(
+        or_(
+            Student.student_id == product.seller,
+            Student.name == product.seller,
+        )
+    ).first()
+    seller_id = seller.student_id if seller else product.seller
+    messages = db.query(Message).filter(
+        Message.product_id == product.id,
+        or_(
+            Message.sender_id == seller_id,
+            Message.receiver_id == seller_id,
+        ),
+    ).order_by(Message.created_at.desc()).all()
+
+    inquiry_partner_ids = {
+        message.sender_id
+        for message in messages
+        if message.receiver_id == seller_id and message.sender_id != seller_id
+    }
+    latest_by_partner = {}
+    unread_by_partner = {}
+    for message in messages:
+        partner_id = message.receiver_id if message.sender_id == seller_id else message.sender_id
+        if partner_id in inquiry_partner_ids:
+            latest_by_partner.setdefault(partner_id, message)
+            if message.receiver_id == seller_id and not message.is_read:
+                unread_by_partner[partner_id] = unread_by_partner.get(partner_id, 0) + 1
+
+    partners = {
+        student.student_id: student
+        for student in db.query(Student).filter(
+            Student.student_id.in_(latest_by_partner.keys())
+        ).all()
+    } if latest_by_partner else {}
+    conversations = []
+    for partner_id, message in latest_by_partner.items():
+        partner = partners.get(partner_id)
+        if not partner:
+            continue
+        conversations.append({
+            "id": f"conv-{partner_id}",
+            "studentId": partner_id,
+            "name": partner.name or "Unknown Student",
+            "email": partner.email or "",
+            "phone": partner.phone or "",
+            "college": partner.college or "",
+            "department": partner.department or "",
+            "avatar": "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=80",
+            "status": "online" if manager.is_online(partner_id) else "offline",
+            "lastMessage": message.message_text or "No messages yet",
+            "timestamp": message.created_at.isoformat() if message.created_at else "Just now",
+            "unread": unread_by_partner.get(partner_id, 0),
+            "product": {
+                "id": product.id,
+                "title": product.title,
+                "price": product.price,
+                "image": _normalize_product_image(product.image),
+            },
+        })
+
+    conversations.sort(key=lambda conversation: conversation["timestamp"], reverse=True)
+    return {
+        "product_id": product.id,
+        "conversations": conversations,
+        "total": len(conversations),
+    }
+
+
 @app.get("/api/student/messages/chat-history")
 def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Depends(get_db)):
     """Return the chronological direct-message history for two students."""

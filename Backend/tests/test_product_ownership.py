@@ -177,6 +177,49 @@ class ProductOwnershipTests(unittest.TestCase):
             "cart_count": 2,
         })
 
+    def test_owner_can_view_only_inquiries_for_their_product(self):
+        inquiry = Message(
+            sender_id=self.seller.student_id,
+            receiver_id=self.buyer.student_id,
+            product_id=self.buyers_product.id,
+            message_text="Is this available?",
+        )
+        self.db.add_all([
+            inquiry,
+            Message(
+                sender_id=self.buyer.student_id,
+                receiver_id=self.seller.student_id,
+                product_id=self.sellers_product.id,
+                message_text="I am interested in your listing.",
+            ),
+        ])
+        self.db.commit()
+
+        with patch.object(main_module, "_student_from_authorization", return_value=self.buyer):
+            result = main_module.get_product_inquiries(
+                self.buyers_product.id,
+                authorization="******",
+                db=self.db,
+            )
+
+        self.assertEqual(result["product_id"], self.buyers_product.id)
+        self.assertEqual([conversation["studentId"] for conversation in result["conversations"]], [
+            self.seller.student_id,
+        ])
+        self.assertEqual(result["conversations"][0]["lastMessage"], "Is this available?")
+        self.assertFalse(inquiry.is_read)
+
+    def test_non_owner_cannot_view_product_inquiries(self):
+        with patch.object(main_module, "_student_from_authorization", return_value=self.seller):
+            with self.assertRaises(HTTPException) as error:
+                main_module.get_product_inquiries(
+                    self.buyers_product.id,
+                    authorization="******",
+                    db=self.db,
+                )
+
+        self.assertEqual(error.exception.status_code, 403)
+
     def test_non_owner_product_details_do_not_include_owner_stats(self):
         detail = self.product_detail_for(self.seller)
 

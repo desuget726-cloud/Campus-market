@@ -121,7 +121,49 @@ export const translations = {
             loginRequired: 'Login required',
             loginPrompt: 'Please log in to continue with this action.',
             login: 'Login',
-            cancel: 'Cancel'
+            cancel: 'Cancel',
+            owner: {
+                badge: 'This is your listing',
+                previewAsBuyer: 'Preview as buyer (read-only)',
+                listingActions: 'Manage listing',
+                editListing: 'Edit listing',
+                markSoldUnlist: 'Mark as sold / Unlist',
+                relist: 'Relist listing',
+                deleteListing: 'Delete listing',
+                quantity: 'Quantity',
+                status: 'Status',
+                active: 'Active',
+                soldOut: 'Sold out',
+                hidden: 'Hidden',
+                saveStock: 'Save stock and status',
+                saving: 'Saving...',
+                stockSaved: 'Listing stock and status updated.',
+                invalidStock: 'Enter a valid whole-number quantity.',
+                stockRequired: 'Active or hidden listings must have at least one item in stock.',
+                updateFailed: 'Could not update the listing.',
+                deleteFailed: 'Could not delete the listing.',
+                deleting: 'Deleting...',
+                confirmDeleteTitle: 'Delete this listing?',
+                confirmDelete: 'This action cannot be undone. Listings with open orders or disputes cannot be deleted.',
+                confirmDeleteAction: 'Delete listing',
+                cancel: 'Cancel',
+                listingStats: 'Listing stats',
+                viewInquiries: 'View inquiries',
+                inquiriesForProduct: 'Inquiries for product #{id}',
+                clearFilter: 'Clear',
+                stats: {
+                    views: 'Views',
+                    wishlist: 'Wishlists',
+                    inquiries: 'Inquiries',
+                    cart: 'Items in carts'
+                },
+                sellerSafetyTips: 'Seller safety tips',
+                safety: {
+                    inspect: 'Let the buyer inspect the item before paying.',
+                    public: 'Meet in busy public areas only.',
+                    wallet: 'Accept payment only through the in-app wallet, never outside the platform.'
+                }
+            }
         },
         auth: {
             campusPortal: 'Campus Portal',
@@ -264,7 +306,49 @@ export const translations = {
             loginRequired: 'መግባት ያስፈልጋል',
             loginPrompt: 'ይህን ተግባር ለመቀጠል እባክዎ ይግቡ።',
             login: 'ግባ',
-            cancel: 'ሰርዝ'
+            cancel: 'ሰርዝ',
+            owner: {
+                badge: 'ይህ የእርስዎ ዝርዝር ነው',
+                previewAsBuyer: 'እንደ ገዢ ቅድመ እይታ (ማንበብ ብቻ)',
+                listingActions: 'ዝርዝሩን ያስተዳድሩ',
+                editListing: 'ዝርዝሩን ያርትዑ',
+                markSoldUnlist: 'እንደተሸጠ ምልክት ያድርጉ / ከዝርዝር ያውጡ',
+                relist: 'ዝርዝሩን እንደገና ያቅርቡ',
+                deleteListing: 'ዝርዝሩን ሰርዝ',
+                quantity: 'ብዛት',
+                status: 'ሁኔታ',
+                active: 'ንቁ',
+                soldOut: 'ተሽጧል',
+                hidden: 'ተደብቋል',
+                saveStock: 'ክምችትና ሁኔታ አስቀምጥ',
+                saving: 'በማስቀመጥ ላይ...',
+                stockSaved: 'የዝርዝሩ ክምችትና ሁኔታ ተዘምኗል።',
+                invalidStock: 'ትክክለኛ ሙሉ ቁጥር ያስገቡ።',
+                stockRequired: 'ንቁ ወይም የተደበቀ ዝርዝር ቢያንስ አንድ እቃ በክምችት ሊኖረው ይገባል።',
+                updateFailed: 'ዝርዝሩን ማዘመን አልተቻለም።',
+                deleteFailed: 'ዝርዝሩን መሰረዝ አልተቻለም።',
+                deleting: 'በመሰረዝ ላይ...',
+                confirmDeleteTitle: 'ይህን ዝርዝር ይሰርዙ?',
+                confirmDelete: 'ይህ ተግባር መመለስ አይቻልም። ክፍት ትዕዛዞች ወይም ክርክሮች ያሏቸው ዝርዝሮች መሰረዝ አይችሉም።',
+                confirmDeleteAction: 'ዝርዝሩን ሰርዝ',
+                cancel: 'ሰርዝ',
+                listingStats: 'የዝርዝሩ ስታቲስቲክስ',
+                viewInquiries: 'ጥያቄዎችን ይመልከቱ',
+                inquiriesForProduct: 'ለምርት #{id} የተላኩ ጥያቄዎች',
+                clearFilter: 'አጽዳ',
+                stats: {
+                    views: 'እይታዎች',
+                    wishlist: 'የተወደዱ',
+                    inquiries: 'ጥያቄዎች',
+                    cart: 'በጋሪ ውስጥ ያሉ እቃዎች'
+                },
+                sellerSafetyTips: 'የሻጭ ደህንነት ምክሮች',
+                safety: {
+                    inspect: 'ከመክፈሉ በፊት ገዢው እቃውን እንዲመረምር ይፍቀዱ።',
+                    public: 'በተጨናነቁ የህዝብ ቦታዎች ብቻ ይገናኙ።',
+                    wallet: 'ክፍያን በመተግበሪያው የኪስ ቦርሳ ብቻ ይቀበሉ፤ ከመድረኩ ውጭ በፍጹም አይቀበሉ።'
+                }
+            }
         },
         sellerHub: {
             productManagement: 'የምርት አስተዳደር',
