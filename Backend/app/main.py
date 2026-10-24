@@ -8097,15 +8097,29 @@ PRODUCT_OWNERSHIP_ERROR = "You cannot buy or save your own product."
 
 
 def _reject_own_product_action(db: Session, product: Product, student: Student) -> None:
-    if not product.seller:
-        return
+    if _is_product_owner(db, product, student):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PRODUCT_OWNERSHIP_ERROR)
+
+
+def _is_product_owner(db: Session, product: Product, student: Optional[Student]) -> bool:
+    if not student or not product.seller:
+        return False
+
+    seller_identifier = str(product.seller).strip().lower()
+    student_identifiers = {
+        str(student.student_id or "").strip().lower(),
+        str(student.name or "").strip().lower(),
+    }
+    if seller_identifier in student_identifiers:
+        return True
 
     seller = db.query(Student).filter(
-        or_(Student.student_id == product.seller, Student.name == product.seller)
+        or_(
+            func.lower(Student.student_id) == seller_identifier,
+            func.lower(Student.name) == seller_identifier,
+        )
     ).first()
-    seller_identifier = seller.student_id if seller else product.seller
-    if str(seller_identifier).strip().lower() == student.student_id.strip().lower():
-        raise HTTPException(status_code=400, detail=PRODUCT_OWNERSHIP_ERROR)
+    return bool(seller and seller.student_id.strip().lower() == student.student_id.strip().lower())
 
 # 4. የዕቃዎች ማውጫ እና ማጣሪያ ኤፒአይ (GET /api/products)
 @app.get("/api/products")
@@ -8253,12 +8267,21 @@ def get_product_detail(
     request: Request,
     response: Response,
     viewer_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     """Fetch details for a single product by ID."""
-    product = _public_marketplace_product_query(db).filter(Product.id == product_id).first()
+    product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+
+    authenticated_student = None
+    if authorization:
+        try:
+            authenticated_student = _student_from_authorization(authorization, db)
+        except HTTPException as error:
+            if error.status_code != status.HTTP_401_UNAUTHORIZED:
+                raise
 
     seller = None
     if product.seller:
@@ -8267,7 +8290,13 @@ def get_product_detail(
         ).first()
 
     seller_id = seller.student_id if seller else product.seller
-    viewer = db.query(Student).filter(Student.student_id == viewer_id.strip()).first() if viewer_id else None
+    is_owner = _is_product_owner(db, product, authenticated_student)
+    if not is_owner and not _public_marketplace_product_query(db).filter(Product.id == product_id).first():
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    viewer = authenticated_student or (
+        db.query(Student).filter(Student.student_id == viewer_id.strip()).first() if viewer_id else None
+    )
     visitor_cookie = request.cookies.get("campace_viewer") if request else None
     visitor_key = f"student:{viewer.student_id}" if viewer else f"session:{visitor_cookie or secrets.token_urlsafe(24)}"
     if not viewer or not seller_id or viewer.student_id != seller_id:
@@ -8343,7 +8372,7 @@ def get_product_detail(
 
     db.commit()
 
-    return {
+    result = {
         "id": product.id,
         "title": product.title,
         "category": product.category,
@@ -8364,7 +8393,6 @@ def get_product_detail(
         "pickup_hours": product.pickup_hours,
         "status": product.status,
         "created_at": product.created_at,
-        "views": int(product.views or 0),
         "reviews": review_items,
         "average_rating": average_rating,
         "review_count": len(review_items),
@@ -8382,6 +8410,23 @@ def get_product_detail(
         ],
         "seller_response_time_hours": round(sum(response_hours) / len(response_hours), 1) if response_hours else None,
     }
+    result["is_owner"] = is_owner
+    if is_owner:
+        result["stats"] = {
+            "views": int(product.views or 0),
+            "wishlist_count": db.query(WishlistItem.id).filter(
+                WishlistItem.product_id == product.id,
+            ).count(),
+            "inquiries_count": db.query(func.count(func.distinct(Message.sender_id))).filter(
+                Message.product_id == product.id,
+                Message.receiver_id == seller_id,
+                Message.sender_id != seller_id,
+            ).scalar() or 0,
+            "cart_count": db.query(func.coalesce(func.sum(CartItem.quantity), 0)).filter(
+                CartItem.product_id == product.id,
+            ).scalar() or 0,
+        }
+    return result
 
 
 @app.get("/api/settings/moderation")
@@ -8751,15 +8796,29 @@ def delete_student_product(
         authenticated_student.name.strip().lower(),
     }:
         raise HTTPException(status_code=403, detail="You can only delete your own products.")
+    if _product_has_open_orders(db, product.id):
+        raise HTTPException(status_code=409, detail="Products with open orders cannot be deleted.")
+    if _product_has_open_disputes(db, product.id):
+        raise HTTPException(status_code=409, detail="Products with open disputes cannot be deleted.")
     if _product_has_orders(db, product.id):
-        raise HTTPException(status_code=409, detail="Products with orders cannot be deleted.")
+        product.status = "Hidden"
+        product.stock = 0
+        db.commit()
+        return {"success": True, "product_id": product_id, "soft_deleted": True}
     db.delete(product)
     db.commit()
-    return {"success": True, "product_id": product_id}
+    return {"success": True, "product_id": product_id, "soft_deleted": False}
     
 @app.post("/api/student/chat/initiate")
-def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
+def initiate_chat(
+    request: ChatInitiateRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    authenticated_student = _student_from_authorization(authorization, db)
     buyer_id = _validate_student_id(db, request.buyer_id, field_name="buyer_id")
+    if buyer_id.strip().lower() != authenticated_student.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You can only start a chat as yourself.")
     buyer = db.query(Student).filter(Student.student_id == buyer_id).first()
     if not buyer:
         raise HTTPException(status_code=404, detail="Buyer not found")
@@ -8767,6 +8826,7 @@ def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.id == request.product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+    _reject_own_product_action(db, product, authenticated_student)
 
     seller = None
     if product.seller:
@@ -8776,10 +8836,6 @@ def initiate_chat(request: ChatInitiateRequest, db: Session = Depends(get_db)):
 
     if not seller:
         raise HTTPException(status_code=404, detail="Seller not found")
-
-    # Prevent notifying yourself
-    if buyer.student_id == seller.student_id:
-        return {"success": True, "message": "You are the owner of this listing."}
 
     notification = None
     if seller.notif_msg_inapp:
@@ -9741,9 +9797,14 @@ def create_report(
     student_id: Optional[str] = Form(None),
     seller_id: Optional[str] = Form(None),
     evidence_image: Optional[UploadFile] = File(None),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
     try:
+        authenticated_student = None
+        if product_id is not None:
+            authenticated_student = _student_from_authorization(authorization, db)
+
         allow_student_reports = _setting_bool(
             _get_setting_value(
                 db,
@@ -9758,7 +9819,11 @@ def create_report(
 
         provided_student_id = student_id.strip() if student_id else None
         student = None
-        if provided_student_id:
+        if authenticated_student:
+            if provided_student_id and provided_student_id.strip().lower() != authenticated_student.student_id.strip().lower():
+                raise HTTPException(status_code=403, detail="You can only submit a report as yourself.")
+            student = authenticated_student
+        elif provided_student_id:
             student = db.query(Student).filter(Student.student_id == provided_student_id).first()
 
         product = None
@@ -9766,6 +9831,7 @@ def create_report(
             product = db.query(Product).filter(Product.id == product_id).first()
             if not product:
                 raise HTTPException(status_code=404, detail="Product not found.")
+            _reject_own_product_action(db, product, authenticated_student)
 
         evidence_url = None
         if evidence_image and evidence_image.filename:
@@ -9782,9 +9848,9 @@ def create_report(
         db_report = Report(
             product_id=product.id if product else None,
             student_id=student.student_id if student else None,
-            seller_id=seller_id.strip() if seller_id else (product.seller if product else None),
-            student_name=student_name.strip(),
-            email=email.strip() if email else None,
+            seller_id=product.seller if product else (seller_id.strip() if seller_id else None),
+            student_name=student.name if authenticated_student else student_name.strip(),
+            email=student.email if authenticated_student else (email.strip() if email else None),
             category=category.strip() if category else None,
             issue=normalized_issue,
             evidence_image=evidence_url,
@@ -10974,9 +11040,22 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
 
 
 @app.post("/api/student/messages/send")
-def send_student_message(request: SendMessageRequest, db: Session = Depends(get_db)):
+def send_student_message(
+    request: SendMessageRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
     validated_sender_id = _validate_student_id(db, request.sender_id, field_name="sender_id")
     validated_receiver_id = _validate_student_id(db, request.receiver_id, field_name="receiver_id")
+    if request.product_id is not None:
+        authenticated_student = _student_from_authorization(authorization, db)
+        if validated_sender_id.strip().lower() != authenticated_student.student_id.strip().lower():
+            raise HTTPException(status_code=403, detail="You can only start a chat as yourself.")
+        product = db.query(Product).filter(Product.id == request.product_id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found.")
+        _reject_own_product_action(db, product, authenticated_student)
+
     sender = db.query(Student).filter(Student.student_id == validated_sender_id).first()
     receiver = db.query(Student).filter(Student.student_id == validated_receiver_id).first()
     if not sender or not receiver:
@@ -10995,11 +11074,6 @@ def send_student_message(request: SendMessageRequest, db: Session = Depends(get_
 
     if len(request.message_text.strip()) > 5000:
         raise HTTPException(status_code=400, detail="Message exceeds the 5000 character limit.")
-
-    if request.product_id is not None:
-        product = db.query(Product).filter(Product.id == request.product_id).first()
-        if not product:
-            raise HTTPException(status_code=404, detail="Product not found.")
 
     try:
         chat_message = Message(
@@ -11829,6 +11903,7 @@ def get_product_pay_summary(
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="This listing is not available for purchase.")
+    _reject_own_product_action(db, product, buyer)
     stock = int(product.stock or 0)
     if stock < 1:
         raise HTTPException(status_code=409, detail={"code": "OUT_OF_STOCK", "message": "This item is out of stock."})
@@ -11872,6 +11947,10 @@ def pay_for_product(
     db: Session = Depends(get_db),
 ):
     buyer = _student_from_authorization(authorization, db)
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="This listing is not available for purchase.")
+    _reject_own_product_action(db, product, buyer)
     key = idempotency_key.strip()
     if not 8 <= len(key) <= 64:
         raise HTTPException(status_code=422, detail="Idempotency-Key must contain 8 to 64 characters.")
@@ -12199,6 +12278,41 @@ def _build_seller_listing_analytics(listings: list, completed_orders: list) -> l
 
 def _product_has_orders(db: Session, product_id: int) -> bool:
     return bool(db.query(Order.id).filter(Order.product_id == product_id).first())
+
+
+def _product_has_open_orders(db: Session, product_id: int) -> bool:
+    terminal_statuses = {
+        "completed",
+        "successful",
+        "sold",
+        "delivered",
+        "cancelled",
+        "canceled",
+        "rejected",
+        "expired",
+        "refunded",
+        "returned",
+    }
+    return bool(
+        db.query(Order.id)
+        .filter(
+            Order.product_id == product_id,
+            func.lower(func.trim(Order.status)).notin_(terminal_statuses),
+        )
+        .first()
+    )
+
+
+def _product_has_open_disputes(db: Session, product_id: int) -> bool:
+    return bool(
+        db.query(Dispute.id)
+        .join(Order, Dispute.order_id == Order.id)
+        .filter(
+            Order.product_id == product_id,
+            func.upper(func.trim(Dispute.status)).in_(ACTIVE_DISPUTE_STATUSES),
+        )
+        .first()
+    )
 
 
 
