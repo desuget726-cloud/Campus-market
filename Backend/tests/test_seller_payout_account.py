@@ -1,9 +1,10 @@
 import asyncio
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi import Request
 from fastapi.testclient import TestClient
@@ -103,29 +104,92 @@ class SellerPayoutAccountTests(unittest.TestCase):
         with patch.object(main_module, "_student_from_authorization", return_value=self.student):
             return function(*args, authorization="Bearer payout-test", db=self.db, **kwargs)
 
-    def test_second_create_returns_conflict(self):
+    def test_setup_twice_returns_same_account_without_exposing_account_number(self):
         payload = self.payload()
-        self.authenticated(main_module.create_seller_payout_account, payload, request=self.request())
-        with self.assertRaises(HTTPException) as error:
-            self.authenticated(main_module.create_seller_payout_account, payload, request=self.request())
-        self.assertEqual(error.exception.status_code, 409)
-        self.assertEqual(self.db.query(SellerPaymentAccount).count(), 1)
+        banks = AsyncMock(return_value=[{
+            "code": self.provider.code,
+            "name": self.provider.name,
+            "method": "bank",
+        }])
+        create_subaccount = AsyncMock(return_value="chapa-test-subaccount")
+        encryption_key = Fernet.generate_key().decode("ascii")
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "get_chapa_banks", banks), \
+                patch.object(main_module, "_create_chapa_subaccount", create_subaccount), \
+                patch.dict(os.environ, {
+                    "PAYOUT_ACCOUNT_ENCRYPTION_KEY": encryption_key,
+                    "CHAPA_TEST_SECRET_KEY": "test-secret",
+                }):
+            first = asyncio.run(main_module.setup_seller_payout_account(
+                payload, authorization="test-token", db=self.db
+            ))
+            second = asyncio.run(main_module.setup_seller_payout_account(
+                payload, authorization="test-token", db=self.db
+            ))
+
+        account = self.db.query(SellerPaymentAccount).one()
+        self.assertEqual(first["account"]["id"], second["account"]["id"])
+        self.assertTrue(second["idempotent"])
+        self.assertNotIn("1234567890123", repr(first))
+        self.assertNotIn("1234567890123", repr(second))
+        self.assertIsNone(account.account_number)
+        self.assertEqual(account.account_last4, "0123")
+        with patch.dict(os.environ, {"PAYOUT_ACCOUNT_ENCRYPTION_KEY": encryption_key}):
+            self.assertEqual(main_module._decrypt_payout_account_number(account), "1234567890123")
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            stored_payload = main_module.get_seller_payout_account(
+                authorization="test-token", db=self.db
+            )
+        self.assertEqual(stored_payload["account"]["account_number_masked"], "****0123")
+        self.assertNotIn("1234567890123", repr(stored_payload))
+        create_subaccount.assert_awaited_once()
+
+    def test_setup_endpoint_limits_repeated_attempts(self):
+        invalid_payload = main_module.SellerPayoutSetupRequest(
+            bank_code=self.provider.code,
+            account_name="",
+            account_number="",
+        )
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            for _ in range(5):
+                with self.assertRaises(HTTPException) as validation_error:
+                    asyncio.run(main_module.setup_seller_payout_account(
+                        invalid_payload, authorization="test-token", db=self.db
+                    ))
+                self.assertEqual(validation_error.exception.status_code, 400)
+
+            with self.assertRaises(HTTPException) as rate_limit_error:
+                asyncio.run(main_module.setup_seller_payout_account(
+                    invalid_payload, authorization="test-token", db=self.db
+                ))
+
+        self.assertEqual(rate_limit_error.exception.status_code, 429)
+        self.assertEqual(self.db.query(SellerPaymentAccount).count(), 0)
+
+    def test_setup_requires_authenticated_verified_student(self):
+        payload = self.payload()
+        self.student.is_verified = False
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            with self.assertRaises(HTTPException) as unverified_error:
+                asyncio.run(main_module.setup_seller_payout_account(
+                    payload, authorization="test-token", db=self.db
+                ))
+        self.assertEqual(unverified_error.exception.status_code, 403)
+
+        self.student.is_verified = True
+        with self.assertRaises(HTTPException) as unauthenticated_error:
+            asyncio.run(main_module.setup_seller_payout_account(
+                payload, authorization=None, db=self.db
+            ))
+        self.assertEqual(unauthenticated_error.exception.status_code, 401)
 
     def test_case_different_existing_student_id_cannot_create_duplicate(self):
         self.create_account(student_id="mau1600007")
-        with self.assertRaises(HTTPException) as error:
-            self.authenticated(main_module.create_seller_payout_account, self.payload(), request=self.request())
-        self.assertEqual(error.exception.status_code, 409)
-        self.assertEqual(self.db.query(SellerPaymentAccount).count(), 1)
-
-    def test_chapa_setup_rejects_second_create(self):
-        self.create_account()
         with patch.object(main_module, "_student_from_authorization", return_value=self.student):
-            with self.assertRaises(HTTPException) as error:
-                asyncio.run(main_module.setup_seller_payout_account(
-                    self.payload(), authorization="Bearer payout-test", db=self.db
-                ))
-        self.assertEqual(error.exception.status_code, 409)
+            result = asyncio.run(main_module.setup_seller_payout_account(
+                self.payload(), authorization="test-token", db=self.db
+            ))
+        self.assertTrue(result["idempotent"])
         self.assertEqual(self.db.query(SellerPaymentAccount).count(), 1)
 
     def test_edit_requires_reauthentication(self):
@@ -152,8 +216,17 @@ class SellerPayoutAccountTests(unittest.TestCase):
                 raise httpx.ConnectError("mock connection failure")
 
         with patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "get_chapa_banks", new=AsyncMock(return_value=[{
+                    "code": self.provider.code,
+                    "name": self.provider.name,
+                    "method": "bank",
+                }])), \
                 patch.object(main_module.httpx, "AsyncClient", return_value=FailingAsyncClient()), \
-                patch.dict(os.environ, {"CHAPA_SECRET_KEY": "test-secret"}):
+                patch.dict(os.environ, {
+                    "CHAPA_MODE": "test",
+                    "CHAPA_TEST_SECRET_KEY": "test-secret",
+                    "PAYOUT_ACCOUNT_ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+                }):
             with self.assertRaises(HTTPException) as error:
                 asyncio.run(main_module.update_seller_payout_account(
                     self.payload("9876543210123"),
@@ -169,9 +242,20 @@ class SellerPayoutAccountTests(unittest.TestCase):
         self.assertEqual(self.db.query(SellerPaymentAccountHistory).count(), 0)
 
     def update_account_with_client(self, account, client, payload=None):
+        encryption_key = Fernet.generate_key().decode("ascii")
+        self.encryption_key = encryption_key
         with patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "get_chapa_banks", new=AsyncMock(return_value=[{
+                    "code": self.provider.code,
+                    "name": self.provider.name,
+                    "method": "bank",
+                }])), \
                 patch.object(main_module.httpx, "AsyncClient", return_value=client), \
-                patch.dict(os.environ, {"CHAPA_SECRET_KEY": "test-secret"}):
+                patch.dict(os.environ, {
+                    "CHAPA_MODE": "test",
+                    "CHAPA_TEST_SECRET_KEY": "test-secret",
+                    "PAYOUT_ACCOUNT_ENCRYPTION_KEY": encryption_key,
+                }):
             return asyncio.run(main_module.update_seller_payout_account(
                 payload or self.payload("9876543210123"),
                 request=self.request("payout-test-password"),
@@ -300,9 +384,11 @@ class SellerPayoutAccountTests(unittest.TestCase):
         self.assertEqual(client.url, "https://api.chapa.co/v1/subaccount")
         self.assertEqual(account.chapa_sub_account_id, "replacement-subaccount")
         self.assertEqual(account.business_name, "Updated Shop")
-        self.assertEqual(account.account_number, "1234567890123")
-        self.assertEqual(history.old_last4, "••••0123")
-        self.assertEqual(history.new_last4, "••••0123")
+        self.assertIsNone(account.account_number)
+        with patch.dict(os.environ, {"PAYOUT_ACCOUNT_ENCRYPTION_KEY": self.encryption_key}):
+            self.assertEqual(main_module._decrypt_payout_account_number(account), "1234567890123")
+        self.assertEqual(history.old_last4, "****0123")
+        self.assertEqual(history.new_last4, "****0123")
         self.assertEqual(history.changed_fields, ["business_name"])
         self.assertNotIn("1234567890123", repr(history))
         hold_duration = account.payout_hold_until - account.updated_at
@@ -334,7 +420,7 @@ class SellerPayoutAccountTests(unittest.TestCase):
                 authorization="Bearer payout-test", db=self.db
             )
 
-        self.assertEqual(result["account_number_masked"], "••••0123")
+        self.assertEqual(result["account_number_masked"], "****0123")
         self.assertEqual(result["bank_code"], self.provider.code)
         self.assertNotIn("1234567890123", repr(result))
         self.assertNotIn("account_number\"", repr(result))

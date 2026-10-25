@@ -745,6 +745,9 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
       const response = await fetch(`${API_BASE_URL}/api/student/report`, {
         method: 'POST',
+        headers: currentUser?.access_token || currentUser?.accessToken || currentUser?.token
+          ? { Authorization: `Bearer ${currentUser.access_token || currentUser.accessToken || currentUser.token}` }
+          : {},
         body: formData,
       });
       const data = await response.json();

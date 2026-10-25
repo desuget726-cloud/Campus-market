@@ -1,11 +1,20 @@
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps, no-unused-vars */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Check, Copy, Eye, Pencil, Trash2, X } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
-import { notifyError, notifySuccess } from '../../utils/notify';
+import AdminSupportInbox from './AdminSupportInbox';
+import { AdminProductReviewsPage, AdminUsersPage } from './AdminDirectoryPages';
+import AdminSidebarNavigation from './AdminSidebarNavigation';
+import { getErrorMessage, notifyError, notifySuccess } from '../../utils/notify';
 import { adminApiGet, getStoredAccessToken } from '../../api/apiClient';
+import { normalizeAdminSection } from '../../utils/adminDashboardSection';
+import {
+  ADMIN_NAVIGATION,
+  filterAdminNavigation,
+  getActiveAdminGroup,
+} from '../../utils/adminNavigation';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { getAdminSettings, invalidateAdminSettingsCache } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
@@ -17,7 +26,7 @@ import {
   getAnalyticsPeriodButtonClass,
 } from '../../utils/analyticsSalesTrend';
 import logs from '../../assets/logs.png';
-import logo1 from '../../assets/logo1.jpg';
+
 
 const generateSvgPath = (values, maxValue, width = 100, height = 100, padding = 8) => {
   if (!Array.isArray(values) || values.length === 0) return '';
@@ -414,28 +423,53 @@ const getReportPriority = (issue = '') => {
   return { label: 'Low', className: 'bg-emerald-100 text-emerald-700 border border-emerald-200' };
 };
 
-const adminTabs = [
-  { id: 'dashboard', label: 'Dashboard', icon: 'M4 6h16M4 12h16M4 18h16' },
-  { id: 'user-management', label: 'User Management', icon: 'M12 14l9-5-9-5-9 5 9 5z M12 14l6.16-3.422M12 14L5.84 10.578' },
-  { id: 'student-verification', label: 'Student Verification', icon: 'M12 11c2.761 0 5-2.238 5-5S14.761 1 12 1 7 3.238 7 6s2.239 5 5 5z M4 23c0-4.418 3.582-8 8-8s8 3.582 8 8' },
-  { id: 'product-management', label: 'Product Management', icon: 'M4 7h16v13H4z M8 7v-3h8v3' },
-  { id: 'categories', label: 'Categories', icon: 'M5 5h14v4H5z M5 15h14v4H5z' },
-  { id: 'orders', label: 'Orders', icon: 'M6 6h12l2 10H4z M8 22h8' },
-  // { id: 'disputes', label: 'Dispute Review', icon: 'M4 5h16v12H8l-4 4V5z' },
-  { id: 'payments', label: 'Payments', icon: 'M6 7h12v10H6z M9 12h6 M12 16v2' },
-  { id: 'reports', label: 'Reports', icon: 'M6 5h12v14H6z M9 9h6 M9 13h4' },
-  { id: 'analytics', label: 'Analytics', icon: 'M5 19h14M9 15v-4M15 15V9' },
-  { id: 'notifications', label: 'Notifications', icon: 'M18 13v-3a6 6 0 10-12 0v3l-2 2v1h16v-1l-2-2z M13.73 21a2 2 0 01-3.46 0' },
-  { id: 'audit-logs', label: 'Audit Logs', icon: 'M6 4h12v4H6z M6 12h12v4H6z M10 20h4' },
-  { id: 'settings', label: 'Settings', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8z M4.93 4.93l2.12 2.12 M17.95 17.95l2.12 2.12 M4.93 19.07l2.12-2.12 M17.95 6.05l2.12-2.12' }
-];
+const normalizeAdminTab = (tab) => normalizeAdminSection(tab, 'dashboard');
 
-const normalizeAdminTab = (tab) => {
-  const normalizedTab = tab || 'dashboard';
-  return ['ai-recommendations', 'id-change-requests', 'id-verification', 'id-verification-requests'].includes(normalizedTab)
-    ? 'dashboard'
-    : normalizedTab;
+const readExpandedAdminGroups = () => {
+  if (typeof window === 'undefined') return [];
+  try {
+    const expanded = JSON.parse(window.sessionStorage.getItem('adminSidebarExpandedGroups') || '[]');
+    return Array.isArray(expanded) ? expanded.filter((key) => typeof key === 'string') : [];
+  } catch (error) {
+    console.warn('Unable to read expanded admin menu groups.', error);
+    return [];
+  }
 };
+
+class AdminDashboardErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Admin dashboard content failed to render. Falling back to a safe empty state.', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-[32px] border border-rose-200 bg-rose-50 p-8 text-center shadow-sm" role="alert">
+          <h2 className="text-2xl font-black text-slate-900">Something went wrong</h2>
+          <p className="mt-2 text-sm text-slate-600">The admin section could not be loaded. Please retry.</p>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false })}
+            className="mt-5 inline-flex rounded-full bg-slate-900 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' }) {
   const [section, setSection] = useState(initialSection);
@@ -463,7 +497,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const [reauthAction, setReauthAction] = useState(null);
   const [reauthPassword, setReauthPassword] = useState('');
   const [reauthCode, setReauthCode] = useState('');
-  const [permissionState, setPermissionState] = useState({ users: true, products: true, orders: true, payments: true, reports: true, ai: true, analytics: true, audit_logs: true, settings: true });
+  const [permissionState, setPermissionState] = useState({ users: true, products: true, orders: true, payments: true, reports: true, support: true, ai: true, analytics: true, audit_logs: true, settings: true });
   const [permissionsSaving, setPermissionsSaving] = useState(false);
   const { language } = useLanguage();
   const token = () => {
@@ -585,7 +619,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const normalizedRole = String(profile.role || '').trim().toLowerCase().replace(/_/g, ' ');
   const isMainAdmin = normalizedRole === 'admin';
   const canEditPermissions = ['admin', 'super admin', 'superadministrator'].includes(normalizedRole);
-  const permissionDefinitions = [['users', 'Users'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['reports', 'Reports'], ['ai', 'AI'], ['analytics', 'Analytics'], ['audit_logs', 'Audit Logs'], ['settings', 'Settings']];
+  const permissionDefinitions = [['users', 'Users'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['reports', 'Reports'], ['support', 'Support'], ['ai', 'AI'], ['analytics', 'Analytics'], ['audit_logs', 'Audit Logs'], ['settings', 'Settings']];
   const savePermissions = async () => { if (!canEditPermissions || !profile.id || permissionsSaving) return; setPermissionsSaving(true); try { const data = await request(`${API_BASE_URL}/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); notifySuccess('Permissions saved successfully', 'admin-permissions-save'); } catch (error) { notifyError(error, 'admin-permissions-save'); } finally { setPermissionsSaving(false); } };
   const securityAction = async (path) => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); notifySuccess(data.message || 'Security action completed.', `admin-security-${path}`); refreshSecurityData(); } catch (error) { notifyError(error, `admin-security-${path}`); } finally { setBusy(false); } };
   const startTwoFactorSetup = async () => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/setup`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); notifySuccess('Authenticator setup started', 'admin-2fa-setup'); } catch (error) { notifyError(error, 'admin-2fa-setup'); } finally { setBusy(false); } };
@@ -877,14 +911,34 @@ function AdminAccountsPanel({ user }) {
   );
 }
 
-function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
+function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
+  const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState(readExpandedAdminGroups);
+  const [sidebarCounts, setSidebarCounts] = useState({});
+  const visibleNavigation = useMemo(() => filterAdminNavigation(ADMIN_NAVIGATION, user), [user]);
+  const activeGroup = getActiveAdminGroup(activeTab, visibleNavigation);
   useEffect(() => {
     const toggleSidebar = () => setIsSidebarOpen((isOpen) => !isOpen);
     window.addEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
     return () => window.removeEventListener('campace:toggle-dashboard-sidebar', toggleSidebar);
   }, []);
+  useEffect(() => {
+    if (!isSidebarOpen) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setIsSidebarOpen(false);
+    };
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [isSidebarOpen]);
+  useEffect(() => {
+    setIsSidebarOpen(false);
+  }, [activeTab]);
+  useEffect(() => {
+    if (!activeGroup) return;
+    setExpandedGroups((current) => current.includes(activeGroup) ? current : [...current, activeGroup]);
+  }, [activeGroup]);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -894,8 +948,6 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       return false;
     }
   });
-  const [desktopSidebarTooltip, setDesktopSidebarTooltip] = useState(null);
-  const activeDesktopSidebarItemRef = useRef(null);
   const userGrowthChartRef = useRef(null);
   const salesTrendChartRef = useRef(null);
   const [userGrowthChartWidth, setUserGrowthChartWidth] = useState(100);
@@ -939,6 +991,19 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const getAdminSessionToken = () => {
     return getStoredAccessToken() || user?.access_token || user?.accessToken || user?.token || '';
   };
+  const getReportRequestHeaders = () => {
+    const token = getAdminSessionToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
+  const refreshSidebarCounts = useCallback(async () => {
+    try {
+      const counts = await adminApiGet('/api/admin/sidebar-counts');
+      setSidebarCounts(counts || {});
+    } catch (error) {
+      console.error('Unable to refresh admin sidebar counts.', error);
+    }
+  }, []);
 
   // === HOISTED STATES FOR ALL PANELS (OBEYING RULES OF HOOKS) ===
 
@@ -1078,10 +1143,18 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   const [reportPriorityFilter, setReportPriorityFilter] = useState('All');
   const [reportPage, setReportPage] = useState(1);
   const REPORTS_PER_PAGE = 10;
-  const [reportDecision, setReportDecision] = useState('Warning');
+  const [reportDecision, setReportDecision] = useState('');
+  const [reportReason, setReportReason] = useState('');
+  const [reportRefundAmount, setReportRefundAmount] = useState('');
   const [selectedReport, setSelectedReport] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportActionLoading, setReportActionLoading] = useState(false);
+  const [reportReviewLoading, setReportReviewLoading] = useState(false);
+  const [reportReviewOwned, setReportReviewOwned] = useState(false);
+  const [reportContext, setReportContext] = useState(null);
+  const [reportContextLoading, setReportContextLoading] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const reportActionInFlightRef = useRef(false);
   const [broadcastSending, setBroadcastSending] = useState(false);
   const [evidenceImage, setEvidenceImage] = useState(null);
   const [conversationLogs, setConversationLogs] = useState(null);
@@ -2030,16 +2103,26 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   }, [initialTab, onTabChange]);
 
   useEffect(() => {
-    activeDesktopSidebarItemRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [activeTab]);
-
-  useEffect(() => {
     try {
       window.localStorage.setItem('adminSidebarCollapsed', String(isDesktopSidebarCollapsed));
     } catch (error) {
       console.warn('Unable to save the admin sidebar preference to localStorage.', error);
     }
   }, [isDesktopSidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem('adminSidebarExpandedGroups', JSON.stringify(expandedGroups));
+    } catch (error) {
+      console.warn('Unable to save expanded admin menu groups.', error);
+    }
+  }, [expandedGroups]);
+
+  useEffect(() => {
+    void Promise.resolve().then(refreshSidebarCounts);
+    const intervalId = window.setInterval(refreshSidebarCounts, 60000);
+    return () => window.clearInterval(intervalId);
+  }, [activeTab, refreshSidebarCounts]);
 
   useEffect(() => {
     const updateChartWidths = () => {
@@ -2219,25 +2302,28 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
   // Fetch reports from backend
   async function fetchReportsData() {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/reports`);
-      const reports = await response.json();
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports`, {
+        headers: getReportRequestHeaders(),
+      });
+      const reports = await response.json().catch(() => []);
+      if (!response.ok) throw new Error(getErrorMessage(reports));
       setReportsList(Array.isArray(reports) ? reports.map((report) => ({
         ...report,
         report_id: report.report_id || `RPT-${report.id}`,
         student: report.student || report.student_name || 'Unknown Student',
         student_id: report.student_id || 'Unknown',
-        seller_id: report.seller_id || '',
+        seller_id: report.seller_id || null,
         evidence_image: report.evidence_image || null,
-        product_name: report.product_name || 'Marketplace Report',
+        product_name: report.product_name || '',
         issue: report.issue || 'No issue details provided.',
         status: report.status || 'Open',
         date: report.date || new Date().toISOString(),
       })) : []);
     } catch (err) {
       console.error('Failed to fetch reports:', err);
-      // Fallback to default state already set
+      setReportToast(getErrorMessage(err));
     }
-  };
+  }
 
   // Fetch payments from backend
   async function fetchPaymentsData() {
@@ -2970,7 +3056,7 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       // Call backend API with corrected endpoint and payload
       const response = await fetch(`${API_BASE_URL}/api/admin/reports/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getReportRequestHeaders() },
         body: JSON.stringify({ status: 'Closed' })
       });
 
@@ -2986,69 +3072,142 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
         notifySuccess('Report closed successfully.', `admin-report-close-${id}`);
       } else {
         const payload = await response.json().catch(() => ({}));
-        notifyError(new Error(payload.detail || 'Failed to close report.'), `admin-report-close-${id}`);
+        notifyError({ detail: payload.detail || 'Failed to close report.' }, `admin-report-close-${id}`);
       }
     } catch (err) {
       console.error('Error closing case:', err);
-      notifyError(err, `admin-report-close-${id}`);
+      notifyError({ detail: getErrorMessage(err) }, `admin-report-close-${id}`);
     } finally {
       setReportActionLoading(false);
     }
   };
 
-  const handleResolveReport = async (id, decision) => {
+  const handleResolveReport = async (id) => {
     const report = reportsList.find(r => r.id === id);
-    if (!report || reportActionLoading) return;
+    const reason = reportReason.trim();
+    if (!report || reportActionInFlightRef.current || !reportDecision || reason.length < 10) return;
+    const paidAmount = Number(reportContext?.order?.paid_amount);
+    const refundAmount = Number(reportRefundAmount);
+    if (reportDecision === 'Refund' && (
+      !Number.isFinite(refundAmount) || refundAmount <= 0 || !Number.isFinite(paidAmount) || refundAmount > paidAmount
+    )) {
+      setReportError(t('adminReports.refundAmountError'));
+      return;
+    }
 
-    const confirmed = window.confirm(`Resolve report ${report.report_id} with the decision: ${decision}?`);
-    if (!confirmed) return;
+    const effects = {
+      'Remove Product': `Remove "${reportContext?.product?.title || report.product_name}" from the marketplace.`,
+      'Suspend User': `Suspend ${reportContext?.seller?.seller_name || report.seller_name || report.seller_id}.`,
+      Refund: `Transfer ${refundAmount.toFixed(2)} ETB from the seller wallet to the buyer wallet for order #${reportContext?.order?.id}.`,
+    };
+    if (effects[reportDecision] && !window.confirm(`${t('adminReports.confirmEffect')}\n\n${effects[reportDecision]}`)) return;
 
+    reportActionInFlightRef.current = true;
     setReportActionLoading(true);
+    setReportError('');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${id}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getReportRequestHeaders() },
         body: JSON.stringify({
-          status: 'Resolved',
-          decision,
-          priority: report.priority,
-          resolved_at: new Date().toISOString()
-        })
+          decision: reportDecision,
+          reason,
+          ...(reportDecision === 'Refund' ? { refund_amount: reportRefundAmount } : {}),
+        }),
       });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || t('adminReports.resolveError'));
 
-      if (response.ok) {
-        setReportsList(prev => prev.map(r =>
-          r.id === id ? { ...r, status: 'Resolved', decision, priority: r.priority || 'Medium' } : r
-        ));
-
-        setSelectedReport(null);
-        setShowReportModal(false);
-        refreshAuditLogs();
-        notifySuccess('Report resolved successfully.', `admin-report-resolve-${id}`);
-      } else {
-        const payload = await response.json().catch(() => ({}));
-        notifyError(new Error(payload.detail || 'Failed to resolve report.'), `admin-report-resolve-${id}`);
-      }
+      setReportsList(prev => prev.map(r => r.id === id ? { ...r, ...payload, status: 'Resolved' } : r));
+      setSelectedReport(null);
+      setShowReportModal(false);
+      setReportContext(null);
+      refreshAuditLogs();
+      notifySuccess(t('adminReports.resolved'), `admin-report-resolve-${id}`);
     } catch (err) {
       console.error('Error resolving report:', err);
-      notifyError(err, `admin-report-resolve-${id}`);
+      setReportError(getErrorMessage(err));
     } finally {
+      reportActionInFlightRef.current = false;
       setReportActionLoading(false);
-      setReportDecision('Warning');
     }
   };
 
-  const handleOpenReportModal = (report) => {
-    setSelectedReport(report);
-    setShowReportModal(true);
-    setReportDecision('Warning');
+  const loadReportContext = async (reportId) => {
+    setReportContextLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${reportId}/context`, {
+        headers: getReportRequestHeaders(),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || t('adminReports.contextError'));
+      setReportContext(payload);
+      if (payload.order?.paid_amount) setReportRefundAmount(payload.order.paid_amount);
+    } catch (error) {
+      console.error('Failed to load report context:', error);
+      setReportError(getErrorMessage(error));
+    } finally {
+      setReportContextLoading(false);
+    }
   };
 
-  const handleViewEvidence = () => {
+  const handleOpenReportModal = async (report) => {
+    setSelectedReport(report);
+    setShowReportModal(true);
+    setReportDecision('');
+    setReportReason('');
+    setReportRefundAmount('');
+    setReportContext(null);
+    setReportError('');
+    setReportReviewOwned(false);
+    await loadReportContext(report.id);
+
+    if (report.status === 'Resolved') return;
+    setReportReviewLoading(true);
+    try {
+      const requestReview = (takeOver) => fetch(`${API_BASE_URL}/api/admin/reports/${report.id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getReportRequestHeaders() },
+        body: JSON.stringify({ take_over: takeOver }),
+      });
+      let response = await requestReview(false);
+      let payload = await response.json().catch(() => ({}));
+      if (response.status === 409 && /being reviewed by/i.test(payload.detail || '')) {
+        if (!window.confirm(`${payload.detail}\n\n${t('adminReports.takeOverConfirm')}`)) return;
+        response = await requestReview(true);
+        payload = await response.json().catch(() => ({}));
+      }
+      if (!response.ok) throw new Error(payload.detail || t('adminReports.reviewError'));
+      setSelectedReport((current) => current?.id === report.id ? { ...current, ...payload } : current);
+      setReportsList((current) => current.map((item) => item.id === report.id ? { ...item, ...payload } : item));
+      setReportReviewOwned(true);
+      await loadReportContext(report.id);
+    } catch (error) {
+      console.error('Failed to open report for review:', error);
+      setReportError(getErrorMessage(error));
+    } finally {
+      setReportReviewLoading(false);
+    }
+  };
+
+  const handleViewEvidence = async () => {
     if (!selectedReport?.evidence_image) {
       setReportToast('No evidence photo was attached to this report.');
       window.setTimeout(() => setReportToast(''), 3000);
+      return;
+    }
+    if (selectedReport.evidence_image.startsWith('/api/admin/reports/')) {
+      try {
+        const response = await fetch(`${API_BASE_URL}${selectedReport.evidence_image}`, {
+          headers: getReportRequestHeaders(),
+        });
+        if (!response.ok) throw new Error('Evidence could not be loaded.');
+        setEvidenceImage(URL.createObjectURL(await response.blob()));
+      } catch (error) {
+        setReportToast(getErrorMessage(error));
+        window.setTimeout(() => setReportToast(''), 3000);
+      }
       return;
     }
     setEvidenceImage(selectedReport.evidence_image);
@@ -3058,13 +3217,15 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
     if (!selectedReport) return;
     setConversationLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${selectedReport.id}/conversation-logs`);
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${selectedReport.id}/conversation-logs`, {
+        headers: getReportRequestHeaders(),
+      });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || 'Unable to load conversation logs.');
       setConversationLogs(payload);
     } catch (error) {
       console.error('Failed to load conversation logs:', error);
-      setReportToast(error.message || 'Unable to load conversation logs.');
+      setReportToast(getErrorMessage(error));
       window.setTimeout(() => setReportToast(''), 3000);
     } finally {
       setConversationLoading(false);
@@ -5934,6 +6095,12 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
           </div>
         );
       }
+      case 'support':
+        return <AdminSupportInbox />;
+      case 'admin-users':
+        return <AdminUsersPage />;
+      case 'product-reviews':
+        return <AdminProductReviewsPage />;
       case 'reports': {
         const enrichedReports = reportsList.map((report) => ({
           ...report,
@@ -6119,104 +6286,184 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
               )}
             </div>
 
-            {selectedReport && (
-              <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[1000] flex items-center justify-center p-4">
-                <div className="bg-white rounded-[32px] border border-slate-200 p-8 shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-                  <div className="mb-6 flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">Report Resolution</p>
-                      <h3 className="mt-1 text-2xl font-black text-slate-950">{selectedReport.report_id}</h3>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => { setSelectedReport(null); setShowReportModal(false); }}
-                      className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-sm font-bold text-slate-600"
-                    >
-                      ✕
-                    </button>
-                  </div>
+            {selectedReport && (() => {
+              const generalReport = /general/i.test(selectedReport.category || '');
+              const noContextLabel = generalReport ? t('adminReports.notSpecified') : t('adminReports.notRecorded');
+              const productId = reportContext?.product?.id || selectedReport.product_id;
+              const productTitle = reportContext?.product?.title || selectedReport.product_name;
+              const sellerName = reportContext?.seller?.seller_name || selectedReport.seller_name || selectedReport.seller_id;
+              const paidAmount = Number(reportContext?.order?.paid_amount);
+              const refundAmount = Number(reportRefundAmount);
+              const refundValid = reportDecision !== 'Refund'
+                || (Number.isFinite(refundAmount) && refundAmount > 0 && Number.isFinite(paidAmount) && refundAmount <= paidAmount);
+              const canResolve = Boolean(
+                reportReviewOwned
+                && !reportReviewLoading
+                && !reportActionLoading
+                && selectedReport.status !== 'Resolved'
+                && reportDecision
+                && reportReason.trim().length >= 10
+                && refundValid,
+              );
+              const accountAgeLabel = (createdAt) => {
+                if (!createdAt) return noContextLabel;
+                const ageInDays = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 86400000));
+                if (ageInDays >= 365) return `${Math.floor(ageInDays / 365)} ${t('adminReports.years')}`;
+                if (ageInDays >= 30) return `${Math.floor(ageInDays / 30)} ${t('adminReports.months')}`;
+                return `${ageInDays} ${t('adminReports.days')}`;
+              };
+              const closeReportModal = () => {
+                if (reportActionLoading) return;
+                setSelectedReport(null);
+                setShowReportModal(false);
+                setReportContext(null);
+                setReportError('');
+              };
 
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Complaint Type</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{getComplaintType(selectedReport.issue)}</p>
+              return (
+                <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/60 p-2 backdrop-blur-sm sm:p-4">
+                  <div className="flex max-h-[96dvh] w-full max-w-4xl flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl sm:max-h-[92dvh] sm:rounded-[32px]">
+                    <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-7 sm:py-5">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-600">{t('adminReports.title')}</p>
+                        <h3 className="mt-1 text-2xl font-black text-slate-950">{selectedReport.report_id}</h3>
+                      </div>
+                      <button type="button" onClick={closeReportModal} disabled={reportActionLoading} aria-label={t('adminReports.close')} className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-sm font-bold text-slate-600 disabled:opacity-50">✕</button>
                     </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Priority</p>
-                      <p className="mt-2 text-base font-black text-slate-900">
-                        {typeof selectedReport.priority === 'object' ? selectedReport.priority.label : selectedReport.priority}
-                      </p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Reporter</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.student}</p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Student ID</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.student_id}</p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Reported Seller</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{getReportedSeller(selectedReport.issue)}</p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Product</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.product_name}</p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200 md:col-span-2">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Issue Detail</p>
-                      <p className="mt-2 text-sm leading-6 text-slate-700">{selectedReport.issue}</p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Status</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{selectedReport.status}</p>
-                    </div>
-                    <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Date</p>
-                      <p className="mt-2 text-base font-black text-slate-900">{new Date(selectedReport.date).toLocaleString()}</p>
-                    </div>
-                  </div>
 
-                  <div className="mt-6 flex flex-wrap gap-3">
-                    <button type="button" onClick={handleViewEvidence} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100">View Evidence Photo</button>
-                    <button type="button" onClick={handleViewConversationLogs} disabled={conversationLoading} className="rounded-full border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60">{conversationLoading ? 'Loading Logs...' : 'View Conversation Logs'}</button>
-                  </div>
+                    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-7 sm:py-5">
+                      {reportError && <p role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{reportError}</p>}
+                      {reportReviewLoading && <p role="status" className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">{t('adminReports.openingReview')}</p>}
 
-                  <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                    <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Admin Decision</label>
-                    <select
-                      value={reportDecision}
-                      onChange={(e) => setReportDecision(e.target.value)}
-                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
-                    >
-                      <option value="Warning">Warning</option>
-                      <option value="Remove Product">Remove Product</option>
-                      <option value="Suspend User">Suspend User</option>
-                      <option value="Refund">Refund</option>
-                      <option value="Reject">Reject</option>
-                    </select>
-                  </div>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.reporter')}</p>
+                          <p className="mt-2 font-black text-slate-900">{selectedReport.student || noContextLabel}</p>
+                          <p className="mt-1 text-xs text-slate-600">{t('adminReports.studentId')}: {selectedReport.student_id || noContextLabel}</p>
+                          <p className="mt-1 text-xs text-slate-600">{t('adminReports.reportCount')}: {reportContext?.reporter?.report_count ?? noContextLabel}</p>
+                          <p className="mt-1 text-xs text-slate-600">{t('adminReports.verified')}: {reportContext?.reporter?.verified_student == null ? noContextLabel : reportContext.reporter.verified_student ? t('adminReports.yes') : t('adminReports.no')}</p>
+                          <p className="mt-1 text-xs text-slate-600">{t('adminReports.accountAge')}: {accountAgeLabel(reportContext?.reporter?.account_created_at)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.reportedSeller')}</p>
+                          <p className="mt-2 font-black text-slate-900">{sellerName || noContextLabel}</p>
+                          {reportContext?.seller && (
+                            <>
+                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.complaints')}: {reportContext.seller.complaint_count}</p>
+                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.rating')}: {reportContext.seller.average_rating == null ? t('adminReports.noRatings') : `${reportContext.seller.average_rating.toFixed(1)} / 5 (${reportContext.seller.rating_count})`}</p>
+                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.verified')}: {reportContext.seller.verified_student ? t('adminReports.yes') : t('adminReports.no')}</p>
+                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.accountAge')}: {accountAgeLabel(reportContext.seller.account_created_at)}</p>
+                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.walletStatus')}: {reportContext.seller.wallet_status?.join(', ') || noContextLabel}</p>
+                            </>
+                          )}
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.product')}</p>
+                          {productId && productTitle ? (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate?.('product-details', { productId })}
+                              className="mt-2 text-left font-black text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900"
+                            >
+                              {productTitle}
+                            </button>
+                          ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
+                          <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.order')}</p>
+                          {reportContext?.order ? (
+                            <p className="mt-2 font-black text-slate-900">#{reportContext.order.id} · {reportContext.order.title}</p>
+                          ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
+                          {reportContext?.order?.paid_amount && <p className="mt-1 text-xs text-slate-600">{t('adminReports.paidAmount')}: {Number(reportContext.order.paid_amount).toFixed(2)} ETB</p>}
+                        </div>
+                      </div>
 
-                  <div className="mt-6 flex justify-end gap-3">
-                    <button
-                      type="button"
-                      onClick={() => { setSelectedReport(null); setShowReportModal(false); }}
-                      className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50"
-                    >
-                      Close
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleResolveReport(selectedReport.id, reportDecision)}
-                      disabled={reportActionLoading}
-                      className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {reportActionLoading ? 'Resolving...' : 'Resolve'}
-                    </button>
+                      {reportContextLoading && <p role="status" className="text-sm font-semibold text-slate-500">{t('adminReports.loadingContext')}</p>}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.complaintType')}</p>
+                          <p className="mt-2 font-black text-slate-900">{getComplaintType(selectedReport.issue)}</p>
+                          <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.status')}</p>
+                          <p className="mt-1 font-black text-slate-900">{selectedReport.status}</p>
+                          {selectedReport.reviewed_by_name && <p className="mt-2 text-xs text-slate-600">{t('adminReports.reviewedBy')}: {selectedReport.reviewed_by_name} · {selectedReport.reviewed_at ? new Date(selectedReport.reviewed_at).toLocaleString() : ''}</p>}
+                        </div>
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.issueDetails')}</p>
+                          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">{selectedReport.issue}</p>
+                          <p className="mt-3 text-xs text-slate-500">{selectedReport.date ? new Date(selectedReport.date).toLocaleString() : noContextLabel}</p>
+                        </div>
+                      </div>
+
+                      {reportContext?.seller_response && (
+                        <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-indigo-700">{t('adminReports.sellerResponse')}</p>
+                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-800">{reportContext.seller_response}</p>
+                          {reportContext.seller_response_at && <p className="mt-2 text-xs text-slate-500">{new Date(reportContext.seller_response_at).toLocaleString()}</p>}
+                          {reportContext.seller_response_image && <img src={resolveImageUrl(reportContext.seller_response_image)} alt={t('adminReports.sellerResponsePhoto')} className="mt-3 max-h-64 rounded-xl object-contain" />}
+                        </div>
+                      )}
+                      {reportContext?.appeal && (
+                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-amber-800">{t('adminReports.appeal')}</p>
+                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-800">{reportContext.appeal.text}</p>
+                          <p className="mt-2 text-xs text-slate-600">{reportContext.appeal.by} · {new Date(reportContext.appeal.at).toLocaleString()}</p>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap gap-3">
+                        <button type="button" onClick={handleViewEvidence} className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100">{t('adminReports.viewEvidence')}</button>
+                        <button type="button" onClick={handleViewConversationLogs} disabled={conversationLoading} className="rounded-full border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60">{conversationLoading ? t('adminReports.loadingLogs') : t('adminReports.viewConversation')}</button>
+                      </div>
+
+                      {selectedReport.status === 'Resolved' ? (
+                        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                          <p className="font-black text-emerald-900">{t('adminReports.resolvedDecision')}: {selectedReport.decision}</p>
+                          <p className="mt-2 whitespace-pre-wrap text-sm text-emerald-900">{selectedReport.decision_reason}</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                          <div>
+                            <label className="block text-sm font-bold text-slate-700" htmlFor="admin-report-decision">{t('adminReports.decision')}</label>
+                            <select id="admin-report-decision" value={reportDecision} onChange={(event) => setReportDecision(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none">
+                              <option value="">{t('adminReports.selectDecision')}</option>
+                              <option value="Warning">{t('adminReports.warning')}</option>
+                              <option value="Remove Product">{t('adminReports.removeProduct')}</option>
+                              <option value="Suspend User">{t('adminReports.suspendUser')}</option>
+                              <option value="Refund">{t('adminReports.refund')}</option>
+                              <option value="Reject">{t('adminReports.reject')}</option>
+                            </select>
+                          </div>
+                          {reportDecision === 'Refund' && reportContext?.order && (
+                            <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2">
+                              <p className="text-sm font-semibold text-amber-900 sm:col-span-2">{t('adminReports.refundOrder')}: #{reportContext.order.id} · {reportContext.order.title}</p>
+                              <p className="text-sm text-amber-900">{t('adminReports.paidAmount')}: {paidAmount.toFixed(2)} ETB</p>
+                              <label className="text-sm font-semibold text-amber-900">
+                                {t('adminReports.refundAmount')}
+                                <input type="number" min="0.01" max={Number.isFinite(paidAmount) ? paidAmount : undefined} step="0.01" value={reportRefundAmount} onChange={(event) => setReportRefundAmount(event.target.value)} className="mt-1 w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-slate-900" />
+                              </label>
+                              {!refundValid && <p role="alert" className="text-sm font-semibold text-rose-700 sm:col-span-2">{t('adminReports.refundAmountError')}</p>}
+                            </div>
+                          )}
+                          {reportDecision === 'Refund' && !reportContext?.order && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">{t('adminReports.refundRequiresOrder')}</p>}
+                          <div>
+                            <label className="block text-sm font-bold text-slate-700" htmlFor="admin-report-reason">{t('adminReports.reason')}</label>
+                            <textarea id="admin-report-reason" rows="3" maxLength={2000} value={reportReason} onChange={(event) => setReportReason(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" placeholder={t('adminReports.reasonPlaceholder')} />
+                            <p className={`mt-1 text-xs ${reportReason.trim().length < 10 ? 'text-rose-600' : 'text-slate-500'}`}>{t('adminReports.reasonMinLength')}: {reportReason.trim().length}/10</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="sticky bottom-0 flex shrink-0 justify-end gap-3 border-t border-slate-200 bg-white px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-8px_20px_-16px_rgba(15,23,42,0.45)] sm:px-7">
+                      <button type="button" onClick={closeReportModal} disabled={reportActionLoading} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">{t('adminReports.close')}</button>
+                      {selectedReport.status !== 'Resolved' && (
+                        <button type="button" onClick={() => handleResolveReport(selectedReport.id)} disabled={!canResolve} className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">
+                          {reportActionLoading ? t('adminReports.resolving') : t('adminReports.resolve')}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {reportToast && (
               <div role="alert" className="fixed right-6 top-6 z-[1200] rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm font-bold text-amber-800 shadow-lg">
                 {reportToast}
@@ -7532,34 +7779,54 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
       case 'disputes':
         return <AdminDisputeReview user={user} onCountChange={setOpenDisputeCount} />;
       default:
-        return null;
+        return (
+          <div className="space-y-4 rounded-[32px] border border-slate-200 bg-white p-8 text-center shadow-sm" role="alert">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-600">Admin section unavailable</p>
+            <h2 className="text-3xl font-black text-slate-950">Page not found</h2>
+            <p className="mt-2 text-sm text-slate-600">The requested section could not be found or is no longer available.</p>
+            <button
+              type="button"
+              onClick={() => handleTabClick('dashboard')}
+              className="mt-5 inline-flex rounded-full bg-slate-900 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800"
+            >
+              Go to Dashboard
+            </button>
+          </div>
+        );
     }
   };
 
+  const toggleAdminGroup = (groupKey, collapsed) => {
+    if (collapsed) {
+      setIsDesktopSidebarCollapsed(false);
+      setExpandedGroups((current) => current.includes(groupKey) ? current : [...current, groupKey]);
+      return;
+    }
+    setExpandedGroups((current) => current.includes(groupKey)
+      ? current.filter((key) => key !== groupKey)
+      : [...current, groupKey]);
+  };
+
   return (
-    <div className="admin-dashboard-shell flex min-h-[calc(100dvh-4rem)] flex-col bg-slate-50 text-slate-900 lg:min-h-0">
+    <div className="admin-dashboard-shell flex h-full min-h-0 flex-col bg-slate-50 text-slate-900">
       <div
-        className="admin-dashboard-layout flex flex-1 flex-col items-start gap-3 px-3 py-2 lg:h-full lg:min-h-0 lg:flex-row lg:px-4 lg:py-4"
+        className="admin-dashboard-layout flex min-h-0 flex-1 flex-col lg:flex-row"
         data-admin-sidebar-layout
         data-sidebar-collapsed={isDesktopSidebarCollapsed}
-        style={{ '--admin-sidebar-width': isDesktopSidebarCollapsed ? '72px' : '288px' }}
       >
-        {/* Dark Navy Collapsible Sidebar with Custom Scrollbar */}
         <aside
           data-collapsed={isDesktopSidebarCollapsed}
-          className="admin-dashboard-sidebar relative hidden lg:flex lg:min-h-0 lg:w-72 lg:shrink-0 lg:flex-col lg:overflow-hidden rounded-[28px] bg-[#111c3a] p-6 text-white shadow-xl"
+          className={`admin-dashboard-sidebar fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col overflow-y-auto bg-[#111c3a] p-4 text-white shadow-2xl transition-[transform,width] duration-200 [scrollbar-width:thin] lg:sticky lg:top-0 lg:h-full lg:rounded-r-2xl lg:shadow-none ${isDesktopSidebarCollapsed ? 'lg:w-20' : 'lg:w-72'} ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
         >
-          {/* Positioned and clipped so the brand mark cannot bleed into the global header. */}
-          <div className="admin-sidebar-brand relative z-10 flex shrink-0 items-start justify-between gap-3 overflow-hidden">
-            {/* The logo stays in normal flow at the top of the header; no absolute or negative offset can make it bleed out. */}
-            <img src={logs} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
+          <div className="admin-sidebar-brand flex shrink-0 items-center justify-between gap-2 border-b border-white/10 pb-4">
+            <img src={logs} alt="UniXchange Admin" className="h-10 w-10 shrink-0 rounded-xl object-cover" />
+            <span className={`min-w-0 flex-1 text-sm font-black ${isDesktopSidebarCollapsed ? 'lg:hidden' : ''}`}>Admin Console</span>
             <button
               type="button"
               onClick={() => {
                 setIsDesktopSidebarCollapsed((collapsed) => !collapsed);
-                setDesktopSidebarTooltip(null);
               }}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-300 transition hover:bg-white/10 hover:text-white"
+              className="hidden h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-300 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 lg:grid"
               aria-label={isDesktopSidebarCollapsed ? 'Expand admin navigation' : 'Collapse admin navigation'}
               aria-expanded={!isDesktopSidebarCollapsed}
             >
@@ -7569,138 +7836,41 @@ function AdminDashboard({ onLogout, onSessionExpired, user, onUserUpdate, initia
                   : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5l-7 7 7 7" />}
               </svg>
             </button>
-          </div>
-
-          <nav className="admin-sidebar-menu flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain pb-4 pr-1">
-            {adminTabs.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  ref={isActive ? activeDesktopSidebarItemRef : null}
-                  type="button"
-                  onClick={() => handleTabClick(tab.id)}
-                  onMouseEnter={(event) => {
-                    if (isDesktopSidebarCollapsed) {
-                      const bounds = event.currentTarget.getBoundingClientRect();
-                      setDesktopSidebarTooltip({ label: tab.label, top: bounds.top + bounds.height / 2, left: bounds.right + 12 });
-                    }
-                  }}
-                  onMouseLeave={() => setDesktopSidebarTooltip(null)}
-                  onFocus={(event) => {
-                    if (isDesktopSidebarCollapsed) {
-                      const bounds = event.currentTarget.getBoundingClientRect();
-                      setDesktopSidebarTooltip({ label: tab.label, top: bounds.top + bounds.height / 2, left: bounds.right + 12 });
-                    }
-                  }}
-                  onBlur={() => setDesktopSidebarTooltip(null)}
-                  aria-label={tab.label}
-                  title={isDesktopSidebarCollapsed ? tab.label : undefined}
-                  data-tooltip={tab.label}
-                  className={`admin-sidebar-item group mb-2 flex w-full shrink-0 items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
-                    ? 'bg-[#1d4ed8] text-white shadow-md'
-                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                    }`}
-                >
-                  <span className="admin-sidebar-item-label flex items-center gap-2">{tab.label}{tab.id === 'disputes' && openDisputeCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{openDisputeCount}</span>}</span>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className={`h-5 w-5 ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-white'}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
-                  </svg>
-                </button>
-              );
-            })}
-          </nav>
-          {isDesktopSidebarCollapsed && desktopSidebarTooltip && (
-            <span
-              role="tooltip"
-              className="admin-sidebar-tooltip"
-              style={{ top: desktopSidebarTooltip.top, left: desktopSidebarTooltip.left }}
-            >
-              {desktopSidebarTooltip.label}
-            </span>
-          )}
-        </aside>
-
-        <aside id="admin-mobile-navigation" className={`fixed left-0 top-[72px] bottom-0 z-50 flex w-72 flex-col overflow-hidden bg-[#111c3a] p-6 text-white shadow-2xl transition-transform duration-300 max-md:w-[85%] max-md:max-w-[320px] lg:hidden ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-          {/* The mobile header uses the same relative/clipped containment as desktop. */}
-          <div className="relative z-10 flex min-h-0 items-start gap-3 overflow-hidden">
-            <img src={logo1} alt="Campace Admin logo" className="relative z-10 h-10 w-10 shrink-0 rounded-xl object-cover" />
             <button
               type="button"
               onClick={() => setIsSidebarOpen(false)}
-              className="rounded-lg p-2 text-slate-300 transition hover:bg-white/10 hover:text-white"
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-300 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 lg:hidden"
               aria-label="Close admin navigation"
             >
-              ✕
+              <span aria-hidden="true">×</span>
             </button>
           </div>
-          <nav className="flex max-h-[calc(100vh-120px)] flex-col overflow-y-auto pr-1 scrollbar-thin scrollbar-track-slate-900/20 scrollbar-thumb-slate-600/60">
-            {adminTabs.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => handleTabClick(tab.id)}
-                  className={`mb-2 flex w-full items-center justify-between rounded-3xl px-4 py-3 text-left text-sm font-semibold transition duration-200 cursor-pointer ${isActive
-                    ? 'bg-[#1d4ed8] text-white shadow-md'
-                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                    }`}
-                >
-                  <span className="flex items-center gap-2">{tab.label}{tab.id === 'disputes' && openDisputeCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{openDisputeCount}</span>}</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 ${isActive ? 'text-white' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                    <path strokeLinecap="round" strokeLinejoin="round" d={tab.icon} />
-                  </svg>
-                </button>
-              );
-            })}
+          <nav className="admin-sidebar-menu mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain pb-4 pr-1">
+            <AdminSidebarNavigation
+              navigation={visibleNavigation}
+              activePath={activeTab}
+              counts={sidebarCounts}
+              collapsed={isDesktopSidebarCollapsed}
+              expandedGroups={expandedGroups}
+              onNavigate={handleTabClick}
+              onGroupToggle={toggleAdminGroup}
+            />
           </nav>
         </aside>
-        {
-          isSidebarOpen && (
-            <div onClick={() => setIsSidebarOpen(false)} className="admin-sidebar-backdrop fixed top-[72px] bottom-0 left-0 right-0 z-40 bg-slate-950/70 backdrop-blur-xs md:bg-slate-900/40 lg:hidden" />
-          )
-        }
+        {isSidebarOpen && <button type="button" aria-label="Close admin navigation" onClick={() => setIsSidebarOpen(false)} className="fixed inset-0 z-30 bg-black/50 lg:hidden" />}
 
-        {/* Main Panel Content Area */}
-        {/* Start content directly below the global navbar; the former empty hero card is removed. */}
-        <main className="admin-dashboard-content min-w-0 flex-1 overflow-x-hidden pb-8 pt-4 lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:pt-2 lg:pr-2">
-
-          <div className="admin-dashboard-mobile-toggle mb-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm md:p-3 lg:hidden">
-            <button
-              type="button"
-              onClick={() => setIsSidebarOpen(true)}
-              aria-controls="admin-mobile-navigation"
-              aria-expanded={isSidebarOpen}
-              aria-label={isSidebarOpen ? 'Close admin navigation' : 'Open admin navigation'}
-              className="hidden h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-900 text-white md:grid"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <div className="min-w-0">
-              <p className="text-xs font-bold uppercase text-slate-500">Admin Console</p>
-              <p className="truncate text-sm font-bold text-slate-900">{adminTabs.find((tab) => tab.id === activeTab)?.label || 'Dashboard'}</p>
-            </div>
-          </div>
-
-          <section className="min-w-0 overflow-hidden rounded-[32px] bg-slate-50 shadow-sm">
-            {isReady ? renderTabContent() : (
-              <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm">
-                Loading admin tools...
-              </div>
-            )}
+        <main className="admin-dashboard-content min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-4 lg:p-6">
+          <section className="min-w-0 overflow-hidden">
+            <AdminDashboardErrorBoundary>
+              {isReady ? renderTabContent() : (
+                <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-center text-slate-500 shadow-sm">
+                  Loading admin tools...
+                </div>
+              )}
+            </AdminDashboardErrorBoundary>
           </section>
         </main>
-      </div >
+      </div>
 
       {showProfileModal && (
         <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">

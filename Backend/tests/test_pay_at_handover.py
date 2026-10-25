@@ -178,9 +178,9 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
         assert db.query(AuditLog).filter_by(action="payment_completed").count() == 1
         assert db.query(Notification).filter_by(student_id="buyer-1").count() == 1
         assert db.query(Notification).filter_by(student_id="seller-1").count() == 1
-        for student_id, title in (
-            ("buyer-1", "Payment completed"),
-            ("seller-1", "Payment received"),
+        for student_id, title, role in (
+            ("buyer-1", "Payment completed", "buyer"),
+            ("seller-1", "Payment received", "seller"),
         ):
             notification = db.query(Notification).filter_by(
                 student_id=student_id,
@@ -188,7 +188,7 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
             ).one()
             assert notification.reference_id == str(body["order_id"])
             assert notification.action_url == (
-                f"/dashboard?tab=buyer&section=orders&order={body['order_id']}"
+                f"/dashboard?tab={role}&section=orders&order={body['order_id']}"
             )
             assert notification.action_label == "View Order"
             assert json.loads(notification.target) == {
@@ -198,6 +198,7 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
 
     notification_response = client.get(
         "/api/student/notifications?student_id=buyer-1",
+        headers=_headers(),
     )
     assert notification_response.status_code == 200
     buyer_notification = notification_response.json()["notifications"][0]

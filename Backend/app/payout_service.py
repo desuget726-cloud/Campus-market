@@ -40,6 +40,10 @@ def _chapa_secret_key() -> str:
     )
 
 
+def get_chapa_secret_key() -> str:
+    return _chapa_secret_key()
+
+
 def get_chapa_webhook_secret() -> str:
     mode = get_chapa_mode()
     if mode == "live":
@@ -150,9 +154,12 @@ class ChapaPayoutAdapter(PayoutAdapter):
 
         if response.is_error:
             message = response_payload.get("message") if isinstance(response_payload, dict) else None
+            safe_message = str(message or "The payout provider rejected the transfer.")
+            if account_number:
+                safe_message = safe_message.replace(account_number, "[redacted]")
             raise PayoutProviderError(
                 f"Chapa transfer failed (HTTP {response.status_code}): "
-                f"{message or 'The payout provider rejected the transfer.'}",
+                f"{safe_message}",
                 retryable=False,
                 status_code=response.status_code,
             )

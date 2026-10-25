@@ -68,7 +68,12 @@ class StudentVerificationNotificationTests(unittest.TestCase):
         self.assertEqual(notification.type, "SYSTEM")
         self.assertEqual(notification.action_label, "Go to Marketplace")
         self.assertEqual(notification.action_url, "buyer")
-        response = main_module.get_student_notifications(self.student.student_id, db=self.db)
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            response = main_module.get_student_notifications(
+                self.student.student_id,
+                authorization="Bearer test-token",
+                db=self.db,
+            )
         self.assertEqual(response["notifications"][0]["action_label"], "Go to Marketplace")
         self.assertEqual(response["notifications"][0]["action_url"], "buyer")
 

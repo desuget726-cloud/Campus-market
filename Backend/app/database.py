@@ -106,6 +106,50 @@ def init_db() -> None:
                 table.dialect_options["mysql"]["collate"] = student_id_collation
     Base.metadata.create_all(bind=engine, tables=tables)
     inspector = inspect(engine)
+    if "support_tickets" in inspector.get_table_names():
+        support_ticket_columns = {
+            column["name"] for column in inspect(engine).get_columns("support_tickets")
+        }
+        support_ticket_additions = {
+            "subject": "VARCHAR(200) NULL",
+            "assigned_admin_id": "INTEGER NULL",
+            "last_admin_reply_at": "DATETIME NULL",
+            "last_reminder_at": "DATETIME NULL",
+            "reopen_used": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "reopened_at": "DATETIME NULL",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
+        }
+        for column_name, column_definition in support_ticket_additions.items():
+            if column_name not in support_ticket_columns:
+                _add_column_if_missing("support_tickets", column_name, column_definition)
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE support_tickets SET status = CASE LOWER(status) "
+                "WHEN 'open' THEN 'Open' "
+                "WHEN 'in_progress' THEN 'In Progress' "
+                "WHEN 'waiting for user' THEN 'Waiting for User' "
+                "WHEN 'resolved' THEN 'Resolved' "
+                "WHEN 'closed' THEN 'Closed' "
+                "ELSE status END"
+            ))
+    if "reports" in inspector.get_table_names():
+        report_columns = {
+            column["name"] for column in inspect(engine).get_columns("reports")
+        }
+        if "revision" not in report_columns:
+            _add_column_if_missing("reports", "revision", "INTEGER NOT NULL DEFAULT 1")
+    if "notifications" in inspector.get_table_names():
+        notification_indexes = {
+            index["name"]: index for index in inspect(engine).get_indexes("notifications")
+        }
+        legacy_unique_index = notification_indexes.get("uq_notifications_user_type_reference")
+        if legacy_unique_index and legacy_unique_index.get("unique"):
+            if engine.dialect.name == "mysql":
+                statement = "ALTER TABLE notifications DROP INDEX uq_notifications_user_type_reference"
+            else:
+                statement = "DROP INDEX uq_notifications_user_type_reference"
+            with engine.begin() as connection:
+                connection.execute(text(statement))
     if "admin_login_history" in inspect(engine).get_table_names():
         login_history_columns = {
             column["name"] for column in inspect(engine).get_columns("admin_login_history")
@@ -154,12 +198,55 @@ def init_db() -> None:
                 "frozen_amount",
                 "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
             )
+    if "reports" in inspector.get_table_names():
+        report_additions = {
+            "order_id": "INT NULL",
+            "reviewed_by": "INT NULL",
+            "reviewed_at": "DATETIME NULL",
+            "decision": "VARCHAR(50) NULL",
+            "decision_reason": "TEXT NULL",
+            "resolved_by": "INT NULL",
+            "resolved_at": "DATETIME NULL",
+            "refunded_amount": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
+            "seller_response": "TEXT NULL",
+            "seller_response_image": "TEXT NULL",
+            "seller_response_at": "DATETIME NULL",
+            "appeal_text": "TEXT NULL",
+            "appealed_by": "VARCHAR(50) NULL",
+            "appealed_at": "DATETIME NULL",
+        }
+        for column_name, definition in report_additions.items():
+            _add_column_if_missing("reports", column_name, definition)
     if "payment_idempotency" in inspector.get_table_names():
         idempotency_columns = {column["name"] for column in inspector.get_columns("payment_idempotency")}
         if "product_id" not in idempotency_columns:
             _add_column_if_missing(
                 "payment_idempotency", "product_id", "INT NULL"
             )
+        if engine.dialect.name == "mysql":
+            order_id = next(
+                column for column in inspector.get_columns("payment_idempotency")
+                if column["name"] == "order_id"
+            )
+            if not order_id["nullable"]:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        "ALTER TABLE payment_idempotency MODIFY COLUMN order_id INT NULL"
+                    ))
+    if "seller_payment_accounts" in inspector.get_table_names():
+        payout_columns = {
+            column["name"] for column in inspector.get_columns("seller_payment_accounts")
+        }
+        payout_additions = {
+            "encrypted_account_number": "VARCHAR(255) NULL",
+            "account_last4": "VARCHAR(4) NULL",
+            "created_at": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        }
+        for column_name, definition in payout_additions.items():
+            if column_name not in payout_columns:
+                _add_column_if_missing(
+                    "seller_payment_accounts", column_name, definition
+                )
     inspector = inspect(engine)
     if "reviews" in inspector.get_table_names():
         review_constraints = {

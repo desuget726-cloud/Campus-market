@@ -12,7 +12,8 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     const initialPage = window.location.pathname.replace(/\/+$/, '').split('/').pop();
     return ['about', 'services', 'contact'].includes(initialPage) ? initialPage : 'home';
   });
-  const [profileUser, setProfileUser] = useState(user);
+  const [profileState, setProfileState] = useState(() => ({ source: user, value: user }));
+  const profileUser = profileState.source === user ? profileState.value : user;
   const languageMenuRef = useRef(null);
   const headerRef = useRef(null);
   const { t, language, setLanguage } = useLanguage();
@@ -28,10 +29,6 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const avatarSrc = displayUser?.avatarUrl || displayUser?.avatar_url || (isAdmin
     ? ''
     : (displayUser?.studentId ? `/static/uploads/avatars/${displayUser.studentId}.jpg` : ''));
-
-  useEffect(() => {
-    setProfileUser(user);
-  }, [user]);
 
   useEffect(() => {
     if (!isLanguageMenuOpen) return undefined;
@@ -79,7 +76,12 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         if (!response.ok) return;
 
         const data = await response.json();
-        if (!cancelled) setProfileUser((current) => ({ ...current, ...data }));
+        if (!cancelled) {
+          setProfileState((current) => ({
+            source: user,
+            value: { ...(current.source === user ? current.value : user), ...data },
+          }));
+        }
       } catch (error) {
         console.warn('Failed to refresh the admin navbar profile.', error);
       }
@@ -87,7 +89,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
     fetchAdminProfile();
     return () => { cancelled = true; };
-  }, [isAdmin, user?.accessToken, user?.access_token, userRole]);
+  }, [isAdmin, user, userRole]);
 
   return (
     <header ref={headerRef} className="site-navbar sticky top-0 z-50 h-[72px] w-full shrink-0 border-b border-blue-900 text-white">
@@ -99,7 +101,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             aria-label="Open admin navigation"
             aria-controls="admin-mobile-navigation"
             onClick={() => window.dispatchEvent(new Event('campace:toggle-dashboard-sidebar'))}
-            className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-white/15 text-white md:hidden"
+            className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-white/15 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 lg:hidden"
           >
             <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <path d="M4 6h16M4 12h16M4 18h16" />

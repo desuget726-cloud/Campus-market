@@ -27,19 +27,44 @@ import {
   normalizeInternalReturnTo,
 } from './utils/productActionState';
 import { parseOrderDashboardLink } from './utils/orderDashboardLink';
+import { getAdminSectionFromSearch, normalizeAdminSection, setAdminSectionUrl } from './utils/adminDashboardSection';
 import { isSessionExpiryResponse } from './utils/sessionExpiry';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
+const ADMIN_SECTION_SESSION_KEY = 'campaceAdminSection';
 
-const normalizeLegacyAdminTab = (tab) => {
-  const normalizedTab = tab || 'dashboard';
-  return ['ai-recommendations', 'id-change-requests', 'id-verification', 'id-verification-requests'].includes(normalizedTab)
-    ? 'dashboard'
-    : normalizedTab;
+const getStoredAdminTab = () => {
+  if (typeof window === 'undefined') return 'dashboard';
+
+  try {
+    const sessionSection = window.sessionStorage.getItem(ADMIN_SECTION_SESSION_KEY);
+    if (sessionSection) return normalizeAdminSection(sessionSection, 'dashboard');
+  } catch (error) {
+    console.warn('Failed to read the pending admin section from sessionStorage:', error);
+  }
+
+  try {
+    const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    const session = saved ? JSON.parse(saved) : null;
+    return normalizeAdminSection(session?.adminTab || getAdminSectionFromSearch(window.location.search, 'dashboard'), 'dashboard');
+  } catch {
+    return 'dashboard';
+  }
 };
 
-const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, nextStudentTab, nextAdminTab) => {
+const persistAdminTab = (nextTab) => {
+  if (typeof window === 'undefined') return;
+
+  const normalizedTab = normalizeAdminSection(nextTab, 'dashboard');
+  try {
+    window.sessionStorage.setItem(ADMIN_SECTION_SESSION_KEY, normalizedTab);
+  } catch (error) {
+    console.warn('Failed to persist the active admin section:', error);
+  }
+};
+
+const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, nextStudentTab) => {
   if (typeof window === 'undefined') return;
 
   try {
@@ -57,7 +82,8 @@ const persistSession = (nextUser, nextRole, nextCurrentView, nextDashboardTab, n
       currentView: nextCurrentView,
       dashboardTab: nextDashboardTab,
       studentTab: nextStudentTab,
-      adminTab: normalizeLegacyAdminTab(nextAdminTab ?? existingSession.adminTab ?? 'dashboard'),
+      // Keep the active admin section in sessionStorage so a new login starts on Dashboard,
+      // while refreshes within the same session still restore the last visited section.
     };
 
     if (session.user) {
@@ -125,18 +151,7 @@ function AppContent() {
       return 'home';
     }
   });
-  const [adminTab, setAdminTab] = useState(() => {
-    if (typeof window === 'undefined') return 'dashboard';
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
-      const session = saved ? JSON.parse(saved) : null;
-      const storedTab = params.get('tab') || session?.adminTab || 'dashboard';
-      return normalizeLegacyAdminTab(storedTab);
-    } catch {
-      return 'dashboard';
-    }
-  });
+  const [adminTab, setAdminTab] = useState(() => getStoredAdminTab());
   const [studentTab, setStudentTab] = useState(() => (
     typeof window === 'undefined'
       ? 'home'
@@ -188,9 +203,11 @@ function AppContent() {
     setCurrentView('home');
     setDashboardTab('home');
     setStudentTab('home');
+    setAdminTab('dashboard');
     setLoginMessage('');
     try {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
     } catch (error) {
       console.error('Failed to clear the local session:', error);
     }
@@ -209,7 +226,13 @@ function AppContent() {
     setCurrentView('login');
     setDashboardTab('home');
     setStudentTab('home');
+    setAdminTab('dashboard');
     setLoginMessage('Session expired, please log in again');
+    try {
+      window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
+    } catch {
+      // Ignore session storage cleanup failures during logout.
+    }
   }, []);
 
   useEffect(() => {
@@ -300,7 +323,6 @@ function AppContent() {
             'student-dashboard',
             storedSession?.dashboardTab || 'home',
             storedSession?.studentTab || 'home',
-            storedSession?.adminTab || 'dashboard',
           );
           return nextUser;
         });
@@ -319,8 +341,24 @@ function AppContent() {
 
   useEffect(() => {
     if (!serializedUser || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
-    persistSession(JSON.parse(serializedUser), activeRole, currentView, dashboardTab, studentTab, adminTab);
+    persistSession(JSON.parse(serializedUser), activeRole, currentView, dashboardTab, studentTab);
   }, [currentView, dashboardTab, adminTab, studentTab, serializedUser, activeRole]);
+
+  useEffect(() => {
+    if (!hasUser || activeRole !== 'admin' || currentView !== 'admin-dashboard' || typeof window === 'undefined') return;
+
+    const requestedTab = getAdminSectionFromSearch(window.location.search, adminTab);
+    const nextTab = normalizeAdminSection(adminTab, 'dashboard');
+    const nextUrl = setAdminSectionUrl(window.location.pathname, window.location.search, nextTab);
+    const nextValue = `${window.location.pathname}${window.location.search}`;
+    if (nextValue !== nextUrl) {
+      const fullUrl = `${nextUrl}${window.location.hash}`;
+      window.history.replaceState({}, '', fullUrl);
+    } else if (requestedTab !== nextTab && !window.location.search) {
+      window.history.replaceState({}, '', `${nextUrl}${window.location.hash}`);
+    }
+    persistAdminTab(nextTab);
+  }, [activeRole, adminTab, currentView, hasUser]);
 
   useEffect(() => {
     const loadSessionTimeout = async () => {
@@ -420,8 +458,10 @@ function AppContent() {
     setUserRole('student');
     setDashboardTab('home');
     setStudentTab('home');
+    setAdminTab('dashboard');
+    window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
     setCurrentView('student-dashboard');
-    persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home', 'dashboard');
+    persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home');
   };
 
   const handleLoginSuccess = (userData, role) => {
@@ -430,6 +470,7 @@ function AppContent() {
     const returnTo = normalizeInternalReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
     const productId = getProductIdFromReturnTo(returnTo) || productAction?.returnTo || null;
     const nextView = productId ? 'home' : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
+    const nextSection = role === 'admin' ? 'dashboard' : 'home';
 
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
     setUser(nextUser);
@@ -438,18 +479,20 @@ function AppContent() {
     setPendingProductAction(productId ? productAction : null);
     setDashboardTab('home');
     setStudentTab('home');
+    setAdminTab(nextSection);
+    persistAdminTab(nextSection);
     setCurrentView(nextView);
     setShowSuccessModal(false);
     if (returnTo) {
       window.history.replaceState({}, '', returnTo);
     }
-    persistSession(nextUser, role, nextView, 'home', 'home', 'dashboard');
+    persistSession(nextUser, role, nextView, 'home', 'home');
   };
 
   const handleContinueToDashboard = () => {
     setShowSuccessModal(false);
     setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
-    persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab, adminTab);
+    persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab);
   };
 
   useEffect(() => {
@@ -546,9 +589,8 @@ function AppContent() {
         return;
       }
       if (view === 'admin-dashboard') {
-        if (params.tab) {
-          setAdminTab(normalizeLegacyAdminTab(params.tab));
-        }
+        const nextTab = getAdminSectionFromSearch(window.location.search, 'dashboard');
+        setAdminTab(normalizeAdminSection(nextTab, 'dashboard'));
         setCurrentView('admin-dashboard');
         return;
       }
@@ -635,7 +677,10 @@ function AppContent() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/student/notifications/mark-read`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.access_token || user?.accessToken || user?.token || ''}`,
+        },
         body: JSON.stringify({ student_id: user.studentId }),
       });
 
@@ -652,7 +697,7 @@ function AppContent() {
 
   return (
     <CartProvider user={user}>
-    <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-screen' : ''}`}>
+    <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-dvh lg:overflow-hidden' : ''}`}>
       <Toaster
         position="top-right"
         containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
@@ -736,7 +781,7 @@ function AppContent() {
           }}
         />
       )}
-      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:min-h-0' : 'min-h-0'}`}>
+      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-[calc(100dvh-72px)] lg:overflow-hidden' : 'min-h-0'}`}>
         <main className={isStudentMessagesView
           ? 'app-main-content app-main-content--messages min-h-0 min-w-0 w-full flex-1 overflow-hidden'
           : ['login', 'register'].includes(currentView)
@@ -745,7 +790,7 @@ function AppContent() {
               ? 'app-main-content w-full min-w-0 flex-1 px-0'
               : ['about', 'services', 'contact'].includes(currentView)
                 ? 'app-main-content w-full min-w-0 flex-1 px-0'
-              : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:min-h-0 lg:pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
+              : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-full !pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' || currentView === 'admin-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
@@ -817,6 +862,7 @@ function AppContent() {
           {activeRole === 'admin' && currentView === 'admin-dashboard' && (
             <AdminDashboard
               onLogout={handleLogout}
+              onNavigate={handleNavigate}
               onSessionExpired={handleApiUnauthorized}
               user={user}
               onUserUpdate={setUser}

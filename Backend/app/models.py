@@ -1,4 +1,4 @@
-﻿# C:\xampp\htdocs\Backend\app\models.py
+# C:\xampp\htdocs\Backend\app\models.py
 from decimal import Decimal
 from datetime import datetime, timezone
 import uuid
@@ -141,9 +141,12 @@ class SellerPaymentAccount(Base):
     payout_type = Column(String(30), default="bank", nullable=False)
     bank_code = Column(String(50), nullable=False)
     account_number = Column(String(100), nullable=True)
+    encrypted_account_number = Column(String(255), nullable=True)
+    account_last4 = Column(String(4), nullable=True)
     phone_number = Column(String(30), nullable=True)
     account_name = Column(String(150), nullable=False)
     account_status = Column(String(30), default="Pending", nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
     payout_hold_until = Column(DateTime, nullable=True)
 
@@ -162,6 +165,15 @@ class SellerPaymentAccountHistory(Base):
     new_last4 = Column(String(10), nullable=True)
     ip_address = Column(String(50), nullable=True)
     user_agent = Column(String(255), nullable=True)
+
+
+class PayoutAccountSetupAttempt(Base):
+    __tablename__ = "payout_account_setup_attempts"
+    __table_args__ = (Index("ix_payout_setup_attempt_student_created", "student_id", "created_at"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
 class PayoutTransaction(Base):
@@ -391,7 +403,7 @@ class PaymentIdempotency(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     idempotency_key = Column(String(255), unique=True, nullable=False, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=True, index=True)
     buyer_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True, index=True)
     transaction_id = Column(String(50), nullable=False, index=True)
@@ -601,6 +613,7 @@ class Report(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=True, index=True)
+    order_id = Column(Integer, ForeignKey("orders.id", ondelete="SET NULL"), nullable=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=True)
     seller_id = Column(String(50), nullable=True, index=True)
     student_name = Column(String(150), nullable=False)
@@ -611,8 +624,27 @@ class Report(Base):
     priority = Column(String(20), nullable=False, default="Low")
     status = Column(String(50), nullable=False, default="Open")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    reviewed_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True, index=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    decision = Column(String(50), nullable=True)
+    decision_reason = Column(Text, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+    refunded_amount = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    seller_response = Column(Text, nullable=True)
+    seller_response_image = Column(Text, nullable=True)
+    seller_response_at = Column(DateTime, nullable=True)
+    appeal_text = Column(Text, nullable=True)
+    appealed_by = Column(String(50), nullable=True)
+    appealed_at = Column(DateTime, nullable=True)
+    revision = Column(Integer, nullable=False, default=1)
 
     student = relationship("Student", primaryjoin="Report.student_id == Student.student_id", back_populates="reports")
+    order = relationship("Order")
+    reviewer = relationship("Admin", foreign_keys=[reviewed_by])
+    resolver = relationship("Admin", foreign_keys=[resolved_by])
+
+    __mapper_args__ = {"version_id_col": revision}
 
 
 class SupportTicket(Base):
@@ -622,25 +654,87 @@ class SupportTicket(Base):
     user_id = Column(String(50), nullable=True, index=True)
     requester_name = Column(String(150), nullable=True)
     requester_email = Column(String(150), nullable=True)
+    subject = Column(String(200), nullable=True)
     category = Column(String(50), nullable=False)
     message = Column(Text, nullable=False)
     attachment_url = Column(String(500), nullable=True)
     status = Column(String(30), nullable=False, default="open", index=True)
+    assigned_admin_id = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True, index=True)
+    last_admin_reply_at = Column(DateTime, nullable=True)
+    last_reminder_at = Column(DateTime, nullable=True)
+    reopen_used = Column(Boolean, nullable=False, default=False)
+    reopened_at = Column(DateTime, nullable=True)
+    revision = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __mapper_args__ = {"version_id_col": revision}
+
+
+class SupportTicketMessage(Base):
+    __tablename__ = "support_ticket_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("support_tickets.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_type = Column(String(20), nullable=False)
+    sender_id = Column(String(50), nullable=False)
+    body = Column(Text, nullable=False)
+    attachment_url = Column(String(500), nullable=True)
+    is_internal = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ReportMessage(Base):
+    __tablename__ = "report_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    body = Column(Text, nullable=False)
+    is_internal = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class AdminNotification(Base):
+    __tablename__ = "admin_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    message = Column(String(500), nullable=False)
+    reference_type = Column(String(30), nullable=False)
+    reference_id = Column(String(75), nullable=False)
+    action_url = Column(String(500), nullable=True)
+    is_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class EmailOutbox(Base):
+    __tablename__ = "email_outbox"
+
+    id = Column(Integer, primary_key=True, index=True)
+    recipient = Column(String(150), nullable=False)
+    subject = Column(String(250), nullable=False)
+    body = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class CannedResponse(Base):
+    __tablename__ = "canned_responses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(150), nullable=False)
+    body = Column(Text, nullable=False)
+    created_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class Notification(Base):
     __tablename__ = "notifications"
-    __table_args__ = (
-        Index(
-            "uq_notifications_user_type_reference",
-            "student_id",
-            "type",
-            "reference_id",
-            unique=True,
-        ),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)

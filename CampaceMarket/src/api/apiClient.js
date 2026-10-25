@@ -33,7 +33,9 @@ export async function apiFetch(path, options = {}) {
     ? path
     : `${API_BASE}${path}`;
 
-  const defaultHeaders = { "Content-Type": "application/json" };
+  const defaultHeaders = typeof FormData !== "undefined" && options.body instanceof FormData
+    ? {}
+    : { "Content-Type": "application/json" };
   options.headers = { ...defaultHeaders, ...(options.headers || {}) };
 
   const res = await fetch(url, options);

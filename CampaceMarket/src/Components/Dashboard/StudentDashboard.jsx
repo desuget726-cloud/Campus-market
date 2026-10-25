@@ -5,8 +5,9 @@ import autoTable from 'jspdf-autotable';
 import { Check, Pencil, X } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
-import { notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
+import { getErrorMessage, notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
 import SellerOperationsCenter from './SellerOperationsCenter';
+import ReportsInbox from './ReportsInbox';
 import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
@@ -397,6 +398,7 @@ function StudentDashboard({
   const [profileSaving, setProfileSaving] = useState(false);
 
   // ለድጋፍ ፎም መቆጣጠሪያዎች (Support/Report Form States)
+  const [supportSubject, setSupportSubject] = useState('');
   const [supportIssue, setSupportIssue] = useState('');
   const [supportCategory, setSupportCategory] = useState('General Inquiry');
   const [supportMsg, setSupportMsg] = useState('');
@@ -443,6 +445,16 @@ function StudentDashboard({
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [payoutAccount, setPayoutAccount] = useState(null);
   const [payoutAccountLoading, setPayoutAccountLoading] = useState(false);
+  const [payoutSetupOpen, setPayoutSetupOpen] = useState(false);
+  const [payoutSetupBanks, setPayoutSetupBanks] = useState([]);
+  const [payoutSetupBanksLoading, setPayoutSetupBanksLoading] = useState(false);
+  const [payoutSetupError, setPayoutSetupError] = useState('');
+  const [payoutSetupLoading, setPayoutSetupLoading] = useState(false);
+  const payoutSetupInFlightRef = useRef(false);
+  const [payoutSetupType, setPayoutSetupType] = useState('bank');
+  const [payoutSetupBankCode, setPayoutSetupBankCode] = useState('');
+  const [payoutSetupAccountName, setPayoutSetupAccountName] = useState(user?.name || '');
+  const [payoutSetupAccountNumber, setPayoutSetupAccountNumber] = useState('');
   const [withdrawProviderUnavailable, setWithdrawProviderUnavailable] = useState(false);
   const [activeWithdrawal, setActiveWithdrawal] = useState(null);
   const [withdrawalStatusLoading, setWithdrawalStatusLoading] = useState(false);
@@ -1137,12 +1149,19 @@ function StudentDashboard({
         setSelectedOrder(data);
         setBuyerTab('orders');
         setActiveTab('buyer');
+        updateOrderDashboardUrl(Number(orderId), 'buyer');
       } else {
         setPendingSellerOrderId(Number(orderId));
         setActiveTab('seller');
+        updateOrderDashboardUrl(Number(orderId), 'seller');
       }
     } catch (error) {
-      setOrdersError(error.message || 'Unable to load dispute details.');
+      setSelectedOrder(null);
+      setPendingSellerOrderId(null);
+      setBuyerTab('orders');
+      setActiveTab('buyer');
+      setOrdersError('');
+      setOrderNavigationMessage(error.message || 'Unable to load this order. Your orders are shown below.');
     }
   };
 
@@ -1366,6 +1385,7 @@ function StudentDashboard({
     { id: 'cart', label: 'Cart', badge: cartItemCount },
     { id: 'orders', label: 'Orders', badge: orderCount },
     { id: 'payments', label: 'Payments', badge: transactionLedger.length },
+    { id: 'reports-support', label: 'Reports & Support', badge: 0 },
   ];
 
   const sellerStatusSummary = (() => {
@@ -1597,7 +1617,9 @@ function StudentDashboard({
 
     const fetchNotificationsData = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/student/notifications?student_id=${studentId}`);
+        const response = await fetch(`${API_BASE_URL}/api/student/notifications?student_id=${encodeURIComponent(studentId)}`, {
+          headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
+        });
         if (!response.ok) return;
 
         const notifData = await response.json();
@@ -1620,7 +1642,7 @@ function StudentDashboard({
     };
 
     fetchNotificationsData();
-  }, [activeTab, studentId]);
+  }, [activeTab, studentId, getStudentSessionToken]);
 
   const handleMarkNotificationRead = async (notificationId) => {
     if (!user?.studentId) return;
@@ -1641,8 +1663,11 @@ function StudentDashboard({
     try {
       const response = await fetch(`${API_BASE_URL}/api/student/notifications/mark-read`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ student_id: user.studentId }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${getStudentSessionToken()}`,
+        },
+        body: JSON.stringify({ student_id: user.studentId, notification_id: notificationId || undefined }),
       });
 
       if (!response.ok) {
@@ -1674,6 +1699,7 @@ function StudentDashboard({
     try {
       const response = await fetch(`${API_BASE_URL}/api/student/notifications/${id}?student_id=${encodeURIComponent(studentId)}`, {
         method: 'DELETE',
+        headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
@@ -1966,18 +1992,22 @@ function StudentDashboard({
 
     try {
       const formData = new FormData();
-      formData.append('student_id', user.studentId || '');
-      formData.append('student_name', user.name || '');
-      formData.append('email', user.email || '');
+      formData.append('subject', supportSubject.trim() || supportCategory);
       formData.append('category', supportCategory);
-      formData.append('issue', supportIssue.trim());
-      if (supportEvidenceImage) formData.append('evidence_image', supportEvidenceImage);
-      const res = await fetch(`${API_BASE_URL}/api/student/report`, {
+      formData.append('message', supportIssue.trim());
+      if (supportEvidenceImage) formData.append('attachment', supportEvidenceImage);
+      const res = await fetch(`${API_BASE_URL}/support/tickets`, {
         method: 'POST',
+        headers: {
+          ...(user?.access_token || user?.accessToken || user?.token
+            ? { Authorization: `Bearer ${user.access_token || user.accessToken || user.token}` }
+            : {}),
+        },
         body: formData
       });
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
+        setSupportSubject('');
         setSupportIssue('');
         setSupportCategory('General Inquiry');
         setSupportEvidenceImage(null);
@@ -2609,12 +2639,13 @@ function StudentDashboard({
 
       const data = await res.json();
       if (!res.ok) {
+        const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
         const error = new Error(
           res.status === 422
-            ? (data.detail || 'Payment setup issue. Please contact support.')
+            ? getErrorMessage({ detail })
             : res.status >= 500
               ? 'Payment service is temporarily unavailable. Please try again shortly.'
-              : (data.detail || 'Failed to initialize payment.')
+              : getErrorMessage({ detail })
         );
         error.status = res.status;
         throw error;
@@ -2634,13 +2665,13 @@ function StudentDashboard({
       throw new Error('No checkout URL returned from payment gateway.');
     } catch (err) {
       console.error('Deposit initialization failed:', err);
-      setDepositError(err.message || 'Could not start the payment flow.');
+      setDepositError(getErrorMessage(err));
     } finally {
       setDepositLoading(false);
     }
   };
 
-  const handleWithdrawSubmit = async (e) => {
+  const handleWithdrawSubmit = async (e, payoutAccountOverride = payoutAccount) => {
     e.preventDefault();
     if (withdrawSubmitInFlightRef.current) return;
     setWithdrawError('');
@@ -2656,13 +2687,8 @@ function StudentDashboard({
       return;
     }
 
-    if (!payoutAccount?.id) {
-      setWithdrawError('Set up an active payout account in Account Settings before withdrawing.');
-      return;
-    }
-
-    if (withdrawProviderUnavailable) {
-      setWithdrawError(`${payoutAccount.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`);
+    if (withdrawProviderUnavailable && payoutAccountOverride?.id) {
+      setWithdrawError(`${payoutAccountOverride.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`);
       return;
     }
 
@@ -2687,7 +2713,7 @@ function StudentDashboard({
       withdrawIdempotencyKeyRef.current = idempotencyKey;
       const payload = {
         amount,
-        payout_account_id: payoutAccount.id,
+        payout_account_id: payoutAccountOverride?.id || null,
       };
 
       const token = getStudentSessionToken();
@@ -2703,11 +2729,17 @@ function StudentDashboard({
       const data = await res.json();
 
       if (!res.ok) {
+        if (res.status === 409 && data?.detail?.code === 'PAYOUT_ACCOUNT_REQUIRED') {
+          setPayoutSetupOpen(true);
+          setPayoutSetupError('');
+          return;
+        }
         if (res.status === 503) {
           setWithdrawProviderUnavailable(true);
-          throw new Error(`${payoutAccount.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`);
+          throw new Error(`${payoutAccountOverride?.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.`);
         }
-        throw new Error(data.detail || data.message || 'Withdrawal request failed.');
+        const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+        throw new Error(getErrorMessage({ detail: detail || data?.message }));
       }
 
       if (data?.success !== true || data?.persisted !== true || !data?.transaction_id) {
@@ -2754,7 +2786,7 @@ function StudentDashboard({
       }
     } catch (err) {
       console.error('Withdrawal failed:', err);
-      setWithdrawError(err.message || 'Could not process the withdrawal.');
+      setWithdrawError(getErrorMessage(err));
       notifyError(err, 'student-withdrawal-submit');
     } finally {
       withdrawSubmitInFlightRef.current = false;
@@ -2800,9 +2832,15 @@ function StudentDashboard({
   const handleDepositStatusCheck = async (transaction) => {
     setPayoutStatusCheckId(transaction.id || transaction.hash);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transaction.hash)}`);
+      const token = getStudentSessionToken();
+      const response = await fetch(`${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transaction.hash)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data?.detail || 'Unable to check deposit status.');
+      if (!response.ok) {
+        const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+        throw new Error(getErrorMessage({ detail }));
+      }
       await fetchBuyerDashboardData();
       setWithdrawError(data?.status === 'Successful'
         ? `${transaction.amount || 0} ETB deposit confirmed and added to your wallet.`
@@ -2814,7 +2852,7 @@ function StudentDashboard({
       }
     } catch (error) {
       console.error('Deposit status check failed:', error);
-      setWithdrawError(error.message || 'Unable to check deposit status.');
+      setWithdrawError(getErrorMessage(error));
       notifyError(error, `student-payment-check-${transaction.hash}`);
     } finally {
       setPayoutStatusCheckId(null);
@@ -2850,6 +2888,89 @@ function StudentDashboard({
       return null;
     } finally {
       setPayoutAccountLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!showWithdrawModal || !payoutSetupOpen || payoutAccount || payoutSetupBanks.length) return undefined;
+    const controller = new AbortController();
+    setPayoutSetupBanksLoading(true);
+    setPayoutSetupError('');
+    fetch(`${API_BASE_URL}/api/banks`, { signal: controller.signal })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+          throw new Error(getErrorMessage({ detail }));
+        }
+        const banks = Array.isArray(data) ? data : data?.banks;
+        if (!Array.isArray(banks)) throw new Error(t('walletPayout.setupLoadError'));
+        setPayoutSetupBanks(banks);
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError') return;
+        setPayoutSetupError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setPayoutSetupBanksLoading(false);
+      });
+    return () => controller.abort();
+  }, [payoutAccount, payoutSetupBanks.length, payoutSetupOpen, showWithdrawModal, t]);
+
+  const handlePayoutSetupSubmit = async () => {
+    if (payoutSetupInFlightRef.current) return;
+    payoutSetupInFlightRef.current = true;
+    setPayoutSetupLoading(true);
+    setPayoutSetupError('');
+    try {
+      const token = getStudentSessionToken();
+      if (!token) throw new Error(t('walletPayout.authRequired'));
+      if (!verifiedStudent) throw new Error(t('walletPayout.verifiedRequired'));
+      if (!payoutSetupBankCode || !payoutSetupAccountName.trim() || !payoutSetupAccountNumber.trim()) {
+        throw new Error(t('walletPayout.setupFieldsRequired'));
+      }
+
+      const response = await fetch(`${API_BASE_URL}/api/student/seller/setup-payout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          payout_type: payoutSetupType,
+          bank_code: payoutSetupBankCode,
+          account_name: payoutSetupAccountName.trim(),
+          account_number: payoutSetupAccountNumber.trim(),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+        throw new Error(getErrorMessage({ detail }));
+      }
+
+      const account = data?.account;
+      if (!account?.id) throw new Error(t('walletPayout.setupFailed'));
+      setPayoutAccount(account);
+      setWithdrawProviderUnavailable(account.provider_is_available === false);
+      setPayoutSetupAccountNumber('');
+      setPayoutSetupOpen(false);
+      notifySuccess(data.message || t('studentToast.payoutAccountSaved'), 'student-payout-account-setup');
+      await handleWithdrawSubmit({ preventDefault: () => {} }, account);
+    } catch (error) {
+      setPayoutSetupError(getErrorMessage(error));
+      notifyError(error, 'student-payout-account-setup');
+    } finally {
+      payoutSetupInFlightRef.current = false;
+      setPayoutSetupLoading(false);
+    }
+  };
+
+  const handlePayoutAccountUpdated = async () => {
+    const account = await refreshPayoutAccount();
+    if (returnToWithdrawAfterPayoutSetup && account) {
+      setReturnToWithdrawAfterPayoutSetup(false);
+      setShowWithdrawModal(true);
     }
   };
 
@@ -4040,6 +4161,11 @@ function StudentDashboard({
       formData.append('issue', `Report against ${partnerId}: ${reason}`);
       const res = await fetch(`${API_BASE_URL}/api/student/report`, {
         method: 'POST',
+        headers: {
+          ...(user?.access_token || user?.accessToken || user?.token
+            ? { Authorization: `Bearer ${user.access_token || user.accessToken || user.token}` }
+            : {}),
+        },
         body: formData
       });
 
@@ -4113,6 +4239,7 @@ function StudentDashboard({
     try {
       const res = await fetch(`${API_BASE_URL}/api/student/notifications/mark-all-read?student_id=${encodeURIComponent(user.studentId)}`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
       });
 
       if (res.ok) {
@@ -4293,7 +4420,6 @@ function StudentDashboard({
 
         {/* 2. የቀኝ ዋና ይዘት ማሳያ ሰሌዳ (Main Content Panel) */}
         <main className={`student-dashboard-content min-h-0 min-w-0 w-full max-w-none flex-1 transition-all duration-300 min-[768px]:h-full min-[768px]:pt-1 ${activeTab === 'messages' ? 'overflow-hidden' : 'min-[768px]:overflow-y-auto min-[768px]:overscroll-y-contain'}`}>
-
           {/* ፖፕአፕ የድጋፍ ፎርም (Support Modal) */}
           {showSupportModal && (
             <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
@@ -4325,6 +4451,17 @@ function StudentDashboard({
                     </select>
                   </div>
                   <div>
+                    <label className="block text-sm font-semibold text-slate-700">Subject</label>
+                    <input
+                      type="text"
+                      maxLength={200}
+                      value={supportSubject}
+                      onChange={(e) => setSupportSubject(e.target.value)}
+                      placeholder="Briefly summarize your request"
+                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-sky-500 focus:bg-white focus:outline-none transition"
+                    />
+                  </div>
+                  <div>
                     <label className="block text-sm font-semibold text-slate-700">Describe your issue or complaint</label>
                     <textarea
                       rows="4"
@@ -4336,7 +4473,7 @@ function StudentDashboard({
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-slate-700">Evidence image <span className="font-normal text-slate-400">(optional)</span></label>
-                    <input type="file" accept="image/*" onChange={(e) => setSupportEvidenceImage(e.target.files?.[0] || null)} className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600" />
+                    <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(e) => setSupportEvidenceImage(e.target.files?.[0] || null)} className="mt-1 block w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600" />
                   </div>
 
                   <div className="flex gap-3">
@@ -5085,6 +5222,8 @@ function StudentDashboard({
                   </div>
                 )}
 
+                {buyerTab === 'reports-support' && <ReportsInbox />}
+
                 {/* Sub-tab 4: Payments */}
                 {buyerTab === 'payments' && (
                   <div className="space-y-6">
@@ -5279,13 +5418,7 @@ function StudentDashboard({
                 sellerOrdersError={sellerOrdersError}
                 onRefreshOrders={fetchSellerDashboardData}
                 myListings={myListings}
-                onPayoutAccountUpdated={async () => {
-                  const account = await refreshPayoutAccount();
-                  if (returnToWithdrawAfterPayoutSetup && account) {
-                    setReturnToWithdrawAfterPayoutSetup(false);
-                    setShowWithdrawModal(true);
-                  }
-                }}
+                onPayoutAccountUpdated={handlePayoutAccountUpdated}
                 onAddProduct={() => {
                   resetProductForm();
                   setShowProductModal(true);
@@ -5968,6 +6101,12 @@ function StudentDashboard({
                     setActiveTab(target);
                     return;
                   }
+                  if (orderLink.tab === 'buyer' && orderLink.section === 'reports-support') {
+                    window.history.pushState({}, '', target);
+                    setBuyerTab('reports-support');
+                    setActiveTab('buyer');
+                    return;
+                  }
                   if (orderLink.tab === 'seller') {
                     if (orderLink.section === 'orders' && orderLink.orderId) {
                       openSellerOrder(orderLink.orderId);
@@ -6027,6 +6166,7 @@ function StudentDashboard({
                 currentWalletBalance={currentWalletBalance}
                 transactionLedger={transactionLedger}
                 onNavigate={setActiveTab}
+                onPayoutAccountUpdated={handlePayoutAccountUpdated}
               />
             )}
 
@@ -6036,7 +6176,7 @@ function StudentDashboard({
 
       {showWithdrawModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
-          <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
               <div>
                 <h2 className="text-xl font-bold text-slate-950">Withdraw Funds</h2>
@@ -6044,11 +6184,14 @@ function StudentDashboard({
               </div>
               <button
                 type="button"
+                disabled={payoutSetupLoading || withdrawLoading}
                 onClick={() => {
                   setShowWithdrawModal(false);
+                  setPayoutSetupOpen(false);
+                  setPayoutSetupAccountNumber('');
                   setWithdrawError('');
                 }}
-                className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200"
+                className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Close
               </button>
@@ -6065,7 +6208,7 @@ function StudentDashboard({
                   step="0.01"
                   value={withdrawAmount}
                   onChange={(event) => setWithdrawAmount(event.target.value)}
-                  disabled={payoutAccountLoading || !payoutAccount?.id || withdrawProviderUnavailable}
+                  disabled={payoutAccountLoading || withdrawProviderUnavailable}
                   placeholder="Enter withdrawal amount"
                   className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
@@ -6074,13 +6217,95 @@ function StudentDashboard({
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                 {payoutAccount ? (
                   <>
-                    <span className="font-bold">Payout account:</span> {payoutAccount.provider_name || 'Configured provider'} ({payoutAccount.payout_type === 'mobile_wallet' || payoutAccount.payout_type === 'wallet' ? 'Mobile Wallet' : 'Bank'})
-                    {payoutAccount.account_last4 && <span className="ml-1">ending in {payoutAccount.account_last4}</span>}
+                    <span className="font-bold">{t('walletPayout.accountLabel')}</span> {payoutAccount.provider_name || t('walletPayout.providerFallback')} ({payoutAccount.payout_type === 'mobile_wallet' || payoutAccount.payout_type === 'wallet' ? t('walletPayout.mobileMoney') : t('walletPayout.bank')})
+                    <span className="ml-1">{payoutAccount.account_number_masked || `****${payoutAccount.account_last4 || ''}`}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReturnToWithdrawAfterPayoutSetup(true);
+                        setShowWithdrawModal(false);
+                        setActiveTab('settings');
+                        setSettingsTab('payout');
+                      }}
+                      className="ml-3 font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800"
+                    >
+                      {t('walletPayout.changeAccount')}
+                    </button>
                   </>
                 ) : (
-                  <span>Set up an active payout account in Account Settings before withdrawing.</span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span>{payoutAccountLoading ? t('walletPayout.accountLoading') : t('walletPayout.accountRequired')}</span>
+                    <button type="button" onClick={() => { setPayoutSetupError(''); setPayoutSetupOpen(true); }} disabled={payoutAccountLoading} className="font-semibold text-emerald-700 underline underline-offset-2 disabled:opacity-50">
+                      {t('walletPayout.setupButton')}
+                    </button>
+                  </div>
                 )}
               </div>
+
+              {payoutSetupOpen && !payoutAccount && (
+                <section className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4" aria-busy={payoutSetupLoading || payoutSetupBanksLoading}>
+                  <h3 className="font-bold text-slate-900">{t('walletPayout.setupTitle')}</h3>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    {t('walletPayout.method')}
+                    <select
+                      value={payoutSetupType}
+                      onChange={(event) => {
+                        setPayoutSetupType(event.target.value);
+                        setPayoutSetupBankCode('');
+                      }}
+                      disabled={payoutSetupLoading}
+                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                    >
+                      <option value="bank">{t('walletPayout.bank')}</option>
+                      <option value="mobile_wallet">{t('walletPayout.mobileMoney')}</option>
+                    </select>
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileProvider') : t('walletPayout.bank')}
+                    <select
+                      value={payoutSetupBankCode}
+                      onChange={(event) => setPayoutSetupBankCode(event.target.value)}
+                      disabled={payoutSetupBanksLoading || payoutSetupLoading || payoutSetupBanks.length === 0}
+                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                    >
+                      <option value="">{payoutSetupBanksLoading ? t('walletPayout.loadingBanks') : t('walletPayout.chooseProvider')}</option>
+                      {payoutSetupBanks
+                        .filter((bank) => bank.method === payoutSetupType)
+                        .map((bank) => <option key={bank.code} value={bank.code}>{bank.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    {t('walletPayout.holderName')}
+                    <input
+                      value={payoutSetupAccountName}
+                      onChange={(event) => setPayoutSetupAccountName(event.target.value)}
+                      autoComplete="name"
+                      disabled={payoutSetupLoading}
+                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                    />
+                  </label>
+                  <label className="block text-sm font-semibold text-slate-700">
+                    {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileNumber') : t('walletPayout.accountNumber')}
+                    <input
+                      value={payoutSetupAccountNumber}
+                      onChange={(event) => setPayoutSetupAccountNumber(event.target.value.replace(/\D/g, ''))}
+                      inputMode="numeric"
+                      autoComplete="off"
+                      disabled={payoutSetupLoading}
+                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                    />
+                  </label>
+                  {payoutSetupError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{payoutSetupError}</p>}
+                  <div className="flex gap-2">
+                    <button type="button" onClick={handlePayoutSetupSubmit} disabled={payoutSetupLoading || payoutSetupBanksLoading} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
+                      {payoutSetupLoading ? t('walletPayout.saving') : t('walletPayout.saveAndContinue')}
+                    </button>
+                    <button type="button" onClick={() => setPayoutSetupOpen(false)} disabled={payoutSetupLoading} className="rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">
+                      {t('walletPayout.cancel')}
+                    </button>
+                  </div>
+                </section>
+              )}
 
               {withdrawExceedsBalance && (
                 <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
@@ -6107,10 +6332,10 @@ function StudentDashboard({
 
               <button
                 type="submit"
-                disabled={payoutAccountLoading || !payoutAccount?.id || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
+                disabled={payoutAccountLoading || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
                 className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
               >
-                {withdrawLoading ? 'Processing...' : 'Submit Withdrawal'}
+                {withdrawLoading ? t('walletPayout.processing') : t('walletPayout.submitWithdrawal')}
               </button>
             </form>
           </div>

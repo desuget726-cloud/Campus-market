@@ -32,7 +32,7 @@ export const parseOrderDashboardLink = (value) => {
   if (!['buyer', 'seller'].includes(tab)) return null;
 
   const requestedSection = url.searchParams.get('section') || '';
-  const validSections = ['search', 'wishlist', 'cart', 'orders', 'payments'];
+  const validSections = ['search', 'wishlist', 'cart', 'orders', 'payments', 'reports-support'];
   const section = validSections.includes(requestedSection) ? requestedSection : '';
   const requestedOrderId = url.searchParams.get('order');
   const orderId = /^\d+$/.test(requestedOrderId || '') && Number(requestedOrderId) > 0

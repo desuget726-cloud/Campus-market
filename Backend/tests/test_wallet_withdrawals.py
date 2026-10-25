@@ -212,6 +212,34 @@ class WalletWithdrawalTests(unittest.TestCase):
         self.assertEqual(adapter.create_calls, 0)
         self.assertEqual(self.db.query(PayoutTransaction).count(), 0)
 
+    def test_withdrawal_without_active_account_returns_machine_readable_code(self):
+        self.db.delete(self.account)
+        self.db.commit()
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            with self.assertRaises(HTTPException) as error:
+                self._withdraw()
+
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(error.exception.detail["code"], "PAYOUT_ACCOUNT_REQUIRED")
+        self.assertEqual(self.wallet.balance, Decimal("1000.00"))
+        self.assertEqual(self.db.query(PayoutTransaction).count(), 0)
+
+    def test_unverified_and_unauthenticated_students_cannot_withdraw(self):
+        self.student.is_verified = False
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            with self.assertRaises(HTTPException) as unverified_error:
+                self._withdraw()
+        self.assertEqual(unverified_error.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as unauthenticated_error:
+            asyncio.run(main_module.withdraw_student_wallet(
+                main_module.WalletWithdrawalRequest(amount=Decimal("150.00")),
+                authorization=None,
+                idempotency_key="unauthenticated-withdrawal",
+                db=self.db,
+            ))
+        self.assertEqual(unauthenticated_error.exception.status_code, 401)
+
     def test_successful_verify_endpoint_releases_hold(self):
         adapter = StubPayoutAdapter(
             PayoutResult("processing", "chapa-transfer-1", "Transfer accepted."),
