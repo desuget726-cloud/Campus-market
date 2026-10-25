@@ -3,8 +3,9 @@ import { Check, ChevronDown } from 'lucide-react';
 import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import AdminProfileMenu from '../Dashboard/AdminProfileMenu';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onStudentProfileClick, variant = 'public' }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onAdminSettingsClick, onStudentProfileClick, activeAdminTab, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -99,7 +100,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           <button
             type="button"
             aria-label="Open admin navigation"
-            aria-controls="admin-mobile-navigation"
+            aria-controls="admin-sidebar"
             onClick={() => window.dispatchEvent(new Event('campace:toggle-dashboard-sidebar'))}
             className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-white/15 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 lg:hidden"
           >
@@ -219,6 +220,18 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 )}
               </button>
 
+              {isAdmin && isDashboardLayout ? (
+                <div className="lg:hidden">
+                  <AdminProfileMenu
+                    key={activeAdminTab}
+                    user={displayUser}
+                    onLogout={onLogout}
+                    onNavigate={onAdminProfileClick || (() => onNavigate?.('admin-dashboard'))}
+                    onSettings={onAdminSettingsClick || (() => onNavigate?.('settings'))}
+                    header
+                  />
+                </div>
+              ) : (
               <div className="relative">
                 <button
                   type="button"
@@ -302,6 +315,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   </div>
                 )}
               </div>
+              )}
             </div>
           ) : (
             // Logged Out Login/Register View

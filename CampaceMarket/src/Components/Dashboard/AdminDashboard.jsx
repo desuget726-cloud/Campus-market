@@ -6,6 +6,7 @@ import { Check, Copy, Eye, Pencil, Trash2, X } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
 import AdminSupportInbox from './AdminSupportInbox';
 import { AdminProductReviewsPage, AdminUsersPage } from './AdminDirectoryPages';
+import AdminProfileMenu from './AdminProfileMenu';
 import AdminSidebarNavigation from './AdminSidebarNavigation';
 import { getErrorMessage, notifyError, notifySuccess } from '../../utils/notify';
 import { adminApiGet, apiFetch, getStoredAccessToken } from '../../api/apiClient';
@@ -7903,8 +7904,9 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         data-sidebar-collapsed={isDesktopSidebarCollapsed}
       >
         <aside
+          id="admin-sidebar"
           data-collapsed={isDesktopSidebarCollapsed}
-          className={`admin-dashboard-sidebar fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col overflow-y-auto bg-[#111c3a] p-4 text-white shadow-2xl transition-[transform,width] duration-200 [scrollbar-width:thin] lg:sticky lg:top-0 lg:h-full lg:rounded-r-2xl lg:shadow-none ${isDesktopSidebarCollapsed ? 'lg:w-20' : 'lg:w-72'} ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
+          className={`admin-dashboard-sidebar fixed bottom-0 left-0 top-[72px] z-40 flex h-[calc(100dvh-72px)] w-72 shrink-0 flex-col overflow-visible rounded-none rounded-r-2xl bg-[#111c3a] p-4 text-white shadow-2xl transition-[transform,width] duration-200 lg:sticky lg:top-[72px] lg:h-[calc(100dvh-72px)] lg:shadow-none ${isDesktopSidebarCollapsed ? 'lg:w-20' : 'lg:w-72'} ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
         >
           <div className="admin-sidebar-brand flex shrink-0 items-center justify-between gap-2 border-b border-white/10 pb-4">
             <img src={logs} alt="UniXchange Admin" className="h-10 w-10 shrink-0 rounded-xl object-cover" />
@@ -7933,7 +7935,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               <span aria-hidden="true">×</span>
             </button>
           </div>
-          <nav className="admin-sidebar-menu mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain pb-4 pr-1">
+          <nav className="admin-sidebar-menu mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain pb-4 pr-1 [scrollbar-width:thin]">
             <AdminSidebarNavigation
               navigation={visibleNavigation}
               activePath={activeTab}
@@ -7944,6 +7946,22 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               onGroupToggle={toggleAdminGroup}
             />
           </nav>
+          <div className="relative mt-auto shrink-0 border-t border-white/10 p-3">
+            <AdminProfileMenu
+              key={activeTab}
+              user={{
+                ...user,
+                username: adminProfile.username || user?.username,
+                full_name: adminProfile.fullName || user?.full_name,
+                email: adminProfile.email || user?.email,
+                avatarUrl: user?.avatarUrl || user?.avatar_url || adminProfile.avatarUrl,
+              }}
+              onLogout={onLogout}
+              onNavigate={() => handleTabClick('profile')}
+              onSettings={() => handleTabClick('settings')}
+              collapsed={isDesktopSidebarCollapsed}
+            />
+          </div>
         </aside>
         {isSidebarOpen && <button type="button" aria-label="Close admin navigation" onClick={() => setIsSidebarOpen(false)} className="fixed inset-0 z-30 bg-black/50 lg:hidden" />}
 

@@ -3002,3 +3002,4 @@ Traceback (most recent call last):
   File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
     raise SMTPServerDisconnected("Connection unexpectedly closed")
 smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-25 23:41:31,692 ERROR OTP email was not sent: BREVO_API_KEY is missing.

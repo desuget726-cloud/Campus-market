@@ -185,7 +185,7 @@ html:has(.student-dashboard-content) body {
   background: rgba(100, 116, 139, 0.6);
 }
 
-@media (min-width: 901px) {
+@media (min-width: 1024px) {
   .admin-dashboard-shell {
     height: calc(100vh - var(--header-h));
     height: calc(100dvh - var(--header-h));
@@ -193,23 +193,27 @@ html:has(.student-dashboard-content) body {
 
   .admin-dashboard-layout[data-admin-sidebar-layout] {
     display: grid;
-    grid-template-columns: var(--admin-sidebar-width, 288px) minmax(0, 1fr);
+    grid-template-columns: 18rem minmax(0, 1fr);
     align-items: stretch;
-    transition: grid-template-columns 250ms ease;
+    transition: grid-template-columns 200ms ease;
   }
 
   .admin-dashboard-layout[data-admin-sidebar-layout] .admin-dashboard-sidebar {
     display: flex !important;
     position: sticky;
-    top: calc(var(--header-h) + 16px);
+    top: var(--header-h);
     z-index: 40;
-    align-self: flex-start;
+    align-self: stretch;
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
-    height: calc(100vh - var(--header-h) - 32px);
-    height: calc(100dvh - var(--header-h) - 32px);
-    padding: 1.5rem;
+    height: calc(100vh - var(--header-h));
+    height: calc(100dvh - var(--header-h));
+    padding: 1rem;
+  }
+
+  .admin-dashboard-layout[data-sidebar-collapsed="true"] {
+    grid-template-columns: 5rem minmax(0, 1fr);
   }
 
   .admin-dashboard-layout[data-sidebar-collapsed="true"] .admin-dashboard-sidebar {

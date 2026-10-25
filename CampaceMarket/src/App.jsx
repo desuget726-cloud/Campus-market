@@ -213,6 +213,11 @@ function AppContent() {
     }
   };
 
+  const handleAdminLogout = () => {
+    handleLogout();
+    setCurrentView('login');
+  };
+
   const handleApiUnauthorized = useCallback(() => {
     try {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -768,11 +773,16 @@ function AppContent() {
           onNavigate={handleNavigate}
           user={user}
           userRole={userRole}
-          onLogout={handleLogout}
+          onLogout={activeRole === 'admin' ? handleAdminLogout : handleLogout}
           unreadCount={unreadCount}
           onNotificationClick={handleNotificationClick}
+          activeAdminTab={adminTab}
           onAdminProfileClick={() => {
             setAdminTab('profile');
+            setCurrentView('admin-dashboard');
+          }}
+          onAdminSettingsClick={() => {
+            setAdminTab('settings');
             setCurrentView('admin-dashboard');
           }}
           onStudentProfileClick={() => {
@@ -861,7 +871,7 @@ function AppContent() {
           )}
           {activeRole === 'admin' && currentView === 'admin-dashboard' && (
             <AdminDashboard
-              onLogout={handleLogout}
+              onLogout={handleAdminLogout}
               onNavigate={handleNavigate}
               onSessionExpired={handleApiUnauthorized}
               user={user}
