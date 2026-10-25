@@ -1,25 +1,25 @@
-import { ADMIN_NAV_ITEM_STYLES, getAdminGroupBadgeTotal } from '../../utils/adminNavigation';
+import { ADMIN_NAV_ITEM_STYLES, formatAdminBadgeCount, getAdminGroupBadgeTotal } from '../../utils/adminNavigation';
 
 function renderBadge(item, counts) {
   if (item.badgeKey === 'support') {
-    const openCount = Number(counts.supportOpen || 0);
+    const unseenCount = Number(counts.unseenSupport || 0);
     const overdueCount = Number(counts.supportOverdue || 0);
-    if (!openCount && !overdueCount) return null;
+    if (!unseenCount && !overdueCount) return null;
     return (
       <span className="inline-flex items-center gap-1.5">
-        {openCount > 0 && <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-black text-amber-950">{openCount}</span>}
-        {overdueCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{overdueCount}</span>}
+        {unseenCount > 0 && <span className="rounded-full bg-rose-500 px-2 py-0.5 text-[10px] font-black text-white">{formatAdminBadgeCount(unseenCount)}</span>}
+        {overdueCount > 0 && <span className="rounded-full bg-rose-700 px-1.5 py-0.5 text-[9px] font-black text-white" aria-label={`${overdueCount} overdue tickets`}>{formatAdminBadgeCount(overdueCount)}</span>}
       </span>
     );
   }
   const count = Number(counts[item.badgeKey] || 0);
   if (!count) return null;
-  const badgeClass = item.badgeKey === 'openReports'
+  const badgeClass = item.badgeKey === 'unseenReports'
     ? 'bg-rose-500 text-white'
     : item.badgeKey === 'pendingVerifications'
       ? 'bg-amber-400 text-amber-950'
       : 'bg-sky-500 text-white';
-  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${badgeClass}`}>{count}</span>;
+  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${badgeClass}`}>{formatAdminBadgeCount(count)}</span>;
 }
 
 function AdminSidebarNavigation({
@@ -77,10 +77,10 @@ function AdminSidebarNavigation({
             <span className={collapsed ? 'lg:hidden' : ''}>{entry.label}</span>
           </span>
           {collapsed ? (
-            groupBadgeTotal > 0 && <span className="hidden rounded-full bg-sky-500 px-2 py-0.5 text-[10px] font-black text-white lg:inline-flex">{groupBadgeTotal}</span>
+            groupBadgeTotal > 0 && <span className="hidden rounded-full bg-sky-500 px-2 py-0.5 text-[10px] font-black text-white lg:inline-flex">{formatAdminBadgeCount(groupBadgeTotal)}</span>
           ) : (
             <span className="flex items-center gap-2">
-              {groupBadgeTotal > 0 && <span className="rounded-full bg-sky-500 px-2 py-0.5 text-[10px] font-black text-white">{groupBadgeTotal}</span>}
+              {groupBadgeTotal > 0 && <span className="rounded-full bg-sky-500 px-2 py-0.5 text-[10px] font-black text-white">{formatAdminBadgeCount(groupBadgeTotal)}</span>}
               <svg className={`h-4 w-4 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path strokeLinecap="round" strokeLinejoin="round" d="m9 18 6-6-6-6" />
               </svg>

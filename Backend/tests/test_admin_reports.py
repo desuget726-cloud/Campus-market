@@ -7,6 +7,7 @@ import os
 import time
 import unittest
 from decimal import Decimal
+from unittest.mock import patch
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["SESSION_SECRET"] = "reports-test-secret"
@@ -14,6 +15,7 @@ os.environ["SESSION_SECRET"] = "reports-test-secret"
 import httpx
 
 from app import main as main_module
+from app import database as database_module
 from app.database import Base, get_db
 from app.models import (
     Admin,
@@ -27,7 +29,7 @@ from app.models import (
     Transaction,
     Wallet,
 )
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -205,6 +207,250 @@ class AdminReportEndpointTests(unittest.TestCase):
         self.assertEqual(report.status, "Under Review")
         self.assertEqual(report.reviewed_by, self.admin.id)
         self.assertIsNotNone(report.reviewed_at)
+
+    def test_review_is_idempotent_for_same_and_different_admins(self):
+        report, _ = self.create_report()
+        first = self.request(
+            "POST",
+            f"/api/admin/reports/{report.id}/review",
+            headers=self.headers,
+            json_body={},
+        )
+        self.db.refresh(report)
+        original_reviewed_at = report.reviewed_at
+        original_reviewer_id = report.reviewed_by
+
+        second_admin = Admin(
+            username="reports-admin-second",
+            email="reports-admin-second@example.test",
+            password_hash="test-hash",
+            role="Admin",
+        )
+        self.db.add(second_admin)
+        self.db.flush()
+        second_token = _jwt(second_admin.username, "admin")
+        self.db.add(AdminSession(
+            admin_id=second_admin.id,
+            session_token=second_token,
+            is_active=True,
+        ))
+        self.db.commit()
+
+        same_admin_response = self.request(
+            "POST",
+            f"/api/admin/reports/{report.id}/review",
+            headers=self.headers,
+            json_body={},
+        )
+        second_admin_response = self.request(
+            "POST",
+            f"/api/admin/reports/{report.id}/review",
+            headers={"Authorization": f"Bearer {second_token}"},
+            json_body={},
+        )
+        self.db.refresh(report)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(same_admin_response.status_code, 200)
+        self.assertEqual(second_admin_response.status_code, 200)
+        self.assertEqual(report.reviewed_by, original_reviewer_id)
+        self.assertEqual(report.reviewed_at, original_reviewed_at)
+
+    def test_review_legacy_report_without_related_links(self):
+        report = Report(
+            student_id=None,
+            seller_id=None,
+            product_id=None,
+            order_id=None,
+            student_name="Legacy Reporter",
+            issue="A legacy report with no linked records.",
+            status="Open",
+        )
+        self.db.add(report)
+        self.db.flush()
+
+        response = self.request(
+            "POST",
+            f"/api/admin/reports/{report.id}/review",
+            headers=self.headers,
+            json_body={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["seller_id"], "Not linked")
+        self.assertEqual(payload["seller_name"], "Not linked")
+        self.assertEqual(payload["product_name"], "Not linked")
+        self.assertEqual(payload["order_name"], "Not linked")
+        context = self.request(
+            "GET",
+            f"/api/admin/reports/{report.id}/context",
+            headers=self.headers,
+        )
+        self.assertEqual(context.status_code, 200)
+        self.assertEqual(context.json()["seller"]["seller_name"], "Not linked")
+        self.assertEqual(context.json()["product"]["title"], "Not linked")
+        self.assertEqual(context.json()["order"]["title"], "Not linked")
+
+    def test_review_report_with_deleted_related_records(self):
+        report, order = self.create_report(with_order=True)
+        product = self.db.query(Product).filter(Product.id == report.product_id).one()
+        self.db.delete(order)
+        self.db.delete(product)
+        self.db.delete(self.seller)
+        self.db.flush()
+
+        response = self.request(
+            "POST",
+            f"/api/admin/reports/{report.id}/review",
+            headers=self.headers,
+            json_body={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["seller_name"], "Not linked")
+        self.assertEqual(payload["product_name"], "Not linked")
+        self.assertEqual(payload["order_name"], "Not linked")
+        context = self.request(
+            "GET",
+            f"/api/admin/reports/{report.id}/context",
+            headers=self.headers,
+        )
+        self.assertEqual(context.status_code, 200)
+        self.assertEqual(context.json()["seller"]["seller_name"], "Not linked")
+        self.assertEqual(context.json()["product"]["title"], "Not linked")
+        self.assertEqual(context.json()["order"]["title"], "Not linked")
+
+    def test_closed_reports_are_returned_read_only(self):
+        for status in ("Resolved", "Dismissed"):
+            with self.subTest(status=status):
+                report, _ = self.create_report(status=status)
+                original_reviewed_by = report.reviewed_by
+                original_reviewed_at = report.reviewed_at
+                response = self.request(
+                    "POST",
+                    f"/api/admin/reports/{report.id}/review",
+                    headers=self.headers,
+                    json_body={},
+                )
+                self.db.refresh(report)
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["status"], status)
+                self.assertEqual(report.reviewed_by, original_reviewed_by)
+                self.assertEqual(report.reviewed_at, original_reviewed_at)
+
+    def test_missing_report_returns_404_and_student_returns_403(self):
+        missing_response = self.request(
+            "POST",
+            "/api/admin/reports/99999/review",
+            headers=self.headers,
+            json_body={},
+        )
+        student_response = self.request(
+            "POST",
+            "/api/admin/reports/1/review",
+            headers={"Authorization": f"Bearer {self.student_token}"},
+            json_body={},
+        )
+
+        self.assertEqual(missing_response.status_code, 404)
+        self.assertEqual(student_response.status_code, 403)
+
+    def test_review_succeeds_when_notification_side_effect_fails(self):
+        report, _ = self.create_report()
+
+        with self.assertLogs("app.reports", level="ERROR") as captured:
+            with patch.object(
+                main_module,
+                "_queue_student_item_notification",
+                side_effect=RuntimeError("notification service unavailable"),
+            ):
+                response = self.request(
+                    "POST",
+                    f"/api/admin/reports/{report.id}/review",
+                    headers=self.headers,
+                    json_body={},
+                )
+
+        self.db.refresh(report)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(report.status, "Under Review")
+        self.assertIn(f"report_id={report.id}", captured.output[0])
+        self.assertNotIn(report.issue, "\n".join(captured.output))
+
+    def test_review_succeeds_when_audit_log_write_fails(self):
+        report, _ = self.create_report()
+        original_add = self.db.add
+
+        def add_without_report_audit(instance):
+            if isinstance(instance, AuditLog) and instance.action == "Report Status Changed":
+                raise RuntimeError("audit log unavailable")
+            return original_add(instance)
+
+        with self.assertLogs("app.reports", level="ERROR") as captured:
+            with patch.object(self.db, "add", side_effect=add_without_report_audit):
+                response = self.request(
+                    "POST",
+                    f"/api/admin/reports/{report.id}/review",
+                    headers=self.headers,
+                    json_body={},
+                )
+
+        self.db.refresh(report)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(report.status, "Under Review")
+        self.assertIn(f"report_id={report.id}", captured.output[0])
+
+    def test_unknown_report_state_returns_409(self):
+        report, _ = self.create_report(status="Archived")
+
+        response = self.request(
+            "POST",
+            f"/api/admin/reports/{report.id}/review",
+            headers=self.headers,
+            json_body={},
+        )
+
+        self.assertEqual(response.status_code, 409)
+
+    def test_startup_migration_is_idempotent_and_lists_no_missing_report_columns(self):
+        self.db.commit()
+        self.db.close()
+        with self.engine.begin() as connection:
+            connection.execute(text("DROP TABLE reports"))
+            connection.execute(text(
+                "CREATE TABLE reports ("
+                "id INTEGER PRIMARY KEY, "
+                "student_name VARCHAR(150) NOT NULL, "
+                "issue VARCHAR(1000) NOT NULL, "
+                "priority VARCHAR(20) NOT NULL DEFAULT 'Low', "
+                "status VARCHAR(50) NOT NULL DEFAULT 'Open')"
+            ))
+
+        with patch.object(database_module, "engine", self.engine):
+            database_module.init_db()
+            database_module.init_db()
+            missing_columns = database_module.missing_model_columns({"reports"})
+
+        self.assertEqual(missing_columns, {})
+        table_names = set(inspect(self.engine).get_table_names())
+        self.assertTrue({"admin_item_seen", "report_messages", "support_ticket_messages"}.issubset(table_names))
+        with self.engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO reports (id, student_name, issue) "
+                "VALUES (15, 'Legacy reporter', 'Legacy report body')"
+            ))
+        self.db = self.session_factory()
+        response = self.request(
+            "POST",
+            "/api/admin/reports/15/review",
+            headers=self.headers,
+            json_body={},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "Under Review")
 
     def test_non_admin_is_forbidden(self):
         response = self.request(

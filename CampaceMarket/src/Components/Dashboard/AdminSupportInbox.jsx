@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { apiFetch, apiGet, getStoredAccessToken } from '../../api/apiClient';
+import { apiFetch, apiGet, apiPatch, getStoredAccessToken } from '../../api/apiClient';
 import { API_BASE_URL } from '../../config';
-import { getErrorMessage } from '../../utils/notify';
+import { getErrorMessage, notifySuccess } from '../../utils/notify';
 
 const ticketStatuses = ['Open', 'In Progress', 'Waiting for User', 'Resolved', 'Closed'];
 const ticketStatusStyles = {
@@ -11,11 +11,23 @@ const ticketStatusStyles = {
   Resolved: 'bg-emerald-100 text-emerald-800',
   Closed: 'bg-slate-200 text-slate-700',
 };
+const ticketSeenStyles = {
+  unseen: 'font-black text-slate-950',
+  seen: 'font-bold text-slate-700',
+};
+const ignoreSeenCount = () => {};
+const formatRequestError = (requestError) => {
+  const message = getErrorMessage(requestError);
+  const detail = typeof message === 'string' ? message : requestError?.message || 'Request failed.';
+  return requestError?.status ? `HTTP ${requestError.status}: ${detail}` : detail;
+};
 
-function AdminSupportInbox() {
+function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
   const token = getStoredAccessToken();
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
   const [tickets, setTickets] = useState([]);
+  const [admins, setAdmins] = useState([]);
+  const [currentAdminId, setCurrentAdminId] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [counters, setCounters] = useState({});
   const [selectedId, setSelectedId] = useState(() => {
@@ -52,13 +64,28 @@ function AdminSupportInbox() {
       setCanned(Array.isArray(cannedResult) ? cannedResult : []);
       setNotifications(notificationResult?.items || []);
       setError('');
-      if (!selectedId && ticketResult?.items?.length) setSelectedId(ticketResult.items[0].id);
     } catch (requestError) {
-      setError(getErrorMessage(requestError));
+      setError(formatRequestError(requestError));
     } finally {
       setLoading(false);
     }
-  }, [categoryFilter, headers, overdueOnly, selectedId, statusFilter]);
+  }, [categoryFilter, headers, overdueOnly, statusFilter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiGet('/api/admin/support/admins', { headers })
+      .then((result) => {
+        if (cancelled) return;
+        setAdmins(result?.items || []);
+        setCurrentAdminId(result?.current_admin_id ?? null);
+      })
+      .catch((requestError) => {
+        if (!cancelled) setError(formatRequestError(requestError));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [headers]);
 
   useEffect(() => {
     void Promise.resolve().then(loadTickets);
@@ -74,16 +101,27 @@ function AdminSupportInbox() {
         setDetailLoading(true);
         return apiGet(`/support/tickets/${selectedId}`, { headers, signal: controller.signal });
       })
-      .then((ticket) => {
-        setDetail(ticket);
+      .then(async (ticket) => {
+        await apiFetch(`/api/admin/support/${ticket.id}/seen`, { method: 'POST', headers });
+        setDetail({ ...ticket, is_unseen: false });
         setAssignedAdminId(ticket.assigned_admin_id ? String(ticket.assigned_admin_id) : '');
+        setTickets((current) => current.map((item) => (
+          item.id === ticket.id ? { ...item, is_unseen: false } : item
+        )));
+        setNotifications((current) => current.map((item) => (
+          item.reference_type === 'support'
+          && String(item.reference_id) === String(ticket.id)
+            ? { ...item, is_read: true }
+            : item
+        )));
+        onItemsSeen('unseenSupport', ticket.is_unseen ? 1 : 0);
       })
       .catch((requestError) => {
-        if (requestError.name !== 'AbortError') setError(getErrorMessage(requestError));
+        if (requestError.name !== 'AbortError') setError(formatRequestError(requestError));
       })
       .finally(() => setDetailLoading(false));
     return () => controller.abort();
-  }, [headers, selectedId]);
+  }, [headers, onItemsSeen, selectedId]);
 
   const selectTicket = (ticketId) => {
     setSelectedId(ticketId);
@@ -97,31 +135,54 @@ function AdminSupportInbox() {
     try {
       await apiFetch(`/support/notifications/${notification.id}/read`, { method: 'POST', headers });
       setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, is_read: true } : item));
+      if (!notification.is_read) onItemsSeen('unreadNotifications', 1);
       if (notification.reference_type === 'support') {
         selectTicket(Number(notification.reference_id));
       } else if (notification.action_url) {
         window.location.assign(notification.action_url);
       }
     } catch (requestError) {
-      setError(getErrorMessage(requestError));
+      setError(formatRequestError(requestError));
     }
   };
 
-  const saveAssignment = async () => {
+  const markAllTicketsSeen = async () => {
+    const unseenCount = tickets.filter((ticket) => ticket.is_unseen).length;
+    try {
+      await apiFetch('/api/admin/support/seen-all', { method: 'POST', headers });
+      setTickets((current) => current.map((ticket) => ({ ...ticket, is_unseen: false })));
+      onItemsSeen('unseenSupport', unseenCount);
+      await loadTickets();
+    } catch (requestError) {
+      setError(formatRequestError(requestError));
+    }
+  };
+
+  const markAllNotificationsSeen = async () => {
+    const unreadCount = notifications.filter((notification) => !notification.is_read).length;
+    try {
+      await apiFetch('/support/notifications/read-all', { method: 'POST', headers });
+      setNotifications((current) => current.map((notification) => ({ ...notification, is_read: true })));
+      onItemsSeen('unreadNotifications', unreadCount);
+    } catch (requestError) {
+      setError(formatRequestError(requestError));
+    }
+  };
+
+  const saveAssignment = async (adminId = assignedAdminId) => {
     if (!detail) return;
     setBusy(true);
     setError('');
     try {
-      await apiFetch(`/support/tickets/${detail.id}/assign`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ admin_id: assignedAdminId ? Number(assignedAdminId) : null }),
-      });
+      const result = await apiPatch(`/api/admin/support/${detail.id}/assign`, {
+        admin_id: adminId ? Number(adminId) : null,
+      }, { headers });
+      setDetail((current) => current?.id === detail.id ? { ...current, ...result.ticket } : current);
+      setAssignedAdminId(result.ticket?.assigned_admin_id ? String(result.ticket.assigned_admin_id) : '');
+      notifySuccess('Support ticket assignment saved.');
       await loadTickets();
-      const updated = await apiGet(`/support/tickets/${detail.id}`, { headers });
-      setDetail(updated);
     } catch (requestError) {
-      setError(getErrorMessage(requestError));
+      setError(formatRequestError(requestError));
     } finally {
       setBusy(false);
     }
@@ -162,7 +223,7 @@ function AdminSupportInbox() {
       setDetail(updated);
       await loadTickets();
     } catch (requestError) {
-      setError(getErrorMessage(requestError));
+      setError(formatRequestError(requestError));
     } finally {
       setBusy(false);
     }
@@ -181,7 +242,7 @@ function AdminSupportInbox() {
       setDetail(await apiGet(`/support/tickets/${detail.id}`, { headers }));
       await loadTickets();
     } catch (requestError) {
-      setError(getErrorMessage(requestError));
+      setError(formatRequestError(requestError));
     } finally {
       setBusy(false);
     }
@@ -207,7 +268,7 @@ function AdminSupportInbox() {
       link.click();
       URL.revokeObjectURL(objectUrl);
     } catch (requestError) {
-      setError(getErrorMessage(requestError));
+      setError(formatRequestError(requestError));
     }
   };
 
@@ -216,8 +277,13 @@ function AdminSupportInbox() {
   return (
     <section className="space-y-5 text-slate-900" aria-label="Admin support inbox">
       <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black">Support inbox</h2>
-        <p className="mt-1 text-sm text-slate-600">Private conversations are visible only to administrators and their creator.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-black">Support inbox</h2>
+            <p className="mt-1 text-sm text-slate-600">Private conversations are visible only to administrators and their creator.</p>
+          </div>
+          <button type="button" onClick={markAllTicketsSeen} className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Mark all as seen</button>
+        </div>
       </header>
       {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{error}</p>}
 
@@ -251,7 +317,10 @@ function AdminSupportInbox() {
           ) : tickets.map((ticket) => (
             <button key={ticket.id} type="button" onClick={() => selectTicket(ticket.id)} className={`w-full rounded-xl border p-3 text-left ${selectedId === ticket.id ? 'border-sky-300 bg-sky-50' : 'border-slate-200 hover:bg-slate-50'}`}>
               <span className="flex items-center justify-between gap-2">
-                <span className="font-bold">{ticket.ticket_number}</span>
+                <span className={`inline-flex items-center gap-1.5 ${ticketSeenStyles[ticket.is_unseen ? 'unseen' : 'seen']}`}>
+                  {ticket.is_unseen && <span className="h-2 w-2 rounded-full bg-rose-500" aria-label="Unseen" />}
+                  {ticket.ticket_number}
+                </span>
                 <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${ticketStatusStyles[ticket.status] || 'bg-slate-100 text-slate-700'}`}>{ticket.status}</span>
               </span>
               <span className="mt-1 block truncate text-sm">{ticket.subject}</span>
@@ -263,7 +332,10 @@ function AdminSupportInbox() {
         <article className="min-w-0 space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           {notifications.length > 0 && (
             <div className="space-y-2 border-b border-slate-100 pb-4">
-              <h3 className="text-sm font-bold">Admin queue notifications</h3>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-bold">Admin queue notifications</h3>
+                <button type="button" onClick={markAllNotificationsSeen} className="text-xs font-bold text-sky-700 hover:text-sky-900">Mark all as seen</button>
+              </div>
               {notifications.slice(0, 4).map((notification) => (
                 <button key={notification.id} type="button" onClick={() => openAdminNotification(notification)} className="flex w-full items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-left text-xs hover:bg-sky-50">
                   <span><strong>{notification.title}</strong><span className="ml-2 text-slate-600">{notification.message}</span></span>
@@ -288,11 +360,25 @@ function AdminSupportInbox() {
               </div>
 
               <div className="flex flex-wrap items-end gap-2">
-                <label className="text-xs font-semibold text-slate-600">
-                  Assign admin ID
-                  <input type="number" min="1" value={assignedAdminId} onChange={(event) => setAssignedAdminId(event.target.value)} className="mt-1 block w-36 rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-                </label>
-                <button type="button" disabled={busy} onClick={saveAssignment} className="rounded-full border border-slate-300 px-4 py-2 text-sm font-bold hover:bg-slate-50 disabled:opacity-50">Save assignment</button>
+                <div className="text-xs font-semibold text-slate-600">
+                  <label>
+                    Assign admin
+                    <select value={assignedAdminId} onChange={(event) => setAssignedAdminId(event.target.value)} className="mt-1 block min-w-52 rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                      <option value="">Unassigned</option>
+                      {detail.assigned_admin_id && !admins.some((item) => item.id === detail.assigned_admin_id) && (
+                        <option value={String(detail.assigned_admin_id)} disabled>
+                          {detail.assigned_admin?.name || `Admin #${detail.assigned_admin_id}`} (inactive)
+                        </option>
+                      )}
+                      {admins.map((item) => (
+                        <option key={item.id} value={String(item.id)}>{item.name} (@{item.username})</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="mt-1">Current assignee: {detail.assigned_admin?.name || (detail.assigned_admin_id ? `Admin #${detail.assigned_admin_id}` : 'Unassigned')}</p>
+                </div>
+                <button type="button" disabled={busy} onClick={() => saveAssignment()} className="rounded-full border border-slate-300 px-4 py-2 text-sm font-bold hover:bg-slate-50 disabled:opacity-50">Save assignment</button>
+                <button type="button" disabled={busy || !currentAdminId} onClick={() => saveAssignment(String(currentAdminId))} className="rounded-full border border-sky-300 px-4 py-2 text-sm font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50">Assign to me</button>
                 <label className="text-xs font-semibold text-slate-600">
                   Status
                   <select value={detail.status} onChange={(event) => updateStatus(event.target.value)} disabled={busy} className="mt-1 block rounded-lg border border-slate-200 px-3 py-2 text-sm">

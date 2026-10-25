@@ -380,7 +380,7 @@ class SupportCommunicationLoopTests(unittest.TestCase):
     def test_ticket_assignment_and_status_changes_are_audited(self):
         ticket_id = self._create_ticket().json()["ticket"]["id"]
         assignment = self._request(
-            "POST", f"/support/tickets/{ticket_id}/assign",
+            "PATCH", f"/api/admin/support/{ticket_id}/assign",
             headers={"Authorization": f"Bearer {self.admin_token}"},
             json_body={"admin_id": self.admin.id},
         )
@@ -490,7 +490,7 @@ class SupportCommunicationLoopTests(unittest.TestCase):
         )
         self.assertEqual(denied.status_code, 403)
 
-    def test_sidebar_counts_include_reports_support_overdue_and_unread(self):
+    def test_sidebar_counts_include_unseen_reports_support_overdue_and_unread(self):
         old_ticket = SupportTicket(
             user_id=self.reporter.student_id,
             requester_name=self.reporter.name,
@@ -543,8 +543,8 @@ class SupportCommunicationLoopTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         counts = response.json()
-        self.assertEqual(counts["openReports"], 2)
-        self.assertEqual(counts["supportOpen"], 2)
+        self.assertEqual(counts["unseenReports"], 2)
+        self.assertEqual(counts["unseenSupport"], 2)
         self.assertEqual(counts["supportOverdue"], 1)
         self.assertEqual(counts["unreadNotifications"], 1)
 
@@ -553,6 +553,148 @@ class SupportCommunicationLoopTests(unittest.TestCase):
             headers=self._headers(self.reporter.student_id),
         )
         self.assertEqual(denied.status_code, 403)
+
+    def test_support_assignment_lists_only_safe_active_admin_fields(self):
+        inactive_admin = Admin(
+            username="inactive-support-admin",
+            email="inactive@example.test",
+            password_hash="private-hash",
+            role="Admin",
+            status="Inactive",
+        )
+        self.db.add(inactive_admin)
+        self.db.commit()
+
+        response = self._request(
+            "GET",
+            "/api/admin/support/admins",
+            headers=self._admin_headers(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["current_admin_id"], self.admin.id)
+        self.assertEqual(
+            response.json()["items"],
+            [{
+                "id": self.admin.id,
+                "name": self.admin.username,
+                "username": self.admin.username,
+            }],
+        )
+        self.assertNotIn("password_hash", response.text)
+        denied = self._request(
+            "GET",
+            "/api/admin/support/admins",
+            headers=self._headers(self.reporter.student_id),
+        )
+        self.assertEqual(denied.status_code, 403)
+
+    def test_admin_can_assign_reassign_and_unassign_support_ticket(self):
+        ticket_id = self._create_ticket().json()["ticket"]["id"]
+        next_admin = Admin(
+            username="second-support-admin",
+            email="second-admin@example.test",
+            password_hash="test-hash",
+            role="Admin",
+            status="Active",
+        )
+        self.db.add(next_admin)
+        self.db.commit()
+
+        first_assignment = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._admin_headers(),
+            json_body={"admin_id": self.admin.id},
+        )
+        second_assignment = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._admin_headers(),
+            json_body={"admin_id": next_admin.id},
+        )
+        unassignment = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._admin_headers(),
+            json_body={"admin_id": None},
+        )
+
+        self.assertEqual(first_assignment.status_code, 200, first_assignment.text)
+        self.assertEqual(first_assignment.json()["ticket"]["assigned_admin_id"], self.admin.id)
+        self.assertEqual(first_assignment.json()["ticket"]["assigned_admin"]["username"], self.admin.username)
+        self.assertEqual(second_assignment.status_code, 200, second_assignment.text)
+        self.assertEqual(second_assignment.json()["ticket"]["assigned_admin_id"], next_admin.id)
+        self.assertEqual(unassignment.status_code, 200, unassignment.text)
+        self.assertIsNone(unassignment.json()["ticket"]["assigned_admin_id"])
+        self.assertIsNone(unassignment.json()["ticket"]["assigned_admin"])
+
+        logs = self.db.query(AuditLog).filter(
+            AuditLog.action == "Support Ticket Assigned",
+            AuditLog.entity_id == ticket_id,
+        ).order_by(AuditLog.id).all()
+        self.assertEqual(len(logs), 3)
+        self.assertTrue(all(log.admin_id == self.admin.id for log in logs))
+        self.assertIn(f"none -> {self.admin.id}", logs[0].description)
+        self.assertIn(f"{self.admin.id} -> {next_admin.id}", logs[1].description)
+        self.assertIn(f"{next_admin.id} -> none", logs[2].description)
+
+        assigned_notification = self.db.query(AdminNotification).filter(
+            AdminNotification.admin_id == next_admin.id,
+            AdminNotification.reference_type == "support",
+            AdminNotification.reference_id == str(ticket_id),
+        ).one()
+        self.assertIn(f"SUP-{ticket_id:04d}", assigned_notification.message)
+        self.assertEqual(assigned_notification.action_url, f"/admin/support?ticket={ticket_id}")
+
+    def test_support_assignment_rejects_unknown_ticket_invalid_admin_and_students(self):
+        ticket_id = self._create_ticket().json()["ticket"]["id"]
+        inactive_admin = Admin(
+            username="inactive-assignee",
+            email="inactive-assignee@example.test",
+            password_hash="test-hash",
+            role="Admin",
+            status="Inactive",
+        )
+        self.db.add(inactive_admin)
+        self.db.commit()
+
+        unknown_admin = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._admin_headers(),
+            json_body={"admin_id": 99999},
+        )
+        inactive_assignee = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._admin_headers(),
+            json_body={"admin_id": inactive_admin.id},
+        )
+        missing_admin_id = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._admin_headers(),
+            json_body={},
+        )
+        unknown_ticket = self._request(
+            "PATCH",
+            "/api/admin/support/99999/assign",
+            headers=self._admin_headers(),
+            json_body={"admin_id": None},
+        )
+        student_request = self._request(
+            "PATCH",
+            f"/api/admin/support/{ticket_id}/assign",
+            headers=self._headers(self.reporter.student_id),
+            json_body={"admin_id": self.admin.id},
+        )
+
+        self.assertEqual(unknown_admin.status_code, 404)
+        self.assertEqual(inactive_assignee.status_code, 404)
+        self.assertEqual(missing_admin_id.status_code, 422)
+        self.assertEqual(unknown_ticket.status_code, 404)
+        self.assertEqual(student_request.status_code, 403)
 
 
 if __name__ == "__main__":

@@ -91,7 +91,7 @@ from .models import (
     Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, MessageBlock, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .config import get_dispute_window_hours, get_pay_lock_minutes, get_pay_max_failed_attempts
@@ -1794,7 +1794,7 @@ class SupportTicketMessageCreate(BaseModel):
 
 
 class SupportTicketAssignRequest(BaseModel):
-    admin_id: Optional[int] = None
+    admin_id: Optional[int]
 
 
 class CannedResponseCreate(BaseModel):
@@ -3459,6 +3459,7 @@ async def on_startup():
         purge_legacy_soft_deleted_login_history()
     except Exception:
         logging.getLogger("app.startup").exception("Startup database initialization failed.")
+        raise
 
     payment_scheduler = AsyncIOScheduler()
     payment_scheduler.add_job(
@@ -14192,7 +14193,12 @@ FRONTEND_BASE_URL = (
 ).rstrip("/")
 
 
-def _support_ticket_payload(ticket: SupportTicket, *, include_private: bool = False) -> dict:
+def _support_ticket_payload(
+    ticket: SupportTicket,
+    *,
+    include_private: bool = False,
+    last_student_activity_at: Optional[datetime] = None,
+) -> dict:
     return {
         "id": ticket.id,
         "ticket_number": f"SUP-{ticket.id:04d}",
@@ -14204,7 +14210,7 @@ def _support_ticket_payload(ticket: SupportTicket, *, include_private: bool = Fa
         "last_admin_reply_at": ticket.last_admin_reply_at.isoformat() if ticket.last_admin_reply_at else None,
         "assigned_admin_id": ticket.assigned_admin_id,
         "revision": ticket.revision,
-        "overdue": _ticket_is_overdue(ticket),
+        "overdue": _ticket_is_overdue(ticket, last_student_activity_at=last_student_activity_at),
         **({
             "user_id": ticket.user_id,
             "name": ticket.requester_name,
@@ -14214,12 +14220,18 @@ def _support_ticket_payload(ticket: SupportTicket, *, include_private: bool = Fa
     }
 
 
-def _ticket_is_overdue(ticket: SupportTicket, now: Optional[datetime] = None) -> bool:
+def _ticket_is_overdue(
+    ticket: SupportTicket,
+    now: Optional[datetime] = None,
+    last_student_activity_at: Optional[datetime] = None,
+) -> bool:
     if ticket.status in {"Resolved", "Closed"}:
         return False
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
-    last_admin_activity = ticket.last_admin_reply_at or ticket.created_at
-    return bool(last_admin_activity and now - last_admin_activity > timedelta(hours=SUPPORT_SLA_HOURS))
+    last_student_activity = last_student_activity_at or ticket.created_at
+    if ticket.last_admin_reply_at and last_student_activity and ticket.last_admin_reply_at >= last_student_activity:
+        return False
+    return bool(last_student_activity and now - last_student_activity > timedelta(hours=SUPPORT_SLA_HOURS))
 
 
 @app.get("/api/admin/sidebar-counts")
@@ -14230,35 +14242,177 @@ def get_admin_sidebar_counts(
 ):
     admin = _require_admin_dashboard_access(authorization, session_token, db)
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    sla_cutoff = now - timedelta(hours=SUPPORT_SLA_HOURS)
+    reports = db.query(Report).all()
+    tickets = db.query(SupportTicket).all()
+    report_activity = _admin_report_activity_map(db, reports)
+    support_activity = _admin_support_activity_map(db, tickets)
+    report_seen = _admin_item_seen_map(db, admin.id, "report")
+    support_seen = _admin_item_seen_map(db, admin.id, "support_ticket")
     active_ticket_statuses = ("Open", "In Progress", "Waiting for User")
-    active_tickets = db.query(SupportTicket).filter(
-        SupportTicket.status.in_(active_ticket_statuses),
-    )
-    overdue_tickets = active_tickets.filter(
-        or_(
-            and_(
-                SupportTicket.last_admin_reply_at.is_(None),
-                SupportTicket.created_at < sla_cutoff,
-            ),
-            SupportTicket.last_admin_reply_at < sla_cutoff,
-        ),
-    )
+    overdue_tickets = [
+        ticket for ticket in tickets
+        if ticket.status in active_ticket_statuses
+        and _ticket_is_overdue(ticket, now, support_activity[ticket.id])
+    ]
     return {
         "pendingVerifications": db.query(Student.id).filter(
             Student.is_verified.is_(False),
             or_(Student.verification_reason.is_(None), Student.verification_reason == ""),
         ).count(),
-        "openReports": db.query(Report.id).filter(
-            Report.status.in_(("Open", "Under Review")),
-        ).count(),
-        "supportOpen": active_tickets.count(),
-        "supportOverdue": overdue_tickets.count(),
+        "unseenReports": sum(
+            report.id not in report_seen or report_activity[report.id] > report_seen[report.id]
+            for report in reports
+        ),
+        "unseenSupport": sum(
+            ticket.id not in support_seen or support_activity[ticket.id] > support_seen[ticket.id]
+            for ticket in tickets
+        ),
+        "supportOverdue": len(overdue_tickets),
         "unreadNotifications": db.query(AdminNotification.id).filter(
             AdminNotification.admin_id == admin.id,
             AdminNotification.is_read.is_(False),
         ).count(),
     }
+
+
+def _admin_item_seen_map(db: Session, admin_id: int, item_type: str) -> dict[int, datetime]:
+    return {
+        item.item_id: item.seen_at
+        for item in db.query(AdminItemSeen).filter(
+            AdminItemSeen.admin_id == admin_id,
+            AdminItemSeen.item_type == item_type,
+        ).all()
+    }
+
+
+def _admin_report_activity_map(db: Session, reports: list[Report]) -> dict[int, datetime]:
+    if not reports:
+        return {}
+    report_ids = [report.id for report in reports]
+    reporter_notes = dict(db.query(
+        ReportMessage.report_id,
+        func.max(ReportMessage.created_at),
+    ).filter(
+        ReportMessage.report_id.in_(report_ids),
+        ReportMessage.admin_id.is_(None),
+        ReportMessage.is_internal.is_(False),
+    ).group_by(ReportMessage.report_id).all())
+    return {
+        report.id: max(
+            (timestamp for timestamp in (
+                report.created_at,
+                report.appealed_at,
+                report.seller_response_at,
+                reporter_notes.get(report.id),
+            ) if timestamp is not None),
+            default=datetime.min,
+        )
+        for report in reports
+    }
+
+
+def _admin_support_activity_map(db: Session, tickets: list[SupportTicket]) -> dict[int, datetime]:
+    if not tickets:
+        return {}
+    ticket_ids = [ticket.id for ticket in tickets]
+    student_messages = dict(db.query(
+        SupportTicketMessage.ticket_id,
+        func.max(SupportTicketMessage.created_at),
+    ).filter(
+        SupportTicketMessage.ticket_id.in_(ticket_ids),
+        SupportTicketMessage.sender_type == "student",
+        SupportTicketMessage.is_internal.is_(False),
+    ).group_by(SupportTicketMessage.ticket_id).all())
+    return {
+        ticket.id: max(
+            ticket.created_at or datetime.min,
+            student_messages.get(ticket.id) or datetime.min,
+        )
+        for ticket in tickets
+    }
+
+
+def _record_admin_items_seen(
+    db: Session,
+    admin: Admin,
+    item_type: str,
+    activities: dict[int, datetime],
+) -> int:
+    changed = 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for item_id, activity in activities.items():
+        seen = db.query(AdminItemSeen).filter_by(
+            admin_id=admin.id,
+            item_type=item_type,
+            item_id=item_id,
+        ).first()
+        if seen is not None and activity <= seen.seen_at:
+            continue
+        seen_at = max(now, activity)
+        if seen is None:
+            db.add(AdminItemSeen(
+                admin_id=admin.id,
+                item_type=item_type,
+                item_id=item_id,
+                seen_at=seen_at,
+            ))
+        else:
+            seen.seen_at = seen_at
+        changed += 1
+    return changed
+
+
+def _mark_admin_queue_notifications_read(
+    db: Session,
+    admin_id: int,
+    reference_type: str,
+    reference_ids: Optional[list[int]] = None,
+) -> None:
+    query = db.query(AdminNotification).filter(
+        AdminNotification.admin_id == admin_id,
+        AdminNotification.reference_type == reference_type,
+        AdminNotification.is_read.is_(False),
+    )
+    if reference_ids is not None:
+        query = query.filter(AdminNotification.reference_id.in_([str(item_id) for item_id in reference_ids]))
+    query.update({"is_read": True}, synchronize_session="fetch")
+
+
+@app.post("/api/admin/reports/seen-all")
+def mark_all_admin_reports_seen(
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    admin = _require_report_admin(authorization, db)
+    reports = db.query(Report).all()
+    activities = _admin_report_activity_map(db, reports)
+    changed = _record_admin_items_seen(db, admin, "report", activities)
+    _mark_admin_queue_notifications_read(db, admin.id, "report")
+    if changed:
+        _add_admin_audit(db, admin, request, "Admin Reports Marked Seen", f"Marked {changed} report(s) as seen.")
+    db.commit()
+    return {"success": True, "marked_seen": len(reports)}
+
+
+@app.post("/api/admin/reports/{report_id}/seen")
+def mark_admin_report_seen(
+    report_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    admin = _require_report_admin(authorization, db)
+    report = db.query(Report).filter(Report.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    activity = _admin_report_activity_map(db, [report])[report.id]
+    changed = _record_admin_items_seen(db, admin, "report", {report.id: activity})
+    _mark_admin_queue_notifications_read(db, admin.id, "report", [report.id])
+    if changed:
+        _add_admin_audit(db, admin, request, "Admin Report Marked Seen", f"Marked RPT-{report.id:04d} as seen.")
+    db.commit()
+    return {"success": True}
 
 
 @app.get("/api/admin/admin-users")
@@ -14484,6 +14638,13 @@ def _support_ticket_detail(db: Session, ticket: SupportTicket, *, include_intern
         *([] if include_internal else [SupportTicketMessage.is_internal.is_(False)]),
     ).order_by(SupportTicketMessage.created_at.asc(), SupportTicketMessage.id.asc()).all()
     payload = _support_ticket_payload(ticket, include_private=include_internal)
+    if include_internal and ticket.assigned_admin_id is not None:
+        assigned_admin = db.query(Admin).filter(Admin.id == ticket.assigned_admin_id).first()
+        payload["assigned_admin"] = {
+            "id": assigned_admin.id,
+            "name": assigned_admin.full_name or assigned_admin.username,
+            "username": assigned_admin.username,
+        } if assigned_admin else None
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     payload["can_reopen"] = bool(
         ticket.status == "Resolved"
@@ -14661,7 +14822,7 @@ def list_support_tickets(
     overdue: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
 ):
-    _require_admin(authorization, session_token, db)
+    admin = _require_admin(authorization, session_token, db)
     query = db.query(SupportTicket)
     if status_filter and status_filter.strip() in SUPPORT_TICKET_STATUSES:
         query = query.filter(SupportTicket.status == status_filter.strip())
@@ -14670,16 +14831,91 @@ def list_support_tickets(
     if assigned_admin_id is not None:
         query = query.filter(SupportTicket.assigned_admin_id == assigned_admin_id)
     tickets = query.order_by(SupportTicket.created_at.desc(), SupportTicket.id.desc()).all()
+    activities = _admin_support_activity_map(db, tickets)
     if overdue is not None:
-        tickets = [ticket for ticket in tickets if _ticket_is_overdue(ticket) == overdue]
+        tickets = [
+            ticket for ticket in tickets
+            if _ticket_is_overdue(ticket, last_student_activity_at=activities[ticket.id]) == overdue
+        ]
+    seen = _admin_item_seen_map(db, admin.id, "support_ticket")
+    items = []
+    for ticket in tickets:
+        payload = _support_ticket_payload(
+            ticket,
+            include_private=True,
+            last_student_activity_at=activities[ticket.id],
+        )
+        payload["is_unseen"] = (
+            ticket.id not in seen or activities[ticket.id] > seen[ticket.id]
+        )
+        items.append(payload)
     return {
-        "items": [_support_ticket_payload(ticket, include_private=True) for ticket in tickets],
+        "items": items,
         "total": len(tickets),
         "counters": {
             status_name: query.filter(SupportTicket.status == status_name).count()
             for status_name in sorted(SUPPORT_TICKET_STATUSES)
         },
     }
+
+
+@app.get("/api/admin/support/admins")
+def list_support_assignment_admins(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin_dashboard_access(authorization, session_token, db, "support")
+    rows = db.query(Admin.id, Admin.full_name, Admin.username).filter(
+        func.lower(Admin.status) == "active",
+    ).order_by(Admin.full_name, Admin.username).all()
+    return {
+        "items": [{
+            "id": row.id,
+            "name": row.full_name or row.username,
+            "username": row.username,
+        } for row in rows],
+        "current_admin_id": admin.id,
+    }
+
+
+@app.post("/api/admin/support/seen-all")
+def mark_all_admin_support_tickets_seen(
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin_dashboard_access(authorization, session_token, db, "support")
+    tickets = db.query(SupportTicket).all()
+    activities = _admin_support_activity_map(db, tickets)
+    changed = _record_admin_items_seen(db, admin, "support_ticket", activities)
+    _mark_admin_queue_notifications_read(db, admin.id, "support")
+    if changed:
+        _add_admin_audit(db, admin, request, "Admin Support Tickets Marked Seen", f"Marked {changed} support ticket(s) as seen.")
+    db.commit()
+    return {"success": True, "marked_seen": len(tickets)}
+
+
+@app.post("/api/admin/support/{ticket_id}/seen")
+def mark_admin_support_ticket_seen(
+    ticket_id: int,
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin_dashboard_access(authorization, session_token, db, "support")
+    ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+    activity = _admin_support_activity_map(db, [ticket])[ticket.id]
+    changed = _record_admin_items_seen(db, admin, "support_ticket", {ticket.id: activity})
+    _mark_admin_queue_notifications_read(db, admin.id, "support", [ticket.id])
+    if changed:
+        _add_admin_audit(db, admin, request, "Admin Support Ticket Marked Seen", f"Marked SUP-{ticket.id:04d} as seen.")
+    db.commit()
+    return {"success": True}
 
 
 @app.get("/api/student/support/tickets")
@@ -14750,7 +14986,16 @@ def get_admin_support_ticket(
         status="SUCCESS",
     ))
     db.commit()
-    return _support_ticket_detail(db, ticket, include_internal=True)
+    payload = _support_ticket_detail(db, ticket, include_internal=True)
+    activity = _admin_support_activity_map(db, [ticket])[ticket.id]
+    payload["overdue"] = _ticket_is_overdue(ticket, last_student_activity_at=activity)
+    seen = db.query(AdminItemSeen).filter_by(
+        admin_id=admin.id,
+        item_type="support_ticket",
+        item_id=ticket.id,
+    ).first()
+    payload["is_unseen"] = seen is None or activity > seen.seen_at
+    return payload
 
 
 @app.get("/support/tickets/{ticket_id}/attachments/{message_id}")
@@ -15011,7 +15256,7 @@ def update_support_ticket_status(
     return {"success": True, "ticket": _support_ticket_payload(ticket, include_private=True)}
 
 
-@app.post("/support/tickets/{ticket_id}/assign")
+@app.patch("/api/admin/support/{ticket_id}/assign")
 def assign_support_ticket(
     ticket_id: int,
     payload: SupportTicketAssignRequest,
@@ -15020,14 +15265,19 @@ def assign_support_ticket(
     session_token: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    admin = _require_admin(authorization, session_token, db)
+    admin = _require_admin_dashboard_access(authorization, session_token, db, "support")
     ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).with_for_update().first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Support ticket not found.")
-    if payload.admin_id is not None and not db.query(Admin.id).filter(
-        Admin.id == payload.admin_id, func.lower(Admin.status) == "active",
-    ).first():
-        raise HTTPException(status_code=404, detail="Assigned admin not found.")
+    assigned_admin = None
+    if payload.admin_id is not None:
+        assigned_admin = db.query(Admin).filter(
+            Admin.id == payload.admin_id,
+            func.lower(Admin.status) == "active",
+        ).first()
+        if assigned_admin is None:
+            raise HTTPException(status_code=404, detail="Assigned admin not found or inactive.")
+    previous_admin_id = ticket.assigned_admin_id
     ticket.assigned_admin_id = payload.admin_id
     ticket.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.add(AuditLog(
@@ -15035,12 +15285,35 @@ def assign_support_ticket(
         action="Support Ticket Assigned",
         entity_type="SupportTicket",
         entity_id=ticket.id,
-        description=f"SUP-{ticket.id:04d} assigned to admin {payload.admin_id}.",
+        description=(
+            f"SUP-{ticket.id:04d}: assigned admin {previous_admin_id or 'none'} "
+            f"-> {payload.admin_id or 'none'}."
+        ),
         status="SUCCESS",
         ip_address=request.client.host if request.client else None,
     ))
-    db.commit()
-    return {"success": True, "ticket": _support_ticket_payload(ticket, include_private=True)}
+    if assigned_admin and assigned_admin.id != previous_admin_id:
+        db.add(AdminNotification(
+            admin_id=assigned_admin.id,
+            title=f"Support ticket SUP-{ticket.id:04d} assigned to you",
+            message=f"SUP-{ticket.id:04d} has been assigned to you.",
+            reference_type="support",
+            reference_id=str(ticket.id),
+            action_url=f"/admin/support?ticket={ticket.id}",
+            is_read=False,
+        ))
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Another admin updated this ticket. Reload and try again.")
+    ticket_payload = _support_ticket_payload(ticket, include_private=True)
+    ticket_payload["assigned_admin"] = {
+        "id": assigned_admin.id,
+        "name": assigned_admin.full_name or assigned_admin.username,
+        "username": assigned_admin.username,
+    } if assigned_admin else None
+    return {"success": True, "ticket": ticket_payload}
 
 
 @app.get("/support/canned-responses")
@@ -15178,6 +15451,21 @@ def mark_admin_support_notification_read(
     return {"success": True}
 
 
+@app.post("/support/notifications/read-all")
+def mark_all_admin_support_notifications_read(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin_dashboard_access(authorization, session_token, db, "support")
+    updated = db.query(AdminNotification).filter(
+        AdminNotification.admin_id == admin.id,
+        AdminNotification.is_read.is_(False),
+    ).update({"is_read": True}, synchronize_session="fetch")
+    db.commit()
+    return {"success": True, "marked_read": updated}
+
+
 def _process_support_ticket_automation() -> dict:
     db = SessionLocal()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -15213,8 +15501,9 @@ def _process_support_ticket_automation() -> dict:
         overdue_tickets = db.query(SupportTicket).filter(
             SupportTicket.status.notin_(["Resolved", "Closed"]),
         ).all()
+        student_activity = _admin_support_activity_map(db, overdue_tickets)
         for ticket in overdue_tickets:
-            if _ticket_is_overdue(ticket, now) and (
+            if _ticket_is_overdue(ticket, now, student_activity[ticket.id]) and (
                 not ticket.last_reminder_at
                 or now - ticket.last_reminder_at > timedelta(hours=SUPPORT_SLA_HOURS)
             ):
@@ -18926,11 +19215,11 @@ def _report_product_and_order(db: Session, report: Report) -> tuple[Optional[Pro
     return product, order
 
 
-def _report_seller_name(db: Session, seller_id: Optional[str]) -> Optional[str]:
+def _report_seller_name(db: Session, seller_id: Optional[str]) -> str:
     if not seller_id:
-        return None
+        return "Not linked"
     seller = db.query(Student).filter(Student.student_id == seller_id).first()
-    return seller.name if seller else seller_id
+    return seller.name if seller else "Not linked"
 
 
 def _report_payment_transaction(db: Session, order: Order) -> Optional[Transaction]:
@@ -18963,13 +19252,13 @@ def _report_payload(db: Session, report: Report) -> dict:
         "email": report.email,
         "student": report.student_name,
         "student_id": report.student_id,
-        "seller_id": report.seller_id,
+        "seller_id": report.seller_id or "Not linked",
         "seller_name": _report_seller_name(db, report.seller_id),
         "product_id": report.product_id,
-        "product_name": product.title if product else None,
+        "product_name": product.title if product else "Not linked",
         "product_url": f"/?productId={product.id}" if product else None,
         "order_id": report.order_id,
-        "order_name": order.title if order else None,
+        "order_name": order.title if order else "Not linked",
         "evidence_image": (
             f"/api/admin/reports/{report.id}/evidence"
             if (report.evidence_image or "").startswith("private-report:")
@@ -19016,6 +19305,59 @@ def _add_report_notification(db: Session, student_id: Optional[str], report: Rep
     ))
 
 
+def _record_report_review_side_effects(
+    db: Session,
+    report: Report,
+    admin: Admin,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> None:
+    db.add(AuditLog(
+        admin_id=admin.id,
+        action="Report Status Changed",
+        entity_type="Report",
+        entity_id=report.id,
+        description=f"RPT-{report.id:04d} moved to Under Review.",
+        status="SUCCESS",
+        ip_address=request.client.host if request.client else None,
+    ))
+    student = (
+        db.query(Student).filter(Student.student_id == report.student_id).first()
+        if report.student_id else None
+    )
+    outbox_id = None
+    if student:
+        outbox_id = _queue_student_item_notification(
+            db,
+            student,
+            title=f"Update on RPT-{report.id:04d}",
+            message="An admin is reviewing your report.",
+            item_type="report_status",
+            item_id=report.id,
+            action_url=f"/dashboard?tab=buyer&section=reports-support&item=report-{report.id}",
+            email_subject=f"Update on RPT-{report.id:04d}",
+            email_summary="An administrator is reviewing your report.",
+            email_status=report.status,
+        )
+    db.commit()
+    if outbox_id and db.get_bind() is engine:
+        background_tasks.add_task(
+            _deliver_report_review_outbox,
+            outbox_id,
+            report.id,
+        )
+
+
+def _deliver_report_review_outbox(outbox_id: int, report_id: int) -> None:
+    try:
+        _deliver_outbox_email(outbox_id)
+    except Exception:
+        logging.getLogger("app.reports").exception(
+            "Best-effort report review notification delivery failed (report_id=%s).",
+            report_id,
+        )
+
+
 def _student_report_payload(db: Session, report: Report) -> dict:
     public_messages = db.query(ReportMessage).filter(
         ReportMessage.report_id == report.id,
@@ -19057,7 +19399,7 @@ def get_admin_reports(
     overdue: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
 ):
-    _require_report_admin(authorization, db)
+    admin = _require_report_admin(authorization, db)
     query = db.query(Report)
     if status_filter:
         query = query.filter(Report.status == status_filter)
@@ -19076,7 +19418,14 @@ def get_admin_reports(
                 > timedelta(hours=SUPPORT_SLA_HOURS)
             ) == overdue
         ]
-    return [_report_payload(db, report) for report in reports]
+    activities = _admin_report_activity_map(db, reports)
+    seen = _admin_item_seen_map(db, admin.id, "report")
+    items = []
+    for report in reports:
+        payload = _report_payload(db, report)
+        payload["is_unseen"] = report.id not in seen or activities[report.id] > seen[report.id]
+        items.append(payload)
+    return items
 
 
 @app.get("/api/admin/reports/counters")
@@ -19295,22 +19644,40 @@ def get_report_context(
         },
         "seller": {
             "seller_id": report.seller_id,
-            "seller_name": seller.name if seller else report.seller_id,
+            "seller_name": seller.name if seller else "Not linked",
             "complaint_count": seller_report_count,
             "average_rating": rating_avg,
             "rating_count": rating_count,
             "verified_student": bool(seller.is_verified) if seller else None,
             "account_created_at": seller.created_at.isoformat() if seller and seller.created_at else None,
             "wallet_status": wallet_status or ["Available"],
-        } if report.seller_id else None,
-        "product": {"id": product.id, "title": product.title} if product else None,
+        } if report.seller_id else {
+            "seller_id": "Not linked",
+            "seller_name": "Not linked",
+            "complaint_count": 0,
+            "average_rating": None,
+            "rating_count": 0,
+            "verified_student": None,
+            "account_created_at": None,
+            "wallet_status": [],
+        },
+        "product": {
+            "id": product.id if product else report.product_id,
+            "title": product.title if product else "Not linked",
+        },
         "order": {
             "id": order.id,
             "title": order.title,
             "payment_status": order.payment_status,
             "paid_amount": str(abs(Decimal(str(payment.amount or 0))).quantize(Decimal("0.01"))) if payment else None,
             "refunded_amount": str(report.refunded_amount or Decimal("0.00")),
-        } if order else None,
+        } if order else {
+            "id": None,
+            "title": "Not linked",
+            "payment_status": "Not linked",
+            "paid_amount": None,
+            "refunded_amount": str(report.refunded_amount or Decimal("0.00")),
+        },
         "seller_response": report.seller_response,
         "seller_response_image": report.seller_response_image,
         "seller_response_at": report.seller_response_at.isoformat() if report.seller_response_at else None,
@@ -19332,54 +19699,48 @@ def review_report(
     db: Session = Depends(get_db),
 ):
     admin = _require_report_admin(authorization, db)
-    report = db.query(Report).filter(Report.id == report_id).with_for_update().first()
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-    if report.status in {"Resolved", "Dismissed"}:
-        raise HTTPException(status_code=409, detail="Closed reports cannot be reviewed.")
-    if report.status == "Under Review" and report.reviewed_by and report.reviewed_by != admin.id:
-        holder = db.query(Admin).filter(Admin.id == report.reviewed_by).first()
-        if not data.take_over:
+    try:
+        report = db.query(Report).filter(Report.id == report_id).with_for_update().first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        if report.status in {"Open", "Review"}:
+            report.status = "Under Review"
+            report.reviewed_by = admin.id
+            report.reviewed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            db.commit()
+            db.refresh(report)
+            try:
+                _record_report_review_side_effects(
+                    db, report, admin, request, background_tasks,
+                )
+            except Exception:
+                db.rollback()
+                logging.getLogger("app.reports").exception(
+                    "Best-effort report review side effect failed (report_id=%s).",
+                    report_id,
+                )
+                db.refresh(report)
+        elif report.status not in {"Under Review", "Resolved", "Dismissed"}:
             raise HTTPException(
                 status_code=409,
-                detail=f"This report is being reviewed by {holder.full_name or holder.username if holder else 'another admin'}. Confirm to take over.",
+                detail=f"Report cannot be opened for review from status '{report.status}'.",
             )
-    report.status = "Under Review"
-    report.reviewed_by = admin.id
-    report.reviewed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-    db.add(AuditLog(
-        admin_id=admin.id,
-        action="Report Status Changed",
-        entity_type="Report",
-        entity_id=report.id,
-        description=f"RPT-{report.id:04d} moved to Under Review.",
-        status="SUCCESS",
-        ip_address=request.client.host if request.client else None,
-    ))
-    student = db.query(Student).filter(Student.student_id == report.student_id).first()
-    outbox_id = None
-    if student:
-        report_url = f"/dashboard?tab=buyer&section=reports-support&item=report-{report.id}"
-        outbox_id = _queue_student_item_notification(
-            db,
-            student,
-            title=f"Update on RPT-{report.id:04d}",
-            message="An admin is reviewing your report.",
-            item_type="report_status",
-            item_id=report.id,
-            action_url=report_url,
-            email_subject=f"Update on RPT-{report.id:04d}",
-            email_summary="An administrator is reviewing your report.",
-            email_status=report.status,
-        )
-    try:
-        db.commit()
+        return _report_payload(db, report)
     except StaleDataError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Another admin updated this report. Reload and try again.")
-    db.refresh(report)
-    _schedule_outbox_delivery(background_tasks, db, outbox_id)
-    return _report_payload(db, report)
+    except HTTPException:
+        raise
+    except Exception as error:
+        db.rollback()
+        logging.getLogger("app.reports").exception(
+            "Failed to open report for review (report_id=%s).",
+            report_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to open report for review.",
+        ) from error
 
 
 @app.post("/api/admin/reports/{report_id}/resolve")

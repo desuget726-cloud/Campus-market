@@ -559,6 +559,17 @@ class AdminSession(Base):
     admin = relationship("Admin", back_populates="sessions")
 
 
+class AdminItemSeen(Base):
+    __tablename__ = "admin_item_seen"
+
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), primary_key=True)
+    item_type = Column(String(30), primary_key=True)
+    item_id = Column(Integer, primary_key=True)
+    seen_at = Column(DateTime, nullable=False)
+
+    admin = relationship("Admin")
+
+
 class AdminLoginHistory(Base):
     __tablename__ = "admin_login_history"
 

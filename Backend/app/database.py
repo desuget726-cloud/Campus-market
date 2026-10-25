@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Generator
+from typing import Generator, Iterable, Optional
 from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, inspect, text
@@ -86,6 +86,32 @@ def _add_column_if_missing(table_name: str, column_name: str, column_definition:
             raise
 
 
+def missing_model_columns(table_names: Optional[Iterable[str]] = None) -> dict[str, list[str]]:
+    """List model columns missing from the current database schema."""
+    selected_tables = set(table_names) if table_names is not None else None
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    missing = {}
+
+    for table in Base.metadata.sorted_tables:
+        if selected_tables is not None and table.name not in selected_tables:
+            continue
+        if table.name not in existing_tables:
+            missing[table.name] = [column.name for column in table.columns]
+            continue
+        existing_columns = {
+            column["name"] for column in inspector.get_columns(table.name)
+        }
+        absent_columns = [
+            column.name for column in table.columns
+            if column.name not in existing_columns
+        ]
+        if absent_columns:
+            missing[table.name] = absent_columns
+
+    return missing
+
+
 def init_db() -> None:
     """Create database tables for all models inheriting from `Base`.
 
@@ -111,13 +137,22 @@ def init_db() -> None:
             column["name"] for column in inspect(engine).get_columns("support_tickets")
         }
         support_ticket_additions = {
+            "user_id": "VARCHAR(50) NULL",
+            "requester_name": "VARCHAR(150) NULL",
+            "requester_email": "VARCHAR(150) NULL",
             "subject": "VARCHAR(200) NULL",
+            "category": "VARCHAR(50) NOT NULL DEFAULT 'General'",
+            "message": "TEXT NULL",
+            "attachment_url": "VARCHAR(500) NULL",
+            "status": "VARCHAR(30) NOT NULL DEFAULT 'Open'",
             "assigned_admin_id": "INTEGER NULL",
             "last_admin_reply_at": "DATETIME NULL",
             "last_reminder_at": "DATETIME NULL",
             "reopen_used": "BOOLEAN NOT NULL DEFAULT FALSE",
             "reopened_at": "DATETIME NULL",
             "revision": "INTEGER NOT NULL DEFAULT 1",
+            "created_at": "DATETIME NULL",
+            "updated_at": "DATETIME NULL",
         }
         for column_name, column_definition in support_ticket_additions.items():
             if column_name not in support_ticket_columns:
@@ -132,12 +167,14 @@ def init_db() -> None:
                 "WHEN 'closed' THEN 'Closed' "
                 "ELSE status END"
             ))
-    if "reports" in inspector.get_table_names():
-        report_columns = {
-            column["name"] for column in inspect(engine).get_columns("reports")
-        }
-        if "revision" not in report_columns:
-            _add_column_if_missing("reports", "revision", "INTEGER NOT NULL DEFAULT 1")
+            connection.execute(text(
+                "UPDATE support_tickets SET created_at = CURRENT_TIMESTAMP "
+                "WHERE created_at IS NULL"
+            ))
+            connection.execute(text(
+                "UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP "
+                "WHERE updated_at IS NULL"
+            ))
     if "notifications" in inspector.get_table_names():
         notification_indexes = {
             index["name"]: index for index in inspect(engine).get_indexes("notifications")
@@ -200,7 +237,18 @@ def init_db() -> None:
             )
     if "reports" in inspector.get_table_names():
         report_additions = {
+            "product_id": "INTEGER NULL",
             "order_id": "INT NULL",
+            "student_id": "VARCHAR(50) NULL",
+            "seller_id": "VARCHAR(50) NULL",
+            "student_name": "VARCHAR(150) NOT NULL DEFAULT ''",
+            "email": "VARCHAR(100) NULL",
+            "category": "VARCHAR(100) NULL",
+            "issue": "VARCHAR(1000) NOT NULL DEFAULT ''",
+            "evidence_image": "TEXT NULL",
+            "priority": "VARCHAR(20) NOT NULL DEFAULT 'Low'",
+            "status": "VARCHAR(50) NOT NULL DEFAULT 'Open'",
+            "created_at": "DATETIME NULL",
             "reviewed_by": "INT NULL",
             "reviewed_at": "DATETIME NULL",
             "decision": "VARCHAR(50) NULL",
@@ -214,9 +262,15 @@ def init_db() -> None:
             "appeal_text": "TEXT NULL",
             "appealed_by": "VARCHAR(50) NULL",
             "appealed_at": "DATETIME NULL",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
         }
         for column_name, definition in report_additions.items():
             _add_column_if_missing("reports", column_name, definition)
+        with engine.begin() as connection:
+            connection.execute(text(
+                "UPDATE reports SET created_at = CURRENT_TIMESTAMP "
+                "WHERE created_at IS NULL"
+            ))
     if "payment_idempotency" in inspector.get_table_names():
         idempotency_columns = {column["name"] for column in inspector.get_columns("payment_idempotency")}
         if "product_id" not in idempotency_columns:
@@ -343,15 +397,6 @@ def init_db() -> None:
                 _add_column_if_missing(
                     "product_views", column_name, column_definition
                 )
-    if "reports" in inspector.get_table_names():
-        report_columns = {column["name"] for column in inspector.get_columns("reports")}
-        missing_columns = {
-            "seller_id": "VARCHAR(50) NULL",
-            "evidence_image": "VARCHAR(255) NULL",
-        }
-        for column_name, column_definition in missing_columns.items():
-            if column_name not in report_columns:
-                _add_column_if_missing("reports", column_name, column_definition)
     if "orders" in inspector.get_table_names():
         order_columns = {column["name"] for column in inspector.get_columns("orders")}
         missing_order_columns = {
@@ -428,6 +473,18 @@ def init_db() -> None:
                         connection.execute(text(
                             f"ALTER TABLE students MODIFY COLUMN `{column_name}` VARCHAR(150) NULL"
                         ))
+
+    inspector = inspect(engine)
+    inspector.clear_cache()
+    missing_workflow_columns = missing_model_columns({"reports", "support_tickets"})
+    if missing_workflow_columns:
+        missing_description = "; ".join(
+            f"{table}: {', '.join(columns)}"
+            for table, columns in missing_workflow_columns.items()
+        )
+        raise RuntimeError(
+            f"Database schema is missing report/support model columns: {missing_description}"
+        )
     _log_model_schema_drift()
 
 

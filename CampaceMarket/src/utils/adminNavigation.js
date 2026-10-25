@@ -45,7 +45,7 @@ export const ADMIN_NAVIGATION = [
     icon: 'M6 5h12v14H6z M9 9h6 M9 13h4',
     items: [
       { key: 'analytics', label: 'Analytics', icon: 'M5 19h14M9 15v-4M15 15V9', path: 'analytics', badgeKey: null, permission: 'analytics' },
-      { key: 'reports', label: 'Reports', icon: 'M6 5h12v14H6z M9 9h6 M9 13h4', path: 'reports', badgeKey: 'openReports', permission: 'reports' },
+      { key: 'reports', label: 'Reports', icon: 'M6 5h12v14H6z M9 9h6 M9 13h4', path: 'reports', badgeKey: 'unseenReports', permission: 'reports' },
       { key: 'audit-logs', label: 'Audit Logs', icon: 'M6 4h12v4H6z M6 12h12v4H6z M10 20h4', path: 'audit-logs', badgeKey: null, permission: 'audit_logs' },
     ],
   },
@@ -95,11 +95,20 @@ export function getActiveAdminGroup(path, navigation = ADMIN_NAVIGATION) {
 export function getAdminGroupBadgeTotal(group, counts = {}) {
   if (group.type !== 'group') return 0;
   return group.items.reduce((total, item) => {
-    if (item.badgeKey === 'support') {
-      return total + Number(counts.supportOpen || 0) + Number(counts.supportOverdue || 0);
-    }
     return total + Number(counts[item.badgeKey] || 0);
   }, 0);
+}
+
+export function formatAdminBadgeCount(count) {
+  const normalizedCount = Math.max(0, Number(count) || 0);
+  return normalizedCount > 99 ? '99+' : normalizedCount;
+}
+
+export function decrementAdminSidebarCount(counts, key, amount = 1) {
+  return {
+    ...counts,
+    [key]: Math.max(0, Number(counts[key] || 0) - Math.max(0, Number(amount) || 0)),
+  };
 }
 
 export function isAdminNavigationItemAllowed(item, user) {

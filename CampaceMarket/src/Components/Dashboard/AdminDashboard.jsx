@@ -8,13 +8,15 @@ import AdminSupportInbox from './AdminSupportInbox';
 import { AdminProductReviewsPage, AdminUsersPage } from './AdminDirectoryPages';
 import AdminSidebarNavigation from './AdminSidebarNavigation';
 import { getErrorMessage, notifyError, notifySuccess } from '../../utils/notify';
-import { adminApiGet, getStoredAccessToken } from '../../api/apiClient';
+import { adminApiGet, apiFetch, getStoredAccessToken } from '../../api/apiClient';
 import { normalizeAdminSection } from '../../utils/adminDashboardSection';
 import {
   ADMIN_NAVIGATION,
   filterAdminNavigation,
   getActiveAdminGroup,
+  decrementAdminSidebarCount,
 } from '../../utils/adminNavigation';
+import { notifyAdminSeenChanged, subscribeToAdminSeenChanges } from '../../utils/adminSeenSync';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { getAdminSettings, invalidateAdminSettingsCache } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
@@ -27,6 +29,10 @@ import {
 } from '../../utils/analyticsSalesTrend';
 import logs from '../../assets/logs.png';
 
+const ADMIN_REPORT_ITEM_STYLES = {
+  unseen: 'font-black text-slate-950',
+  seen: 'font-semibold text-slate-700',
+};
 
 const generateSvgPath = (values, maxValue, width = 100, height = 100, padding = 8) => {
   if (!Array.isArray(values) || values.length === 0) return '';
@@ -1001,9 +1007,30 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       const counts = await adminApiGet('/api/admin/sidebar-counts');
       setSidebarCounts(counts || {});
     } catch (error) {
+      setSidebarCounts({});
       console.error('Unable to refresh admin sidebar counts.', error);
     }
   }, []);
+
+  const optimisticallyMarkAdminItemsSeen = useCallback((countKey, count = 1) => {
+    if (count > 0) {
+      setSidebarCounts((current) => decrementAdminSidebarCount(current, countKey, count));
+    }
+    notifyAdminSeenChanged();
+  }, []);
+
+  useEffect(() => {
+    void refreshSidebarCounts();
+    const handleFocus = () => void refreshSidebarCounts();
+    window.addEventListener('focus', handleFocus);
+    const intervalId = window.setInterval(() => void refreshSidebarCounts(), 60000);
+    const unsubscribeSeenChanges = subscribeToAdminSeenChanges(() => void refreshSidebarCounts());
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.clearInterval(intervalId);
+      unsubscribeSeenChanges();
+    };
+  }, [activeTab, refreshSidebarCounts]);
 
   // === HOISTED STATES FOR ALL PANELS (OBEYING RULES OF HOOKS) ===
 
@@ -2325,6 +2352,20 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   }
 
+  const markAllReportsSeen = async () => {
+    const unseenCount = reportsList.filter((report) => report.is_unseen).length;
+    try {
+      await apiFetch('/api/admin/reports/seen-all', {
+        method: 'POST',
+        headers: getReportRequestHeaders(),
+      });
+      setReportsList((current) => current.map((report) => ({ ...report, is_unseen: false })));
+      optimisticallyMarkAdminItemsSeen('unseenReports', unseenCount);
+    } catch (error) {
+      notifyError(error, 'admin-reports-mark-seen');
+    }
+  };
+
   // Fetch payments from backend
   async function fetchPaymentsData() {
     try {
@@ -3134,7 +3175,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   };
 
-  const loadReportContext = async (reportId) => {
+  const loadReportContext = async (reportId, markSeen = true) => {
     setReportContextLoading(true);
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/reports/${reportId}/context`, {
@@ -3142,6 +3183,22 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || t('adminReports.contextError'));
+      if (markSeen) {
+        try {
+          await apiFetch(`/api/admin/reports/${reportId}/seen`, {
+            method: 'POST',
+            headers: getReportRequestHeaders(),
+          });
+          const wasUnseen = reportsList.some((report) => report.id === reportId && report.is_unseen);
+          setReportsList((current) => current.map((report) => (
+            report.id === reportId ? { ...report, is_unseen: false } : report
+          )));
+          setSelectedReport((current) => current?.id === reportId ? { ...current, is_unseen: false } : current);
+          optimisticallyMarkAdminItemsSeen('unseenReports', wasUnseen ? 1 : 0);
+        } catch (error) {
+          console.warn('Failed to mark report as seen:', error);
+        }
+      }
       setReportContext(payload);
       if (payload.order?.paid_amount) setReportRefundAmount(payload.order.paid_amount);
     } catch (error) {
@@ -3163,7 +3220,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setReportReviewOwned(false);
     await loadReportContext(report.id);
 
-    if (report.status === 'Resolved') return;
+    if (['Resolved', 'Dismissed'].includes(report.status)) return;
     setReportReviewLoading(true);
     try {
       const requestReview = (takeOver) => fetch(`${API_BASE_URL}/api/admin/reports/${report.id}/review`, {
@@ -3178,14 +3235,26 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         response = await requestReview(true);
         payload = await response.json().catch(() => ({}));
       }
-      if (!response.ok) throw new Error(payload.detail || t('adminReports.reviewError'));
+      if (!response.ok) {
+        const detail = typeof payload.detail === 'string'
+          ? payload.detail
+          : payload.detail ? JSON.stringify(payload.detail) : t('adminReports.reviewError');
+        const error = new Error(detail);
+        error.status = response.status;
+        error.detail = detail;
+        throw error;
+      }
       setSelectedReport((current) => current?.id === report.id ? { ...current, ...payload } : current);
       setReportsList((current) => current.map((item) => item.id === report.id ? { ...item, ...payload } : item));
-      setReportReviewOwned(true);
-      await loadReportContext(report.id);
+      setReportReviewOwned(!['Resolved', 'Dismissed'].includes(payload.status));
+      await loadReportContext(report.id, false);
     } catch (error) {
       console.error('Failed to open report for review:', error);
-      setReportError(getErrorMessage(error));
+      const detail = error.detail || getErrorMessage(error);
+      const message = `${error.status ? `HTTP ${error.status}: ` : ''}${detail}`;
+      setReportError(message);
+      setReportToast(message);
+      window.setTimeout(() => setReportToast(''), 5000);
     } finally {
       setReportReviewLoading(false);
     }
@@ -6096,7 +6165,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         );
       }
       case 'support':
-        return <AdminSupportInbox />;
+        return <AdminSupportInbox onItemsSeen={optimisticallyMarkAdminItemsSeen} />;
       case 'admin-users':
         return <AdminUsersPage />;
       case 'product-reviews':
@@ -6133,9 +6202,12 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   <h2 className="text-2xl font-black text-slate-900">Reports & Complaints Dashboard</h2>
                   <p className="mt-1 text-sm text-slate-600">Monitor marketplace disputes, fraud, content violations, and moderation outcomes.</p>
                 </div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">
-                  <span>🚨</span>
-                  <span>High Priority: {calculatedReportMetrics.highPriority}</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" onClick={markAllReportsSeen} className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Mark all as seen</button>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700">
+                    <span>🚨</span>
+                    <span>High Priority: {calculatedReportMetrics.highPriority}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -6218,7 +6290,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <div className="flex min-w-0 items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Report ID</p>
-                        <p className="truncate font-mono text-xs font-bold text-slate-900" title={rep.report_id}>{rep.report_id}</p>
+                        <p className={`truncate font-mono text-xs ${ADMIN_REPORT_ITEM_STYLES[rep.is_unseen ? 'unseen' : 'seen']}`} title={rep.report_id}>
+                          {rep.is_unseen && <span className="mr-1.5 inline-block h-2 w-2 rounded-full bg-rose-500" aria-label="Unseen" />}
+                          {rep.report_id}
+                        </p>
                         <p className="mt-1 whitespace-nowrap text-sm font-semibold text-slate-700">{rep.inferredType}</p>
                       </div>
                       <time className="shrink-0 whitespace-nowrap text-xs text-slate-500">{new Date(rep.date).toLocaleDateString()}</time>
@@ -6254,7 +6329,12 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 <tbody>
                   {displayedReports.map((rep) => (
                     <tr key={rep.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition">
-                      <td className="min-w-[110px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-mono text-xs font-bold text-slate-900">{rep.report_id}</span></td>
+                      <td className="min-w-[110px] px-4 py-3 align-middle">
+                        <span className={`inline-flex items-center whitespace-nowrap font-mono text-xs ${ADMIN_REPORT_ITEM_STYLES[rep.is_unseen ? 'unseen' : 'seen']}`}>
+                          {rep.is_unseen && <span className="mr-1.5 h-2 w-2 rounded-full bg-rose-500" aria-label="Unseen" />}
+                          {rep.report_id}
+                        </span>
+                      </td>
                       <td className="min-w-[140px] px-4 py-3 align-middle"><span className="whitespace-nowrap font-semibold text-slate-700">{rep.inferredType}</span></td>
                       <td className="admin-table-wrap-cell min-w-[260px] px-4 py-3 align-middle text-slate-700">
                         <p title={rep.product_name} className="font-semibold text-slate-900">{rep.product_name || 'Report details'}</p>
@@ -6301,6 +6381,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 && !reportReviewLoading
                 && !reportActionLoading
                 && selectedReport.status !== 'Resolved'
+                && selectedReport.status !== 'Dismissed'
                 && reportDecision
                 && reportReason.trim().length >= 10
                 && refundValid,
@@ -6332,7 +6413,14 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     </div>
 
                     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-7 sm:py-5">
-                      {reportError && <p role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">{reportError}</p>}
+                      {reportError && (
+                        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
+                          <p>{reportError}</p>
+                          <button type="button" onClick={() => handleOpenReportModal(selectedReport)} disabled={reportReviewLoading} className="rounded-full border border-rose-300 bg-white px-4 py-2 text-xs font-bold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50">
+                            Retry
+                          </button>
+                        </div>
+                      )}
                       {reportReviewLoading && <p role="status" className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">{t('adminReports.openingReview')}</p>}
 
                       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -6454,7 +6542,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
 
                     <div className="sticky bottom-0 flex shrink-0 justify-end gap-3 border-t border-slate-200 bg-white px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-8px_20px_-16px_rgba(15,23,42,0.45)] sm:px-7">
                       <button type="button" onClick={closeReportModal} disabled={reportActionLoading} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">{t('adminReports.close')}</button>
-                      {selectedReport.status !== 'Resolved' && (
+                      {!['Resolved', 'Dismissed'].includes(selectedReport.status) && (
                         <button type="button" onClick={() => handleResolveReport(selectedReport.id)} disabled={!canResolve} className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">
                           {reportActionLoading ? t('adminReports.resolving') : t('adminReports.resolve')}
                         </button>

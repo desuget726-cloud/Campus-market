@@ -13,7 +13,7 @@ describe('AdminSidebarNavigation', () => {
       <AdminSidebarNavigation
         navigation={[reportGroup]}
         activePath="reports"
-        counts={{ openReports: 3 }}
+        counts={{ unseenReports: 3 }}
         collapsed={false}
         expandedGroups={['reports-system']}
         onNavigate={vi.fn()}
@@ -30,7 +30,7 @@ describe('AdminSidebarNavigation', () => {
       <AdminSidebarNavigation
         navigation={[reportGroup]}
         activePath="dashboard"
-        counts={{ openReports: 2 }}
+        counts={{ unseenReports: 2 }}
         collapsed
         expandedGroups={[]}
         onNavigate={vi.fn()}
@@ -41,6 +41,64 @@ describe('AdminSidebarNavigation', () => {
     expect(screen.getByRole('button', { name: 'Reports & System' }).getAttribute('aria-controls')).toBe('admin-menu-group-reports-system');
     expect(screen.getByRole('button', { name: 'Reports & System' }).textContent).toContain('2');
     expect(screen.queryByRole('button', { name: 'Reports' })).toBeNull();
+  });
+
+  it('hides zero badges and caps report and group badges at 99+', () => {
+    const { rerender } = render(
+      <AdminSidebarNavigation
+        navigation={[reportGroup]}
+        activePath="reports"
+        counts={{ unseenReports: 0 }}
+        collapsed={false}
+        expandedGroups={['reports-system']}
+        onNavigate={vi.fn()}
+        onGroupToggle={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('0')).toBeNull();
+
+    rerender(
+      <AdminSidebarNavigation
+        navigation={[reportGroup]}
+        activePath="reports"
+        counts={{ unseenReports: 120 }}
+        collapsed={false}
+        expandedGroups={['reports-system']}
+        onNavigate={vi.fn()}
+        onGroupToggle={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('99+')).toHaveLength(2);
+  });
+
+  it('shows unseen support separately from its overdue indicator, not the open total', () => {
+    const supportItem = ADMIN_NAVIGATION.find((entry) => entry.key === 'support');
+    const { rerender } = render(
+      <AdminSidebarNavigation
+        navigation={[supportItem]}
+        activePath="dashboard"
+        counts={{ supportOpen: 7, supportOverdue: 0 }}
+        collapsed={false}
+        expandedGroups={[]}
+        onNavigate={vi.fn()}
+        onGroupToggle={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('7')).toBeNull();
+
+    rerender(
+      <AdminSidebarNavigation
+        navigation={[supportItem]}
+        activePath="dashboard"
+        counts={{ unseenSupport: 2, supportOverdue: 1 }}
+        collapsed={false}
+        expandedGroups={[]}
+        onNavigate={vi.fn()}
+        onGroupToggle={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('2')).toBeTruthy();
+    expect(screen.getByText('1')).toBeTruthy();
   });
 
   it('delegates group expand and collapse to the caller', () => {
