@@ -8,13 +8,14 @@ os.environ["SESSION_SECRET"] = "product-ownership-test-secret"
 
 from fastapi import HTTPException, Request, Response
 from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app import main as main_module
 from app.database import Base
-from app.models import CartItem, Dispute, Message, Order, Product, ProductView, Review, Student, WishlistItem
+from app.models import CartItem, Category, Dispute, Message, Order, Product, ProductView, Review, Student, SubCategory, WishlistItem
 
 
 class ProductOwnershipTests(unittest.TestCase):
@@ -26,10 +27,28 @@ class ProductOwnershipTests(unittest.TestCase):
             poolclass=StaticPool,
         )
         cls.session_factory = sessionmaker(bind=cls.engine, autoflush=False, autocommit=False)
+        cls.original_session_local = main_module.SessionLocal
+        cls.original_init_db = main_module.init_db
+        main_module.SessionLocal = cls.session_factory
+        main_module.init_db = lambda: Base.metadata.create_all(bind=cls.engine)
+        main_module.app.dependency_overrides[main_module.get_db] = cls._override_get_db
+        cls.client = TestClient(main_module.app)
 
     @classmethod
     def tearDownClass(cls):
+        cls.client.close()
+        main_module.app.dependency_overrides.pop(main_module.get_db, None)
+        main_module.SessionLocal = cls.original_session_local
+        main_module.init_db = cls.original_init_db
         cls.engine.dispose()
+
+    @classmethod
+    def _override_get_db(cls):
+        database = cls.session_factory()
+        try:
+            yield database
+        finally:
+            database.close()
 
     def setUp(self):
         Base.metadata.drop_all(bind=self.engine)
@@ -53,22 +72,44 @@ class ProductOwnershipTests(unittest.TestCase):
         )
         self.db.add_all([self.buyer, self.seller])
         self.db.flush()
-        self.buyers_product = self.add_product(self.buyer.student_id, "Buyer listing")
+        self.buyers_product = self.add_product(
+            self.buyer.student_id,
+            "Buyer listing",
+            seller_id=self.buyer.student_id,
+        )
         self.legacy_name_product = self.add_product(self.buyer.name, "Legacy buyer listing")
-        self.sellers_product = self.add_product(self.seller.student_id, "Seller listing")
+        self.sellers_product = self.add_product(
+            self.seller.student_id,
+            "Seller listing",
+            seller_id=self.seller.student_id,
+        )
         self.db.commit()
 
     def tearDown(self):
         self.db.close()
 
-    def add_product(self, seller, title, price="10.00", category="Test", stock=5, status="Approved"):
+    def add_product(
+        self,
+        seller,
+        title,
+        price="10.00",
+        category="Test",
+        subcategory=None,
+        stock=5,
+        status="Approved",
+        seller_id=None,
+        created_at=None,
+    ):
         product = Product(
             title=title,
             category=category,
+            subcategory=subcategory,
             price=price,
             stock=stock,
             seller=seller,
+            seller_id=seller_id,
             status=status,
+            created_at=created_at,
         )
         self.db.add(product)
         self.db.flush()
@@ -121,6 +162,120 @@ class ProductOwnershipTests(unittest.TestCase):
             self.legacy_name_product.id,
             self.sellers_product.id,
         })
+
+    def test_invalid_token_public_listing_is_anonymous(self):
+        with patch.object(
+            main_module,
+            "_student_from_authorization",
+            side_effect=HTTPException(status_code=401, detail="JWT token has expired."),
+        ):
+            response = self.client.get(
+                "/api/products",
+                headers={"Authorization": "Bearer invalid-token"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        returned_ids = {product["id"] for product in response.json()}
+        self.assertIn(self.buyers_product.id, returned_ids)
+        self.assertIn(self.legacy_name_product.id, returned_ids)
+
+    def test_owner_products_are_filtered_before_listing_limit(self):
+        self.add_product(
+            self.buyer.student_id,
+            "Newer owner listing",
+            seller_id=self.buyer.student_id,
+            created_at=datetime(2026, 1, 3),
+        )
+        self.add_product(
+            self.seller.student_id,
+            "Visible listing",
+            seller_id=self.seller.student_id,
+            created_at=datetime(2027, 1, 1),
+        )
+        self.db.commit()
+
+        with patch.object(main_module, "_student_from_authorization", return_value=self.buyer):
+            response = self.client.get(
+                "/api/products?limit=1",
+                headers={"Authorization": "Bearer valid-test-token"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([product["title"] for product in response.json()], ["Visible listing"])
+
+    def test_search_results_exclude_owner_products(self):
+        own_match = self.add_product(
+            self.buyer.student_id,
+            "Campus textbook owner copy",
+            seller_id=self.buyer.student_id,
+        )
+        public_match = self.add_product(
+            self.seller.student_id,
+            "Campus textbook public copy",
+            seller_id=self.seller.student_id,
+        )
+        self.db.commit()
+
+        with patch.object(main_module, "_student_from_authorization", return_value=self.buyer):
+            response = self.client.get(
+                "/api/products?search=campus%20textbook",
+                headers={"Authorization": "******"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        returned_ids = {product["id"] for product in response.json()}
+        self.assertNotIn(own_match.id, returned_ids)
+        self.assertEqual(returned_ids, {public_match.id})
+
+    def test_category_directory_counts_exclude_owner_products(self):
+        category = Category(name="Test Counts", icon="📦")
+        self.db.add(category)
+        self.db.flush()
+        self.db.add(SubCategory(name="Test subcategory", category_id=category.id))
+        self.add_product(
+            self.buyer.student_id,
+            "Owner subcategory listing",
+            category="Test Counts",
+            subcategory="Test subcategory",
+            seller_id=self.buyer.student_id,
+        )
+        self.add_product(
+            self.seller.student_id,
+            "Public subcategory listing",
+            category="Test Counts",
+            subcategory="Test subcategory",
+            seller_id=self.seller.student_id,
+        )
+        self.db.commit()
+
+        with patch.object(main_module, "_student_from_authorization", return_value=self.buyer):
+            result = main_module.get_categories(
+                authorization="Bearer valid-test-token",
+                db=self.db,
+            )
+
+        test_category = next(item for item in result if item["name"] == "Test Counts")
+        self.assertEqual(test_category["adsCount"], "1 ads")
+        self.assertEqual(test_category["items"][0]["adsCount"], "1 ads")
+
+    def test_owner_detail_and_seller_management_still_include_owned_listing(self):
+        with patch.object(main_module, "_student_from_authorization", return_value=self.buyer):
+            detail_response = self.client.get(
+                f"/api/products/{self.buyers_product.id}",
+                headers={"Authorization": "Bearer valid-test-token"},
+            )
+            listings_response = self.client.get(
+                f"/api/student/listings?student_id={self.buyer.student_id}",
+                headers={"Authorization": "Bearer valid-test-token"},
+            )
+
+        self.assertEqual(detail_response.status_code, 200, detail_response.text)
+        self.assertTrue(detail_response.json()["is_owner"])
+        self.assertEqual(listings_response.status_code, 200, listings_response.text)
+        self.assertIn(
+            self.buyers_product.id,
+            {listing["id"] for listing in listings_response.json()},
+        )
 
     def test_seller_cannot_add_own_product_to_cart(self):
         payload = main_module.CartItemCreate(
@@ -288,7 +443,7 @@ class ProductOwnershipTests(unittest.TestCase):
             2,
         )
 
-    def test_similar_products_use_fallbacks_and_active_stock(self):
+    def test_similar_products_use_same_category_and_active_stock(self):
         products = [
             self.add_product("another-seller", "Within lower bound", price="3.00"),
             self.add_product("another-seller", "Within upper bound", price="30.00"),
@@ -310,7 +465,6 @@ class ProductOwnershipTests(unittest.TestCase):
             products[1].id,
             products[2].id,
             products[3].id,
-            products[6].id,
         })
 
     def test_seller_trust_data_is_computed_across_completed_sales_and_messages(self):

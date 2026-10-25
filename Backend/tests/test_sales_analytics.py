@@ -7,7 +7,7 @@ from app.sales_analytics import build_sales_trend_response, get_sales_trend_buck
 class SalesAnalyticsBucketTests(unittest.TestCase):
     def test_ranges_have_chronological_zero_filled_buckets(self):
         now = datetime(2026, 10, 14, 12)
-        expected_lengths = {"7d": 7, "30d": 30, "year": 12}
+        expected_lengths = {"7d": 7, "30d": 30, "3m": 3, "year": 12}
 
         for period, expected_length in expected_lengths.items():
             with self.subTest(period=period):
@@ -37,6 +37,14 @@ class SalesAnalyticsBucketTests(unittest.TestCase):
         ])
         self.assertEqual(monthly_result["revenue"][-1], 20.0)
         self.assertEqual(sum(monthly_result["revenue"]), 20.0)
+
+        three_month_buckets = get_sales_trend_buckets("3m", now)
+        three_month_result = build_sales_trend_response(three_month_buckets, [
+            (datetime(2026, 8, 15), 12.5),
+            (datetime(2026, 10, 22), 7.5),
+        ])
+        self.assertEqual(len(three_month_result["labels"]), 3)
+        self.assertEqual(three_month_result["revenue"], [12.5, 0.0, 7.5])
 
     def test_day_ranges_cover_the_last_calendar_days_in_addis_ababa(self):
         buckets = get_sales_trend_buckets("7d", datetime(2026, 10, 14, 12))

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import { getErrorMessage } from '../../utils/notify';
+import { filterPublicProducts, getStudentAccessToken } from '../../utils/publicListings';
 
 const SKELETON_COUNT = 4;
 
@@ -56,7 +57,7 @@ function SimilarProductCard({ product, language, soldOutLabel, categoryLabel, on
   );
 }
 
-export default function SimilarProductsSection({ productId, onNavigate }) {
+export default function SimilarProductsSection({ productId, currentUser, onNavigate }) {
   const { t, language } = useLanguage();
   const [retryCount, setRetryCount] = useState(0);
   const [result, setResult] = useState({
@@ -67,6 +68,7 @@ export default function SimilarProductsSection({ productId, onNavigate }) {
   });
   const id = String(productId || '');
   const requestKey = `${id}:${retryCount}`;
+  const accessToken = getStudentAccessToken(currentUser);
   const isCurrentResult = result.requestKey === requestKey;
   const loading = !isCurrentResult || result.loading;
   const error = isCurrentResult ? result.error : '';
@@ -76,7 +78,9 @@ export default function SimilarProductsSection({ productId, onNavigate }) {
     if (!id) return undefined;
 
     let active = true;
-    fetch(`${API_BASE_URL}/api/products/${encodeURIComponent(id)}/similar`)
+    fetch(`${API_BASE_URL}/api/products/${encodeURIComponent(id)}/similar`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    })
       .then(async (response) => {
         const data = await response.json().catch(() => null);
         if (!response.ok) {
@@ -85,7 +89,7 @@ export default function SimilarProductsSection({ productId, onNavigate }) {
         if (!Array.isArray(data)) {
           throw new Error('Invalid similar products response.');
         }
-        return data.slice(0, 8);
+        return filterPublicProducts(data, currentUser).slice(0, 8);
       })
       .then((items) => {
         if (active) setResult({ requestKey, products: items, loading: false, error: '' });
@@ -102,7 +106,7 @@ export default function SimilarProductsSection({ productId, onNavigate }) {
     return () => {
       active = false;
     };
-  }, [id, retryCount, requestKey]);
+  }, [id, retryCount, requestKey, accessToken, currentUser]);
 
   if (!id) return null;
 

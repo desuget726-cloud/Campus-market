@@ -4,6 +4,7 @@ import ProductDetails from './ProductDetails';
 import { apiUrl } from '../../api/config';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
+import { filterPublicProducts, getStudentAccessToken } from '../../utils/publicListings';
 import logs from '../../assets/logs.png';
 import laptop_586 from '../../assets/laptop_586.webp';
 import phone1 from '../../assets/phone1.jpg';
@@ -106,18 +107,6 @@ const getCategoryAdCount = (value) => {
   return Number(match[1]) * multiplier;
 };
 
-const getStudentAccessToken = (user) => {
-  const userToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken;
-  if (userToken) return userToken;
-
-  try {
-    const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-    return session?.user?.access_token || session?.user?.accessToken || session?.access_token || session?.accessToken || '';
-  } catch {
-    return '';
-  }
-};
-
 function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages }) {
   const { t, language } = useLanguage();
   const contentContainerClass = 'w-full px-4 sm:px-6 lg:px-10 2xl:px-16';
@@ -135,9 +124,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [aiRecommendations, setAiRecommendations] = useState([]);
-  const [recommendationsFailed, setRecommendationsFailed] = useState(false);
   const [recommendationsStudentId, setRecommendationsStudentId] = useState('');
-  const [recommendationsRetryKey, setRecommendationsRetryKey] = useState(0);
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
   const aiScrollRef = useRef(null);
   const allProductsSectionRef = useRef(null);
@@ -146,6 +133,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const searchDebounceTimeoutRef = useRef(null);
   const hasSignedInUser = Boolean(user);
   const selectedProductAccessToken = getStudentAccessToken(user);
+  const studentAccessToken = getStudentAccessToken(user);
 
   useEffect(() => () => {
     if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
@@ -183,9 +171,12 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     return () => clearInterval(intervalId);
   }, []);
 
-  const fetchCategories = async (signal) => {
+  const fetchCategories = useCallback(async (signal) => {
     try {
-      const response = await fetchWithRetries(apiUrl('/api/categories'), signal);
+      const init = studentAccessToken
+        ? { headers: { Authorization: `Bearer ${studentAccessToken}` } }
+        : undefined;
+      const response = await fetchWithRetries(apiUrl('/api/categories'), signal, init);
       const data = await response.json();
       const normalizedCategories = (Array.isArray(data) ? data : []).map((category) => ({
         ...category,
@@ -204,7 +195,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
         setCategories([]);
       }
     }
-  };
+  }, [studentAccessToken]);
 
   const fetchProducts = useCallback(async ({ search, category, subcategory, department } = {}, signal) => {
     const requestId = latestProductsRequestRef.current + 1;
@@ -228,7 +219,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
       const response = await fetchWithRetries(apiUrl(url), signal, init);
       const data = await response.json();
       if (requestId === latestProductsRequestRef.current) {
-        setSearchResults(Array.isArray(data) ? data : []);
+        setSearchResults(filterPublicProducts(data, user));
       }
     } catch (error) {
       if (error.name !== 'AbortError') console.error('Product fetch error:', error);
@@ -254,7 +245,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
       window.clearTimeout(startTimeoutId);
       controller.abort();
     };
-  }, [fetchProducts, user?.department, user?.college, user?.departmentName]);
+  }, [fetchCategories, fetchProducts, user?.department, user?.college, user?.departmentName]);
 
   useEffect(() => {
     if (!loading) window.dispatchEvent(new Event('campace:content-rendered'));
@@ -295,7 +286,12 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     const fetchRecommendations = async () => {
       try {
         const response = await fetch(
-          `${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`
+          `${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(user.studentId)}`,
+          {
+            headers: studentAccessToken
+              ? { Authorization: `Bearer ${studentAccessToken}` }
+              : {},
+          },
         );
         if (!response.ok) throw new Error('Failed to load recommendations');
 
@@ -304,14 +300,12 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
           ? data
           : data?.recommendations || data?.items || [];
         if (!cancelled) {
-          setAiRecommendations(Array.isArray(recommendations) ? recommendations : []);
-          setRecommendationsFailed(false);
+          setAiRecommendations(filterPublicProducts(recommendations, user));
           setRecommendationsStudentId(user.studentId);
         }
       } catch {
         if (!cancelled) {
           setAiRecommendations([]);
-          setRecommendationsFailed(true);
           setRecommendationsStudentId(user.studentId);
         }
       }
@@ -319,7 +313,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
 
     fetchRecommendations();
     return () => { cancelled = true; };
-  }, [user?.studentId, recommendationsRetryKey]);
+  }, [user?.studentId, studentAccessToken, user]);
 
   const scrollAiRecommendations = (direction) => {
     const container = aiScrollRef.current;
@@ -622,7 +616,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
               </aside>
 
               <div className="min-w-0 space-y-8">
-                {user?.studentId && recommendationsStudentId === user.studentId && (aiRecommendations.length > 0 || recommendationsFailed) && (
+                {user?.studentId && recommendationsStudentId === user.studentId && aiRecommendations.length > 0 && (
                   <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
                     <div className="flex items-center justify-between gap-4">
                       <div>
@@ -636,14 +630,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                       </div>}
                     </div>
 
-                    {recommendationsFailed ? (
-                      <p className="mt-5 text-sm text-slate-500">
-                        Recommendations are temporarily unavailable.{' '}
-                        <button type="button" onClick={() => setRecommendationsRetryKey((key) => key + 1)} className="font-semibold text-emerald-700 underline underline-offset-2">
-                          Try again
-                        </button>
-                      </p>
-                    ) : <div ref={aiScrollRef} className="mt-5 flex snap-x items-stretch gap-2 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
+                    <div ref={aiScrollRef} className="mt-5 flex snap-x items-stretch gap-2 overflow-x-auto scroll-smooth pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:gap-4">
                       {aiRecommendations.map((product, index) => (
                         <article key={product.id ?? `${product.title}-${index}`} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 w-[calc(25%_-_0.375rem)] shrink-0 snap-start cursor-pointer flex-col overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm transition hover:-translate-y-1 hover:bg-white hover:shadow-md sm:w-[calc(33.333%_-_0.667rem)] lg:w-[calc(25%_-_0.75rem)]">
                           <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title || 'Recommended product'} className="aspect-square w-full rounded-xl object-cover sm:aspect-[4/3] sm:rounded-none" />
@@ -661,7 +648,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                           </div>
                         </article>
                       ))}
-                    </div>}
+                    </div>
                   </section>
                 )}
 

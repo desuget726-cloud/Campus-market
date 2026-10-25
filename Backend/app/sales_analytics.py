@@ -20,7 +20,7 @@ def analytics_local_now() -> datetime:
 
 
 def get_sales_trend_buckets(period: str, now: datetime | None = None) -> SalesTrendBuckets:
-    if period not in {"7d", "30d", "year"}:
+    if period not in {"7d", "30d", "3m", "year"}:
         raise ValueError(f"Unsupported sales analytics range: {period}")
 
     current = now or datetime.now(ANALYTICS_TIMEZONE)
@@ -43,9 +43,10 @@ def get_sales_trend_buckets(period: str, now: datetime | None = None) -> SalesTr
             end=datetime.combine(end_date, time.min),
         )
 
+    month_count = 3 if period == "3m" else 12
     current_month = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     month_buckets = []
-    for month_offset in range(11, -1, -1):
+    for month_offset in range(month_count - 1, -1, -1):
         absolute_month = current_month.year * 12 + current_month.month - 1 - month_offset
         year, zero_based_month = divmod(absolute_month, 12)
         month_buckets.append(datetime(year, zero_based_month + 1, 1))
@@ -57,7 +58,10 @@ def get_sales_trend_buckets(period: str, now: datetime | None = None) -> SalesTr
     return SalesTrendBuckets(
         period=period,
         buckets=tuple(month_buckets),
-        labels=tuple(bucket.strftime("%b %y") for bucket in month_buckets),
+        labels=tuple(
+            bucket.strftime("%b" if period == "3m" else "%b %y")
+            for bucket in month_buckets
+        ),
         start=month_buckets[0],
         end=end,
     )

@@ -7992,24 +7992,28 @@ def mark_notifications_read(request: NotificationMarkReadRequest, db: Session = 
 
 # 3. የዋና እና የንዑሳን ምድቦች ማውጫ ኤፒአይ (GET /api/categories)
 @app.get("/api/categories")
-def get_categories(db: Session = Depends(get_db)):
+def get_categories(
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    current_user = _optional_student_from_authorization(authorization, db)
+    public_products = apply_public_listing_filters(
+        _public_marketplace_product_query(db),
+        current_user,
+    )
     categories = db.query(Category).all()
     result = []
     for cat in categories:
         category_ads_count = (
-            db.query(Product)
-            .filter(Product.category == cat.name, Product.status == "Approved")
-            .count()
+            public_products.filter(Product.category == cat.name).count()
         )
 
         items = []
         for sub in cat.subcategories:
             subcategory_ads_count = (
-                db.query(Product)
-                .filter(
+                public_products.filter(
                     Product.category == cat.name,
                     Product.subcategory == sub.name,
-                    Product.status == "Approved",
                 )
                 .count()
             )
@@ -8092,54 +8096,73 @@ def _public_marketplace_product_query(db: Session):
     return query
 
 
-def _get_similar_products(db: Session, product: Product) -> List[Product]:
+def _optional_student_from_authorization(
+    authorization: Optional[str],
+    db: Session,
+) -> Optional[Student]:
+    if not isinstance(authorization, str) or not authorization.strip():
+        return None
+    try:
+        return _student_from_authorization(authorization, db)
+    except HTTPException as error:
+        if error.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        raise
+
+
+def apply_public_listing_filters(query, current_user: Optional[Student]):
+    if not current_user:
+        return query
+
+    student_id = str(current_user.student_id or "").strip().lower()
+    seller_identifiers = {
+        student_id,
+        str(current_user.name or "").strip().lower(),
+    }
+    seller_identifiers.discard("")
+    return query.filter(
+        or_(
+            Product.seller_id.is_(None),
+            func.lower(func.trim(Product.seller_id)) != student_id,
+        ),
+        or_(
+            Product.seller.is_(None),
+            func.lower(func.trim(Product.seller)).notin_(seller_identifiers),
+        ),
+    )
+
+
+def _get_similar_products(
+    db: Session,
+    product: Product,
+    current_user: Optional[Student] = None,
+) -> List[Product]:
     current_price = _parse_price_to_etb(product.price)
-    candidates = db.query(Product).filter(
+    candidates = apply_public_listing_filters(_public_marketplace_product_query(db), current_user).filter(
         Product.id != product.id,
+        Product.category == product.category,
         func.lower(func.trim(Product.status)) == "approved",
         Product.stock > 0,
     ).order_by(Product.created_at.desc(), Product.id.desc()).all()
 
-    results = []
-    seen_ids = set()
+    def sort_by_price_then_newest(products):
+        return sorted(
+            products,
+            key=lambda candidate: abs(_parse_price_to_etb(candidate.price) - current_price),
+        )
 
-    def add_candidates(products):
-        for candidate in products:
-            if candidate.id in seen_ids:
-                continue
-            results.append(candidate)
-            seen_ids.add(candidate.id)
-            if len(results) == 8:
-                return True
-        return False
-
-    same_category = [
+    same_subcategory = [
         candidate for candidate in candidates
-        if product.category and candidate.category == product.category
+        if product.subcategory and candidate.subcategory == product.subcategory
     ]
-    if product.subcategory and current_price > 0:
-        price_min = current_price * 0.3
-        price_max = current_price * 3
-        same_subcategory = [
-            candidate for candidate in same_category
-            if candidate.subcategory == product.subcategory
-            and price_min <= _parse_price_to_etb(candidate.price) <= price_max
-        ]
-        same_subcategory.sort(
-            key=lambda candidate: abs(_parse_price_to_etb(candidate.price) - current_price)
-        )
-        if add_candidates(same_subcategory):
-            return results
-
-    if current_price > 0:
-        same_category.sort(
-            key=lambda candidate: abs(_parse_price_to_etb(candidate.price) - current_price)
-        )
-    if add_candidates(same_category):
-        return results
-
-    add_candidates(candidates)
-    return results
+    other_subcategories = [
+        candidate for candidate in candidates
+        if not product.subcategory or candidate.subcategory != product.subcategory
+    ]
+    return (
+        sort_by_price_then_newest(same_subcategory)
+        + sort_by_price_then_newest(other_subcategories)
+    )[:8]
 
 
 def _similar_product_response(product: Product) -> Dict[str, Any]:
@@ -8293,24 +8316,8 @@ def get_products(
         )
 
     query = _public_marketplace_product_query(db)
-    authenticated_student = None
-    if authorization:
-        try:
-            authenticated_student = _student_from_authorization(authorization, db)
-        except HTTPException as error:
-            if error.status_code != status.HTTP_401_UNAUTHORIZED:
-                raise
-    if authenticated_student:
-        seller_identifiers = {
-            authenticated_student.student_id.strip().lower(),
-            authenticated_student.name.strip().lower(),
-        }
-        query = query.filter(
-            or_(
-                Product.seller.is_(None),
-                func.lower(func.trim(Product.seller)).notin_(seller_identifiers),
-            )
-        )
+    authenticated_student = _optional_student_from_authorization(authorization, db)
+    query = apply_public_listing_filters(query, authenticated_student)
     try:
         auto_hide_reported = _setting_bool(
             _get_setting_value(
@@ -8410,13 +8417,18 @@ def get_products(
 def get_similar_products(
     product_id: int,
     db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
 
     try:
-        return [_similar_product_response(candidate) for candidate in _get_similar_products(db, product)]
+        current_user = _optional_student_from_authorization(authorization, db)
+        return [
+            _similar_product_response(candidate)
+            for candidate in _get_similar_products(db, product, current_user)
+        ]
     except SQLAlchemyError as error:
         db.rollback()
         logger.exception("Failed to fetch similar products: %s", error)
@@ -8526,28 +8538,24 @@ def get_product_detail(
         image_notes = json.loads(product.image_notes or "[]")
     except (TypeError, json.JSONDecodeError):
         image_notes = []
-    image_values = json.loads(product.image) if product.image and product.image.startswith("[") else [product.image]
+    image_values = _product_image_values(product.image)
     gallery = [
         {"url": image_url, "note": image_notes[index] if index < len(image_notes) else None}
         for index, image_url in enumerate(image_values) if image_url
     ]
 
     if is_owner:
-        excluded_seller_values = {
-            value
-            for value in (seller_id, seller.name if seller else None, viewer.student_id if viewer else None)
-            if value
-        }
-        similar_query = _public_marketplace_product_query(db).filter(Product.id != product.id)
+        similar_query = apply_public_listing_filters(
+            _public_marketplace_product_query(db),
+            authenticated_student,
+        ).filter(Product.id != product.id)
         if product.category:
             similar_query = similar_query.filter(Product.category == product.category)
         if product.subcategory:
             similar_query = similar_query.filter(Product.subcategory == product.subcategory)
-        if excluded_seller_values:
-            similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
         similar_products = similar_query.order_by(Product.created_at.desc()).limit(8).all()
     else:
-        similar_products = _get_similar_products(db, product)
+        similar_products = _get_similar_products(db, product, authenticated_student)
 
     seller_values = {value for value in (seller_id, seller.name if seller else None) if value}
     more_from_seller = []
@@ -9130,6 +9138,95 @@ def get_student_listings(
 
 
 # 21. የሻጭ ስታቲስቲክስ እና የደረሱ ትዕዛዞች መጥሪያ ኤፒአይ (GET /api/student/seller/dashboard-data) - Database-driven
+@app.get("/api/student/seller/products")
+def get_seller_products(
+    student_id: str,
+    page: int = Query(1),
+    page_size: int = Query(10),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    if student.student_id.strip().lower() != str(student_id).strip().lower():
+        raise HTTPException(status_code=403, detail="You can only view your own products.")
+
+    seller_filter = (Product.seller_id == student.student_id) | (
+        Product.seller_id.is_(None)
+        & ((Product.seller == student.student_id) | (Product.seller == student.name))
+    )
+    page_size = min(max(page_size, 1), 50)
+    status_counts = (
+        db.query(
+            func.lower(func.trim(func.coalesce(Product.status, ""))),
+            func.count(Product.id),
+        )
+        .filter(seller_filter)
+        .group_by(func.lower(func.trim(func.coalesce(Product.status, ""))))
+        .all()
+    )
+    total = sum(count for _, count in status_counts)
+    counts_by_status = dict(status_counts)
+    summary = {
+        "total": total,
+        "active": sum(counts_by_status.get(status, 0) for status in {"approved", "active"}),
+        "sold": counts_by_status.get("sold", 0),
+        "pending": sum(
+            counts_by_status.get(status, 0)
+            for status in {"pending", "under review", "under_review"}
+        ),
+    }
+    total_pages = math.ceil(total / page_size) if total else 0
+    page = min(max(page, 1), total_pages) if total_pages else 1
+
+    products = (
+        db.query(Product)
+        .filter(seller_filter)
+        .order_by(Product.created_at.desc(), Product.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    product_ids = [product.id for product in products]
+    products_with_orders = set()
+    if product_ids:
+        products_with_orders = {
+            product_id
+            for (product_id,) in db.query(Order.product_id)
+            .filter(Order.product_id.in_(product_ids))
+            .distinct()
+            .all()
+        }
+
+    items = [
+        {
+            "id": product.id,
+            "title": product.title,
+            "category": product.category,
+            "subcategory": product.subcategory,
+            "price": product.price,
+            "stock": int(getattr(product, "stock", 1) or 0),
+            "image": _normalize_product_image(product.image),
+            "status": product.status,
+            "has_orders": product.id in products_with_orders,
+            "sold_via": (
+                "Marketplace Order" if product.id in products_with_orders
+                else "Marked by Seller" if str(product.status or "").strip().lower() == "sold"
+                else None
+            ),
+            "created_at": product.created_at,
+        }
+        for product in products
+    ]
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+        "summary": summary,
+    }
+
+
 @app.get("/api/student/seller/dashboard-data")
 def get_seller_dashboard_data(
     student_id: str,
@@ -9192,7 +9289,6 @@ def get_seller_dashboard_data(
         (len(received_orders) - len(cancelled_orders)) / len(received_orders) * 100
         if received_orders else 0
     )
-    on_time_pickup = (len(completed_orders) / len(received_orders) * 100) if received_orders else 0
     payout_account = db.query(SellerPaymentAccount).filter(
         SellerPaymentAccount.student_id == student.student_id,
     ).first()
@@ -9221,7 +9317,6 @@ def get_seller_dashboard_data(
             "rating": round(float(review_average or 0), 1),
             "response_rate": round(response_rate, 1),
             "order_completion": round(order_completion, 1),
-            "on_time_pickup": round(on_time_pickup, 1),
         },
         "my_listings": [
             {
@@ -9294,47 +9389,35 @@ def get_seller_sales_analytics(
     if normalized_range not in {"7d", "30d", "3m"}:
         raise HTTPException(status_code=400, detail="Range must be 7d, 30d, or 3m.")
 
-    now = datetime.now()
-    today = now.date()
-    if normalized_range == "7d":
-        current_start = datetime.combine(today - timedelta(days=6), datetime.min.time())
-        previous_start = current_start - timedelta(days=7)
-        bucket_count, bucket_delta = 7, timedelta(days=1)
-    elif normalized_range == "30d":
-        current_start = datetime.combine(today - timedelta(days=29), datetime.min.time())
-        previous_start = current_start - timedelta(days=30)
-        bucket_count, bucket_delta = 30, timedelta(days=1)
-    else:
-        current_month = datetime(today.year, today.month, 1)
-        current_start = (current_month - timedelta(days=1)).replace(day=1)
-        current_start = (current_start - timedelta(days=1)).replace(day=1)
-        previous_start = (current_start - timedelta(days=1)).replace(day=1)
-        previous_start = (previous_start - timedelta(days=1)).replace(day=1)
-        previous_start = (previous_start - timedelta(days=1)).replace(day=1)
-        bucket_count, bucket_delta = 3, None
+    now = analytics_local_now()
+    current_buckets = get_sales_trend_buckets(normalized_range, now)
+    current_start = current_buckets.start
+    previous_buckets = get_sales_trend_buckets(
+        normalized_range,
+        current_start - timedelta(microseconds=1),
+    )
+    previous_start = previous_buckets.start
+    current_end = current_buckets.end
 
     seller_filter = or_(
-        Order.seller_id == student.student_id,
-        Product.seller == student.student_id,
-        Product.seller == student.name,
+        Product.seller_id == student.student_id,
+        and_(
+            Product.seller_id.is_(None),
+            or_(
+                Product.seller == student.student_id,
+                Product.seller == student.name,
+            ),
+        ),
     )
     completed_statuses = {"completed", "successful", "delivered", "sold"}
-
-    def month_start(value):
-        calendar_date = value.date() if isinstance(value, datetime) else value
-        return calendar_date.replace(day=1)
-
-    def bucket_starts(start):
-        if normalized_range == "3m":
-            return [month_start(start + timedelta(days=32 * index)) for index in range(bucket_count)]
-        return [(start + bucket_delta * index).date() for index in range(bucket_count)]
+    completed_at = func.coalesce(Order.completed_at, Order.created_at)
 
     def aggregate(start, end, starts):
         orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
             seller_filter,
-            func.lower(Order.status).in_(completed_statuses),
-            Order.created_at >= start,
-            Order.created_at < end,
+            func.lower(func.trim(Order.status)).in_(completed_statuses),
+            completed_at >= start,
+            completed_at < end,
         ).all()
         revenue_buckets = {item: 0.0 for item in starts}
         order_buckets = {item: 0 for item in starts}
@@ -9345,13 +9428,21 @@ def get_seller_sales_analytics(
             amount = float(re.sub(r"[^0-9.]", "", str(order.price or "0")) or 0) * quantity
             revenue += amount
             products_sold += quantity
-            order_time = order.created_at or now
-            bucket = month_start(order_time) if normalized_range == "3m" else order_time.date()
+            order_time = (
+                getattr(order, "completed_at", None)
+                or getattr(order, "created_at", None)
+                or now
+            )
+            bucket = (
+                datetime(order_time.year, order_time.month, 1)
+                if normalized_range == "3m"
+                else order_time.date()
+            )
             if bucket in revenue_buckets:
                 revenue_buckets[bucket] += amount
                 order_buckets[bucket] += 1
         views = db.query(ProductView).join(Product, ProductView.product_id == Product.id).filter(
-            or_(Product.seller == student.student_id, Product.seller == student.name),
+            seller_filter,
             ProductView.viewed_at >= start,
             ProductView.viewed_at < end,
         ).count()
@@ -9366,25 +9457,30 @@ def get_seller_sales_analytics(
             "order_buckets": order_buckets,
         }
 
-    current_buckets = bucket_starts(current_start)
-    previous_buckets = bucket_starts(previous_start)
-    current = aggregate(current_start, now, current_buckets)
-    previous = aggregate(previous_start, current_start, previous_buckets)
+    current = aggregate(current_start, current_end, current_buckets.buckets)
+    previous = aggregate(previous_start, current_start, previous_buckets.buckets)
 
     def percent_change(current_value, previous_value):
         return 100.0 if current_value and not previous_value else ((current_value - previous_value) / previous_value * 100 if previous_value else 0.0)
 
     points = [{
         "date": bucket.isoformat(),
-        "label": bucket.strftime("%b") if normalized_range == "3m" else f"{bucket.strftime('%b')} {bucket.day}",
+        "label": label,
         "total": round(current["revenue_buckets"][bucket], 2),
         "orders": current["order_buckets"][bucket],
-    } for bucket in current_buckets]
+    } for bucket, label in zip(current_buckets.buckets, current_buckets.labels)]
+    total_revenue = round(current["revenue"], 2)
     return {
         "range": normalized_range,
         "points": points,
+        "labels": list(current_buckets.labels),
+        "values": [point["total"] for point in points],
+        "totals": {
+            "revenue": total_revenue,
+            "orders": current["orders"],
+        },
         "stats": {
-            "total_revenue": round(current["revenue"], 2),
+            "total_revenue": total_revenue,
             "total_orders": current["orders"],
             "products_sold": current["products_sold"],
             "conversion_rate": round(current["conversion_rate"], 2),
@@ -9399,7 +9495,7 @@ def get_seller_sales_analytics(
             "average_order_value": round(percent_change(current["average_order_value"], previous["average_order_value"]), 2),
             "total_views": round(percent_change(current["views"], previous["views"]), 2),
         },
-        "total": round(current["revenue"], 2),
+        "total": total_revenue,
         "order_count": current["orders"],
     }
 
@@ -9548,10 +9644,19 @@ def calculate_tf_idf_similarity(query: str, products: List[Product]) -> List[Tup
         return [(p, 0.5) for p in products]
 
 
-def search_products_by_intent(db: Session, message: str, intent: str, department: Optional[str] = None) -> List[Product]:
+def search_products_by_intent(
+    db: Session,
+    message: str,
+    intent: str,
+    department: Optional[str] = None,
+    current_user: Optional[Student] = None,
+) -> List[Product]:
     try:
         keywords = extract_search_keywords(message)
-        query = _public_marketplace_product_query(db)
+        query = apply_public_listing_filters(
+            _public_marketplace_product_query(db),
+            current_user,
+        )
         
         if keywords:
             keyword_filters = []
@@ -9885,6 +9990,7 @@ async def ai_advisor(
     request: AIAdvisorRequest,
     http_request: Request,
     db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """Return database-backed product search or pricing guidance for the AI Advisor."""
     message = request.message.strip()
@@ -9919,14 +10025,24 @@ async def ai_advisor(
     try:
         intent = detect_intent(message)
         keywords = extract_search_keywords(message)
-        approved_products = _public_marketplace_product_query(db).all()
+        current_user = _optional_student_from_authorization(authorization, db)
+        approved_products = apply_public_listing_filters(
+            _public_marketplace_product_query(db),
+            current_user,
+        ).all()
         approved_database_context = "\n".join(
             f"[PRODUCT:{product.id}:{product.title}:{product.category}:{product.price}]"
             for product in approved_products
         ) or "No approved products are available in the marketplace database."
         web_search_context = perform_web_search(message)
 
-        cloud_products = search_products_by_intent(db, message, intent, request.department) if intent == "buy" else []
+        cloud_products = search_products_by_intent(
+            db,
+            message,
+            intent,
+            request.department,
+            current_user,
+        ) if intent == "buy" else []
         local_price_data = calculate_price_recommendation(db, keywords) if intent == "sell" else None
         model_context = (
             f"Student department: {request.department or 'Not provided'}\n"
@@ -10295,6 +10411,7 @@ def _fallback_student_recommendations(
         category = product.get("category") or "General"
         recommendations.append({
             "id": product.get("id"),
+            "seller_id": product.get("seller_id"),
             "title": product.get("title") or "Marketplace item",
             "description": product.get("description") or "Recommended from campus marketplace categories.",
             "category": category,
@@ -10328,7 +10445,11 @@ def _recommendation_traceback() -> str:
     )
 
 
-def _build_student_recommendations(student_id: str, db: Session):
+def _build_student_recommendations(
+    student_id: str,
+    db: Session,
+    current_user: Optional[Student] = None,
+):
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
@@ -10377,7 +10498,10 @@ def _build_student_recommendations(student_id: str, db: Session):
     if recommendation_engine not in supported_engines:
         recommendation_engine = DEFAULT_SETTINGS_BLOCKS["ai"]["recommendationEngine"]
 
-    approved_products = db.query(Product).filter(Product.status.ilike('%approved%')).all()
+    approved_products = apply_public_listing_filters(
+        _public_marketplace_product_query(db),
+        current_user,
+    ).filter(Product.status.ilike("%approved%")).all()
     if not approved_products:
         return []
 
@@ -10386,6 +10510,7 @@ def _build_student_recommendations(student_id: str, db: Session):
     fallback_products = [
         {
             "id": product.id,
+            "seller_id": product.seller_id,
             "title": product.title,
             "description": product.description,
             "category": product.category,
@@ -10508,6 +10633,7 @@ def _build_student_recommendations(student_id: str, db: Session):
             reason = "Recommended from your marketplace activity"
         best_matches.append({
             "id": product.id,
+            "seller_id": product.seller_id,
             "title": product.title,
             "description": product.description or 'Popular product recommended for your academic needs.',
             "category": product.category or 'General',
@@ -10521,8 +10647,11 @@ def _build_student_recommendations(student_id: str, db: Session):
             break
 
     if len(best_matches) < num_recommendations:
-        latest_products = db.query(Product).filter(
-            Product.status.ilike("%approved%")
+        latest_products = apply_public_listing_filters(
+            _public_marketplace_product_query(db),
+            current_user,
+        ).filter(
+            Product.status.ilike("%approved%"),
         ).order_by(Product.created_at.desc()).limit(max(5, num_recommendations * 3)).all()
         for product in latest_products:
             if product.id in seen_ids or product.id in excluded_product_ids:
@@ -10530,6 +10659,7 @@ def _build_student_recommendations(student_id: str, db: Session):
             seen_ids.add(product.id)
             best_matches.append({
                 "id": product.id,
+                "seller_id": product.seller_id,
                 "title": product.title,
                 "description": product.description or 'Latest active product available in the marketplace.',
                 "category": product.category or 'General',
@@ -10552,10 +10682,54 @@ def _build_student_recommendations(student_id: str, db: Session):
     return best_matches
 
 
+def _filter_public_recommendations(
+    recommendations: List[dict],
+    current_user: Optional[Student],
+    db: Session,
+) -> List[dict]:
+    if not recommendations:
+        return recommendations
+
+    def recommendation_product_id(recommendation: dict) -> Optional[int]:
+        value = recommendation.get("id", recommendation.get("product_id"))
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    recommendation_ids = {
+        product_id
+        for recommendation in recommendations
+        for product_id in [recommendation_product_id(recommendation)]
+        if product_id is not None
+    }
+    if not recommendation_ids:
+        return []
+
+    visible_ids = {
+        product_id
+        for (product_id,) in apply_public_listing_filters(
+            _public_marketplace_product_query(db),
+            current_user,
+        ).with_entities(Product.id).filter(Product.id.in_(recommendation_ids)).all()
+    }
+    return [
+        recommendation
+        for recommendation in recommendations
+        if recommendation_product_id(recommendation) in visible_ids
+    ]
+
+
 @app.get("/api/student/recommendations")
-def get_student_recommendations(student_id: str, db: Session = Depends(get_db)):
+def get_student_recommendations(
+    student_id: str,
+    db: Session = Depends(get_db),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
     try:
-        return _build_student_recommendations(student_id, db)
+        current_user = _optional_student_from_authorization(authorization, db)
+        recommendations = _build_student_recommendations(student_id, db, current_user)
+        return _filter_public_recommendations(recommendations, current_user, db)
     except HTTPException:
         raise
     except Exception:
@@ -11600,24 +11774,11 @@ def _build_order_timeline(
 
 
 def _normalize_product_image(raw_image: Optional[object]) -> Optional[str]:
-    if raw_image is None:
+    image_values = _product_image_values(raw_image)
+    if not image_values:
         return None
 
-    image_value = raw_image
-    if isinstance(raw_image, str):
-        text_value = raw_image.strip()
-        if text_value.startswith("["):
-            try:
-                image_value = json.loads(text_value)
-            except json.JSONDecodeError:
-                image_value = text_value
-
-    if isinstance(image_value, list):
-        image_value = next((item for item in image_value if str(item).strip()), None)
-    if not image_value:
-        return None
-
-    image_url = str(image_value).strip()
+    image_url = image_values[0]
     if image_url.startswith(("http://", "https://", "data:")):
         return image_url
     if image_url.startswith("/static/"):
@@ -11625,6 +11786,34 @@ def _normalize_product_image(raw_image: Optional[object]) -> Optional[str]:
     if image_url.startswith("static/"):
         return f"http://127.0.0.1:8000/{image_url}"
     return f"http://127.0.0.1:8000/static/uploads/{image_url.lstrip('/')}"
+
+
+def _product_image_values(raw_image: Optional[object]) -> List[str]:
+    if raw_image is None:
+        return []
+
+    if isinstance(raw_image, list):
+        values = raw_image
+    elif isinstance(raw_image, str):
+        text_value = raw_image.strip()
+        if not text_value:
+            return []
+        try:
+            parsed_image = json.loads(text_value)
+        except json.JSONDecodeError:
+            parsed_image = None
+        values = parsed_image if isinstance(parsed_image, list) else text_value.split(",")
+    else:
+        values = [raw_image]
+
+    image_urls = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("url")
+        image_url = str(value or "").strip()
+        if image_url and image_url not in image_urls:
+            image_urls.append(image_url)
+    return image_urls
 
 
 def _serialize_order(db: Session, order: Order) -> dict:

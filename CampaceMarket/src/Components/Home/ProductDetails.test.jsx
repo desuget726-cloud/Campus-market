@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ProductDetails from './ProductDetails';
+import { IMAGE_PLACEHOLDER } from '../../config';
 import { clearPendingProductAction, getPendingProductAction } from '../../utils/productActionState';
 
 const { mockSetCartItems } = vi.hoisted(() => ({ mockSetCartItems: vi.fn() }));
@@ -54,6 +55,27 @@ const jsonResponse = (data, status = 200) => ({
   ok: status >= 200 && status < 300,
   status,
   json: async () => data,
+});
+
+const galleryImageSet = [
+  { url: '/uploads/gallery-one.jpg' },
+  { url: '/uploads/gallery-two.jpg' },
+  { url: '/uploads/gallery-three.jpg' },
+];
+
+const galleryFetchMock = (detailsById) => vi.fn((input) => {
+  const url = String(input);
+  const similarMatch = url.match(/\/api\/products\/(\d+)\/similar$/);
+  if (similarMatch) return Promise.resolve(jsonResponse([]));
+  const productMatch = url.match(/\/api\/products\/(\d+)$/);
+  if (productMatch) {
+    const id = productMatch[1];
+    return Promise.resolve(jsonResponse(detailsById[id] || { ...detail, id: Number(id) }));
+  }
+  if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+  if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+  if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+  return Promise.resolve(jsonResponse({}));
 });
 
 describe('ProductDetails guest actions', () => {
@@ -139,7 +161,7 @@ describe('ProductDetails guest actions', () => {
         comment: 'Great item',
       }],
     };
-    const fetchMock = vi.fn((input, options = {}) => {
+    const fetchMock = vi.fn((input) => {
       const url = String(input);
       if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([similarProduct]));
       if (url.includes('/api/products/42')) return Promise.resolve(jsonResponse(detailedProduct));
@@ -171,6 +193,128 @@ describe('ProductDetails guest actions', () => {
     expect(onNavigate).toHaveBeenCalledWith('product-details', { productId: 99 });
 
     const similarRequest = fetchMock.mock.calls.find(([input]) => String(input).includes('/similar'));
-    expect(similarRequest).toHaveLength(1);
+    expect(similarRequest).toHaveLength(2);
+    expect(similarRequest[1].headers).toEqual({});
+  });
+
+  it('shows only the neutral placeholder when there are no gallery images', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, images: [], image: null, image_urls: [] },
+    }));
+    render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('Seller');
+    const mainImage = screen.getByRole('img', { name: 'Test phone', exact: true });
+    expect(mainImage.getAttribute('src')).toBe(IMAGE_PLACEHOLDER);
+    expect(screen.queryByRole('button', { name: 'Previous image' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next image' })).toBeNull();
+    expect(screen.queryByText(/\d+\/\d+/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Show product image/ })).toBeNull();
+  });
+
+  it('hides gallery controls and thumbnails for a single image', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, images: [galleryImageSet[0]], image: null, image_urls: [] },
+    }));
+    render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('Seller');
+    expect(screen.queryByRole('button', { name: 'Previous image' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next image' })).toBeNull();
+    expect(screen.queryByText(/\d+\/\d+/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Show product image/ })).toBeNull();
+  });
+
+  it('shows two images and wraps the next-image arrow back to the first', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, images: galleryImageSet.slice(0, 2), image: null, image_urls: [] },
+    }));
+    render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('1/2');
+    expect(screen.getByRole('button', { name: 'Previous image' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Next image' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /Show product image/ })).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(screen.getByText('2/2')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(screen.getByText('1/2')).toBeTruthy();
+  });
+
+  it.each([
+    ['JSON-string arrays', JSON.stringify(['/uploads/gallery-one.jpg', '/uploads/gallery-two.jpg'])],
+    ['comma-separated values', '/uploads/gallery-one.jpg, /uploads/gallery-two.jpg'],
+  ])('parses %s from the image field', async (_description, image) => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, image, images: [], image_urls: [] },
+    }));
+    render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('1/2');
+    expect(screen.getAllByRole('button', { name: /Show product image/ })).toHaveLength(2);
+  });
+
+  it('supports thumbnail selection, wrapping arrows, keyboard, and touch for multiple images', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, images: galleryImageSet, image: null, image_urls: [] },
+    }));
+    render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('1/3');
+    const gallery = screen.getByRole('group', { name: 'Product image gallery' });
+    expect(screen.getAllByRole('button', { name: /Show product image/ })).toHaveLength(3);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(screen.getByText('2/3')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(screen.getByText('1/3')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show product image 3' }));
+    expect(screen.getByText('3/3')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(screen.getByText('1/3')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous image' }));
+    expect(screen.getByText('3/3')).toBeTruthy();
+
+    fireEvent.keyDown(gallery, { key: 'ArrowLeft' });
+    expect(screen.getByText('2/3')).toBeTruthy();
+    fireEvent.touchStart(gallery, { touches: [{ clientX: 100 }] });
+    fireEvent.touchEnd(gallery, { changedTouches: [{ clientX: 40 }] });
+    expect(screen.getByText('3/3')).toBeTruthy();
+  });
+
+  it('shows the image gallery controls in the owner view', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, is_owner: true, images: galleryImageSet, image: null, image_urls: [] },
+    }));
+    render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('1/3');
+    expect(screen.getByRole('button', { name: 'Previous image' })).toBeTruthy();
+  });
+
+  it('resets the gallery index when navigating to another product', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, images: galleryImageSet, image: null, image_urls: [] },
+      43: {
+        ...detail,
+        id: 43,
+        title: 'Second product',
+        images: galleryImageSet.slice(0, 2),
+        image: null,
+        image_urls: [],
+      },
+    }));
+    const { rerender } = render(<ProductDetails product={product} currentUser={null} />);
+
+    await screen.findByText('1/3');
+    fireEvent.click(screen.getByRole('button', { name: 'Next image' }));
+    expect(screen.getByText('2/3')).toBeTruthy();
+
+    rerender(<ProductDetails product={{ ...product, id: 43, title: 'Second product' }} currentUser={null} />);
+
+    expect(await screen.findByText('1/2')).toBeTruthy();
   });
 });

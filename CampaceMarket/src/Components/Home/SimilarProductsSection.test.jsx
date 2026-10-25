@@ -52,7 +52,8 @@ describe('SimilarProductsSection', () => {
     expect(card.getAttribute('aria-label')).toContain('Electronics');
     expect(screen.getByText('12,000 ETB')).toBeTruthy();
     expect(screen.getByText('Category: Electronics')).toBeTruthy();
-    expect(globalThis.fetch.mock.calls[0]).toHaveLength(1);
+    expect(globalThis.fetch.mock.calls[0]).toHaveLength(2);
+    expect(globalThis.fetch.mock.calls[0][1].headers).toEqual({});
 
     fireEvent.click(card);
     expect(onNavigate).toHaveBeenCalledWith('product-details', { productId: 12 });
@@ -80,6 +81,23 @@ describe('SimilarProductsSection', () => {
     render(<SimilarProductsSection productId={42} />);
 
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Similar Products' })).toBeNull());
+  });
+
+  it('sends the session token and hides own products from recommendations', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse([
+      { ...product, id: 13, seller_id: 'student-1' },
+      { ...product, id: 14, title: 'Another seller laptop', seller_id: 'student-2' },
+    ])));
+    render(
+      <SimilarProductsSection
+        productId={42}
+        currentUser={{ studentId: 'student-1', access_token: 'test-access-token' }}
+      />,
+    );
+
+    expect(await screen.findByRole('button', { name: /Another seller laptop/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Campus laptop/ })).toBeNull();
+    expect(globalThis.fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer test-access-token');
   });
 
   it('shows an error and retries the request', async () => {

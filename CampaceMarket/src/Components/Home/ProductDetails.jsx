@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
+import { getStudentAccessToken } from '../../utils/publicListings';
 import SimilarProductsSection from './SimilarProductsSection';
 import ProductPurchaseActions from '../ProductPurchaseActions';
 import {
@@ -30,28 +31,36 @@ const formatRelativeTime = (value, language) => {
   return new Intl.RelativeTimeFormat(language === 'am' ? 'am' : 'en', { numeric: 'auto' })
     .format(Math.round(seconds / unitSeconds), unit);
 };
-const getStudentAccessToken = (student) => {
-  const userToken = student?.access_token || student?.accessToken || student?.token || student?.session_token || student?.sessionToken;
-  if (userToken) return userToken;
-
-  try {
-    const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
-    return session?.user?.access_token || session?.user?.accessToken || session?.access_token || session?.accessToken || '';
-  } catch {
-    return '';
-  }
-};
-
 const parseProductImages = (image) => {
-  if (Array.isArray(image)) return image;
-  if (typeof image !== 'string' || !image.trim()) return [];
-
-  try {
-    const parsedImage = JSON.parse(image);
-    return Array.isArray(parsedImage) ? parsedImage : [image];
-  } catch {
-    return [image];
+  let imageValues;
+  if (Array.isArray(image)) {
+    imageValues = image;
+  } else if (typeof image === 'string' && image.trim()) {
+    const imageValue = image.trim();
+    try {
+      const parsedImage = JSON.parse(imageValue);
+      imageValues = Array.isArray(parsedImage)
+        ? parsedImage
+        : typeof parsedImage === 'string'
+          ? parsedImage.split(',')
+          : imageValue.split(',');
+    } catch {
+      imageValues = imageValue.split(',');
+    }
+  } else {
+    return [];
   }
+
+  return imageValues.flatMap((value) => {
+    if (typeof value === 'string') {
+      const url = value.trim();
+      return url ? [url] : [];
+    }
+    if (value && typeof value === 'object' && typeof value.url === 'string' && value.url.trim()) {
+      return [{ ...value, url: value.url.trim() }];
+    }
+    return [];
+  });
 };
 
 function ProductDetails({ product, currentUser, pendingAction, onPendingActionHandled, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
@@ -83,6 +92,8 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const [reportLoading, setReportLoading] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
   const [showShareMenu, setShowShareMenu] = useState(false);
+  const galleryTouchStartXRef = useRef(null);
+  const activeThumbnailRef = useRef(null);
   const [wishlistState, setWishlistState] = useState({
     studentId: '',
     productId: '',
@@ -245,6 +256,11 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
   useEffect(() => {
     payAttemptKeyRef.current = null;
+  }, [product?.id]);
+
+  useEffect(() => {
+    setSelectedImageIndex(0);
+    setIsZoomed(false);
   }, [product?.id]);
 
   useEffect(() => {
@@ -857,18 +873,48 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     ? `${priceValue.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`
     : 'Negotiable';
   const campusLocation = String(item?.pickup_location || '').trim();
-  const galleryEntries = (Array.isArray(item?.images) ? item.images : []).map((image) => (
+  const toGalleryEntry = (image) => (
     typeof image === 'string' ? { url: image, note: null } : image
-  ));
+  );
   const galleryImages = [
-    ...galleryEntries,
-    ...parseProductImages(item?.image).map((image) => ({ url: image, note: null })),
-    ...(Array.isArray(item?.image_urls) ? item.image_urls.map((url) => ({ url, note: null })) : []),
+    ...parseProductImages(item?.images).map(toGalleryEntry),
+    ...parseProductImages(item?.image).map(toGalleryEntry),
+    ...parseProductImages(item?.image_urls).map(toGalleryEntry),
   ].filter((image) => image?.url).filter((image, index, images) => images.findIndex((candidate) => candidate.url === image.url) === index);
   const fallbackImage = 'https://images.unsplash.com/photo-1517336714731-489689fd1ca8?auto=format&fit=crop&w=1200&q=80';
-  const visibleImages = galleryImages.length ? galleryImages : [{ url: fallbackImage, note: null }];
-  const activeEntry = galleryImages.length ? galleryImages[selectedImageIndex % galleryImages.length] : { url: fallbackImage, note: null };
+  const hasMultipleImages = galleryImages.length > 1;
+  const activeIndex = galleryImages.length ? selectedImageIndex % galleryImages.length : 0;
+  const activeEntry = galleryImages[activeIndex] || { url: IMAGE_PLACEHOLDER, note: null };
   const activeImage = activeEntry.url;
+  useEffect(() => {
+    activeThumbnailRef.current?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [activeIndex]);
+  const handleGalleryKeyDown = (event) => {
+    if (!hasMultipleImages || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    setSelectedImageIndex((index) => (
+      event.key === 'ArrowLeft'
+        ? (index - 1 + galleryImages.length) % galleryImages.length
+        : (index + 1) % galleryImages.length
+    ));
+  };
+  const handleGalleryTouchStart = (event) => {
+    galleryTouchStartXRef.current = event.touches[0]?.clientX ?? null;
+  };
+  const handleGalleryTouchEnd = (event) => {
+    const startX = galleryTouchStartXRef.current;
+    const endX = event.changedTouches[0]?.clientX;
+    galleryTouchStartXRef.current = null;
+    if (!hasMultipleImages || startX === null || endX === undefined) return;
+
+    const deltaX = endX - startX;
+    if (Math.abs(deltaX) < 40) return;
+    setSelectedImageIndex((index) => (
+      deltaX < 0
+        ? (index + 1) % galleryImages.length
+        : (index - 1 + galleryImages.length) % galleryImages.length
+    ));
+  };
   const reviews = Array.isArray(item?.reviews) ? item.reviews : [];
   const reviewCount = Number(item?.review_count || reviews.length);
   const similarProducts = Array.isArray(item?.similar_products) ? item.similar_products : [];
@@ -918,22 +964,60 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="contents lg:col-start-1 lg:block lg:space-y-6">
           <section className="order-1 min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:order-none">
-            <div className="relative overflow-hidden rounded-xl bg-slate-50">
+            <div
+              className="relative overflow-hidden rounded-xl bg-slate-50"
+              role="group"
+              aria-label="Product image gallery"
+              tabIndex={hasMultipleImages ? 0 : undefined}
+              onKeyDown={handleGalleryKeyDown}
+              onTouchStart={handleGalleryTouchStart}
+              onTouchEnd={handleGalleryTouchEnd}
+            >
               <button type="button" onClick={() => setIsZoomed(true)} className="block aspect-[4/3] w-full cursor-zoom-in bg-slate-50" aria-label="Zoom product image">
                 <img src={resolveImageUrl(activeImage)} alt={displayTitle} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-full w-full object-contain" />
               </button>
-              <button type="button" onClick={() => setSelectedImageIndex((index) => (index - 1 + visibleImages.length) % visibleImages.length)} aria-label="Previous product image" className="btn-primary absolute left-3 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full text-lg font-bold">←</button>
-              <button type="button" onClick={() => setSelectedImageIndex((index) => (index + 1) % visibleImages.length)} aria-label="Next product image" className="btn-primary absolute right-3 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full text-lg font-bold">→</button>
-              <span className="absolute bottom-3 left-3 rounded-full bg-slate-950/75 px-2.5 py-1 text-xs font-bold text-white">{(selectedImageIndex % visibleImages.length) + 1}/{visibleImages.length}</span>
+              {hasMultipleImages && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedImageIndex((index) => (index - 1 + galleryImages.length) % galleryImages.length)}
+                    aria-label="Previous image"
+                    className="btn-primary absolute left-3 top-1/2 z-10 flex h-10 min-h-10 w-10 min-w-10 -translate-y-1/2 items-center justify-center rounded-full text-xl font-bold"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedImageIndex((index) => (index + 1) % galleryImages.length)}
+                    aria-label="Next image"
+                    className="btn-primary absolute right-3 top-1/2 z-10 flex h-10 min-h-10 w-10 min-w-10 -translate-y-1/2 items-center justify-center rounded-full text-xl font-bold"
+                  >
+                    ›
+                  </button>
+                  <span className="absolute bottom-3 left-3 rounded-full bg-slate-950/75 px-2.5 py-1 text-xs font-bold text-white">
+                    {activeIndex + 1}/{galleryImages.length}
+                  </span>
+                </>
+              )}
             </div>
-            <div className="flex min-w-0 gap-2 overflow-x-auto p-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              {visibleImages.map((image, index) => (
-                <button key={`${image.url}-${index}`} type="button" onClick={() => setSelectedImageIndex(index)} className={`relative h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition ${selectedImageIndex === index ? 'border-emerald-500' : 'border-slate-200 hover:border-slate-400'}`} aria-label={`Show product image ${index + 1}`}>
-                  <img src={resolveImageUrl(image.url)} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-full w-full object-cover" />
-                  {image.note && <span title={image.note} className="absolute bottom-1 right-1 rounded-full bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-bold text-white">i</span>}
-                </button>
-              ))}
-            </div>
+            {hasMultipleImages && (
+              <div className="flex min-w-0 flex-nowrap gap-2 overflow-x-auto overscroll-x-contain p-3 [scrollbar-width:thin]">
+                {galleryImages.map((image, index) => (
+                  <button
+                    key={`${image.url}-${index}`}
+                    ref={index === activeIndex ? activeThumbnailRef : null}
+                    type="button"
+                    onClick={() => setSelectedImageIndex(index)}
+                    aria-label={`Show product image ${index + 1}`}
+                    aria-pressed={activeIndex === index}
+                    className={`relative h-16 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition ${activeIndex === index ? 'border-emerald-500' : 'border-slate-200 hover:border-slate-400'}`}
+                  >
+                    <img src={resolveImageUrl(image.url)} alt={`${displayTitle} thumbnail ${index + 1}`} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} className="h-full w-full object-cover" />
+                    {image.note && <span title={image.note} className="absolute bottom-1 right-1 rounded-full bg-slate-950/75 px-1.5 py-0.5 text-[10px] font-bold text-white">i</span>}
+                  </button>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="order-3 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:order-none">
@@ -1035,6 +1119,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
           {showBuyerView && !isOwner && (
             <SimilarProductsSection
               productId={item?.id || product?.id}
+              currentUser={currentUser}
               onNavigate={onNavigate}
             />
           )}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import SellerOrderDetails from "./SellerOrderDetails";
 import SellerCompletedOrders from "./SellerCompletedOrders";
 import { useSellerOrders } from '../../hooks/useSellerOrders';
@@ -77,9 +77,40 @@ const getSellerSessionToken = (user) => {
 const getInitialSellerHubView = () => {
   if (typeof window === "undefined") return SELLER_HUB_VIEWS.overview;
   const params = new URLSearchParams(window.location.search);
-  return params.get("tab") === "seller" && params.get("section") === "orders"
-    ? SELLER_HUB_VIEWS.operations
-    : SELLER_HUB_VIEWS.overview;
+  if (params.get("tab") === "seller" && params.get("section") === "orders") {
+    return SELLER_HUB_VIEWS.operations;
+  }
+  if (
+    (params.get("tab") === "seller" && params.get("section") === "products")
+    || params.has("page")
+  ) {
+    return SELLER_HUB_VIEWS.productManagement;
+  }
+  return SELLER_HUB_VIEWS.overview;
+};
+
+const getProductPageFromUrl = () => {
+  if (typeof window === "undefined") return 1;
+  const page = Number(new URLSearchParams(window.location.search).get("page"));
+  return Number.isInteger(page) && page > 0 ? page : 1;
+};
+
+const getProductPaginationItems = (currentPage, totalPages) => {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+
+  const pages = [...new Set([
+    1,
+    totalPages,
+    currentPage - 1,
+    currentPage,
+    currentPage + 1,
+  ].filter((page) => page >= 1 && page <= totalPages))].sort((left, right) => left - right);
+
+  return pages.reduce((items, page, index) => {
+    if (index > 0 && page - pages[index - 1] > 1) items.push("ellipsis");
+    items.push(page);
+    return items;
+  }, []);
 };
 
 function SellerOperationsCenter({
@@ -105,7 +136,10 @@ function SellerOperationsCenter({
 }) {
   const { t } = useLanguage();
   const [activeHubView, dispatchHubView] = useReducer(sellerHubViewReducer, null, getInitialSellerHubView);
-  const [chartRange, setChartRange] = useState("3 Months");
+  const [chartRange, setChartRange] = useState("3m");
+  const [salesAnalyticsRetry, setSalesAnalyticsRetry] = useState(0);
+  const [salesAnalyticsError, setSalesAnalyticsError] = useState("");
+  const salesAnalyticsRequestId = useRef(0);
   const [salesAnalytics, setSalesAnalytics] = useState({
     points: [],
     total: 0,
@@ -121,8 +155,103 @@ function SellerOperationsCenter({
   const [viewedProductId, setViewedProductId] = useState(null);
   const [productActionState, setProductActionState] = useState({});
   const [productActionFeedback, setProductActionFeedback] = useState(null);
+  const [productPage, setProductPage] = useState({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 10,
+    total_pages: 0,
+    summary: { total: 0, active: 0, sold: 0, pending: 0 },
+  });
+  const [productPageNumber, setProductPageNumber] = useState(getProductPageFromUrl);
+  const [productPageLoading, setProductPageLoading] = useState(false);
+  const [productPageError, setProductPageError] = useState("");
+  const productPageRequestId = useRef(0);
+  const skipNextProductPageFetch = useRef(false);
   const { overview: showOverview, productManagement: showProductManagement, operations: showOperations } = getSellerHubSections(activeHubView);
   const sessionToken = getSellerSessionToken(user);
+  const updateProductPageUrl = useCallback((page, replace = false) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("page", String(page));
+    window.history[replace ? "replaceState" : "pushState"](
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`,
+    );
+  }, []);
+  const fetchProductPage = useCallback(async (requestedPage = productPageNumber) => {
+    if (!user?.studentId || !sessionToken) {
+      setProductPageError("Your student session is missing. Please sign in again.");
+      return;
+    }
+    const requestId = productPageRequestId.current + 1;
+    productPageRequestId.current = requestId;
+    setProductPageLoading(true);
+    setProductPageError("");
+    try {
+      const params = new URLSearchParams({
+        student_id: user.studentId,
+        page: String(requestedPage),
+        page_size: "10",
+      });
+      const response = await fetch(
+        `${API_BASE_URL}/api/student/seller/products?${params.toString()}`,
+        { headers: { Authorization: `Bearer ${sessionToken}` } },
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to load seller products.");
+      }
+      const data = await response.json();
+      if (!Array.isArray(data.items) || !data.summary) {
+        throw new Error("The server returned invalid seller product data.");
+      }
+      if (requestId !== productPageRequestId.current) return;
+
+      const actualPage = Number(data.page) || 1;
+      if (actualPage !== requestedPage) {
+        updateProductPageUrl(actualPage, true);
+        if (data.items.length > 0) skipNextProductPageFetch.current = true;
+        setProductPageNumber(actualPage);
+      }
+      if (data.items.length === 0 && actualPage > 1) {
+        const previousPage = actualPage - 1;
+        updateProductPageUrl(previousPage, true);
+        setProductPageNumber(previousPage);
+      }
+      setProductPage(data);
+    } catch (error) {
+      if (requestId === productPageRequestId.current) {
+        setProductPageError(error.message || "Failed to load seller products.");
+      }
+    } finally {
+      if (requestId === productPageRequestId.current) setProductPageLoading(false);
+    }
+  }, [productPageNumber, sessionToken, updateProductPageUrl, user?.studentId]);
+
+  useEffect(() => {
+    const syncPageFromUrl = () => setProductPageNumber(getProductPageFromUrl());
+    window.addEventListener("popstate", syncPageFromUrl);
+    return () => window.removeEventListener("popstate", syncPageFromUrl);
+  }, []);
+
+  useEffect(() => {
+    if (!showProductManagement) return;
+    if (skipNextProductPageFetch.current) {
+      skipNextProductPageFetch.current = false;
+      return;
+    }
+    fetchProductPage(productPageNumber);
+  }, [fetchProductPage, productPageNumber, showProductManagement]);
+
+  const goToProductPage = (page) => {
+    const nextPage = Math.min(Math.max(page, 1), productPage.total_pages);
+    if (nextPage === productPageNumber) return;
+    updateProductPageUrl(nextPage);
+    setProductPageNumber(nextPage);
+  };
+
   const {
     filters: sellerOrderFilters,
     updateFilters: updateSellerOrderFilters,
@@ -171,6 +300,7 @@ function SellerOperationsCenter({
     setProductActionState((previous) => ({ ...previous, [productId]: action }));
     try {
       await callback(productId);
+      await fetchProductPage(productPageNumber);
       setProductActionFeedback({
         type: "success",
         message: action === "delete"
@@ -316,6 +446,11 @@ function SellerOperationsCenter({
         `${35 + (index * 575) / Math.max(salesAnalytics.points.length - 1, 1)},${190 - ((Number(point.total) || 0) / chartMax) * 135}`,
     )
     .join(" ");
+  const salesRangeButtons = [
+    { value: "7d", label: t("sellerHub.salesRange7d") },
+    { value: "30d", label: t("sellerHub.salesRange30d") },
+    { value: "3m", label: t("sellerHub.salesRange3m") },
+  ];
   const onNavigate = (target, payload) => {
     if (target === "product-details" && payload?.productId) {
       onViewProduct?.(payload.productId);
@@ -331,33 +466,43 @@ function SellerOperationsCenter({
 
   useEffect(() => {
     let cancelled = false;
-    const rangeKey =
-      chartRange === "7 Days" ? "7d" : chartRange === "30 Days" ? "30d" : "3m";
+    const requestId = salesAnalyticsRequestId.current + 1;
+    salesAnalyticsRequestId.current = requestId;
 
     const fetchSalesAnalytics = async () => {
       setSalesAnalyticsLoading(true);
-      setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
+      setSalesAnalyticsError("");
       try {
-        const sessionToken = getSessionToken();
+        if (!sessionToken) {
+          throw new Error("Your student session is missing. Please sign in again.");
+        }
         const response = await fetch(
-          `${API_BASE_URL}/api/student/seller/sales-analytics?range=${rangeKey}`,
+          `${API_BASE_URL}/api/student/seller/sales-analytics?range=${chartRange}`,
           {
-            ...(sessionToken
-              ? { headers: { Authorization: `Bearer ${sessionToken}` } }
-              : {}),
+            headers: { Authorization: `Bearer ${sessionToken}` },
             credentials: "include",
+            cache: "no-store",
           },
         );
         const result = await response.json().catch(() => ({}));
         if (!response.ok)
           throw new Error(result.detail || "Unable to load sales analytics.");
-        if (!cancelled) setSalesAnalytics(result);
-      } catch {
-        if (!cancelled) {
-          setSalesAnalytics({ points: [], total: 0, order_count: 0, stats: {}, comparisons: {} });
+        if (!Array.isArray(result.points) || !result.stats) {
+          throw new Error("The server returned invalid sales analytics.");
+        }
+        if (!cancelled && requestId === salesAnalyticsRequestId.current) {
+          setSalesAnalytics(result);
+        }
+      } catch (error) {
+        if (!cancelled && requestId === salesAnalyticsRequestId.current) {
+          setSalesAnalyticsError(
+            error.message || "Unable to load sales analytics.",
+          );
         }
       } finally {
-        if (!cancelled) setSalesAnalyticsLoading(false);
+        if (!cancelled && requestId === salesAnalyticsRequestId.current) {
+          setSalesAnalyticsLoading(false);
+        }
       }
     };
 
@@ -365,101 +510,18 @@ function SellerOperationsCenter({
     return () => {
       cancelled = true;
     };
-  }, [chartRange, getSessionToken]);
+  }, [chartRange, salesAnalyticsRetry, sessionToken]);
 
   useEffect(() => {
-    const analyticsSection = document.querySelectorAll("#seller-analytics")[0];
-    const svg = analyticsSection?.querySelector("svg");
-    if (!svg) return;
-
-    const points = Array.isArray(salesAnalytics.points)
-      ? salesAnalytics.points
-      : [];
-    const chartWidth = 575;
-    const chartStart = 35;
-    const chartBottom = 190;
-    const chartHeight = 135;
-    const chartMax = Math.max(
-      ...points.map((point) => Number(point.total) || 0),
-      1,
-    );
-    const coordinates = points.map((point, index) => {
-      const x =
-        chartStart + (index * chartWidth) / Math.max(points.length - 1, 1);
-      const y =
-        chartBottom - ((Number(point.total) || 0) / chartMax) * chartHeight;
-      return { x, y };
-    });
-    const line = coordinates.map(({ x, y }) => `${x},${y}`).join(" ");
-    const paths = svg.querySelectorAll("path");
-    const labelsGroup = svg.querySelector("g");
-    const labelNodes = svg.querySelectorAll("text");
-
-    if (paths[1])
-      paths[1].setAttribute(
-        "d",
-        line ? `M${line.replace(/ /g, " L")}` : "M35 190 L610 190",
-      );
-    if (paths[2])
-      paths[2].setAttribute(
-        "d",
-        line
-          ? `M${line.replace(/ /g, " L")} L610 205 L35 205 Z`
-          : "M35 190 L610 190 L610 205 L35 205 Z",
-      );
-    if (labelsGroup) {
-      labelsGroup.replaceChildren(
-        ...coordinates.map(({ x, y }) => {
-          const circle = document.createElementNS(
-            "http://www.w3.org/2000/svg",
-            "circle",
-          );
-          circle.setAttribute("cx", String(x));
-          circle.setAttribute("cy", String(y));
-          circle.setAttribute("r", "5");
-          return circle;
-        }),
-      );
-    }
-    labelNodes.forEach((node) => node.remove());
-    points.forEach((point, index) => {
-      const label = document.createElementNS(
-        "http://www.w3.org/2000/svg",
-        "text",
-      );
-      label.setAttribute("x", String(coordinates[index]?.x || chartStart));
-      label.setAttribute("y", "225");
-      label.setAttribute("text-anchor", "middle");
-      label.setAttribute("fill", "#64748b");
-      label.setAttribute("font-size", points.length > 12 ? "9" : "12");
-      label.textContent = point.label;
-      svg.appendChild(label);
-    });
-
-    const status = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "text",
-    );
-    status.setAttribute("x", "320");
-    status.setAttribute("y", "120");
-    status.setAttribute("text-anchor", "middle");
-    status.setAttribute("fill", "#64748b");
-    status.setAttribute("font-size", "14");
-    status.textContent = salesAnalyticsLoading
-      ? "Loading sales..."
-      : Number(salesAnalytics.stats?.total_revenue ?? 0) === 0
-        ? "No sales in this period yet"
-        : "";
-    svg.appendChild(status);
-
     const advisorMessage =
-      analyticsSection.nextElementSibling?.querySelector("h3 + p");
+      document.querySelector("#seller-analytics")
+        ?.nextElementSibling?.querySelector("h3 + p");
     if (advisorMessage) {
       advisorMessage.textContent = advisor
         ? `${advisor.product_title} received ${advisor.views.toLocaleString()} views and ${advisor.completed_orders} completed order${advisor.completed_orders === 1 ? "" : "s"} (${Number(advisor.conversion_rate).toFixed(2)}% conversion). Consider updating its images or price.`
         : "Your listings do not have enough view or completed-order activity for a conversion recommendation yet.";
     }
-  }, [advisor, salesAnalytics, salesAnalyticsLoading]);
+  }, [advisor]);
 
   const fetchSellerOrderDetails = useCallback(async (orderId) => {
     setSelectedOrderLoading(true);
@@ -769,26 +831,43 @@ function SellerOperationsCenter({
                 </h3>
               </div>
               <span className="flex flex-wrap justify-end gap-x-1.5 text-right text-sm font-semibold text-slate-400">
-                <span>{totalInventoryCount} total</span>
+                <span>{productPage.summary.total} {t('sellerHub.inventoryTotal')}</span>
                 <span aria-hidden="true">·</span>
-                <span>{counts.active} Active</span>
+                <span>{productPage.summary.active} {t('sellerHub.inventoryActive')}</span>
                 <span aria-hidden="true">·</span>
-                <span>{counts.sold} Sold</span>
+                <span>{productPage.summary.sold} {t('sellerHub.inventorySold')}</span>
                 <span aria-hidden="true">·</span>
-                <span>{counts.pending} Pending</span>
+                <span>{productPage.summary.pending} {t('sellerHub.inventoryPending')}</span>
               </span>
             </div>
-            {visibleListings.length === 0 ? (
+            {productActionFeedback && (
+              <p className={`mt-4 rounded-xl border p-3 text-sm font-semibold ${productActionFeedback.type === "error" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                {productActionFeedback.message}
+              </p>
+            )}
+            {productPageLoading ? (
+              <div className="mt-6 space-y-3" role="status" aria-label={t('sellerHub.productsLoading')}>
+                {Array.from({ length: 5 }, (_, index) => (
+                  <div key={index} className="h-14 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
+                ))}
+              </div>
+            ) : productPageError ? (
+              <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-sm font-semibold text-rose-700" role="alert">
+                <p>{t('sellerHub.productsLoadError')}</p>
+                <button
+                  type="button"
+                  onClick={() => fetchProductPage(productPageNumber)}
+                  className="mt-3 rounded-full border border-rose-300 px-4 py-2 font-bold hover:bg-rose-100"
+                >
+                  {t('sellerHub.retryProducts')}
+                </button>
+              </div>
+            ) : productPage.items.length === 0 ? (
               <div className="mt-6 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-slate-500">
                 No active products yet. Add your first campus product to get started.
               </div>
             ) : (
               <div className="mt-5 min-w-0 max-w-full overflow-x-auto">
-                {productActionFeedback && (
-                  <p className={`mb-3 rounded-xl border p-3 text-sm font-semibold ${productActionFeedback.type === "error" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-                    {productActionFeedback.message}
-                  </p>
-                )}
                 <table className="w-full min-w-[1120px] table-auto text-left text-sm">
                   <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:text-slate-300">
                     <tr>
@@ -801,7 +880,7 @@ function SellerOperationsCenter({
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleListings.map((listing) => {
+                    {productPage.items.map((listing) => {
                       const status = listing.status || "Pending";
                       const image = getSellerImage(listing.image);
                       const stock = Number(listing.stock ?? 0);
@@ -974,6 +1053,55 @@ function SellerOperationsCenter({
                 </table>
               </div>
             )}
+            {!productPageLoading && !productPageError && productPage.total > 10 && (
+              <nav
+                className="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between dark:border-slate-700"
+                aria-label={t('sellerHub.productsPagination')}
+              >
+                <p className="text-sm text-slate-600 dark:text-slate-300">
+                  {t('sellerHub.productsShowing')
+                    .replace('{start}', String((productPage.page - 1) * productPage.page_size + 1))
+                    .replace('{end}', String(Math.min(productPage.page * productPage.page_size, productPage.total)))
+                    .replace('{total}', String(productPage.total))}
+                </p>
+                <div className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label={t('sellerHub.productsPreviousPage')}
+                    disabled={productPage.page <= 1}
+                    onClick={() => goToProductPage(productPage.page - 1)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200"
+                  >
+                    {t('sellerOrders.previous')}
+                  </button>
+                  {getProductPaginationItems(productPage.page, productPage.total_pages).map((item, index) => (
+                    item === "ellipsis" ? (
+                      <span key={`ellipsis-${index}`} aria-hidden="true" className="px-2 text-slate-500">…</span>
+                    ) : (
+                      <button
+                        key={item}
+                        type="button"
+                        aria-label={t('sellerHub.productsPage').replace('{page}', String(item))}
+                        aria-current={item === productPage.page ? "page" : undefined}
+                        onClick={() => goToProductPage(item)}
+                        className={`min-w-10 rounded-lg border px-3 py-2 text-sm font-semibold ${item === productPage.page ? "border-sky-600 bg-sky-600 text-white" : "border-slate-300 text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-200"}`}
+                      >
+                        {item}
+                      </button>
+                    )
+                  ))}
+                  <button
+                    type="button"
+                    aria-label={t('sellerHub.productsNextPage')}
+                    disabled={productPage.page >= productPage.total_pages}
+                    onClick={() => goToProductPage(productPage.page + 1)}
+                    className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:text-slate-200"
+                  >
+                    {t('sellerOrders.next')}
+                  </button>
+                </div>
+              </nav>
+            )}
           </section>
         </div>
       )}
@@ -989,7 +1117,6 @@ function SellerOperationsCenter({
           {[
             ["Response Rate", Number(performance.response_rate || 0)],
             ["Order Completion", Number(performance.order_completion || 0)],
-            ["On-time Pickup", Number(performance.on_time_pickup || 0)],
           ].map(([label, value]) => (
             <div key={label}>
               <div className="flex justify-between text-sm font-bold text-slate-700">
@@ -1131,30 +1258,59 @@ function SellerOperationsCenter({
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-                  Sales Analytics
+                  {t("sellerHub.salesAnalytics")}
                 </p>
                 <h3 className="mt-1 text-xl font-black text-slate-950">
-                  Sales Performance
+                  {t("sellerHub.salesPerformance")}
                 </h3>
               </div>
               <div className="flex flex-wrap gap-1 rounded-full bg-slate-100 p-1">
-                {["7 Days", "30 Days", "3 Months"].map((range) => (
+                {salesRangeButtons.map(({ value, label }) => (
                   <button
-                    key={range}
+                    key={value}
                     type="button"
-                    onClick={() => setChartRange(range)}
-                    className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === range ? "bg-slate-900 text-white" : "text-slate-500"}`}
+                    aria-pressed={chartRange === value}
+                    onClick={() => setChartRange(value)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-bold ${chartRange === value ? "bg-slate-900 text-white" : "text-slate-500"}`}
                   >
-                    {range}
+                    {label}
                   </button>
                 ))}
               </div>
             </div>
+            <p className="mt-4 text-sm font-semibold text-slate-700" aria-live="polite">
+              {t("sellerHub.salesRangeTotals")
+                .replace("{revenue}", formatSellerEtb(salesAnalytics.totals?.revenue ?? salesAnalytics.stats?.total_revenue))
+                .replace("{orders}", String(salesAnalytics.totals?.orders ?? salesAnalytics.stats?.total_orders ?? 0))}
+            </p>
+            {salesAnalyticsLoading && (
+              <p className="mt-2 text-sm text-slate-500" role="status">
+                {t("sellerHub.salesLoading")}
+              </p>
+            )}
+            {salesAnalyticsError ? (
+              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700" role="alert">
+                <p>{t("sellerHub.salesLoadError")}</p>
+                <button
+                  type="button"
+                  onClick={() => setSalesAnalyticsRetry((retry) => retry + 1)}
+                  className="mt-2 rounded-full border border-rose-300 px-4 py-2 font-bold hover:bg-rose-100"
+                >
+                  {t("sellerHub.salesRetry")}
+                </button>
+              </div>
+            ) : !salesAnalyticsLoading
+              && Number(salesAnalytics.stats?.total_orders ?? salesAnalytics.order_count ?? 0) === 0 ? (
+                <p className="mt-3 text-sm text-slate-500" role="status">
+                  {t("sellerHub.salesNoSales")}
+                </p>
+              ) : null}
             <svg
               viewBox="0 0 640 230"
               className="mt-6 h-56 w-full"
               role="img"
-              aria-label={`Sales revenue trend for ${chartRange}`}
+              aria-busy={salesAnalyticsLoading}
+              aria-label={`${t("sellerHub.salesRevenueTrend")} - ${salesRangeButtons.find(({ value }) => value === chartRange)?.label}`}
             >
               <path
                 d="M35 190 H610 M35 145 H610 M35 100 H610 M35 55 H610"
@@ -1191,7 +1347,7 @@ function SellerOperationsCenter({
                   y="225"
                   textAnchor="middle"
                   fill="#64748b"
-                  fontSize="12"
+                  fontSize={salesAnalytics.points.length > 12 ? "9" : "12"}
                 >
                   {point.label}
                 </text>

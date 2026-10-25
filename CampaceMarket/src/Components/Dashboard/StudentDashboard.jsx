@@ -16,6 +16,7 @@ import { getAdminSettings } from '../../api/adminSettings';
 import { isOrderRefunded } from '../../utils/orderReceiptState';
 import { shouldReduceUnreadNotificationCount } from '../../utils/notificationState';
 import { buildOrderDashboardUrl, parseOrderDashboardLink } from '../../utils/orderDashboardLink';
+import { filterPublicProducts } from '../../utils/publicListings';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'product sale', 'dispute release', 'refund']);
@@ -452,9 +453,7 @@ function StudentDashboard({
   const withdrawSubmitInFlightRef = useRef(false);
   const withdrawIdempotencyKeyRef = useRef(null);
   const [recommendedProducts, setRecommendedProducts] = useState([]);
-  const [recommendationsFailed, setRecommendationsFailed] = useState(false);
   const [recommendationsStudentId, setRecommendationsStudentId] = useState('');
-  const [recommendationsRetryKey, setRecommendationsRetryKey] = useState(0);
   const [recentCampusActivity, setRecentCampusActivity] = useState([]);
 
   // የሻጭ/ምርት መለጠፊያ ፎርም ስቴት (Seller Product Posting Form States)
@@ -539,7 +538,7 @@ function StudentDashboard({
       unapproved_products: 0
     },
     alerts: { pending_orders: 0, unapproved_products: 0 },
-    performance: { rating: 0, response_rate: 0, order_completion: 0, on_time_pickup: 0 },
+    performance: { rating: 0, response_rate: 0, order_completion: 0 },
     my_listings: [],
     received_orders: []
   });
@@ -1400,14 +1399,14 @@ function StudentDashboard({
       });
       if (!res.ok) throw new Error('Failed to load products');
       const productData = await res.json();
-      setSearchResults(Array.isArray(productData) ? productData : []);
+      setSearchResults(filterPublicProducts(productData, user));
     } catch (err) {
       console.error('Error loading products:', err);
       setSearchResults([]);
     } finally {
       setSearchLoading(false);
     }
-  }, [getStudentSessionToken]);
+  }, [getStudentSessionToken, user]);
 
   const fetchSellerDashboardData = async () => {
     if (!user?.studentId) {
@@ -1555,7 +1554,10 @@ function StudentDashboard({
   useEffect(() => {
     const fetchModalDropdownData = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/categories`);
+        const token = getStudentSessionToken();
+        const response = await fetch(`${API_BASE_URL}/api/categories`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         if (!response.ok) return;
 
         const catData = await response.json();
@@ -1567,7 +1569,7 @@ function StudentDashboard({
     };
 
     fetchModalDropdownData();
-  }, []);
+  }, [getStudentSessionToken]);
 
   useEffect(() => {
     const fetchMarketplaceSettings = async () => {
@@ -1739,7 +1741,10 @@ function StudentDashboard({
 
     const fetchRecommendations = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`);
+        const token = getStudentSessionToken();
+        const response = await fetch(`${API_BASE_URL}/api/student/recommendations?student_id=${encodeURIComponent(studentId)}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
         if (!response.ok) throw new Error('Failed to load recommendations');
 
         const recommendationData = await response.json();
@@ -1747,14 +1752,12 @@ function StudentDashboard({
           ? recommendationData
           : recommendationData?.recommendations || recommendationData?.items || [];
         if (!cancelled) {
-          setRecommendedProducts(Array.isArray(recommendations) ? recommendations : []);
-          setRecommendationsFailed(false);
+          setRecommendedProducts(filterPublicProducts(recommendations, user));
           setRecommendationsStudentId(studentId);
         }
       } catch {
         if (!cancelled) {
           setRecommendedProducts([]);
-          setRecommendationsFailed(true);
           setRecommendationsStudentId(studentId);
         }
       }
@@ -1762,7 +1765,7 @@ function StudentDashboard({
 
     fetchRecommendations();
     return () => { cancelled = true; };
-  }, [studentId, recommendationsRetryKey]);
+  }, [studentId, getStudentSessionToken, user]);
 
   const loadSearchDefaults = useCallback(async () => {
     if (activeTab !== 'buyer' || buyerTab !== 'search') return;
@@ -4355,8 +4358,8 @@ function StudentDashboard({
             {activeTab === 'home' && (
               <div data-dashboard-view="home" className="min-w-0 space-y-6">
 
-                <div className="grid min-w-0 max-w-full gap-6 xl:grid-cols-[1.35fr_0.65fr]">
-                  {/* AI Recommendations */}
+                <div className={`grid min-w-0 max-w-full gap-6 ${recommendationsStudentId === studentId && recommendedProducts.length ? 'xl:grid-cols-[1.35fr_0.65fr]' : 'xl:grid-cols-1'}`}>
+                  {recommendationsStudentId === studentId && recommendedProducts.length > 0 && (
                   <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6 dark:border-slate-700 dark:bg-slate-900">
                     <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b pb-2">
                       <h3 className="min-w-0 break-words text-xl font-bold text-slate-900 dark:text-white">AI Recommendations</h3>
@@ -4364,8 +4367,7 @@ function StudentDashboard({
                     </div>
 
                     <div className="-mx-2 flex min-w-0 max-w-full snap-x snap-mandatory touch-pan-x gap-3 overflow-x-auto px-2 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mx-0 md:grid md:grid-cols-2 md:overflow-visible md:px-0 md:pb-0 lg:grid-cols-4">
-                      {recommendationsStudentId === studentId && recommendedProducts.length ? (
-                        recommendedProducts.map((item) => {
+                      {recommendedProducts.map((item) => {
                           const fallbackImage = getRecommendationPlaceholder(item.category);
                           const displayImage = getRecommendationImage(item.image) || fallbackImage;
 
@@ -4396,21 +4398,10 @@ function StudentDashboard({
                               </div>
                             </div>
                           );
-                        })
-                      ) : (
-                        <div className="w-full rounded-[24px] border border-slate-100 bg-slate-50 p-4 text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:col-span-2 lg:col-span-4">
-                          {recommendationsFailed && recommendationsStudentId === studentId ? (
-                            <>
-                              Recommendations are temporarily unavailable.{' '}
-                              <button type="button" onClick={() => setRecommendationsRetryKey((key) => key + 1)} className="font-semibold underline underline-offset-2">
-                                Try again
-                              </button>
-                            </>
-                          ) : 'No recommendations are available yet for your department.'}
-                        </div>
-                      )}
+                      })}
                     </div>
                   </div>
+                  )}
 
                   <div className="min-w-0 max-w-full space-y-6">
                     {/* Quick Actions */}

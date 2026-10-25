@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["SESSION_SECRET"] = "similar-products-test-secret"
@@ -101,14 +102,14 @@ class SimilarProductsTests(unittest.TestCase):
         self.db.flush()
         return product
 
-    def test_anonymous_request_uses_fallback_ladder_and_returns_public_fields(self):
+    def test_anonymous_request_returns_only_same_category_items_in_rank_order(self):
         farther_subcategory_match = self.add_product("Farther subcategory match", price="1200")
-        closest_subcategory_match = self.add_product("Closest subcategory match", price="900")
+        closest_subcategory_match = self.add_product("Closest subcategory match", price="990")
         same_seller_category_match = self.add_product(
             "Same seller category match",
             seller=self.seller.student_id,
             seller_id=self.seller.student_id,
-            price="1010",
+            price="1001",
             subcategory="Accessories",
         )
         out_of_range_category_match = self.add_product(
@@ -117,16 +118,8 @@ class SimilarProductsTests(unittest.TestCase):
             price="5000",
             subcategory="Accessories",
         )
-        newest_other_category = self.add_product(
-            "Newest other category",
-            category="Books",
-            created_at=datetime(2026, 1, 3),
-        )
-        older_other_category = self.add_product(
-            "Older other category",
-            category="Furniture",
-            created_at=datetime(2026, 1, 2),
-        )
+        self.add_product("Laptop", category="Laptops")
+        self.add_product("Monitor", category="Monitors")
         self.add_product("Hidden listing", status="Hidden")
         self.add_product("Sold listing", status="Sold", stock=0)
         self.add_product("Soft deleted listing", status="Deleted")
@@ -147,15 +140,82 @@ class SimilarProductsTests(unittest.TestCase):
                 farther_subcategory_match.id,
                 same_seller_category_match.id,
                 out_of_range_category_match.id,
-                newest_other_category.id,
-                older_other_category.id,
             ],
         )
         self.assertNotIn(self.current_product.id, returned_ids)
+        self.assertTrue(all(item["category"] == self.current_product.category for item in products))
         self.assertEqual(
             set(products[0]),
             {"id", "title", "price", "image", "category", "status"},
         )
+
+    def test_phone_and_electronics_products_never_cross_category_boundaries(self):
+        phone = self.add_product(
+            "Current phone",
+            category="Mobile Phones & Accessories",
+            subcategory="Phones",
+        )
+        mobile_accessory = self.add_product(
+            "Phone accessory",
+            category="Mobile Phones & Accessories",
+            subcategory="Accessories",
+        )
+        electronics_base_laptop = self.add_product(
+            "Laptop",
+            category="Electronics",
+            subcategory="Laptops",
+        )
+        electronics_monitor = self.add_product(
+            "Monitor",
+            category="Electronics",
+            subcategory="Monitors",
+        )
+        electronics_product = self.add_product(
+            "Current electronics item",
+            category="Electronics",
+            subcategory="Monitors",
+        )
+        electronics_laptop = self.add_product(
+            "Electronics laptop",
+            category="Electronics",
+            subcategory="Laptops",
+        )
+        self.db.commit()
+
+        phone_response = self.client.get(f"/api/products/{phone.id}/similar", headers={})
+        electronics_response = self.client.get(
+            f"/api/products/{electronics_product.id}/similar",
+            headers={},
+        )
+
+        self.assertEqual(phone_response.status_code, 200, phone_response.text)
+        self.assertEqual(
+            [item["id"] for item in phone_response.json()],
+            [mobile_accessory.id],
+        )
+        self.assertTrue(all(
+            item["category"] == "Mobile Phones & Accessories"
+            for item in phone_response.json()
+        ))
+        self.assertEqual(electronics_response.status_code, 200, electronics_response.text)
+        self.assertEqual(
+            [item["id"] for item in electronics_response.json()],
+            [
+                electronics_monitor.id,
+                electronics_laptop.id,
+                electronics_base_laptop.id,
+                self.current_product.id,
+            ],
+        )
+        self.assertNotIn(
+            electronics_product.id,
+            [item["id"] for item in electronics_response.json()],
+        )
+        self.assertNotIn(phone.id, [item["id"] for item in electronics_response.json()])
+        self.assertTrue(all(
+            item["category"] == "Electronics"
+            for item in electronics_response.json()
+        ))
 
     def test_returns_only_same_category_product_when_its_price_is_out_of_range(self):
         out_of_range_product = self.add_product(
@@ -173,18 +233,41 @@ class SimilarProductsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual([item["id"] for item in response.json()], [out_of_range_product.id])
 
+    def test_authenticated_owner_does_not_receive_own_similar_products(self):
+        own_similar_product = self.add_product(
+            "Another listing by the viewer",
+            seller=self.seller.student_id,
+            seller_id=self.seller.student_id,
+        )
+        public_similar_product = self.add_product("Other seller listing")
+        self.db.commit()
+
+        with patch.object(
+            main_module,
+            "_student_from_authorization",
+            return_value=self.seller,
+        ):
+            response = self.client.get(
+                f"/api/products/{self.current_product.id}/similar",
+                headers={"Authorization": "Bearer valid-test-token"},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        returned_ids = {item["id"] for item in response.json()}
+        self.assertNotIn(own_similar_product.id, returned_ids)
+        self.assertIn(public_similar_product.id, returned_ids)
+
     def test_excludes_hidden_sold_out_and_soft_deleted_products(self):
         hidden_product = self.add_product("Hidden listing", status="Hidden")
         sold_status_product = self.add_product("Sold listing", status="Sold", stock=0)
         sold_out_product = self.add_product("Sold out listing", stock=0)
         deleted_product = self.add_product("Soft deleted listing", status="Deleted")
-        active_product = self.add_product("Active fallback", category="Books")
         self.db.commit()
 
         response = self.client.get(f"/api/products/{self.current_product.id}/similar")
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual([item["id"] for item in response.json()], [active_product.id])
+        self.assertEqual(response.json(), [])
         excluded_ids = {
             self.current_product.id,
             hidden_product.id,

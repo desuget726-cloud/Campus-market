@@ -226,6 +226,9 @@ class SubCategory(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        Index("ix_products_seller_created_at_id", "seller_id", "created_at", "id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(150), nullable=False)
