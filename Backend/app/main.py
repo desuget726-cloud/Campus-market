@@ -231,12 +231,11 @@ origins = list(dict.fromkeys(origins))
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,        #  Uses origins list
-    allow_credentials=True,       #  Allow cookies/auth
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 @app.get("/health")
 def health_check():
@@ -8093,6 +8092,152 @@ def _public_marketplace_product_query(db: Session):
     return query
 
 
+def _get_similar_products(db: Session, product: Product) -> List[Product]:
+    current_price = _parse_price_to_etb(product.price)
+    candidates = db.query(Product).filter(
+        Product.id != product.id,
+        func.lower(func.trim(Product.status)) == "approved",
+        Product.stock > 0,
+    ).order_by(Product.created_at.desc(), Product.id.desc()).all()
+
+    results = []
+    seen_ids = set()
+
+    def add_candidates(products):
+        for candidate in products:
+            if candidate.id in seen_ids:
+                continue
+            results.append(candidate)
+            seen_ids.add(candidate.id)
+            if len(results) == 8:
+                return True
+        return False
+
+    same_category = [
+        candidate for candidate in candidates
+        if product.category and candidate.category == product.category
+    ]
+    if product.subcategory and current_price > 0:
+        price_min = current_price * 0.3
+        price_max = current_price * 3
+        same_subcategory = [
+            candidate for candidate in same_category
+            if candidate.subcategory == product.subcategory
+            and price_min <= _parse_price_to_etb(candidate.price) <= price_max
+        ]
+        same_subcategory.sort(
+            key=lambda candidate: abs(_parse_price_to_etb(candidate.price) - current_price)
+        )
+        if add_candidates(same_subcategory):
+            return results
+
+    if current_price > 0:
+        same_category.sort(
+            key=lambda candidate: abs(_parse_price_to_etb(candidate.price) - current_price)
+        )
+    if add_candidates(same_category):
+        return results
+
+    add_candidates(candidates)
+    return results
+
+
+def _similar_product_response(product: Product) -> Dict[str, Any]:
+    return {
+        "id": product.id,
+        "title": product.title,
+        "category": product.category,
+        "price": _parse_price_to_etb(product.price),
+        "image": _normalize_product_image(product.image),
+        "status": product.status,
+    }
+
+
+def _seller_typical_response_bucket(
+    db: Session,
+    seller_id: Optional[str],
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    if not seller_id:
+        return None
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    else:
+        current_time = current_time.astimezone(timezone.utc)
+    cutoff = current_time - timedelta(days=30)
+    recent_messages = db.query(Message.sender_id, Message.receiver_id).filter(
+        or_(
+            Message.sender_id == seller_id,
+            Message.receiver_id == seller_id,
+        ),
+        Message.created_at >= cutoff.replace(tzinfo=None),
+    ).all()
+    buyer_ids = {
+        message.receiver_id if message.sender_id == seller_id else message.sender_id
+        for message in recent_messages
+        if (message.receiver_id if message.sender_id == seller_id else message.sender_id) != seller_id
+    }
+    if not buyer_ids:
+        return None
+
+    conversation_messages = db.query(Message).filter(
+        or_(
+            (Message.sender_id == seller_id) & Message.receiver_id.in_(buyer_ids),
+            (Message.receiver_id == seller_id) & Message.sender_id.in_(buyer_ids),
+        )
+    ).order_by(Message.created_at.asc(), Message.id.asc()).all()
+    messages_by_buyer: Dict[str, List[Message]] = {}
+    for message in conversation_messages:
+        buyer_id = message.receiver_id if message.sender_id == seller_id else message.sender_id
+        messages_by_buyer.setdefault(buyer_id, []).append(message)
+
+    reply_times = []
+    for buyer_messages in messages_by_buyer.values():
+        first_message = buyer_messages[0]
+        if first_message.sender_id == seller_id:
+            continue
+
+        seller_reply = next(
+            (
+                message for message in buyer_messages[1:]
+                if message.sender_id == seller_id and message.receiver_id == first_message.sender_id
+            ),
+            None,
+        )
+        if not seller_reply or not first_message.created_at or not seller_reply.created_at:
+            continue
+
+        reply_time = seller_reply.created_at
+        if reply_time.tzinfo is None:
+            reply_time = reply_time.replace(tzinfo=timezone.utc)
+        if reply_time < cutoff:
+            continue
+
+        elapsed_hours = (seller_reply.created_at - first_message.created_at).total_seconds() / 3600
+        if elapsed_hours >= 0:
+            reply_times.append(elapsed_hours)
+
+    if len(reply_times) < 3:
+        return None
+
+    reply_times.sort()
+    middle = len(reply_times) // 2
+    median_hours = (
+        reply_times[middle]
+        if len(reply_times) % 2
+        else (reply_times[middle - 1] + reply_times[middle]) / 2
+    )
+    if median_hours < 1:
+        return "responseUnderHour"
+    if median_hours <= 6:
+        return "responseWithinFewHours"
+    if median_hours <= 24:
+        return "responseWithinDay"
+    return "responseWithinFewDays"
+
+
 PRODUCT_OWNERSHIP_ERROR = "You cannot buy or save your own product."
 
 
@@ -8261,6 +8406,23 @@ def get_products(
         raise HTTPException(status_code=500, detail="Could not fetch products.") from error
 
 
+@app.get("/api/products/{product_id}/similar")
+def get_similar_products(
+    product_id: int,
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    try:
+        return [_similar_product_response(candidate) for candidate in _get_similar_products(db, product)]
+    except SQLAlchemyError as error:
+        db.rollback()
+        logger.exception("Failed to fetch similar products: %s", error)
+        raise HTTPException(status_code=500, detail="Could not fetch similar products.") from error
+
+
 @app.get("/api/products/{product_id}")
 def get_product_detail(
     product_id: int,
@@ -8370,10 +8532,12 @@ def get_product_detail(
         for index, image_url in enumerate(image_values) if image_url
     ]
 
-    excluded_seller_values = {value for value in (seller_id, seller.name if seller else None, viewer.student_id if viewer else None) if value}
-    similar_products = []
-    current_price = _parse_price_to_etb(product.price)
     if is_owner:
+        excluded_seller_values = {
+            value
+            for value in (seller_id, seller.name if seller else None, viewer.student_id if viewer else None)
+            if value
+        }
         similar_query = _public_marketplace_product_query(db).filter(Product.id != product.id)
         if product.category:
             similar_query = similar_query.filter(Product.category == product.category)
@@ -8382,20 +8546,8 @@ def get_product_detail(
         if excluded_seller_values:
             similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
         similar_products = similar_query.order_by(Product.created_at.desc()).limit(8).all()
-    elif product.category and current_price > 0:
-        similar_query = db.query(Product).filter(
-            Product.id != product.id,
-            Product.category == product.category,
-            func.lower(Product.status) == "approved",
-            Product.stock > 0,
-        )
-        if excluded_seller_values:
-            similar_query = similar_query.filter(~Product.seller.in_(excluded_seller_values))
-        similar_products = [
-            candidate
-            for candidate in similar_query.order_by(Product.created_at.desc()).all()
-            if current_price * 0.3 <= _parse_price_to_etb(candidate.price) <= current_price * 3
-        ][:8]
+    else:
+        similar_products = _get_similar_products(db, product)
 
     seller_values = {value for value in (seller_id, seller.name if seller else None) if value}
     more_from_seller = []
@@ -8423,27 +8575,7 @@ def get_product_detail(
             if seller_reply and message.created_at and seller_reply.created_at:
                 response_hours.append((seller_reply.created_at - message.created_at).total_seconds() / 3600)
 
-        seller_response_hours = []
-        pending_buyer_messages = {}
-        for message in messages:
-            if message.receiver_id == seller_id and message.sender_id != seller_id:
-                pending_buyer_messages.setdefault(message.sender_id, message)
-            elif message.sender_id == seller_id:
-                buyer_message = pending_buyer_messages.pop(message.receiver_id, None)
-                if buyer_message and buyer_message.created_at and message.created_at:
-                    seller_response_hours.append((message.created_at - buyer_message.created_at).total_seconds() / 3600)
-        seller_response_hours.sort()
-    else:
-        seller_response_hours = []
-    if seller_response_hours:
-        middle = len(seller_response_hours) // 2
-        typical_response_hours = (
-            seller_response_hours[middle]
-            if len(seller_response_hours) % 2
-            else (seller_response_hours[middle - 1] + seller_response_hours[middle]) / 2
-        )
-    else:
-        typical_response_hours = None
+    typical_response_bucket = _seller_typical_response_bucket(db, seller_id)
 
     db.commit()
 
@@ -8476,7 +8608,7 @@ def get_product_detail(
         "seller_member_since": seller_member_since,
         "views": int(product.views or 0),
         "similar_products": [
-            {
+            ({
                 "id": similar.id,
                 "title": similar.title,
                 "category": similar.category,
@@ -8485,7 +8617,7 @@ def get_product_detail(
                 "image": _normalize_product_image(similar.image),
                 "description": similar.description,
                 "pickup_location": similar.pickup_location,
-            }
+            } if is_owner else _similar_product_response(similar))
             for similar in similar_products
         ],
         "more_from_seller": [
@@ -8499,7 +8631,7 @@ def get_product_detail(
             for other in more_from_seller
         ],
         "seller_response_time_hours": round(sum(response_hours) / len(response_hours), 1) if response_hours else None,
-        "seller_typical_response_time_hours": round(typical_response_hours, 1) if typical_response_hours is not None else None,
+        "seller_typical_response_bucket": typical_response_bucket,
     }
     if authenticated_student:
         result["seller_phone"] = seller.phone if seller else None
@@ -15230,7 +15362,7 @@ def _analytics_local_now():
 @app.get("/api/admin/analytics/sales-trend")
 def get_admin_sales_trend(
     months: int = Query(6, ge=1, le=12),
-    period: Optional[str] = Query(None, alias="range", regex="^(7d|30d|year)$"),
+    period: Optional[str] = Query(None, alias="range", pattern="^(7d|30d|year)$"),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ):
@@ -17580,3 +17712,13 @@ def delete_subcategory(id: int, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete subcategory: {str(e)}")
+
+
+# Wrap the complete FastAPI middleware stack so CORS also applies to unhandled errors.
+app.middleware_stack = CORSMiddleware(
+    app.build_middleware_stack(),
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

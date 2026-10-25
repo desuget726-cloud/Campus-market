@@ -2,7 +2,7 @@ import toast from 'react-hot-toast';
 
 const fallbackError = 'Something went wrong. Please try again.';
 
-const getErrorMessage = (error) => typeof error === 'string'
+export const getErrorMessage = (error) => typeof error === 'string'
     ? error
     : error?.detail || error?.message || fallbackError;
 

@@ -3,6 +3,8 @@ import toast from 'react-hot-toast';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
+import SimilarProductsSection from './SimilarProductsSection';
+import ProductPurchaseActions from '../ProductPurchaseActions';
 import {
   buildProductReturnTo,
   restorePendingProductAction,
@@ -872,7 +874,6 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const similarProducts = Array.isArray(item?.similar_products) ? item.similar_products : [];
   const moreFromSeller = Array.isArray(item?.more_from_seller) ? item.more_from_seller.slice(0, 4) : [];
   const responseTimeHours = Number(item?.seller_response_time_hours);
-  const sellerTypicalResponseTimeHours = Number(item?.seller_typical_response_time_hours);
   const sellerReviewCount = Number(item?.seller_review_count || 0);
   const sellerAverageRating = Number(item?.seller_average_rating || 0);
   const viewCount = Number(item?.views ?? item?.stats?.views ?? 0);
@@ -883,11 +884,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const sellerMemberSince = item?.seller_member_since
     ? new Date(item.seller_member_since).toLocaleDateString(language === 'am' ? 'am-ET' : 'en-ET', { year: 'numeric', month: 'long' })
     : '';
-  const typicalResponseTime = Number.isFinite(sellerTypicalResponseTimeHours) && sellerTypicalResponseTimeHours > 0
-    ? sellerTypicalResponseTimeHours < 1
-      ? t('productDetails.buyer.responseUnderHour')
-      : `${Math.round(sellerTypicalResponseTimeHours)} ${t('productDetails.buyer.responseHours')}`
-    : t('productDetails.buyer.responseUnavailable');
+  const sellerTypicalResponseBucket = item?.seller_typical_response_bucket;
   const isNegotiable = item?.negotiable === true;
   const pickupHours = item?.pickup_hours;
   const additionalSpecifications = [
@@ -946,7 +943,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                 {isOwner && <span className="mt-2 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-800">{t('productDetails.owner.badge')}</span>}
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {showBuyerView && <button type="button" onClick={handleToggleWishlist} disabled={isReadOnlyPreview} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-2xl ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500 disabled:opacity-50`}>{isWishlisted ? '♥' : '♡'}</button>}
+                {showBuyerView && !isOwner && <button type="button" onClick={handleToggleWishlist} aria-label={isWishlisted ? 'Remove from wishlist' : 'Add to wishlist'} className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-2xl ${isWishlisted ? 'text-rose-500' : 'text-slate-500'} hover:text-rose-500`}>{isWishlisted ? '♥' : '♡'}</button>}
                 <div className="relative">
                   <button type="button" onClick={() => setShowShareMenu((previous) => !previous)} className="rounded-full border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">↗ Share</button>
                   {showShareMenu && <div className="absolute right-0 z-20 mt-2 w-48 rounded-2xl border border-slate-200 bg-white p-2 text-left shadow-xl"><button type="button" onClick={() => handleShare('copy')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Copy Link</button><button type="button" onClick={() => handleShare('telegram')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Share to Telegram</button><button type="button" onClick={() => handleShare('whatsapp')} className="block w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Share to WhatsApp</button></div>}
@@ -1018,7 +1015,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             )}
           </section>
 
-          {similarProducts.length > 0 && (
+          {isOwner && similarProducts.length > 0 && (
             <section className="order-7 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5 lg:order-none" aria-labelledby="similar-products-heading">
               <h2 id="similar-products-heading" className="text-xl font-black text-slate-900">{t('productDetails.buyer.similarProducts')}</h2>
               <div className="mt-4 grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
@@ -1034,6 +1031,12 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                 ))}
               </div>
             </section>
+          )}
+          {showBuyerView && !isOwner && (
+            <SimilarProductsSection
+              productId={item?.id || product?.id}
+              onNavigate={onNavigate}
+            />
           )}
         </div>
 
@@ -1051,32 +1054,24 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             {showBuyerView && <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>}
             {showBuyerView && itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
             {showBuyerView && availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
-            {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
-              <button
-                type="button"
-                onClick={openPayModal}
-                disabled={isReadOnlyPreview || availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating}
-                className="mt-5 w-full rounded-full bg-emerald-600 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Pay with wallet
-              </button>
+            {showBuyerView && (
+              <ProductPurchaseActions
+                isOwner={isOwner}
+                isSoldOut={availableStock === 0}
+                isInCart={isInCart}
+                cartReady={!buyerStudentId || cartLoaded}
+                cartError={Boolean(buyerStudentId && cartError)}
+                isAddingToCart={cartAdding}
+                addDisabled={isReadOnlyPreview || purchaseBlocked}
+                payDisabled={isReadOnlyPreview || availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating}
+                onAddToCart={handleAddToCart}
+                onPay={openPayModal}
+                className="mt-5 grid grid-cols-1 gap-2"
+                addButtonClassName="btn-primary w-full rounded-full py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+                payButtonClassName="w-full rounded-full bg-emerald-600 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                statusClassName="rounded-2xl border px-3 py-2 text-center text-xs font-bold"
+              />
             )}
-            {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
-              <button
-                type="button"
-                onClick={handleAddToCart}
-                disabled={isReadOnlyPreview || purchaseBlocked || cartAdding}
-                className="btn-primary mt-5 w-full rounded-full py-3.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {cartAdding ? 'Adding...' : 'Add to Cart'}
-              </button>
-            )}
-            {showBuyerView && buyerStudentId && cartLoading && !cartLoaded && (
-              <button type="button" disabled className="mt-5 w-full rounded-full bg-slate-200 py-3.5 text-sm font-semibold text-slate-500">
-                Checking cart...
-              </button>
-            )}
-            {showBuyerView && buyerStudentId && cartError && <p className="mt-3 text-sm text-rose-700">Unable to verify your cart. Please refresh and try again.</p>}
             {showBuyerView && cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
           </section>
 
@@ -1164,10 +1159,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   <dt className="font-semibold text-slate-500">{t('productDetails.buyer.memberSince')}</dt>
                   <dd className="mt-1 font-black text-slate-900">{sellerMemberSince}</dd>
                 </div>}
-                <div className="rounded-xl bg-slate-50 p-3">
+                {sellerTypicalResponseBucket && <div className="rounded-xl bg-slate-50 p-3">
                   <dt className="font-semibold text-slate-500">{t('productDetails.buyer.responseTime')}</dt>
-                  <dd className="mt-1 font-black text-slate-900">{typicalResponseTime}</dd>
-                </div>
+                  <dd className="mt-1 font-black text-slate-900">{t(`productDetails.buyer.${sellerTypicalResponseBucket}`)}</dd>
+                </div>}
               </dl>
             ) : (
               <>
@@ -1302,13 +1297,24 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <p className="text-xs font-semibold text-slate-500">Price</p>
             <p className="truncate text-lg font-extrabold text-slate-900">{formattedPrice}</p>
           </div>
-          {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && isInCart && (
-            <button type="button" onClick={openPayModal} disabled={isReadOnlyPreview || availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating} className="shrink-0 rounded-full bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">Pay with wallet</button>
+          {showBuyerView && (
+            <ProductPurchaseActions
+              isOwner={isOwner}
+              isSoldOut={availableStock === 0}
+              isInCart={isInCart}
+              cartReady={!buyerStudentId || cartLoaded}
+              cartError={Boolean(buyerStudentId && cartError)}
+              isAddingToCart={cartAdding}
+              addDisabled={isReadOnlyPreview || purchaseBlocked}
+              payDisabled={isReadOnlyPreview || availableStock === 0 || selectedQuantity > availableStock || cartQuantityUpdating}
+              onAddToCart={handleAddToCart}
+              onPay={openPayModal}
+              className="shrink-0"
+              addButtonClassName="btn-primary shrink-0 rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+              payButtonClassName="shrink-0 rounded-full bg-emerald-600 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              statusClassName="inline-flex rounded-full border px-3 py-1 text-xs font-bold"
+            />
           )}
-          {showBuyerView && (!buyerStudentId || (!cartError && cartLoaded)) && !isInCart && (
-            <button type="button" onClick={handleAddToCart} disabled={isReadOnlyPreview || purchaseBlocked || cartAdding} className="btn-primary shrink-0 rounded-full px-5 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50">{cartAdding ? 'Adding...' : 'Add to Cart'}</button>
-          )}
-          {showBuyerView && buyerStudentId && cartLoading && !cartLoaded && <button type="button" disabled className="shrink-0 rounded-full bg-slate-200 px-5 py-3 text-sm font-semibold text-slate-500">Checking cart...</button>}
         </div>
         {cartStatus && <p className="mx-auto mt-1 w-full max-w-7xl px-1 text-xs text-blue-700">{cartStatus}</p>}
       </div>}

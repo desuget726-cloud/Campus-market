@@ -10,6 +10,7 @@ import SellerOperationsCenter from './SellerOperationsCenter';
 import OrderDetailsView from './OrderDetailsView';
 import NotificationCenter from './NotificationCenter';
 import SettingsCenter from './SettingsCenter';
+import BuyerHubProductCard from './BuyerHubProductCard';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl, WS_BASE_URL } from '../../config';
 import { getAdminSettings } from '../../api/adminSettings';
 import { isOrderRefunded } from '../../utils/orderReceiptState';
@@ -402,9 +403,17 @@ function StudentDashboard({
 
   // የገዢው ዳሽቦርድ መረጃዎችን ከዳታቤዝ ለመጥራት የተዘጋጁ ስቴቶች (Buyer States)
   const [wishlist, setWishlist] = useState([]);
-  const { items: cart, setItems: setCart } = useCart();
+  const {
+    items: cart,
+    setItems: setCart,
+    loadedStudentId: cartStudentId,
+    loading: cartLoading,
+    error: cartError,
+  } = useCart();
   const [wishlistBadgeCount, setWishlistBadgeCount] = useState(0);
   const [cartBadgeCount, setCartBadgeCount] = useState(0);
+  const [addingCartProductIds, setAddingCartProductIds] = useState([]);
+  const cartAddInFlightRef = useRef(new Set());
   const [orders, setOrders] = useState([]);
   const [showHiddenOrders, setShowHiddenOrders] = useState(false);
   const [hiddenOrdersCount, setHiddenOrdersCount] = useState(0);
@@ -2214,14 +2223,20 @@ function StudentDashboard({
       return;
     }
 
+    const productKey = String(safePayload.product_id);
+    if (cartAddInFlightRef.current.has(productKey)) return;
+    if (cart.some((item) => String(item.product_id) === productKey)) return;
+
     const selectedProduct = searchResults.find((item) => String(item.id) === String(safePayload.product_id));
     const availableStock = Number(selectedProduct?.stock);
-    const existingCartQuantity = Number(cart.find((item) => String(item.product_id) === String(safePayload.product_id))?.quantity || 0);
+    const existingCartQuantity = Number(cart.find((item) => String(item.product_id) === productKey)?.quantity || 0);
     if (Number.isFinite(availableStock) && availableStock <= existingCartQuantity) {
       setCartMessage(`Only ${availableStock} available. Your cart already has ${existingCartQuantity}.`);
       return;
     }
 
+    cartAddInFlightRef.current.add(productKey);
+    setAddingCartProductIds((previous) => [...previous, productKey]);
     try {
       const res = await fetch(`${API_BASE_URL}/api/student/cart`, {
         method: 'POST',
@@ -2238,10 +2253,22 @@ function StudentDashboard({
         const nextWishlistCount = Number(data.wishlist_count ?? data.wishlist_item_count ?? wishlistCount);
         setCartBadgeCount(Number.isFinite(nextCartCount) ? nextCartCount : cartItemCount + 1);
         setWishlistBadgeCount(Number.isFinite(nextWishlistCount) ? nextWishlistCount : wishlistCount);
-        await fetchBuyerDashboardData();
+        if (data.moved_from_wishlist) {
+          setWishlist((previous) => previous.filter(
+            (item) => String(item.product_id ?? item.id) !== productKey,
+          ));
+        }
+        setCart((previous) => [
+          ...previous.filter((item) => String(item.product_id) !== productKey),
+          {
+            ...selectedProduct,
+            ...data.item,
+            product_id: data.item?.product_id ?? safePayload.product_id,
+            quantity: data.item?.quantity ?? 1,
+          },
+        ]);
         setCartMessage('Added to cart.');
         notifySuccess(studentToast('cartAdded'), `student-cart-add-${safePayload.product_id}`);
-        setBuyerTab('cart');
       } else {
         const message = translateProductOwnershipError(await getErrorString(res));
         setCartMessage(message);
@@ -2251,6 +2278,9 @@ function StudentDashboard({
       console.error('Error adding to cart:', err);
       setCartMessage('Connection error. Please try again.');
       notifyError(err, `student-cart-add-${safePayload.product_id}`);
+    } finally {
+      cartAddInFlightRef.current.delete(productKey);
+      setAddingCartProductIds((previous) => previous.filter((id) => id !== productKey));
     }
   };
 
@@ -4626,89 +4656,42 @@ function StudentDashboard({
                       ) : (
                         <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
                           {searchResults.map((item) => {
-                            const isInWishlist = wishlist.some((wishlistItem) => String(wishlistItem.product_id) === String(item.id));
-                            const isOwnProduct = String(user?.studentId || user?.student_id || '').trim().toLowerCase() === String(item.seller_id || item.seller || '').trim().toLowerCase();
+                            const productId = String(item.id);
+                            const buyerStudentId = String(user?.studentId || user?.student_id || '').trim();
+                            const isInWishlist = wishlist.some(
+                              (wishlistItem) => String(wishlistItem.product_id ?? wishlistItem.id) === productId,
+                            );
+                            const isOwnProduct = Boolean(
+                              buyerStudentId
+                              && buyerStudentId.toLowerCase()
+                                === String(item.seller_id || item.seller || '').trim().toLowerCase(),
+                            );
                             const isOutOfStock = Number.isFinite(Number(item.stock)) && Number(item.stock) <= 0;
-                            const purchaseBlocked = isOwnProduct || isOutOfStock;
-                            const fallbackImage = 'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80';
-                            const backendOrigin = `${API_BASE_URL}`;
-                            let displayImage = fallbackImage;
-                            const imageValue = typeof item.image === 'string' ? item.image.trim() : '';
-                            let imageSource = imageValue;
-
-                            if (imageValue) {
-                              if (imageValue.startsWith('[') && imageValue.endsWith(']')) {
-                                try {
-                                  const parsedImages = JSON.parse(imageValue);
-                                  if (Array.isArray(parsedImages) && parsedImages.length > 0) {
-                                    imageSource = String(parsedImages[0]).trim();
-                                  } else {
-                                    imageSource = '';
-                                  }
-                                } catch {
-                                  imageSource = '';
-                                }
-                              }
-
-                              if (imageSource) {
-                                displayImage = imageSource.startsWith('http')
-                                  ? imageSource
-                                  : `${backendOrigin}${imageSource.startsWith('/') ? '' : '/'}${imageSource}`;
-                              }
-                            }
+                            const isInCart = cart.some((cartItem) => String(cartItem.product_id) === productId);
+                            const cartReady = !buyerStudentId || (
+                              cartStudentId === buyerStudentId && !cartLoading && !cartError
+                            );
 
                             return (
-                              <div key={item.id} onClick={() => handleViewProductFromChat(item.id)} onKeyDown={(event) => handleProductCardKeyDown(event, item.id)} role="button" tabIndex={0} className="flex w-full min-w-0 cursor-pointer flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
-                                <div className="flex min-w-0 flex-col gap-3">
-                                  <img
-                                    src={resolveImageUrl(displayImage)}
-                                    alt={item.title}
-                                    onError={(e) => {
-                                      e.currentTarget.onerror = null;
-                                      e.currentTarget.src = fallbackImage;
-                                    }}
-                                    className="aspect-square h-auto w-full max-w-full rounded-2xl object-cover"
-                                  />
-                                  <div className="min-w-0">
-                                    <p className="max-w-full truncate text-[10px] uppercase tracking-[0.16em] text-slate-400 dark:text-slate-400">{item.category} / {item.subcategory || 'General'}</p>
-                                    <h4 className="mt-2 line-clamp-2 break-words text-sm font-semibold text-slate-900 dark:text-white">{item.title}</h4>
-                                    <p className="mt-1 line-clamp-2 text-xs text-slate-500 dark:text-slate-300">{item.description || item.summary || 'No description available.'}</p>
-                                    <p className="mt-2 text-sm font-bold text-slate-900 dark:text-white">{formatETB(normalizePrice(item.price))}</p>
-                                  </div>
-                                </div>
-                                <div className="mt-auto flex min-w-0 flex-col gap-2">
-                                  {isOwnProduct ? (
-                                    <div className="grid grid-cols-1 gap-2">
-                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleViewProductFromChat(item.id); }} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">View</button>
-                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleEditProduct(item); }} className="w-full rounded-full border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">Edit</button>
-                                      <button type="button" onClick={(event) => { event.stopPropagation(); handleDeleteProduct(item); }} className="w-full rounded-full border border-rose-200 bg-white px-3 py-2 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">Delete</button>
-                                    </div>
-                                  ) : (
-                                    <>
-                                      {isOutOfStock ? (
-                                        <span className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700">Out of Stock</span>
-                                      ) : null}
-                                      <div className="grid grid-cols-1 gap-2">
-                                        {!isOutOfStock && canPayProductFromChat(item) && (
-                                          <button
-                                            type="button"
-                                            onClick={(event) => { event.stopPropagation(); handlePayProductFromChat(item.id); }}
-                                            className="w-full rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
-                                          >
-                                            Pay with wallet
-                                          </button>
-                                        )}
-                                        {!isOutOfStock && <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToCartFromSearch(item.id); }} disabled={purchaseBlocked} className="btn-primary w-full rounded-full px-3 py-2 text-xs font-semibold shadow-sm transition">Add to Cart</button>}
-                                        {isInWishlist ? (
-                                          <button type="button" onClick={(event) => event.stopPropagation()} disabled className="w-full rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400 cursor-not-allowed transition">♥ In Wishlist</button>
-                                        ) : (
-                                          <button type="button" onClick={(event) => { event.stopPropagation(); handleAddToWishlist(item.id); }} className="w-full rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">♡ Add to Wishlist</button>
-                                        )}
-                                      </div>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
+                              <BuyerHubProductCard
+                                key={item.id}
+                                item={item}
+                                priceLabel={formatETB(normalizePrice(item.price))}
+                                isOwnProduct={isOwnProduct}
+                                isOutOfStock={isOutOfStock}
+                                isInCart={isInCart}
+                                isInWishlist={isInWishlist}
+                                cartReady={cartReady}
+                                cartError={Boolean(buyerStudentId && cartError)}
+                                isAddingToCart={addingCartProductIds.includes(productId)}
+                                onViewProduct={() => handleViewProductFromChat(item.id)}
+                                onKeyDown={(event) => handleProductCardKeyDown(event, item.id)}
+                                onAddToCart={() => handleAddToCartFromSearch(item.id)}
+                                onPay={() => handlePayProductFromChat(item.id)}
+                                onAddToWishlist={() => handleAddToWishlist(item.id)}
+                                onEdit={() => handleEditProduct(item)}
+                                onDelete={() => handleDeleteProduct(item)}
+                              />
                             );
                           })}
                         </div>

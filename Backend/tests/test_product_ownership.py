@@ -7,6 +7,7 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["SESSION_SECRET"] = "product-ownership-test-secret"
 
 from fastapi import HTTPException, Request, Response
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -205,6 +206,58 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertNotIn("seller_phone", anonymous_detail)
         self.assertEqual(authenticated_detail["seller_phone"], "0912345678")
 
+    def test_anonymous_product_detail_endpoint_returns_public_fields(self):
+        self.buyer.phone = "0912345678"
+        self.db.commit()
+        previous_override = main_module.app.dependency_overrides.get(main_module.get_db)
+
+        def override_get_db():
+            yield self.db
+
+        main_module.app.dependency_overrides[main_module.get_db] = override_get_db
+        try:
+            with TestClient(main_module.app) as client:
+                response = client.get(
+                    f"/api/products/{self.buyers_product.id}",
+                    headers={"Origin": "http://localhost:5173"},
+                )
+        finally:
+            if previous_override is None:
+                main_module.app.dependency_overrides.pop(main_module.get_db, None)
+            else:
+                main_module.app.dependency_overrides[main_module.get_db] = previous_override
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:5173")
+        detail = response.json()
+        self.assertFalse(detail["is_owner"])
+        self.assertNotIn("seller_phone", detail)
+        self.assertNotIn("0912345678", response.text)
+        self.assertNotIn("stats", detail)
+
+    def test_unhandled_errors_are_logged_and_include_cors_headers(self):
+        previous_override = main_module.app.dependency_overrides.get(main_module.get_db)
+
+        def failing_get_db():
+            raise RuntimeError("intentional unhandled test exception")
+
+        main_module.app.dependency_overrides[main_module.get_db] = failing_get_db
+        try:
+            with self.assertLogs(level="ERROR"):
+                with TestClient(main_module.app, raise_server_exceptions=False) as client:
+                    response = client.get(
+                        f"/api/products/{self.buyers_product.id}",
+                        headers={"Origin": "http://localhost:5173"},
+                    )
+        finally:
+            if previous_override is None:
+                main_module.app.dependency_overrides.pop(main_module.get_db, None)
+            else:
+                main_module.app.dependency_overrides[main_module.get_db] = previous_override
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:5173")
+
     def test_product_views_exclude_owner_and_dedupe_authenticated_viewer_per_day(self):
         self.buyers_product.views = 4
         self.db.commit()
@@ -235,7 +288,7 @@ class ProductOwnershipTests(unittest.TestCase):
             2,
         )
 
-    def test_similar_products_match_category_price_and_active_stock(self):
+    def test_similar_products_use_fallbacks_and_active_stock(self):
         products = [
             self.add_product("another-seller", "Within lower bound", price="3.00"),
             self.add_product("another-seller", "Within upper bound", price="30.00"),
@@ -251,9 +304,13 @@ class ProductOwnershipTests(unittest.TestCase):
         similar_ids = {item["id"] for item in detail["similar_products"]}
 
         self.assertEqual(similar_ids, {
+            self.legacy_name_product.id,
             self.sellers_product.id,
             products[0].id,
             products[1].id,
+            products[2].id,
+            products[3].id,
+            products[6].id,
         })
 
     def test_seller_trust_data_is_computed_across_completed_sales_and_messages(self):
@@ -300,7 +357,7 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertEqual(detail["seller_review_count"], 2)
         self.assertEqual(detail["seller_items_sold"], 5)
         self.assertEqual(detail["seller_member_since"], self.buyer.created_at)
-        self.assertEqual(detail["seller_typical_response_time_hours"], 0.5)
+        self.assertIsNone(detail["seller_typical_response_bucket"])
 
     def test_more_from_seller_is_limited_to_four_active_other_products(self):
         listings = [
