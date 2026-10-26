@@ -26,7 +26,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Form, UploadFile, F
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError, field_validator
 from sqlalchemy import Numeric as SQLNumeric, String, and_, case, cast as sql_cast, event, extract, func, inspect, or_, text
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError, OperationalError
@@ -91,7 +91,7 @@ from .models import (
     Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, MessageBlock, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
 )
 from .database import get_db, init_db, SessionLocal, Base, engine
 from .config import get_dispute_window_hours, get_pay_lock_minutes, get_pay_max_failed_attempts
@@ -1838,9 +1838,22 @@ class ReportReviewRequest(BaseModel):
 
 
 class ReportDecisionRequest(BaseModel):
-    decision: Literal["Warning", "Remove Product", "Suspend User", "Refund", "Reject"]
-    reason: str = Field(min_length=10, max_length=2000)
-    refund_amount: Optional[Decimal] = Field(default=None, gt=0)
+    decision: str
+    reason: str = Field(min_length=10, max_length=1000)
+
+    @field_validator("decision")
+    @classmethod
+    def normalize_decision(cls, value: str) -> str:
+        normalized = _normalize_report_decision(value)
+        if normalized in {"dismiss", "warn", "hide_product", "suspend", "deactivate", "escalate"}:
+            return normalized
+        raise ValueError("Unsupported report decision.")
+
+
+class ReportLinkRequest(BaseModel):
+    seller_id: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    product_id: Optional[int] = Field(default=None, gt=0)
+    order_id: Optional[int] = Field(default=None, gt=0)
 
 
 class ReportAppealRequest(BaseModel):
@@ -14586,16 +14599,30 @@ def _queue_student_item_notification(
     critical: bool = False,
 ) -> Optional[int]:
     if student.notif_msg_inapp or critical:
-        db.add(Notification(
-            student_id=student.student_id,
-            title=title,
-            message=message[:500],
-            type=item_type,
-            reference_id=str(item_id),
-            action_label="View in UniXchange",
-            action_url=action_url,
-            is_read=False,
-        ))
+        reference_id = str(item_id)
+        notification = db.query(Notification).filter(
+            Notification.student_id == student.student_id,
+            Notification.type == item_type,
+            Notification.reference_id == reference_id,
+        ).with_for_update().first()
+        if notification:
+            notification.title = title
+            notification.message = message[:500]
+            notification.action_label = "View in UniXchange"
+            notification.action_url = action_url
+            notification.is_read = False
+            notification.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            db.add(Notification(
+                student_id=student.student_id,
+                title=title,
+                message=message[:500],
+                type=item_type,
+                reference_id=reference_id,
+                action_label="View in UniXchange",
+                action_url=action_url,
+                is_read=False,
+            ))
     if email_subject and email_summary is not None and email_status is not None:
         return _queue_communication_email(
             db,
@@ -19194,6 +19221,37 @@ async def simulate_chapa_webhook(
 
 
 # 17. Admin-only report review and resolution workflow.
+REPORT_DECISION_OPTIONS = (
+    {"key": "dismiss", "label": "Dismiss, no violation found"},
+    {"key": "warn", "label": "Warn seller"},
+    {"key": "hide_product", "label": "Hide product"},
+    {"key": "suspend", "label": "Suspend seller"},
+    {"key": "deactivate", "label": "Deactivate seller"},
+    {"key": "escalate", "label": "Escalate / request more info"},
+)
+LEGACY_REPORT_DECISIONS = {
+    "warning": "warn",
+    "remove product": "hide_product",
+    "suspend user": "suspend",
+    "reject": "dismiss",
+}
+try:
+    REPORT_ABUSE_THRESHOLD = max(1, int(os.getenv("REPORT_ABUSE_THRESHOLD", "5")))
+except ValueError:
+    REPORT_ABUSE_THRESHOLD = 5
+try:
+    WARNINGS_BEFORE_SUSPEND = max(1, int(os.getenv("WARNINGS_BEFORE_SUSPEND", "3")))
+except ValueError:
+    WARNINGS_BEFORE_SUSPEND = 3
+
+
+def _normalize_report_decision(decision: Optional[str]) -> Optional[str]:
+    if decision is None:
+        return None
+    normalized = decision.strip().lower()
+    return LEGACY_REPORT_DECISIONS.get(normalized, normalized)
+
+
 def _require_report_admin(authorization: Optional[str], db: Session) -> Admin:
     token = _extract_admin_token(authorization, None)
     try:
@@ -19244,6 +19302,7 @@ def _report_payment_transaction(db: Session, order: Order) -> Optional[Transacti
 def _report_payload(db: Session, report: Report) -> dict:
     product, order = _report_product_and_order(db, report)
     reviewer = db.query(Admin).filter(Admin.id == report.reviewed_by).first() if report.reviewed_by else None
+    resolver = db.query(Admin).filter(Admin.id == report.resolved_by).first() if report.resolved_by else None
     return {
         "id": report.id,
         "report_id": f"RPT-{report.id:04d}",
@@ -19267,12 +19326,14 @@ def _report_payload(db: Session, report: Report) -> dict:
         "status": report.status,
         "date": report.created_at.isoformat() if report.created_at else None,
         "priority": report.priority,
-        "decision": report.decision,
+        "decision": _normalize_report_decision(report.decision),
         "decision_reason": report.decision_reason,
         "reviewed_by": report.reviewed_by,
         "reviewed_by_name": reviewer.full_name or reviewer.username if reviewer else None,
         "reviewed_at": report.reviewed_at.isoformat() if report.reviewed_at else None,
         "resolved_at": report.resolved_at.isoformat() if report.resolved_at else None,
+        "resolved_by": report.resolved_by,
+        "resolved_by_name": resolver.full_name or resolver.username if resolver else None,
         "seller_response": report.seller_response,
         "seller_response_image": report.seller_response_image,
         "seller_response_at": report.seller_response_at.isoformat() if report.seller_response_at else None,
@@ -19369,7 +19430,7 @@ def _student_report_payload(db: Session, report: Report) -> dict:
         "issue": report.issue,
         "category": report.category,
         "status": report.status,
-        "decision": report.decision,
+        "decision": _normalize_report_decision(report.decision),
         "decision_reason": report.decision_reason,
         "date": report.created_at.isoformat() if report.created_at else None,
         "updated_at": (
@@ -19595,6 +19656,167 @@ def get_report_conversation_logs(
     }
 
 
+@app.get("/api/admin/reports/decisions")
+def get_report_decisions(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    _require_report_admin(authorization, db)
+    return list(REPORT_DECISION_OPTIONS)
+
+
+@app.get("/api/admin/reports/link-options")
+def get_report_link_options(
+    q: str = Query(..., min_length=2, max_length=100),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    _require_report_admin(authorization, db)
+    search = q.strip()
+    if len(search) < 2:
+        return {"sellers": [], "products": [], "orders": []}
+    pattern = f"%{search}%"
+    sellers = db.query(Student).filter(
+        or_(Student.name.ilike(pattern), Student.student_id.ilike(pattern)),
+    ).order_by(Student.name.asc()).limit(20).all()
+    products = db.query(Product).filter(
+        Product.title.ilike(pattern),
+    ).order_by(Product.title.asc()).limit(20).all()
+    order_query = db.query(Order)
+    if search.isdigit():
+        order_query = order_query.filter(
+            or_(Order.id == int(search), Order.title.ilike(pattern)),
+        )
+    else:
+        order_query = order_query.filter(Order.title.ilike(pattern))
+    orders = order_query.order_by(Order.id.desc()).limit(20).all()
+    return {
+        "sellers": [{
+            "student_id": student.student_id,
+            "name": student.name,
+        } for student in sellers],
+        "products": [{
+            "id": product.id,
+            "title": product.title,
+            "seller_id": product.seller_id,
+        } for product in products],
+        "orders": [{
+            "id": order.id,
+            "title": order.title,
+            "product_id": order.product_id,
+            "student_id": order.student_id,
+        } for order in orders],
+    }
+
+
+@app.post("/api/admin/reports/{report_id}/links")
+def link_report_targets(
+    report_id: int,
+    data: ReportLinkRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    admin = _require_report_admin(authorization, db)
+    if data.seller_id is None and data.product_id is None and data.order_id is None:
+        raise HTTPException(status_code=422, detail="Select at least one report target to link.")
+    try:
+        report = db.query(Report).filter(Report.id == report_id).with_for_update().first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found.")
+
+        seller_id = (data.seller_id or report.seller_id or "").strip()
+        product_id = data.product_id if data.product_id is not None else report.product_id
+        order_id = data.order_id if data.order_id is not None else report.order_id
+        seller = db.query(Student).filter(Student.student_id == seller_id).first() if seller_id else None
+        if seller_id and not seller:
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "The selected seller does not exist.",
+            })
+
+        order = db.query(Order).filter(Order.id == order_id).first() if order_id else None
+        if order_id and not order:
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "The selected order does not exist.",
+            })
+        if data.order_id is not None and data.product_id is None:
+            product_id = order.product_id
+        product = db.query(Product).filter(Product.id == product_id).first() if product_id else None
+        if product_id and not product:
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "The selected product does not exist.",
+            })
+        if product and not seller_id:
+            seller_id = product.seller_id or ""
+            seller = db.query(Student).filter(Student.student_id == seller_id).first() if seller_id else None
+        if product and (not seller or product.seller_id != seller.student_id):
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "The selected product does not belong to the selected seller.",
+            })
+        if order:
+            if not product or order.product_id != product.id:
+                raise HTTPException(status_code=409, detail={
+                    "code": "TARGET_NOT_LINKED",
+                    "message": "The selected order does not match the linked product.",
+                })
+            if not report.student_id or order.student_id != report.student_id:
+                raise HTTPException(status_code=409, detail={
+                    "code": "TARGET_NOT_LINKED",
+                    "message": "The selected order buyer does not match the linked reporter.",
+                })
+            if order.seller_id and order.seller_id != seller_id:
+                raise HTTPException(status_code=409, detail={
+                    "code": "TARGET_NOT_LINKED",
+                    "message": "The selected order does not match the linked seller.",
+                })
+
+        previous_values = (report.seller_id, report.product_id, report.order_id)
+        updated_seller_id = seller_id or None
+        updated_product_id = product.id if product else None
+        updated_order_id = order.id if order else None
+        if previous_values == (updated_seller_id, updated_product_id, updated_order_id):
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "No report target changed.",
+            })
+        report.seller_id = updated_seller_id
+        report.product_id = updated_product_id
+        report.order_id = updated_order_id
+        db.add(AuditLog(
+            admin_id=admin.id,
+            action="Report Targets Linked",
+            entity_type="Report",
+            entity_id=report.id,
+            description=(
+                f"Linked report RPT-{report.id:04d} targets: "
+                f"seller={report.seller_id or 'none'}, product={report.product_id or 'none'}, "
+                f"order={report.order_id or 'none'}."
+            ),
+            status="SUCCESS",
+            ip_address=request.client.host if request.client else None,
+        ))
+        db.commit()
+        db.refresh(report)
+        return _report_payload(db, report)
+    except HTTPException:
+        db.rollback()
+        raise
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "code": "ALREADY_RESOLVED",
+            "message": "Another admin changed this report. Reload before linking targets.",
+        })
+    except Exception as error:
+        db.rollback()
+        logging.getLogger("app.reports").exception("Report target linking failed for report %s.", report_id)
+        raise HTTPException(status_code=500, detail="Unable to link report targets safely.") from error
+
+
 @app.get("/api/admin/reports/{report_id}/context")
 def get_report_context(
     report_id: int,
@@ -19611,6 +19833,17 @@ def get_report_context(
     product, order = _report_product_and_order(db, report)
     seller_report_count = db.query(Report.id).filter(Report.seller_id == report.seller_id).count() if report.seller_id else 0
     reporter_report_count = db.query(Report.id).filter(Report.student_id == report.student_id).count() if report.student_id else 0
+    dismissed_report_count = db.query(Report.id).filter(
+        Report.student_id == report.student_id,
+        Report.status == "Dismissed",
+    ).count() if report.student_id else 0
+    seller_warnings = db.query(ReportSellerWarning).filter(
+        ReportSellerWarning.seller_id == report.seller_id,
+    ).order_by(ReportSellerWarning.created_at.desc(), ReportSellerWarning.id.desc()).all() if seller else []
+    previous_seller_reports = db.query(Report).filter(
+        Report.seller_id == report.seller_id,
+        Report.id != report.id,
+    ).order_by(Report.created_at.desc(), Report.id.desc()).limit(10).all() if seller else []
     rating_avg = None
     rating_count = 0
     if report.seller_id:
@@ -19636,9 +19869,34 @@ def get_report_context(
         elif order.is_funds_released:
             wallet_status.append("Released to seller")
     payment = _report_payment_transaction(db, order) if order else None
+    seller_linked = seller is not None
+    product_linked = product is not None and seller_linked and product.seller_id == seller.student_id
+    decision_availability = {
+        "dismiss": {"enabled": True, "reason": None},
+        "warn": {
+            "enabled": seller_linked,
+            "reason": None if seller_linked else "No seller linked: link a seller first",
+        },
+        "hide_product": {
+            "enabled": product_linked,
+            "reason": None if product_linked else "No product linked to the reported seller: link a seller and product first",
+        },
+        "suspend": {
+            "enabled": False,
+            "reason": "No seller linked: link a seller first" if not seller_linked else "Suspension is not available in this implementation step.",
+        },
+        "deactivate": {
+            "enabled": False,
+            "reason": "No seller linked: link a seller first" if not seller_linked else "Deactivation is not available in this implementation step.",
+        },
+        "escalate": {"enabled": False, "reason": "Escalation is not available in this implementation step."},
+    }
     return {
         "reporter": {
             "report_count": reporter_report_count,
+            "dismissed_report_count": dismissed_report_count,
+            "report_abuse_threshold": REPORT_ABUSE_THRESHOLD,
+            "flagged_for_admin_attention": dismissed_report_count > REPORT_ABUSE_THRESHOLD,
             "verified_student": bool(reporter.is_verified) if reporter else None,
             "account_created_at": reporter.created_at.isoformat() if reporter and reporter.created_at else None,
         },
@@ -19660,6 +19918,23 @@ def get_report_context(
             "verified_student": None,
             "account_created_at": None,
             "wallet_status": [],
+        },
+        "decision_options": list(REPORT_DECISION_OPTIONS),
+        "decision_availability": decision_availability,
+        "seller_history": {
+            "warnings": [{
+                "id": warning.id,
+                "report_id": warning.report_id,
+                "reason": warning.reason,
+                "created_at": warning.created_at.isoformat() if warning.created_at else None,
+            } for warning in seller_warnings],
+            "previous_reports": [{
+                "id": previous.id,
+                "report_id": f"RPT-{previous.id:04d}",
+                "status": previous.status,
+                "decision": _normalize_report_decision(previous.decision),
+                "created_at": previous.created_at.isoformat() if previous.created_at else None,
+            } for previous in previous_seller_reports],
         },
         "product": {
             "id": product.id if product else report.product_id,
@@ -19756,168 +20031,115 @@ def resolve_report(
     reason = data.reason.strip()
     if len(reason) < 10:
         raise HTTPException(status_code=422, detail="A resolution reason of at least 10 characters is required.")
-    report = db.query(Report).filter(Report.id == report_id).with_for_update().first()
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-    if report.status in {"Resolved", "Dismissed"}:
-        raise HTTPException(status_code=409, detail="This report has already been resolved.")
-    if report.status != "Under Review" or report.reviewed_by != admin.id:
-        raise HTTPException(status_code=409, detail="Review the report before resolving it.")
-
-    product, order = _report_product_and_order(db, report)
-    refund_amount = Decimal("0.00")
-    payment = None
-    if data.decision == "Remove Product" and not product:
-        raise HTTPException(status_code=422, detail="This report is not linked to a product.")
-    if data.decision == "Suspend User" and not report.seller_id:
-        raise HTTPException(status_code=422, detail="This report has no reported user to suspend.")
-    if data.decision == "Refund":
-        if not order:
-            raise HTTPException(status_code=422, detail="Refunds require a linked order.")
-        order = db.query(Order).filter(Order.id == order.id).with_for_update().first()
-        if report.refunded_amount and Decimal(str(report.refunded_amount)) > 0:
-            raise HTTPException(status_code=409, detail="This report has already been refunded.")
-        payment = _report_payment_transaction(db, order)
-        if not payment or _normalize_payment_status(order.payment_status) != "Successful":
-            raise HTTPException(status_code=409, detail="The linked order does not have a successful payment.")
-        paid_amount = abs(Decimal(str(payment.amount or 0))).quantize(Decimal("0.01"))
-        refund_amount = Decimal(str(data.refund_amount or 0)).quantize(Decimal("0.01"))
-        if refund_amount <= 0 or refund_amount > paid_amount:
-            raise HTTPException(status_code=422, detail="Refund amount must be greater than zero and cannot exceed the paid amount.")
-        if db.query(Transaction.id).filter(
-            Transaction.type == "Refund",
-            Transaction.status == "Successful",
-            Transaction.description.like(f"%order #{order.id}%"),
-        ).first():
-            raise HTTPException(status_code=409, detail="This order has already been refunded.")
-        seller = db.query(Student).filter(Student.student_id == report.seller_id).with_for_update().first()
-        buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
-        if not seller or not buyer or seller.student_id == buyer.student_id:
-            raise HTTPException(status_code=409, detail="The order's buyer or reported seller is unavailable.")
-        seller_wallet = db.query(Wallet).filter(Wallet.student_id == seller.student_id).with_for_update().first()
-        buyer_wallet = db.query(Wallet).filter(Wallet.student_id == buyer.student_id).with_for_update().first()
-        if not seller_wallet or not buyer_wallet:
-            raise HTTPException(status_code=409, detail="A buyer or seller wallet is unavailable for the refund.")
-        seller_balance = Decimal(str(seller_wallet.balance or 0)).quantize(Decimal("0.01"))
-        dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
-        order_frozen_funds = min(
-            Decimal(str(dispute.frozen_amount or 0)).quantize(Decimal("0.01")) if dispute else Decimal("0.00"),
-            Decimal(str(seller_wallet.frozen_balance or 0)).quantize(Decimal("0.01")),
-        )
-        if seller_balance + order_frozen_funds < refund_amount:
-            raise HTTPException(status_code=409, detail="The seller wallet does not have enough available funds for this refund.")
-        total_refunded = Decimal(str(
-            db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
-                Transaction.type == "Refund",
-                Transaction.status == "Successful",
-                Transaction.description.like(f"%order #{order.id}%"),
-            ).scalar() or 0
-        )).quantize(Decimal("0.01"))
-        if total_refunded + refund_amount > paid_amount:
-            raise HTTPException(status_code=422, detail="Refund amount exceeds the remaining amount paid for this order.")
-
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
     try:
-        if data.decision == "Remove Product":
-            product.status = "Removed"
-        elif data.decision == "Suspend User":
-            reported_user = db.query(Student).filter(Student.student_id == report.seller_id).with_for_update().first()
-            if not reported_user:
-                raise HTTPException(status_code=404, detail="Reported user not found.")
-            reported_user.status = "Suspended"
-        elif data.decision == "Refund":
-            seller = db.query(Student).filter(Student.student_id == report.seller_id).with_for_update().first()
-            buyer = db.query(Student).filter(Student.student_id == order.student_id).with_for_update().first()
-            seller_wallet = db.query(Wallet).filter(Wallet.student_id == seller.student_id).with_for_update().first()
-            buyer_wallet = db.query(Wallet).filter(Wallet.student_id == buyer.student_id).with_for_update().first()
-            dispute = db.query(Dispute).filter(Dispute.order_id == order.id).order_by(Dispute.created_at.desc()).first()
-            frozen_to_release = min(
-                refund_amount,
-                Decimal(str(dispute.frozen_amount or 0)).quantize(Decimal("0.01")) if dispute else Decimal("0.00"),
-                Decimal(str(seller_wallet.frozen_balance or 0)).quantize(Decimal("0.01")),
-            )
-            if frozen_to_release:
-                dispute.frozen_amount = (Decimal(str(dispute.frozen_amount)) - frozen_to_release).quantize(Decimal("0.01"))
-                seller_wallet.frozen_balance = (Decimal(str(seller_wallet.frozen_balance)) - frozen_to_release).quantize(Decimal("0.01"))
-                seller_wallet.balance = (Decimal(str(seller_wallet.balance)) + frozen_to_release).quantize(Decimal("0.01"))
-                db.add(Transaction(
-                    student_id=seller.student_id,
-                    wallet_id=seller_wallet.id,
-                    tx_id=f"RPT-REFUND-{report.id}-RELEASE",
-                    type="Dispute Release",
-                    amount=frozen_to_release,
-                    description=f"Release frozen funds for report RPT-{report.id:04d}, order #{order.id}",
-                    status="Successful",
-                ))
-            seller_wallet.balance = (Decimal(str(seller_wallet.balance)) - refund_amount).quantize(Decimal("0.01"))
-            buyer_wallet.balance = (Decimal(str(buyer_wallet.balance)) + refund_amount).quantize(Decimal("0.01"))
-            seller.wallet_balance = seller_wallet.balance
-            buyer.wallet_balance = buyer_wallet.balance
-            seller_wallet.updated_at = now
-            buyer_wallet.updated_at = now
-            reference = f"RPT-{report.id:04d}"
-            db.add_all([
-                Transaction(
-                    student_id=seller.student_id,
-                    wallet_id=seller_wallet.id,
-                    tx_id=f"RPT-REFUND-{report.id}-SELLER",
-                    type="Seller Payout",
-                    amount=refund_amount,
-                    description=f"Seller debit for report {reference}, order #{order.id}",
-                    status="Successful",
-                ),
-                Transaction(
-                    student_id=buyer.student_id,
-                    wallet_id=buyer_wallet.id,
-                    tx_id=f"RPT-REFUND-{report.id}-BUYER",
-                    type="Refund",
-                    amount=refund_amount,
-                    description=f"Report refund for order #{order.id} ({reference})",
-                    status="Successful",
-                ),
-            ])
-            report.refunded_amount = refund_amount
-            payment_amount = abs(Decimal(str(payment.amount or 0))).quantize(Decimal("0.01"))
-            order.refund_status = "refunded" if refund_amount >= payment_amount else "partial"
-            order.refund_reference = f"RPT-REFUND-{report.id}-BUYER"
-            if refund_amount >= payment_amount:
-                order.payment_status = "Refunded"
-        report.status = "Dismissed" if data.decision == "Reject" else "Resolved"
+        report = db.query(Report).filter(Report.id == report_id).with_for_update().first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found.")
+        if report.status in {"Resolved", "Dismissed"}:
+            raise HTTPException(status_code=409, detail={
+                "code": "ALREADY_RESOLVED",
+                "message": "This report has already been resolved.",
+            })
+        if report.status != "Under Review" or report.reviewed_by != admin.id:
+            raise HTTPException(status_code=409, detail={
+                "code": "ALREADY_RESOLVED",
+                "message": "Review this report before resolving it.",
+            })
+        if data.decision not in {"dismiss", "warn", "hide_product"}:
+            raise HTTPException(status_code=409, detail={
+                "code": "DECISION_NOT_AVAILABLE",
+                "message": "This decision is not available yet. Choose dismiss, warn, or hide product.",
+            })
+
+        product, _order = _report_product_and_order(db, report)
+        seller = db.query(Student).filter(Student.student_id == report.seller_id).with_for_update().first() if report.seller_id else None
+        if data.decision == "warn" and not seller:
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "No seller linked: link a seller first.",
+            })
+        if data.decision == "hide_product" and (
+            not product or not seller or product.seller_id != seller.student_id
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "No product linked to the reported seller: link a seller and product first.",
+            })
+
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if data.decision == "warn":
+            db.add(ReportSellerWarning(
+                report_id=report.id,
+                seller_id=seller.student_id,
+                admin_id=admin.id,
+                reason=reason,
+            ))
+        elif data.decision == "hide_product":
+            product.status = "Hidden"
+            product.moderation_reason = reason
+
+        report.status = "Dismissed" if data.decision == "dismiss" else "Resolved"
         report.decision = data.decision
         report.decision_reason = reason
         report.resolved_by = admin.id
         report.resolved_at = now
-        reporter = db.query(Student).filter(Student.student_id == report.student_id).first()
-        outbox_id = None
+        reporter = db.query(Student).filter(Student.student_id == report.student_id).with_for_update().first() if report.student_id else None
+        outbox_ids = []
         if reporter:
-            report_url = f"/dashboard?tab=buyer&section=reports-support&item=report-{report.id}"
-            outbox_id = _queue_student_item_notification(
+            reporter_outbox_id = _queue_student_item_notification(
                 db,
                 reporter,
                 title=f"Decision on RPT-{report.id:04d}",
-                message=f"Your report was {report.status.lower()}: {data.decision}. Reason: {reason}",
+                message=f"Your report was {'dismissed' if data.decision == 'dismiss' else 'resolved'} ({data.decision}). Reason: {reason}",
                 item_type="report_decision",
                 item_id=report.id,
-                action_url=report_url,
+                action_url=f"/dashboard?tab=buyer&section=reports-support&item=report-{report.id}",
                 email_subject=f"Decision on RPT-{report.id:04d}",
                 email_summary="An administrator completed the review of your report.",
                 email_status=report.status,
                 critical=True,
             )
-        if report.seller_id and report.seller_id != report.student_id and data.decision != "Reject":
-            seller = db.query(Student).filter(Student.student_id == report.seller_id).first()
-            if seller and seller.notif_msg_inapp:
-                db.add(Notification(
-                    student_id=seller.student_id,
-                    title="Account action update",
-                    message=reason[:500],
-                    type="moderation_action",
-                    reference_id=None,
-                    is_read=False,
-                ))
+            if reporter_outbox_id:
+                outbox_ids.append(reporter_outbox_id)
+
+        if data.decision in {"warn", "hide_product"} and seller and seller.student_id != report.student_id:
+            seller_outbox_id = _queue_student_item_notification(
+                db,
+                seller,
+                title="Marketplace warning" if data.decision == "warn" else "Product hidden",
+                message=reason,
+                item_type="moderation_action",
+                item_id=report.id,
+                action_url="/dashboard",
+                email_subject=f"Marketplace update for RPT-{report.id:04d}",
+                email_summary="An administrator reviewed a marketplace report.",
+                email_status=report.status,
+            )
+            if seller_outbox_id:
+                outbox_ids.append(seller_outbox_id)
+
+        if data.decision == "dismiss" and reporter:
+            dismissed_count = db.query(Report.id).filter(
+                Report.student_id == reporter.student_id,
+                Report.status == "Dismissed",
+            ).count()
+            if dismissed_count == REPORT_ABUSE_THRESHOLD + 1:
+                _notify_admins(
+                    db,
+                    title="Reporter attention requested",
+                    message=f"Reporter {reporter.student_id} has more than {REPORT_ABUSE_THRESHOLD} dismissed reports. Review for admin attention; no automatic action was taken.",
+                    reference_type="reporter",
+                    reference_id=report.id,
+                    action_url=f"/admin/reports?report={report.id}",
+                )
+
         db.add(AuditLog(
             admin_id=admin.id,
-            action="Report Resolved",
+            action={
+                "dismiss": "Report Dismissed",
+                "warn": "Seller Warned",
+                "hide_product": "Product Hidden",
+            }[data.decision],
             entity_type="Report",
             entity_id=report.id,
             description=f"Decision: {data.decision}. Reason: {reason}",
@@ -19926,17 +20148,21 @@ def resolve_report(
             ip_address=request.client.host if request.client else None,
         ))
         db.commit()
-        _schedule_outbox_delivery(background_tasks, db, outbox_id)
+        for outbox_id in outbox_ids:
+            _schedule_outbox_delivery(background_tasks, db, outbox_id)
     except HTTPException:
         db.rollback()
         raise
     except StaleDataError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Another admin updated this report. Reload and try again.")
-    except Exception:
+        raise HTTPException(status_code=409, detail={
+            "code": "ALREADY_RESOLVED",
+            "message": "Another admin resolved or changed this report. Reload and try again.",
+        })
+    except Exception as error:
         db.rollback()
         logging.getLogger("app.reports").exception("Report resolution failed for report %s.", report_id)
-        raise HTTPException(status_code=500, detail="Unable to resolve this report safely.")
+        raise HTTPException(status_code=500, detail="Unable to resolve this report safely.") from error
     db.refresh(report)
     payload = _report_payload(db, report)
     payload["refunded_amount"] = str(report.refunded_amount or Decimal("0.00"))

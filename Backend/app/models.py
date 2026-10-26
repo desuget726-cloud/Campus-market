@@ -658,6 +658,20 @@ class Report(Base):
     __mapper_args__ = {"version_id_col": revision}
 
 
+class ReportSellerWarning(Base):
+    __tablename__ = "report_seller_warnings"
+    __table_args__ = (
+        Index("ix_report_seller_warnings_seller_created", "seller_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False, index=True)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True)
+    reason = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class SupportTicket(Base):
     __tablename__ = "support_tickets"
 
@@ -746,6 +760,15 @@ class CannedResponse(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
+    __table_args__ = (
+        Index(
+            "uq_notifications_user_type_reference",
+            "student_id",
+            "type",
+            "reference_id",
+            unique=True,
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)

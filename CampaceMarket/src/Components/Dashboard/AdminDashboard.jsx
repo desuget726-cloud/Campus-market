@@ -1172,8 +1172,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [reportPage, setReportPage] = useState(1);
   const REPORTS_PER_PAGE = 10;
   const [reportDecision, setReportDecision] = useState('');
+  const [reportDecisionOptions, setReportDecisionOptions] = useState([]);
   const [reportReason, setReportReason] = useState('');
-  const [reportRefundAmount, setReportRefundAmount] = useState('');
   const [selectedReport, setSelectedReport] = useState(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportActionLoading, setReportActionLoading] = useState(false);
@@ -1183,11 +1183,47 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [reportContextLoading, setReportContextLoading] = useState(false);
   const [reportError, setReportError] = useState('');
   const reportActionInFlightRef = useRef(false);
+  const [reportLinkSearch, setReportLinkSearch] = useState('');
+  const [reportLinkOptions, setReportLinkOptions] = useState({ sellers: [], products: [], orders: [] });
+  const [reportLinkSelection, setReportLinkSelection] = useState({ seller_id: '', product_id: '', order_id: '' });
+  const [reportLinksSaving, setReportLinksSaving] = useState(false);
   const [broadcastSending, setBroadcastSending] = useState(false);
   const [evidenceImage, setEvidenceImage] = useState(null);
   const [conversationLogs, setConversationLogs] = useState(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [reportToast, setReportToast] = useState('');
+
+  useEffect(() => {
+    const query = reportLinkSearch.trim();
+    if (!showReportModal || query.length < 2) {
+      setReportLinkOptions({ sellers: [], products: [], orders: [] });
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/admin/reports/link-options?q=${encodeURIComponent(query)}`,
+          { headers: getReportRequestHeaders(), signal: controller.signal },
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(getErrorMessage(payload));
+        setReportLinkOptions({
+          sellers: Array.isArray(payload.sellers) ? payload.sellers : [],
+          products: Array.isArray(payload.products) ? payload.products : [],
+          orders: Array.isArray(payload.orders) ? payload.orders : [],
+        });
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setReportError(getErrorMessage(error));
+        }
+      }
+    }, 250);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [reportLinkSearch, showReportModal]);
 
   const calculatedReportMetrics = useMemo(() => {
     const openStatuses = new Set(['Open']);
@@ -3127,22 +3163,12 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const handleResolveReport = async (id) => {
     const report = reportsList.find(r => r.id === id);
     const reason = reportReason.trim();
-    if (!report || reportActionInFlightRef.current || !reportDecision || reason.length < 10) return;
-    const paidAmount = Number(reportContext?.order?.paid_amount);
-    const refundAmount = Number(reportRefundAmount);
-    if (reportDecision === 'Refund' && (
-      !Number.isFinite(refundAmount) || refundAmount <= 0 || !Number.isFinite(paidAmount) || refundAmount > paidAmount
-    )) {
-      setReportError(t('adminReports.refundAmountError'));
-      return;
-    }
+    const availability = reportContext?.decision_availability?.[reportDecision];
+    if (!report || reportActionInFlightRef.current || !reportDecision || !availability?.enabled || reason.length < 10 || reason.length > 1000) return;
 
-    const effects = {
-      'Remove Product': `Remove "${reportContext?.product?.title || report.product_name}" from the marketplace.`,
-      'Suspend User': `Suspend ${reportContext?.seller?.seller_name || report.seller_name || report.seller_id}.`,
-      Refund: `Transfer ${refundAmount.toFixed(2)} ETB from the seller wallet to the buyer wallet for order #${reportContext?.order?.id}.`,
-    };
-    if (effects[reportDecision] && !window.confirm(`${t('adminReports.confirmEffect')}\n\n${effects[reportDecision]}`)) return;
+    if (reportDecision === 'hide_product' && !window.confirm(
+      `Hide "${reportContext?.product?.title || report.product_name}" from listings and prevent purchases? The product and existing orders will be kept.`,
+    )) return;
 
     reportActionInFlightRef.current = true;
     setReportActionLoading(true);
@@ -3155,16 +3181,23 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         body: JSON.stringify({
           decision: reportDecision,
           reason,
-          ...(reportDecision === 'Refund' ? { refund_amount: reportRefundAmount } : {}),
         }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.detail || t('adminReports.resolveError'));
+      if (!response.ok) {
+        const detail = payload.detail;
+        const code = typeof detail === 'object' && detail !== null ? detail.code : null;
+        const message = typeof detail === 'object' && detail !== null
+          ? detail.message || t('adminReports.resolveError')
+          : detail || t('adminReports.resolveError');
+        throw new Error(`${code ? `${code}: ` : ''}${message}`);
+      }
 
-      setReportsList(prev => prev.map(r => r.id === id ? { ...r, ...payload, status: 'Resolved' } : r));
+      setReportsList(prev => prev.map(r => r.id === id ? { ...r, ...payload } : r));
       setSelectedReport(null);
       setShowReportModal(false);
       setReportContext(null);
+      await fetchReportsData();
       refreshAuditLogs();
       notifySuccess(t('adminReports.resolved'), `admin-report-resolve-${id}`);
     } catch (err) {
@@ -3176,6 +3209,48 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   };
 
+  const handleSaveReportLinks = async () => {
+    if (!selectedReport || reportLinksSaving) return;
+    const links = Object.fromEntries(
+      Object.entries(reportLinkSelection).filter(([, value]) => value !== ''),
+    );
+    if (!Object.keys(links).length) {
+      setReportError('Select a seller, product, or order to link.');
+      return;
+    }
+    setReportLinksSaving(true);
+    setReportError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${selectedReport.id}/links`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getReportRequestHeaders() },
+        body: JSON.stringify({
+          ...links,
+          ...(links.product_id ? { product_id: Number(links.product_id) } : {}),
+          ...(links.order_id ? { order_id: Number(links.order_id) } : {}),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = payload.detail;
+        const code = typeof detail === 'object' && detail !== null ? detail.code : null;
+        const message = typeof detail === 'object' && detail !== null
+          ? detail.message || 'Unable to link report targets.'
+          : detail || 'Unable to link report targets.';
+        throw new Error(`${code ? `${code}: ` : ''}${message}`);
+      }
+      setSelectedReport((current) => current?.id === selectedReport.id ? { ...current, ...payload } : current);
+      setReportsList((current) => current.map((item) => item.id === selectedReport.id ? { ...item, ...payload } : item));
+      setReportLinkSelection({ seller_id: '', product_id: '', order_id: '' });
+      setReportLinkSearch('');
+      await loadReportContext(selectedReport.id, false);
+    } catch (error) {
+      setReportError(getErrorMessage(error));
+    } finally {
+      setReportLinksSaving(false);
+    }
+  };
+
   const loadReportContext = async (reportId, markSeen = true) => {
     setReportContextLoading(true);
     try {
@@ -3184,6 +3259,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || t('adminReports.contextError'));
+      if (Array.isArray(payload.decision_options)) setReportDecisionOptions(payload.decision_options);
       if (markSeen) {
         try {
           await apiFetch(`/api/admin/reports/${reportId}/seen`, {
@@ -3201,7 +3277,6 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         }
       }
       setReportContext(payload);
-      if (payload.order?.paid_amount) setReportRefundAmount(payload.order.paid_amount);
     } catch (error) {
       console.error('Failed to load report context:', error);
       setReportError(getErrorMessage(error));
@@ -3215,10 +3290,22 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setShowReportModal(true);
     setReportDecision('');
     setReportReason('');
-    setReportRefundAmount('');
+    setReportDecisionOptions([]);
+    setReportLinkSearch('');
+    setReportLinkSelection({ seller_id: '', product_id: '', order_id: '' });
     setReportContext(null);
     setReportError('');
     setReportReviewOwned(false);
+    try {
+      const decisionsResponse = await fetch(`${API_BASE_URL}/api/admin/reports/decisions`, {
+        headers: getReportRequestHeaders(),
+      });
+      const decisions = await decisionsResponse.json().catch(() => []);
+      if (!decisionsResponse.ok) throw new Error(getErrorMessage(decisions));
+      setReportDecisionOptions(Array.isArray(decisions) ? decisions : []);
+    } catch (error) {
+      setReportError(getErrorMessage(error));
+    }
     await loadReportContext(report.id);
 
     if (['Resolved', 'Dismissed'].includes(report.status)) return;
@@ -6373,19 +6460,25 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               const productId = reportContext?.product?.id || selectedReport.product_id;
               const productTitle = reportContext?.product?.title || selectedReport.product_name;
               const sellerName = reportContext?.seller?.seller_name || selectedReport.seller_name || selectedReport.seller_id;
-              const paidAmount = Number(reportContext?.order?.paid_amount);
-              const refundAmount = Number(reportRefundAmount);
-              const refundValid = reportDecision !== 'Refund'
-                || (Number.isFinite(refundAmount) && refundAmount > 0 && Number.isFinite(paidAmount) && refundAmount <= paidAmount);
+              const closedReport = ['Resolved', 'Dismissed'].includes(selectedReport.status);
+              const decisionAvailability = reportContext?.decision_availability?.[reportDecision];
+              const selectedDecisionEnabled = Boolean(reportDecision && decisionAvailability?.enabled);
+              const resolveRequirements = [];
+              if (!reportDecision) resolveRequirements.push('Select a decision');
+              else if (!selectedDecisionEnabled && decisionAvailability?.reason) resolveRequirements.push(decisionAvailability.reason);
+              if (reportReason.trim().length < 10) resolveRequirements.push('Reason needs 10+ characters');
+              if (reportReason.trim().length > 1000) resolveRequirements.push('Reason must be 1000 characters or fewer');
               const canResolve = Boolean(
                 reportReviewOwned
                 && !reportReviewLoading
                 && !reportActionLoading
-                && selectedReport.status !== 'Resolved'
-                && selectedReport.status !== 'Dismissed'
-                && reportDecision
+                && !closedReport
+                && selectedDecisionEnabled
                 && reportReason.trim().length >= 10
-                && refundValid,
+                && reportReason.trim().length <= 1000,
+              );
+              const optionLabel = (decision) => (
+                reportDecisionOptions.find((option) => option.key === decision)?.label || decision
               );
               const accountAgeLabel = (createdAt) => {
                 if (!createdAt) return noContextLabel;
@@ -6502,10 +6595,14 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                         <button type="button" onClick={handleViewConversationLogs} disabled={conversationLoading} className="rounded-full border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm font-bold text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60">{conversationLoading ? t('adminReports.loadingLogs') : t('adminReports.viewConversation')}</button>
                       </div>
 
-                      {selectedReport.status === 'Resolved' ? (
+                      {closedReport ? (
                         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                          <p className="font-black text-emerald-900">{t('adminReports.resolvedDecision')}: {selectedReport.decision}</p>
+                          <p className="font-black text-emerald-900">{t('adminReports.resolvedDecision')}: {selectedReport.decision === 'Refund' ? 'Refund' : optionLabel(selectedReport.decision)}</p>
                           <p className="mt-2 whitespace-pre-wrap text-sm text-emerald-900">{selectedReport.decision_reason}</p>
+                          <p className="mt-2 text-xs text-emerald-800">
+                            {selectedReport.resolved_by_name || noContextLabel}
+                            {selectedReport.resolved_at ? ` · ${new Date(selectedReport.resolved_at).toLocaleString()}` : ''}
+                          </p>
                         </div>
                       ) : (
                         <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
@@ -6513,37 +6610,68 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                             <label className="block text-sm font-bold text-slate-700" htmlFor="admin-report-decision">{t('adminReports.decision')}</label>
                             <select id="admin-report-decision" value={reportDecision} onChange={(event) => setReportDecision(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none">
                               <option value="">{t('adminReports.selectDecision')}</option>
-                              <option value="Warning">{t('adminReports.warning')}</option>
-                              <option value="Remove Product">{t('adminReports.removeProduct')}</option>
-                              <option value="Suspend User">{t('adminReports.suspendUser')}</option>
-                              <option value="Refund">{t('adminReports.refund')}</option>
-                              <option value="Reject">{t('adminReports.reject')}</option>
+                              {reportDecisionOptions.map((option) => {
+                                const availability = reportContext?.decision_availability?.[option.key];
+                                const disabled = !availability?.enabled;
+                                return (
+                                  <option key={option.key} value={option.key} disabled={disabled}>
+                                    {option.label}{disabled && availability?.reason ? ` — ${availability.reason}` : ''}
+                                  </option>
+                                );
+                              })}
                             </select>
                           </div>
-                          {reportDecision === 'Refund' && reportContext?.order && (
-                            <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2">
-                              <p className="text-sm font-semibold text-amber-900 sm:col-span-2">{t('adminReports.refundOrder')}: #{reportContext.order.id} · {reportContext.order.title}</p>
-                              <p className="text-sm text-amber-900">{t('adminReports.paidAmount')}: {paidAmount.toFixed(2)} ETB</p>
-                              <label className="text-sm font-semibold text-amber-900">
-                                {t('adminReports.refundAmount')}
-                                <input type="number" min="0.01" max={Number.isFinite(paidAmount) ? paidAmount : undefined} step="0.01" value={reportRefundAmount} onChange={(event) => setReportRefundAmount(event.target.value)} className="mt-1 w-full rounded-xl border border-amber-300 bg-white px-3 py-2 text-slate-900" />
+                          <p className="text-xs font-medium text-slate-500">To refund a buyer, use the order&apos;s dispute.</p>
+                          {!closedReport && (
+                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                              <div>
+                                <p className="text-sm font-bold text-slate-800">Link missing report targets</p>
+                                <p className="mt-1 text-xs text-slate-600">Search students by name or ID, products by title, or orders by ID.</p>
+                              </div>
+                              <label className="block text-xs font-semibold text-slate-700" htmlFor="report-link-search">Search targets
+                                <input id="report-link-search" type="search" value={reportLinkSearch} onChange={(event) => setReportLinkSearch(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Name, student ID, product title, or order ID" />
                               </label>
-                              {!refundValid && <p role="alert" className="text-sm font-semibold text-rose-700 sm:col-span-2">{t('adminReports.refundAmountError')}</p>}
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <label className="text-xs font-semibold text-slate-700">Seller
+                                  <select value={reportLinkSelection.seller_id} onChange={(event) => setReportLinkSelection((current) => ({ ...current, seller_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                    <option value="">Keep current</option>
+                                    {reportLinkOptions.sellers.map((seller) => <option key={seller.student_id} value={seller.student_id}>{seller.name} ({seller.student_id})</option>)}
+                                  </select>
+                                </label>
+                                <label className="text-xs font-semibold text-slate-700">Product
+                                  <select value={reportLinkSelection.product_id} onChange={(event) => setReportLinkSelection((current) => ({ ...current, product_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                    <option value="">Keep current</option>
+                                    {reportLinkOptions.products.map((product) => <option key={product.id} value={product.id}>{product.title} (seller {product.seller_id || 'not linked'})</option>)}
+                                  </select>
+                                </label>
+                                <label className="text-xs font-semibold text-slate-700">Order
+                                  <select value={reportLinkSelection.order_id} onChange={(event) => setReportLinkSelection((current) => ({ ...current, order_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                    <option value="">Keep current</option>
+                                    {reportLinkOptions.orders.map((order) => <option key={order.id} value={order.id}>#{order.id} · {order.title}</option>)}
+                                  </select>
+                                </label>
+                              </div>
+                              <button type="button" onClick={handleSaveReportLinks} disabled={reportLinksSaving || !Object.values(reportLinkSelection).some(Boolean)} className="rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50">{reportLinksSaving ? 'Saving links…' : 'Save links'}</button>
                             </div>
                           )}
-                          {reportDecision === 'Refund' && !reportContext?.order && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">{t('adminReports.refundRequiresOrder')}</p>}
+                          {reportContext?.reporter?.flagged_for_admin_attention && (
+                            <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+                              Reporter has {reportContext.reporter.dismissed_report_count} dismissed reports. Flagged for admin attention only; no automatic action is taken.
+                            </p>
+                          )}
                           <div>
                             <label className="block text-sm font-bold text-slate-700" htmlFor="admin-report-reason">{t('adminReports.reason')}</label>
-                            <textarea id="admin-report-reason" rows="3" maxLength={2000} value={reportReason} onChange={(event) => setReportReason(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" placeholder={t('adminReports.reasonPlaceholder')} />
-                            <p className={`mt-1 text-xs ${reportReason.trim().length < 10 ? 'text-rose-600' : 'text-slate-500'}`}>{t('adminReports.reasonMinLength')}: {reportReason.trim().length}/10</p>
+                            <textarea id="admin-report-reason" rows="3" maxLength={1000} value={reportReason} onChange={(event) => setReportReason(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" placeholder={t('adminReports.reasonPlaceholder')} />
+                            <p className={`mt-1 text-xs ${reportReason.trim().length < 10 ? 'text-rose-600' : 'text-slate-500'}`}>{t('adminReports.reasonMinLength')}: {reportReason.trim().length}/1000</p>
                           </div>
+                          {resolveRequirements.length > 0 && <ul className="list-disc space-y-1 pl-5 text-xs font-semibold text-slate-600">{resolveRequirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul>}
                         </div>
                       )}
                     </div>
 
                     <div className="sticky bottom-0 flex shrink-0 justify-end gap-3 border-t border-slate-200 bg-white px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-8px_20px_-16px_rgba(15,23,42,0.45)] sm:px-7">
                       <button type="button" onClick={closeReportModal} disabled={reportActionLoading} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">{t('adminReports.close')}</button>
-                      {!['Resolved', 'Dismissed'].includes(selectedReport.status) && (
+                      {!closedReport && (
                         <button type="button" onClick={() => handleResolveReport(selectedReport.id)} disabled={!canResolve} className="rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50">
                           {reportActionLoading ? t('adminReports.resolving') : t('adminReports.resolve')}
                         </button>

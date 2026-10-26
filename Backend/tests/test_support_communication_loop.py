@@ -395,6 +395,40 @@ class SupportCommunicationLoopTests(unittest.TestCase):
         self.assertIn("Support Ticket Assigned", actions)
         self.assertIn("Support Ticket Status Changed", actions)
 
+    def test_repeated_ticket_status_changes_refresh_the_existing_notification(self):
+        ticket_id = self._create_ticket().json()["ticket"]["id"]
+        headers = self._admin_headers()
+        first = self._request(
+            "PATCH", f"/support/tickets/{ticket_id}",
+            headers=headers,
+            json_body={"status": "In Progress"},
+        )
+        notification = self.db.query(Notification).filter(
+            Notification.type == "support_status",
+            Notification.reference_id == str(ticket_id),
+        ).one()
+        notification.is_read = True
+        self.db.commit()
+
+        second = self._request(
+            "PATCH", f"/support/tickets/{ticket_id}",
+            headers=headers,
+            json_body={"status": "Closed"},
+        )
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(
+            self.db.query(Notification).filter(
+                Notification.type == "support_status",
+                Notification.reference_id == str(ticket_id),
+            ).count(),
+            1,
+        )
+        self.db.refresh(notification)
+        self.assertIn("now Closed", notification.message)
+        self.assertFalse(notification.is_read)
+
     def test_order_detail_is_limited_to_buyer_or_product_seller(self):
         product = Product(
             title="Test item",
