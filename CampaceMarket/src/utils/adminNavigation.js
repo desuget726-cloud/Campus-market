@@ -14,7 +14,6 @@ export const ADMIN_NAVIGATION = [
     items: [
       { key: 'user-management', label: 'All Users / Students', icon: 'M12 14l9-5-9-5-9 5 9 5z', path: 'user-management', badgeKey: null, permission: 'users' },
       { key: 'student-verification', label: 'Student Verification', icon: 'M12 11c2.761 0 5-2.238 5-5S14.761 1 12 1 7 3.238 7 6s2.239 5 5 5z M4 23c0-4.418 3.582-8 8-8s8 3.582 8 8', path: 'student-verification', badgeKey: 'pendingVerifications', permission: 'users' },
-      { key: 'admin-users', label: 'Admin Users', icon: 'M16 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2 M10 11a4 4 0 100-8 4 4 0 000 8z M20 8v6 M23 11h-6', path: 'admin-users', badgeKey: null, permission: 'users' },
     ],
   },
   {

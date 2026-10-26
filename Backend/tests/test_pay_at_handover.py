@@ -47,6 +47,7 @@ def market(monkeypatch, tmp_path):
             password=hash_password("correct-app-password"),
             has_password=True,
             wallet_balance=Decimal("500.00"),
+            is_verified=True,
         )
         seller = Student(
             name="Seller",
@@ -55,6 +56,7 @@ def market(monkeypatch, tmp_path):
             password=hash_password("seller-password"),
             has_password=True,
             wallet_balance=Decimal("0.00"),
+            is_verified=True,
         )
         db.add_all([buyer, seller])
         db.flush()

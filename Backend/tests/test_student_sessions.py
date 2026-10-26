@@ -330,7 +330,7 @@ class StudentSessionTests(unittest.TestCase):
             main_module._student_from_authorization(f"Bearer {other}", self.db)
         self.assertEqual(revoked_error.exception.status_code, 401)
 
-    def test_last_active_timestamp_is_throttled_to_five_minutes(self):
+    def test_last_active_timestamp_updates_on_authenticated_requests(self):
         token = self._login()["access_token"]
         session = self.db.query(UserSession).filter(UserSession.id == self._session_id(token)).one()
         original_last_active = datetime.now(timezone.utc) - timedelta(minutes=2)
@@ -339,7 +339,19 @@ class StudentSessionTests(unittest.TestCase):
 
         main_module._student_from_authorization(f"Bearer {token}", self.db)
 
-        self.assertEqual(main_module._as_utc_datetime(session.last_active_at), original_last_active)
+        self.assertGreater(main_module._as_utc_datetime(session.last_active_at), original_last_active)
+
+    def test_session_expires_after_configured_idle_timeout(self):
+        token = self._login()["access_token"]
+        session = self.db.query(UserSession).filter(UserSession.id == self._session_id(token)).one()
+        session.last_active_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as expired:
+            main_module._student_from_authorization(f"Bearer {token}", self.db)
+
+        self.assertEqual(expired.exception.status_code, 401)
+        self.assertIsNotNone(session.revoked_at)
 
     def test_password_change_revokes_other_sessions_but_keeps_current(self):
         current_token = self._login("8.8.8.8")["access_token"]

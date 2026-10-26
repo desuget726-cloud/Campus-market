@@ -83,6 +83,42 @@ class AdminSecuritySettingsTests(unittest.TestCase):
             },
         )
 
+    def patch_security(self, values):
+        return self.client.patch(
+            "/api/admin/settings",
+            headers={"Authorization": "Bearer security-settings-session"},
+            json={"security": values},
+        )
+
+    def test_patch_security_settings_persists_and_reloads_values(self):
+        patched = self.patch_security({
+            "requireStudentVerification": False,
+            "maxLoginAttempts": 3,
+            "sessionTimeout": 15,
+            "minPasswordLength": 10,
+            "auditLogging": False,
+        })
+
+        self.assertEqual(patched.status_code, 200, patched.text)
+        self.assertEqual(patched.json()["settings"]["security"]["maxLoginAttempts"], 3)
+        self.assertEqual(patched.json()["settings"]["security"]["sessionTimeout"], 15)
+        stored = self.db.query(SystemSetting).filter_by(key="security").one()
+        self.assertEqual(json.loads(stored.value)["minPasswordLength"], 10)
+
+        reloaded = self.client.get("/api/admin/settings")
+
+        self.assertEqual(reloaded.status_code, 200, reloaded.text)
+        self.assertFalse(reloaded.json()["security"]["requireStudentVerification"])
+        self.assertFalse(reloaded.json()["security"]["auditLogging"])
+        self.assertEqual(reloaded.json()["security"]["maxLoginAttempts"], 3)
+        self.assertEqual(reloaded.json()["security"]["sessionTimeout"], 15)
+        self.assertEqual(reloaded.json()["security"]["minPasswordLength"], 10)
+
+    def test_patch_rejects_password_minimum_below_eight(self):
+        response = self.patch_security({"minPasswordLength": 7})
+
+        self.assertEqual(response.status_code, 422, response.text)
+
     def test_security_two_factor_setting_saves_to_database_and_reloads_from_database(self):
         self.admin.two_factor_enabled = True
         self.admin.two_factor_secret = main_module._encrypt_totp_secret("JBSWY3DPEHPK3PXP")

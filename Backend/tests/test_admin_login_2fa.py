@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import main as main_module
 from app.database import Base, get_db
-from app.models import Admin, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, AdminLoginHistory, AdminSession, AuditLog, SystemSetting
+from app.models import Admin, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, AdminLoginHistory, AdminSession, AuditLog, LoginAttempt, SystemSetting
 
 
 class AdminLoginTwoFactorTests(unittest.TestCase):
@@ -110,6 +110,50 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
             300,
         )
 
+    def test_global_two_factor_policy_cannot_be_disabled_by_environment_flags(self):
+        with patch.object(main_module, "DISABLE_ADMIN_2FA", True), patch.dict(
+            os.environ,
+            {"ADMIN_2FA_BYPASS": "true"},
+        ):
+            response = self.login()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["requires_2fa_setup"])
+        self.assertNotIn("access_token", response.json())
+        self.assertEqual(self.db.query(AdminSession).count(), 0)
+
+    def test_configured_login_attempt_limit_locks_account_across_identifiers(self):
+        self.db.query(SystemSetting).filter_by(key="security").update({
+            "value": json.dumps({
+                "requireStudentVerification": True,
+                "admin2FA": False,
+                "maxLoginAttempts": 2,
+                "sessionTimeout": 30,
+                "minPasswordLength": 8,
+                "auditLogging": True,
+            }),
+        })
+        self.db.commit()
+
+        with patch.object(main_module, "verify_password", return_value=False):
+            first = self.client.post(
+                "/api/login",
+                json={"id_or_email": self.admin.email, "password": "wrong"},
+            )
+            second = self.client.post(
+                "/api/login",
+                json={"id_or_email": self.admin.username, "password": "wrong"},
+            )
+            locked = self.client.post(
+                "/api/login",
+                json={"id_or_email": self.admin.email, "password": "wrong"},
+            )
+
+        self.assertEqual(first.status_code, 400)
+        self.assertEqual(second.status_code, 400)
+        self.assertEqual(locked.status_code, 429)
+        self.assertEqual(self.db.query(LoginAttempt).one().failed_attempts, 2)
+
     def test_totp_challenge_creates_session_only_after_success_and_audits_result(self):
         secret = self.configure_authenticator()
         password_step = self.login()
@@ -152,6 +196,28 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         self.assertFalse(response.json()["requires_2fa_setup"])
         self.assertTrue(response.json()["challenge_token"])
         self.assertEqual(self.db.query(AdminSession).count(), 0)
+
+    def test_admin_session_expires_after_configured_idle_timeout(self):
+        token = main_module._create_session_token(
+            self.admin.username,
+            "admin",
+            60,
+            "test-admin-login-2fa-secret",
+        )
+        session = AdminSession(
+            admin_id=self.admin.id,
+            session_token=token,
+            is_active=True,
+            last_active=datetime.now(timezone.utc) - timedelta(minutes=31),
+        )
+        self.db.add(session)
+        self.db.commit()
+
+        with self.assertRaises(main_module.HTTPException) as expired:
+            main_module._admin_for_session(self.db, token)
+
+        self.assertEqual(expired.exception.status_code, 401)
+        self.assertFalse(session.is_active)
 
     def test_backup_code_is_hashed_single_use_and_remaining_count_is_accurate(self):
         self.configure_authenticator()
@@ -285,14 +351,16 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         self.assertTrue(next_login.json()["requires_2fa_setup"])
         self.assertEqual(self.db.query(AdminSession).count(), 1)
 
-    def test_emergency_bypass_only_allows_the_sole_active_admin(self):
+    def test_emergency_bypass_cannot_skip_required_two_factor_setup(self):
         with patch.dict(os.environ, {"ADMIN_2FA_BYPASS": "true"}):
             response = self.login()
-        self.assertIn("access_token", response.json())
+        self.assertTrue(response.json()["requires_2fa_setup"])
+        self.assertNotIn("access_token", response.json())
         self.assertEqual(
             self.db.query(AuditLog).filter_by(action="Admin 2FA Emergency Bypass").count(),
-            1,
+            0,
         )
+        self.assertEqual(self.db.query(AdminSession).count(), 0)
 
         self.db.add(Admin(
             username="second-admin",
@@ -302,11 +370,10 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
             status="Active",
         ))
         self.db.commit()
-        self.db.query(AdminSession).delete()
-        self.db.commit()
         with patch.dict(os.environ, {"ADMIN_2FA_BYPASS": "true"}):
             blocked_bypass = self.login()
         self.assertTrue(blocked_bypass.json()["requires_2fa_setup"])
+        self.assertNotIn("access_token", blocked_bypass.json())
 
     def test_email_code_is_hashed_sent_masked_and_single_use(self):
         self.configure_authenticator()

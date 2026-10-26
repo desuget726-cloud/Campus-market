@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react
 import toast from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Check, ChevronDown, Pencil, X } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, Check, ChevronDown, Copy, Pencil, Search, Wallet, X } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
 import { getErrorMessage, notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
@@ -505,6 +505,8 @@ function StudentDashboard({
   const [depositError, setDepositError] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
   const [copiedTransactionHash, setCopiedTransactionHash] = useState('');
+  const [transactionFilter, setTransactionFilter] = useState('all');
+  const [transactionSearch, setTransactionSearch] = useState('');
   const [paymentVerificationState, setPaymentVerificationState] = useState('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
@@ -773,6 +775,45 @@ function StudentDashboard({
     };
   };
 
+  const getTransactionCategory = (tx) => {
+    const typeAndLabel = `${tx?.type || ''} ${tx?.label || ''}`.toLowerCase();
+    if (typeAndLabel.includes('withdraw') || typeAndLabel.includes('payout')) return 'withdrawals';
+    if (getTransactionDirection(tx).sign === '+') return 'deposits';
+    return 'payments';
+  };
+
+  const getTransactionAmount = (tx) => {
+    const amount = Number(tx.amount ?? tx.value ?? 0);
+    return Number.isFinite(amount) ? Math.abs(amount) : 0;
+  };
+
+  const totalDeposited = transactionLedger.reduce((total, tx) => (
+    getTransactionDirection(tx).sign === '+'
+      ? total + getTransactionAmount(tx)
+      : total
+  ), 0);
+  const totalSpent = transactionLedger.reduce((total, tx) => (
+    getTransactionDirection(tx).sign === '-'
+      ? total + getTransactionAmount(tx)
+      : total
+  ), 0);
+  const filteredTransactions = transactionLedger.filter((tx) => {
+    const matchesFilter = transactionFilter === 'all' || getTransactionCategory(tx) === transactionFilter;
+    const searchableText = [
+      tx?.label,
+      tx?.type,
+      tx?.description,
+      tx?.hash,
+      tx?.reference,
+      tx?.reference_id,
+      tx?.reference_number,
+      tx?.payment_reference,
+      tx?.tx_ref,
+      tx?.transaction_id,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return matchesFilter && searchableText.includes(transactionSearch.trim().toLowerCase());
+  });
+
   const getTransactionStatusClass = (status) => {
     const normalizedStatus = String(status || '').trim().toLowerCase();
     if (normalizedStatus.includes('fail')) return 'border-rose-100 bg-rose-50 text-rose-700';
@@ -791,10 +832,6 @@ function StudentDashboard({
     }
   };
 
-  const recentTransactionText = transactionLedger[0]
-    ? getTransactionSummaryText(transactionLedger[0])
-    : 'No transactions yet';
-
   const fetchBuyerDashboardData = async () => {
     if (!studentId) return;
 
@@ -812,7 +849,11 @@ function StudentDashboard({
     try {
       const [wishRes, cartRes, orderRes, hiddenOrderRes, payRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${studentId}`),
-        fetch(`${API_BASE_URL}/api/student/cart?student_id=${studentId}`),
+        fetch(`${API_BASE_URL}/api/student/cart?student_id=${studentId}`, {
+          cache: 'no-store',
+          credentials: 'include',
+          ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+        }),
         fetch(`${API_BASE_URL}/api/student/orders?student_id=${encodeURIComponent(studentId)}`, {
           cache: 'no-store',
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
@@ -1450,7 +1491,7 @@ function StudentDashboard({
     { id: 'wishlist', label: 'Wishlist', badge: wishlistCount },
     { id: 'cart', label: 'Cart', badge: cartItemCount },
     { id: 'orders', label: 'Orders', badge: orderCount },
-    { id: 'payments', label: 'Payments', badge: transactionLedger.length },
+    { id: 'payments', label: 'Payments', badge: 0 },
     { id: 'reports-support', label: 'Reports & Support', badge: 0 },
   ];
 
@@ -1928,7 +1969,8 @@ function StudentDashboard({
   }, [activeTab]);
 
   useEffect(() => {
-    if (!user?.studentId) return;
+    const sessionToken = getStudentSessionToken();
+    if (!user?.studentId || !sessionToken) return;
 
     let isMounted = true;
     let unreadRequestInFlight = false;
@@ -1938,7 +1980,13 @@ function StudentDashboard({
       if (!isMounted || unreadRequestInFlight) return;
       unreadRequestInFlight = true;
       try {
-        const messageResponse = await fetch(`${API_BASE_URL}/api/student/messages/unread-count?student_id=${encodeURIComponent(currentStudentId)}`);
+        const messageResponse = await fetch(
+          `${API_BASE_URL}/api/student/messages/unread-count?student_id=${encodeURIComponent(currentStudentId)}`,
+          {
+            credentials: 'include',
+            headers: { Authorization: `Bearer ${sessionToken}` },
+          },
+        );
         if (!messageResponse.ok) return;
         const messageData = messageResponse.ok ? await messageResponse.json() : {};
         const parsedMessageCount = Number(messageData.unreadCount ?? messageData.unread_count ?? 0);
@@ -2008,7 +2056,7 @@ function StudentDashboard({
     // onUserUpdate and getTransactionSummaryText are intentionally excluded from this
     // student-scoped fetch to prevent parent callback identity changes from refetching.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.studentId]);
+  }, [getStudentSessionToken, user?.studentId]);
 
   useEffect(() => {
     if (!studentId || !['buyer', 'seller'].includes(activeTab)) return undefined;
@@ -4109,6 +4157,12 @@ function StudentDashboard({
     onNavigate?.('product-details', { productId });
   };
 
+  const handleViewProductFromSellerHub = (productId) => {
+    if (!productId) return;
+    setActiveTab('seller');
+    onNavigate?.('product-details', { productId, returnTo: 'seller-hub' });
+  };
+
   const canPayProductFromChat = (product) => {
     const buyerId = String(user?.studentId || user?.student_id || '').trim().toLowerCase();
     const sellerId = String(product?.seller_id || '').trim().toLowerCase();
@@ -5328,125 +5382,151 @@ function StudentDashboard({
                 {/* Sub-tab 4: Payments */}
                 {buyerTab === 'payments' && (
                   <div className="space-y-6">
-                    <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
-                      <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                        <h3 className="text-xl font-bold text-slate-900 border-b pb-2 mb-4">Transactions & Wallet</h3>
-                        <div className="space-y-4">
-                          <div className="rounded-2xl bg-sky-50/40 border border-sky-100 p-4">
-                            <p className="text-xs text-sky-600 font-semibold uppercase">Wallet Balance</p>
-                            <p className="mt-2 text-3xl font-black text-slate-900">{formatETB(currentWalletBalance)}</p>
-                            {heldWalletBalance > 0 && (
-                              <p className="mt-1 text-xs font-medium text-amber-700">
-                                {formatETB(heldWalletBalance)} held for pending withdrawals
-                              </p>
-                            )}
-                            {transactionLedger[0] && (() => {
-                              const latestTransaction = transactionLedger[0];
-                              const { sign, colorClass } = getTransactionDirection(latestTransaction);
-                              return (
-                                <p className={`mt-1 text-xs font-semibold ${colorClass}`}>
-                                  Recent {sign === '+' ? 'credit' : 'debit'}: {sign}{formatETB(Math.abs(Number(latestTransaction.amount ?? latestTransaction.value ?? 0)))}
-                                </p>
-                              );
-                            })()}
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <div className="flex min-w-0 items-center gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+                        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-sky-50 text-sky-700">
+                          <Wallet size={22} aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Wallet Balance</p>
+                          <p className="mt-1 truncate text-xl font-bold text-slate-900">{formatETB(currentWalletBalance)}</p>
+                          {heldWalletBalance > 0 && <p className="mt-1 text-xs text-amber-700">{formatETB(heldWalletBalance)} held</p>}
+                        </div>
+                      </div>
+                      <div className="flex min-w-0 items-center gap-4 rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+                        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700">
+                          <ArrowDownLeft size={22} aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Deposited</p>
+                          <p className="mt-1 truncate text-xl font-bold text-emerald-700">+{formatETB(totalDeposited)}</p>
+                        </div>
+                      </div>
+                      <div className="flex min-w-0 items-center gap-4 rounded-3xl border border-rose-100 bg-white p-5 shadow-sm">
+                        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-rose-50 text-rose-700">
+                          <ArrowUpRight size={22} aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Spent</p>
+                          <p className="mt-1 truncate text-xl font-bold text-rose-700">-{formatETB(totalSpent)}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+                      <div className="min-w-0 rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+                        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-xl font-bold text-slate-900">Transactions &amp; Wallet</h3>
+                            <p className="mt-1 text-sm text-slate-500">Review your wallet activity and payment history.</p>
                           </div>
-                          <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200">
-                            <div className="flex items-center justify-between gap-3">
-                              <p className="text-xs text-slate-500 font-semibold uppercase">Recent Transaction</p>
-                              <span className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-600 border border-slate-200">Live</span>
-                            </div>
-                            {transactionLedger[0] ? (() => {
-                              const recentTransaction = transactionLedger[0];
-                              const amount = Number(recentTransaction.amount ?? recentTransaction.value ?? 0);
-                              const { sign, colorClass } = getTransactionDirection(recentTransaction);
-                              const status = normalizePaymentStatus(recentTransaction.status);
-                              return (
-                                <div className="mt-3 flex items-start justify-between gap-4">
-                                  <div className="min-w-0">
-                                    <p className="truncate text-sm font-semibold text-slate-900">{getTransactionLabel(recentTransaction)}</p>
-                                    <p className="mt-1 text-xs text-slate-500">{recentTransaction.date || recentTransaction.created_at?.slice(0, 10) || 'Date unavailable'}</p>
-                                  </div>
-                                  <div className="shrink-0 text-right">
-                                    <p className={`text-sm font-black ${colorClass}`}>{sign}{formatETB(Math.abs(amount))}</p>
-                                    <span className={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${getTransactionStatusClass(status)}`}>
-                                      {status}
-                                    </span>
-                                  </div>
-                                </div>
-                              );
-                            })() : (
-                              <p className="mt-3 text-sm font-semibold text-slate-800">{recentTransactionText}</p>
-                            )}
-                          </div>
+                          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">{transactionLedger.length} records</span>
                         </div>
 
-                        <div className="mt-6">
-                          <div className="mb-3 flex items-center justify-between">
-                            <h4 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-500">Transaction Ledger</h4>
-                            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold text-slate-700">{transactionLedger.length} records</span>
+                        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="flex flex-wrap gap-2" aria-label="Filter transactions">
+                            {[
+                              { id: 'all', label: 'All' },
+                              { id: 'deposits', label: 'Deposits' },
+                              { id: 'payments', label: 'Payments' },
+                              { id: 'withdrawals', label: 'Withdrawals' },
+                            ].map((filter) => (
+                              <button
+                                key={filter.id}
+                                type="button"
+                                onClick={() => setTransactionFilter(filter.id)}
+                                aria-pressed={transactionFilter === filter.id}
+                                className={`rounded-full px-3.5 py-2 text-xs font-semibold transition ${transactionFilter === filter.id ? 'bg-slate-900 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                              >
+                                {filter.label}
+                              </button>
+                            ))}
                           </div>
-                          <div className="max-h-80 space-y-3 overflow-y-auto pr-2">
-                            {transactionLedger.length === 0 ? (
-                              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-                                No transaction records found. Your wallet loads and product purchases will appear here.
-                              </div>
-                            ) : (
-                              transactionLedger.map((tx) => {
-                                const amount = Number(tx.amount ?? tx.value ?? 0);
-                                const { sign, colorClass } = getTransactionDirection(tx);
-                                const status = normalizePaymentStatus(tx.status);
-                                const isPendingTransaction = ['pending', 'processing'].includes(String(tx.status || '').trim().toLowerCase());
-                                const isWithdrawal = String(tx.type || '').trim().toLowerCase() === 'wallet withdrawal';
-                                const isDeposit = String(tx.type || '').trim().toLowerCase() === 'wallet deposit';
+                          <label className="relative block w-full lg:max-w-xs">
+                            <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <input
+                              type="search"
+                              value={transactionSearch}
+                              onChange={(event) => setTransactionSearch(event.target.value)}
+                              placeholder="Search description or reference"
+                              aria-label="Search transactions by description or reference"
+                              className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-9 pr-4 text-sm outline-none transition placeholder:text-slate-400 focus:border-sky-400 focus:bg-white"
+                            />
+                          </label>
+                        </div>
 
-                                return (
-                                  <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div>
-                                        <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
-                                          {getTransactionLabel(tx)}
-                                          {tx.test_mode && <span className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-extrabold tracking-normal text-amber-800">TEST</span>}
-                                        </p>
-                                        <p className="mt-1 text-xs text-slate-500">{tx.date || tx.created_at?.slice(0, 10) || 'Date unavailable'}</p>
-                                      </div>
-                                      <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase ${getTransactionStatusClass(status)}`}>
-                                        {status}
-                                      </span>
+                        <div className="max-h-[30rem] space-y-2 overflow-y-auto pr-1">
+                          {filteredTransactions.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+                              {transactionLedger.length === 0
+                                ? 'No transaction records found. Your wallet deposits and product purchases will appear here.'
+                                : 'No transactions match your filters.'}
+                            </div>
+                          ) : (
+                            filteredTransactions.map((tx) => {
+                              const amount = getTransactionAmount(tx);
+                              const { sign, colorClass } = getTransactionDirection(tx);
+                              const isCredit = sign === '+';
+                              const status = normalizePaymentStatus(tx.status);
+                              const isPendingTransaction = ['pending', 'processing'].includes(String(tx.status || '').trim().toLowerCase());
+                              const isWithdrawal = getTransactionCategory(tx) === 'withdrawals';
+                              const isDeposit = getTransactionCategory(tx) === 'deposits';
+                              const timestamp = tx.created_at || tx.date;
+                              const parsedTimestamp = timestamp ? new Date(timestamp) : null;
+                              const timestampLabel = parsedTimestamp && !Number.isNaN(parsedTimestamp.getTime())
+                                ? parsedTimestamp.toLocaleString()
+                                : timestamp || 'Date unavailable';
+
+                              return (
+                                <div key={tx.id || tx.hash || `${tx.label}-${tx.date}`} className="flex min-w-0 items-center gap-3 rounded-2xl border border-slate-100 bg-white px-3 py-3 transition hover:border-slate-200 hover:bg-slate-50/60 sm:px-4">
+                                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${isCredit ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                                    {isCredit
+                                      ? <ArrowDownLeft size={18} aria-hidden="true" />
+                                      : <ArrowUpRight size={18} aria-hidden="true" />}
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                      <p className="max-w-full truncate text-sm font-semibold text-slate-900">{getTransactionLabel(tx)}</p>
+                                      {tx.test_mode && <span className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-800">TEST</span>}
+                                    </div>
+                                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+                                      <span>{timestampLabel}</span>
+                                      <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${getTransactionStatusClass(status)}`}>{status}</span>
+                                      {tx.hash && (
+                                        <span className="inline-flex min-w-0 items-center gap-1">
+                                          <span className="max-w-32 truncate font-mono" title={tx.hash}>{tx.hash}</span>
+                                          <button
+                                            type="button"
+                                            onClick={() => copyTransactionHash(tx.hash)}
+                                            title={copiedTransactionHash === tx.hash ? 'Copied' : 'Copy transaction hash'}
+                                            aria-label={copiedTransactionHash === tx.hash ? 'Transaction hash copied' : 'Copy transaction hash'}
+                                            className="rounded p-1 text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
+                                          >
+                                            {copiedTransactionHash === tx.hash
+                                              ? <Check size={13} aria-hidden="true" />
+                                              : <Copy size={13} aria-hidden="true" />}
+                                          </button>
+                                        </span>
+                                      )}
                                     </div>
                                     {isPendingTransaction && (isWithdrawal || isDeposit) && (
                                       <button
                                         type="button"
                                         onClick={() => isWithdrawal ? handlePayoutStatusCheck(tx) : handleDepositStatusCheck(tx)}
                                         disabled={payoutStatusCheckId === (tx.id || tx.hash)}
-                                        className="mt-3 rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                        className="mt-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
                                       >
                                         {payoutStatusCheckId === (tx.id || tx.hash) ? 'Checking status...' : isDeposit ? 'Check Deposit Status' : 'Check Payout Status'}
                                       </button>
                                     )}
-                                    <div className="mt-3 flex items-center justify-between">
-                                      <span className={`text-lg font-black ${colorClass}`}>
-                                        {sign}{formatETB(Math.abs(amount))}
-                                      </span>
-                                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500">
-                                        Hash: {tx.hash || 'N/A'}
-                                        {tx.hash && (
-                                          <button
-                                            type="button"
-                                            onClick={() => copyTransactionHash(tx.hash)}
-                                            title={copiedTransactionHash === tx.hash ? 'Copied' : 'Copy transaction hash'}
-                                            aria-label={copiedTransactionHash === tx.hash ? 'Transaction hash copied' : 'Copy transaction hash'}
-                                            className="rounded p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                                          >
-                                            {copiedTransactionHash === tx.hash ? 'OK' : '⧉'}
-                                          </button>
-                                        )}
-                                      </span>
-                                    </div>
                                   </div>
-                                );
-                              })
-                            )}
-                          </div>
+                                  <span className={`shrink-0 text-sm font-bold sm:text-base ${colorClass}`}>
+                                    {sign}{formatETB(Math.abs(amount))}
+                                  </span>
+                                </div>
+                              );
+                            })
+                          )}
                         </div>
                       </div>
 
@@ -5539,7 +5619,7 @@ function StudentDashboard({
                   }
                   onTabChange?.(target, payload);
                 }}
-                onViewProduct={handleViewProductFromChat}
+                onViewProduct={handleViewProductFromSellerHub}
                 onDeleteProduct={handleDeleteProduct}
                 sellerDashboardData={sellerDashboardData}
                 onEditProduct={handleEditProduct}

@@ -436,6 +436,7 @@ class Review(Base):
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     rating = Column(Integer, nullable=False)
     comment = Column(String(500), nullable=False)
+    is_hidden = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     order = relationship("Order", back_populates="reviews")
@@ -614,6 +615,11 @@ class AuditLog(Base):
     status = Column(String(50), default="SUCCESS", nullable=False)
     severity = Column(String(20), default="informational", nullable=False)
     ip_address = Column(String(50), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    actor_role = Column(String(30), nullable=True)
+    event_type = Column(String(255), nullable=True)
+    category = Column(String(30), nullable=True)
+    metadata_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     admin = relationship("Admin", back_populates="audit_logs")

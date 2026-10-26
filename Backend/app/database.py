@@ -132,6 +132,25 @@ def init_db() -> None:
                 table.dialect_options["mysql"]["collate"] = student_id_collation
     Base.metadata.create_all(bind=engine, tables=tables)
     inspector = inspect(engine)
+    if "audit_logs" in inspector.get_table_names():
+        audit_log_additions = {
+            "user_agent": "VARCHAR(255) NULL",
+            "actor_role": "VARCHAR(30) NULL",
+            "event_type": "VARCHAR(255) NULL",
+            "category": "VARCHAR(30) NULL",
+            "metadata_json": "JSON NULL",
+        }
+        for column_name, column_definition in audit_log_additions.items():
+            _add_column_if_missing("audit_logs", column_name, column_definition)
+    if "reviews" in inspector.get_table_names():
+        review_columns = {
+            column["name"] for column in inspect(engine).get_columns("reviews")
+        }
+        if "is_hidden" not in review_columns:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "ALTER TABLE reviews ADD COLUMN is_hidden BOOLEAN NOT NULL DEFAULT FALSE"
+                ))
     if "support_tickets" in inspector.get_table_names():
         support_ticket_columns = {
             column["name"] for column in inspect(engine).get_columns("support_tickets")

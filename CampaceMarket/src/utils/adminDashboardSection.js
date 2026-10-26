@@ -4,7 +4,6 @@ export const ADMIN_SECTION_OPTIONS = [
   'dashboard',
   'user-management',
   'student-verification',
-  'admin-users',
   'product-management',
   'product-reviews',
   'categories',
@@ -23,6 +22,8 @@ export const ADMIN_SECTION_OPTIONS = [
 export const normalizeAdminSection = (value, fallback = DEFAULT_ADMIN_SECTION) => {
   const normalizedValue = String(value ?? '').trim().toLowerCase();
   if (!normalizedValue) return fallback;
+
+  if (normalizedValue === 'admin-users') return DEFAULT_ADMIN_SECTION;
 
   if (['ai-recommendations', 'id-change-requests', 'id-verification', 'id-verification-requests'].includes(normalizedValue)) {
     return DEFAULT_ADMIN_SECTION;

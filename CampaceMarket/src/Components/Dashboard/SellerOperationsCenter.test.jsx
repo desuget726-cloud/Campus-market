@@ -159,6 +159,24 @@ describe('SellerOperationsCenter product pagination', () => {
     expect(screen.getByText('7 total')).toBeTruthy();
   });
 
+  it('opens product details from the inventory row and View button', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => (
+      String(url).includes('/seller/products')
+        ? { ok: true, json: async () => createPageResponse(1, 7, 7) }
+        : createAnalyticsResponse()
+    )));
+    const onViewProduct = vi.fn();
+    const user = userEvent.setup();
+    renderProductManagement({ onViewProduct });
+
+    const row = await screen.findByRole('row', { name: /Product 1/ });
+    await user.click(row);
+    await user.click(within(row).getByRole('button', { name: 'View' }));
+
+    expect(onViewProduct).toHaveBeenNthCalledWith(1, 1);
+    expect(onViewProduct).toHaveBeenNthCalledWith(2, 1);
+  });
+
   it('loads page two and updates the URL when Next is activated', async () => {
     const fetchProducts = vi.fn(async (url) => {
       if (!String(url).includes('/seller/products')) return createAnalyticsResponse();

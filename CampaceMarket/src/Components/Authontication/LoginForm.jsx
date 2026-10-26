@@ -95,24 +95,6 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
     const expectedState = sessionStorage.getItem('campaceOAuthState');
 
     if (!code && !oauthError) {
-      const hasStoredUserSession = (() => {
-        try {
-          const savedSession = window.localStorage.getItem('campaceSession');
-          return Boolean(savedSession && JSON.parse(savedSession)?.user);
-        } catch {
-          return false;
-        }
-      })();
-
-      if (hasStoredUserSession) {
-        fetch(apiUrl('/api/auth/session'), { credentials: 'include' })
-          .then(async (response) => {
-            if (!response.ok) return;
-            const data = await response.json();
-            onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
-          })
-          .catch(() => { });
-      }
       return;
     }
 

@@ -34,6 +34,16 @@ import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
 const ADMIN_SECTION_SESSION_KEY = 'campaceAdminSection';
+const getStudentId = (student) => String(student?.studentId || student?.student_id || '').trim();
+const getAccessToken = (session, sessionUser) => (
+  sessionUser?.access_token
+  || sessionUser?.accessToken
+  || sessionUser?.token
+  || session?.access_token
+  || session?.accessToken
+  || session?.token
+  || ''
+);
 const getStudentDashboardLink = () => {
   if (typeof window === 'undefined') {
     return { tab: 'home', section: null, itemId: null };
@@ -130,6 +140,7 @@ function AppContent() {
       return 'home';
     }
   });
+  const [isStudentSessionVerified, setIsStudentSessionVerified] = useState(false);
   const [user, setUser] = useState(() => {
     if (typeof window === 'undefined') return null;
     try {
@@ -171,6 +182,7 @@ function AppContent() {
       ? null
       : getProductIdFromReturnTo(`${window.location.pathname}${window.location.search}${window.location.hash}`)
   ));
+  const [returnToSellerHubOnProductBack, setReturnToSellerHubOnProductBack] = useState(false);
   const [pendingProductAction, setPendingProductAction] = useState(null);
   const [pendingSellerProductEdit, setPendingSellerProductEdit] = useState(null);
   const [pendingMessagesProductId, setPendingMessagesProductId] = useState(null);
@@ -194,7 +206,8 @@ function AppContent() {
   const activeRole = userRole || user?.role || null;
   const hasUser = Boolean(user);
   const serializedUser = user ? JSON.stringify(user) : '';
-  const studentId = userRole === 'student' ? user?.studentId : null;
+  const studentAccessToken = getAccessToken(null, user);
+  const studentId = isStudentSessionVerified && userRole === 'student' ? getStudentId(user) : '';
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
 
   const handleLogout = () => {
@@ -206,6 +219,7 @@ function AppContent() {
     });
     setUser(null);
     setUserRole(null);
+    setIsStudentSessionVerified(false);
     setUnreadCount(0);
     setCurrentView('home');
     setDashboardTab('home');
@@ -233,6 +247,7 @@ function AppContent() {
     }
     setUser(null);
     setUserRole(null);
+    setIsStudentSessionVerified(false);
     setUnreadCount(0);
     setShowSuccessModal(false);
     setCurrentView('login');
@@ -315,20 +330,42 @@ function AppContent() {
       };
     }
 
+    const accessToken = getAccessToken(storedSession, storedUser);
     fetch(`${API_BASE_URL}/api/auth/session`, {
       credentials: 'include',
-      headers: storedUser.access_token ? { Authorization: `Bearer ${storedUser.access_token}` } : {},
+      ...(accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
     })
       .then(async (response) => {
         if (cancelled) return;
-        if (response.status === 401) return;
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (response.status === 401) {
+            window.localStorage.removeItem(SESSION_STORAGE_KEY);
+          } else {
+            console.error('Unable to verify the stored student session:', response.status);
+          }
+          setUser(null);
+          setUserRole(null);
+          setIsStudentSessionVerified(false);
+          setCurrentView('login');
+          return;
+        }
 
         const data = await response.json();
-        if (!data?.user || data.role !== 'student' || cancelled) return;
+        if (!data?.user || data.role !== 'student' || !getStudentId(data.user) || cancelled) {
+          window.localStorage.removeItem(SESSION_STORAGE_KEY);
+          setUser(null);
+          setUserRole(null);
+          setIsStudentSessionVerified(false);
+          setCurrentView('login');
+          return;
+        }
 
         setUser((currentUser) => {
-          const nextUser = { ...data.user, ...(currentUser || {}) };
+          const nextUser = {
+            ...(currentUser || {}),
+            ...data.user,
+            access_token: data.access_token || accessToken || null,
+          };
           persistSession(
             nextUser,
             'student',
@@ -339,9 +376,17 @@ function AppContent() {
           return nextUser;
         });
         setUserRole('student');
+        setIsStudentSessionVerified(true);
         setCurrentView((view) => view === 'login' || view === 'home' ? 'student-dashboard' : view);
       })
-      .catch(() => { })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Unable to verify the stored student session:', error);
+        setUser(null);
+        setUserRole(null);
+        setIsStudentSessionVerified(false);
+        setCurrentView('login');
+      })
       .finally(() => {
         if (!cancelled) setIsRestoringStudentSession(false);
       });
@@ -417,7 +462,7 @@ function AppContent() {
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
-    if (!studentId) {
+    if (!studentId || !studentAccessToken) {
       setUnreadCount((current) => current === 0 ? current : 0);
       return;
     }
@@ -432,6 +477,10 @@ function AppContent() {
           `${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(
             studentId,
           )}`,
+          {
+            credentials: 'include',
+            headers: { Authorization: `Bearer ${studentAccessToken}` },
+          },
         );
 
         const data = await response.json();
@@ -461,19 +510,21 @@ function AppContent() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [studentId]);
+  }, [studentAccessToken, studentId]);
 
-  const handleRegisterSuccess = (studentData) => {
-    setLoginMessage('');
-    const nextUser = { ...studentData, access_token: studentData?.access_token || studentData?.accessToken || null };
-    setUser(nextUser);
-    setUserRole('student');
-    setDashboardTab('home');
-    setStudentTab('home');
-    setAdminTab('dashboard');
-    window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
-    setCurrentView('student-dashboard');
-    persistSession(nextUser, 'student', 'student-dashboard', 'home', 'home');
+  const handleRegisterSuccess = () => {
+    setUser(null);
+    setUserRole(null);
+    setIsStudentSessionVerified(false);
+    setUnreadCount(0);
+    setCurrentView('login');
+    setLoginMessage('Registration complete. Please sign in to continue.');
+    try {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
+    } catch (error) {
+      console.error('Failed to clear the previous session after registration:', error);
+    }
   };
 
   const handleLoginSuccess = (userData, role) => {
@@ -487,6 +538,7 @@ function AppContent() {
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
     setUser(nextUser);
     setUserRole(role);
+    setIsStudentSessionVerified(role === 'student' && Boolean(getStudentId(nextUser)));
     setPendingProductId(productId);
     setPendingProductAction(productId ? productAction : null);
     setDashboardTab('home');
@@ -610,6 +662,11 @@ function AppContent() {
 
     if (view === 'product-details' || view === 'ProductDetails') {
       const productId = params.productId ?? params.product_id ?? null;
+      if (params.returnTo === 'seller-hub') {
+        setReturnToSellerHubOnProductBack(true);
+      } else if (currentView !== 'home') {
+        setReturnToSellerHubOnProductBack(false);
+      }
       setPendingMessagesProductId(null);
       setPendingProductId(productId);
       setPendingProductAction(params.action === 'pay' && productId
@@ -746,7 +803,7 @@ function AppContent() {
   };
 
   return (
-    <CartProvider user={user}>
+    <CartProvider user={isStudentSessionVerified && activeRole === 'student' ? user : null}>
     <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-dvh lg:overflow-hidden' : ''}`}>
       <Toaster
         position="top-right"
@@ -878,6 +935,12 @@ function AppContent() {
               user={user}
               initialProductId={pendingProductId}
               pendingProductAction={pendingProductAction}
+              onBackToSellerHub={returnToSellerHubOnProductBack ? () => {
+                setReturnToSellerHubOnProductBack(false);
+                setPendingProductId(null);
+                setPendingProductAction(null);
+                handleNavigate('/dashboard?tab=seller');
+              } : undefined}
               onPendingProductActionHandled={() => {
                 clearPendingProductAction();
                 setPendingProductId(null);
@@ -925,7 +988,7 @@ function AppContent() {
               onTabChange={(tab) => setAdminTab(tab)}
             />
           )}
-          {!isRestoringStudentSession && activeRole === 'student' && currentView === 'student-dashboard' && (
+          {!isRestoringStudentSession && isStudentSessionVerified && activeRole === 'student' && currentView === 'student-dashboard' && (
             <StudentDashboard
               user={user}
               initialTab={studentTab}

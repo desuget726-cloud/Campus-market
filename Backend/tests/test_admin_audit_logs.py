@@ -57,6 +57,8 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
                 description="Persisted audit row",
                 status="SUCCESS",
                 severity="informational",
+                ip_address="197.156.0.25" if log_id == 25 else None,
+                user_agent="Mozilla/5.0 (Audit Test)" if log_id == 25 else None,
                 created_at=created_at + timedelta(seconds=log_id),
             )
             for log_id in range(1, 26)
@@ -107,8 +109,19 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
             {
                 "id", "admin_id", "action", "entity_type", "entity_id", "description",
                 "status", "ip_address", "created_at", "severity", "username", "full_name", "role",
+                "actor_id", "actor_username", "actor_name", "actor_role", "event_type",
+                "category", "metadata", "user_agent",
             },
         )
+        self.assertEqual(payload["items"][0]["actor_role"], "admin")
+        self.assertEqual(payload["items"][0]["actor_name"], "Audit Admin")
+        self.assertEqual(payload["items"][0]["event_type"], "ADMIN_ACTION_25")
+        self.assertEqual(payload["items"][0]["category"], "ADMIN")
+        self.assertEqual(payload["items"][0]["severity"], "INFO")
+        self.assertEqual(payload["items"][0]["metadata"], {"description": "Persisted audit row"})
+        self.assertEqual(payload["items"][0]["ip_address"], "197.156.0.25")
+        self.assertEqual(payload["items"][0]["user_agent"], "Mozilla/5.0 (Audit Test)")
+        self.assertTrue(payload["items"][0]["created_at"].endswith("Z"))
         self.assertNotIn("password_hash", payload["items"][0])
         self.assertNotIn("two_factor_secret", payload["items"][0])
         self.assertNotIn("backup_codes", payload["items"][0])
@@ -159,6 +172,32 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
         self.assertIn("authorization", response.headers.get("access-control-allow-headers", "").lower())
 
     def test_summary_uses_login_history_and_audit_severity_counts(self):
+        self.db.add_all([
+            AuditLog(
+                action="Background task complete",
+                entity_type="System",
+                description="Automated cleanup complete",
+                status="SUCCESS",
+                severity="informational",
+            ),
+            AuditLog(
+                admin_id=self.admin.id,
+                action="Report Escalated",
+                entity_type="Report",
+                entity_id=11,
+                status="SUCCESS",
+                severity="warning",
+            ),
+            AuditLog(
+                admin_id=self.admin.id,
+                action="User Banned",
+                entity_type="User",
+                entity_id=1600418,
+                status="SUCCESS",
+                severity="critical",
+            ),
+        ])
+        self.db.commit()
         response = self.client.get(
             "/api/admin/audit-logs/summary",
             headers={"Authorization": "Bearer test-session"},
@@ -166,11 +205,54 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
-            "total_events": 25,
+            "total_events": 28,
             "logins": {"success": 2, "failed": 2, "total": 4},
-            "admin_actions": 25,
-            "alerts": {"critical": 0, "warning": 0, "informational": 25, "total": 25},
+            "admin_actions": 27,
+            "alerts": {"critical": 1, "warning": 1, "informational": 26, "total": 2},
         })
+
+    def test_filters_by_ip_severity_and_category(self):
+        self.db.add_all([
+            AuditLog(
+                admin_id=self.admin.id,
+                action="Report Escalated",
+                entity_type="Report",
+                entity_id=11,
+                description='{"old_status":"under_review","new_status":"escalated"}',
+                status="SUCCESS",
+                severity="warning",
+            ),
+            AuditLog(
+                action="Background task complete",
+                entity_type="System",
+                description="Automated cleanup complete",
+                status="SUCCESS",
+                severity="informational",
+            ),
+            AuditLog(
+                action="Payout threshold reached",
+                entity_type="Payout",
+                description="Payout requires review.",
+                status="SUCCESS",
+                severity="informational",
+            ),
+        ])
+        self.db.commit()
+
+        warning = self.get_logs(severity="WARNING", category="SECURITY")
+        financial_warning = self.get_logs(severity="WARNING", category="FINANCIAL")
+        by_ip = self.get_logs(search="197.156.0.25")
+        system = self.get_logs(category="SYSTEM", severity="INFO")
+
+        self.assertEqual(warning.status_code, 200)
+        self.assertEqual([row["event_type"] for row in warning.json()["items"]], ["REPORT_ESCALATED"])
+        self.assertEqual(warning.json()["items"][0]["metadata"], {
+            "old_status": "under_review",
+            "new_status": "escalated",
+        })
+        self.assertEqual([row["event_type"] for row in financial_warning.json()["items"]], ["PAYOUT_THRESHOLD_REACHED"])
+        self.assertEqual([row["id"] for row in by_ip.json()["items"]], [25])
+        self.assertEqual(len(system.json()["items"]), 1)
 
     def test_invalid_and_expired_admin_jwts_are_rejected(self):
         with patch.dict(os.environ, {"SESSION_SECRET": "audit-test-secret"}):

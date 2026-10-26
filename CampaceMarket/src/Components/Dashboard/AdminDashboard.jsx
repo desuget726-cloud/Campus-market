@@ -6,7 +6,7 @@ import { Check, Copy, Eye, Pencil, Trash2, X } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
 import AdminSupportInbox from './AdminSupportInbox';
 import AdminReportLinkSearchResults from './AdminReportLinkSearchResults';
-import { AdminProductReviewsPage, AdminUsersPage } from './AdminDirectoryPages';
+import { AdminProductReviewsPage } from './AdminDirectoryPages';
 import AdminProfileMenu from './AdminProfileMenu';
 import AdminSidebarNavigation from './AdminSidebarNavigation';
 import { getErrorMessage, notifyError, notifySuccess } from '../../utils/notify';
@@ -24,9 +24,10 @@ import {
 } from '../../utils/adminNavigation';
 import { notifyAdminSeenChanged, subscribeToAdminSeenChanges } from '../../utils/adminSeenSync';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
-import { getAdminSettings, invalidateAdminSettingsCache } from '../../api/adminSettings';
+import { getAdminSettings, invalidateAdminSettingsCache, patchAdminSettings } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
 import { applyReportLinkSelection } from './reportLinkSelection';
+import { getAdminProductStatusCounts, matchesAdminProductStatusFilter } from '../../utils/adminProductStatus';
 import {
   analyticsSalesPeriods,
   buildAnalyticsRevenueChart,
@@ -1119,14 +1120,13 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
 
   // 3. Product Management States
   const [prodSearch, setProdSearch] = useState('');
-  const [prodStatusFilter, setProdStatusFilter] = useState('');
+  const [prodStatusFilter, setProdStatusFilter] = useState('all');
   const [productCategoryFilter, setProductCategoryFilter] = useState('All');
   const [productSubcategoryFilter, setProductSubcategoryFilter] = useState('All');
   const [productPage, setProductPage] = useState(1);
   const PRODUCTS_PER_PAGE = 10;
   const [dbCategories, setDbCategories] = useState([]);
   const [dbSubcategories, setDbSubcategories] = useState([]);
-  const [productStats, setProductStats] = useState({ total: 0, approved: 0, pending: 0, flagged: 0 });
   const [productsList, setProductsList] = useState([
     { id: 1, title: "HP Pavilion Laptop", price: "24,000 ETB", seller: "Tefesayiku", category: "Electronics", condition: "New", status: "Pending", image: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?auto=format&fit=crop&w=900&q=80", description: "Premium lightweight laptop with 16GB RAM and a 512GB SSD for student productivity.", seller_verified: true },
     { id: 2, title: "Calculus II Textbook", price: "450 ETB", seller: "Abebe Kebede", category: "Books", condition: "Gently Used", status: "Approved", image: "https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=900&q=80", description: "Well-maintained calculus reference book with highlighted notes and exercise solutions.", seller_verified: true }
@@ -1303,8 +1303,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [paymentSearchTerm, setPaymentSearchTerm] = useState('');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('All');
   const [paymentMethodFilter, setPaymentMethodFilter] = useState('All');
-  const [paymentFromDate, setPaymentFromDate] = useState('');
-  const [paymentToDate, setPaymentToDate] = useState('');
+  const [paymentDateFilter, setPaymentDateFilter] = useState('');
   const [paymentPage, setPaymentPage] = useState(1);
   const PAYMENTS_PER_PAGE = 10;
   const [selectedPaymentDetail, setSelectedPaymentDetail] = useState(null);
@@ -1357,9 +1356,11 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   // 8. Audit Logs List
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLogSearch, setAuditLogSearch] = useState('');
-  const [auditLogFilterAction, setAuditLogFilterAction] = useState('All');
+  const [auditLogFilterSeverity, setAuditLogFilterSeverity] = useState('All');
+  const [auditLogFilterCategory, setAuditLogFilterCategory] = useState('All');
   const [auditLogFilterStatus, setAuditLogFilterStatus] = useState('All');
-  const [auditLogFilterDate, setAuditLogFilterDate] = useState('All');
+  const [auditLogStartDate, setAuditLogStartDate] = useState('');
+  const [auditLogEndDate, setAuditLogEndDate] = useState('');
   const [auditLogSummary, setAuditLogSummary] = useState(null);
   const [auditLogsLoading, setAuditLogsLoading] = useState(true);
   const [auditLogsError, setAuditLogsError] = useState('');
@@ -1370,6 +1371,32 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [auditLogTotal, setAuditLogTotal] = useState(0);
   const auditLogPageSize = 20;
   const refreshAuditLogs = () => setAuditLogsRetry((retry) => retry + 1);
+
+  const buildAuditLogParams = (page = auditLogPage, pageSize = auditLogPageSize) => {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (auditLogSearch.trim()) params.set('search', auditLogSearch.trim());
+    if (auditLogFilterSeverity !== 'All') params.set('severity', auditLogFilterSeverity);
+    if (auditLogFilterCategory !== 'All') params.set('category', auditLogFilterCategory);
+    if (auditLogFilterStatus !== 'All') params.set('status', auditLogFilterStatus);
+    if (auditLogStartDate) params.set('start_date', new Date(`${auditLogStartDate}T00:00:00`).toISOString());
+    if (auditLogEndDate) params.set('end_date', new Date(`${auditLogEndDate}T23:59:59.999`).toISOString());
+    return params;
+  };
+
+  const fetchAllFilteredAuditLogs = async () => {
+    const logs = [];
+    let total;
+    let page = 1;
+    do {
+      const params = buildAuditLogParams(page, 100);
+      const result = await adminApiGet(`/api/admin/audit-logs?${params.toString()}`);
+      const items = Array.isArray(result.items) ? result.items : [];
+      logs.push(...items);
+      total = Number(result.total) || 0;
+      page += 1;
+    } while (logs.length < total);
+    return logs;
+  };
 
   useEffect(() => {
     setUserPage(1);
@@ -1385,7 +1412,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
 
   useEffect(() => {
     setPaymentPage(1);
-  }, [paymentSearchTerm, paymentStatusFilter, paymentMethodFilter, paymentFromDate, paymentToDate]);
+  }, [paymentSearchTerm, paymentStatusFilter, paymentMethodFilter, paymentDateFilter]);
 
   const fetchGatewayStatus = async () => {
     try {
@@ -1488,21 +1515,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       setAuditLogsLoading(true);
       setAuditLogsError('');
       try {
-        const params = new URLSearchParams({ page: String(auditLogPage), page_size: String(auditLogPageSize) });
-        if (auditLogSearch.trim()) params.set('search', auditLogSearch.trim());
-        if (auditLogFilterAction !== 'All') params.set('action', auditLogFilterAction);
-        if (auditLogFilterStatus !== 'All') params.set('status', auditLogFilterStatus);
-        const now = new Date();
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const dateStarts = {
-          Today: startOfToday,
-          Yesterday: new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000),
-          'Last 7 Days': new Date(startOfToday.getTime() - 6 * 24 * 60 * 60 * 1000),
-        };
-        if (dateStarts[auditLogFilterDate]) {
-          params.set('start_date', dateStarts[auditLogFilterDate].toISOString());
-          params.set('end_date', (auditLogFilterDate === 'Yesterday' ? startOfToday : now).toISOString());
-        }
+        const params = buildAuditLogParams();
 
         const [data, summary] = await Promise.all([
           adminApiGet(`/api/admin/audit-logs?${params.toString()}`),
@@ -1510,21 +1523,25 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         ]);
         if (cancelled) return;
         const mappedLogs = (Array.isArray(data.items) ? data.items : []).map((log) => {
-          const description = getAuditDescriptionPresentation(log.description);
+          const description = getAuditDescriptionPresentation(log.metadata ?? log.description);
           const rowStatus = String(log.status || '').toUpperCase();
           return {
             id: log.id,
             action: log.action || 'System Event',
-            actionType: log.entity_type || 'System',
+            event_type: log.event_type || log.action || 'SYSTEM_EVENT',
+            category: log.category || 'SYSTEM',
             description: description.summary,
             rawDescription: description.details,
-            performed_by: log.username || 'System',
+            performed_by: log.actor_name || log.full_name || log.username || 'System',
+            actor_id: log.actor_id ?? log.admin_id ?? 'N/A',
+            actor_role: log.actor_role || (log.admin_id ? 'admin' : 'system'),
             entity_type: log.entity_type || 'System',
             entity_id: log.entity_id ?? 'N/A',
             ip_address: log.ip_address || 'Unknown',
+            user_agent: log.user_agent || 'Unknown',
             date_time: log.created_at,
             status: ['SUCCESS', 'SUCCESSFUL', 'COMPLETED'].includes(rowStatus) ? 'SUCCESS' : 'FAILED',
-            severity: String(log.severity || 'informational').toLowerCase(),
+            severity: String(log.severity || 'INFO').toUpperCase(),
           };
         });
         setAuditLogs(mappedLogs);
@@ -1553,7 +1570,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
 
     fetchAuditLogs();
     return () => { cancelled = true; };
-  }, [activeTab, auditLogPage, auditLogSearch, auditLogFilterAction, auditLogFilterStatus, auditLogFilterDate, auditLogsRetry, user?.role, onSessionExpired]);
+  }, [activeTab, auditLogPage, auditLogSearch, auditLogFilterSeverity, auditLogFilterCategory, auditLogFilterStatus, auditLogStartDate, auditLogEndDate, auditLogsRetry, user?.role, onSessionExpired]);
 
   useEffect(() => {
     const fetchVerificationColleges = async () => {
@@ -1736,23 +1753,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           description: product.description ?? 'No product description provided by the seller yet.',
           seller_verified: product.seller_verified ?? product.is_verified ?? true,
         }));
-        const statusCounts = mappedProducts.reduce((counts, product) => {
-          const normalizedStatus = String(product.status || '').trim().toLowerCase();
-          if (normalizedStatus === 'approved') counts.approved += 1;
-          if (normalizedStatus === 'pending') counts.pending += 1;
-          if (normalizedStatus === 'flagged') counts.flagged += 1;
-          return counts;
-        }, { approved: 0, pending: 0, flagged: 0 });
-
-        setProductStats({
-          total: mappedProducts.length,
-          ...statusCounts,
-        });
         setProductsList(mappedProducts);
       }
     } catch (error) {
       console.error('Failed to fetch admin catalog products:', error);
-      setProductStats({ total: 0, approved: 0, pending: 0, flagged: 0 });
     }
   };
 
@@ -1860,7 +1864,12 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     maintenanceMessage: 'The marketplace is temporarily unavailable for maintenance.'
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const [securitySettingsSaving, setSecuritySettingsSaving] = useState(false);
   const savedSettingsRef = useRef(null);
+  const securitySettingsRef = useRef(securitySettings);
+  const securitySaveTimerRef = useRef(null);
+  const securitySaveSequenceRef = useRef(0);
+  const securitySaveQueueRef = useRef(Promise.resolve());
   const settingsLoadRequestedRef = useRef(false);
   const updateSetting = (key, value) => {
     const [section, ...fieldPath] = key.split('.');
@@ -1900,11 +1909,74 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setPaymentSettings(saved.payment);
     setNotificationSettings(saved.notifications);
     setSecuritySettings(saved.security);
+    securitySettingsRef.current = saved.security;
     setStudentVerificationSettings(saved.studentVerification);
     setModerationSettings(saved.moderation);
     setChatSettings(saved.chat);
     setMaintenanceSettings(saved.maintenance);
   };
+
+  const saveSecuritySettings = async (nextSettings) => {
+    if (settingsLoading) return;
+    if (securitySaveTimerRef.current) {
+      window.clearTimeout(securitySaveTimerRef.current);
+      securitySaveTimerRef.current = null;
+    }
+    const requestSequence = ++securitySaveSequenceRef.current;
+    securitySettingsRef.current = nextSettings;
+    setSecuritySettings(nextSettings);
+    setSecuritySettingsSaving(true);
+    const save = securitySaveQueueRef.current.catch(() => {}).then(async () => {
+      try {
+        const saved = await patchAdminSettings({ security: nextSettings });
+        const savedSecurity = saved.settings?.security || nextSettings;
+        savedSettingsRef.current = {
+          ...(savedSettingsRef.current || {}),
+          security: savedSecurity,
+        };
+        if (requestSequence === securitySaveSequenceRef.current) {
+          securitySettingsRef.current = savedSecurity;
+          setSecuritySettings(savedSecurity);
+        }
+        notifySuccess('Security settings saved successfully.', 'admin-security-settings-save');
+      } catch (error) {
+        if (requestSequence === securitySaveSequenceRef.current) {
+          const savedSecurity = savedSettingsRef.current?.security || nextSettings;
+          securitySettingsRef.current = savedSecurity;
+          setSecuritySettings(savedSecurity);
+        }
+        notifyError(error, 'admin-security-settings-save');
+      } finally {
+        if (requestSequence === securitySaveSequenceRef.current) {
+          setSecuritySettingsSaving(false);
+        }
+      }
+    });
+    securitySaveQueueRef.current = save;
+    return save;
+  };
+
+  const scheduleSecuritySettingsSave = (field, value) => {
+    const nextSettings = { ...securitySettingsRef.current, [field]: value };
+    securitySettingsRef.current = nextSettings;
+    setSecuritySettings(nextSettings);
+    if (securitySaveTimerRef.current) window.clearTimeout(securitySaveTimerRef.current);
+    securitySaveTimerRef.current = window.setTimeout(() => {
+      securitySaveTimerRef.current = null;
+      saveSecuritySettings(nextSettings);
+    }, 400);
+  };
+
+  const flushSecuritySettingsSave = () => {
+    if (!securitySaveTimerRef.current) return;
+    window.clearTimeout(securitySaveTimerRef.current);
+    securitySaveTimerRef.current = null;
+    saveSecuritySettings(securitySettingsRef.current);
+  };
+
+  useEffect(() => () => {
+    if (securitySaveTimerRef.current) window.clearTimeout(securitySaveTimerRef.current);
+  }, []);
 
   // KPI calculations
   const [metrics, setMetrics] = useState({
@@ -2318,6 +2390,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         maintenance: { ...maintenanceSettings, ...(data.maintenance || {}) },
       };
       savedSettingsRef.current = loadedSettings;
+      securitySettingsRef.current = loadedSettings.security;
 
       const setIfChanged = (setter, nextValue) => setter((current) => (
         JSON.stringify(current) === JSON.stringify(nextValue) ? current : nextValue
@@ -2522,23 +2595,38 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   };
 
-  const handleExportAuditLogsCSV = (logs = auditLogs) => {
-    const columns = ['Event ID', 'Action', 'Action Type', 'Description', 'Performed By', 'Entity Type', 'Entity ID', 'IP Address', 'Date & Time', 'Status', 'Severity'];
+  const handleExportAuditLogsCSV = async () => {
+    let logs;
+    try {
+      logs = await fetchAllFilteredAuditLogs();
+    } catch (error) {
+      setAuditLogsError(getErrorMessage(error));
+      return;
+    }
+    const columns = ['Event ID', 'Event Type', 'Category', 'Severity', 'Action', 'Description', 'Actor ID', 'Performed By', 'Actor Role', 'Entity Type', 'Entity ID', 'IP Address', 'User Agent', 'Date & Time', 'Status', 'Metadata'];
     const sanitizeCSVField = (value) => String(value || '').replace(/,/g, ';').replace(/"/g, '""');
     const escapeCSVValue = (value) => `"${sanitizeCSVField(value)}"`;
-    const rows = logs.map((log) => [
-      String(log.id || ''),
-      String(log.action || ''),
-      String(log.actionType || ''),
-      String(log.description || ''),
-      String(log.performed_by || ''),
-      String(log.entity_type || ''),
-      String(log.entity_id || ''),
-      String(log.ip_address || ''),
-      String(log.date_time || ''),
-      String(log.status || ''),
-      String(log.severity || ''),
-    ].map(escapeCSVValue));
+    const rows = logs.map((log) => {
+      const presentation = getAuditDescriptionPresentation(log.metadata ?? log.description);
+      return [
+        String(log.id || ''),
+        String(log.event_type || ''),
+        String(log.category || ''),
+        String(log.severity || ''),
+        String(log.action || ''),
+        presentation.summary,
+        String(log.actor_id ?? log.admin_id ?? ''),
+        String(log.actor_name || log.full_name || log.username || 'System'),
+        String(log.actor_role || ''),
+        String(log.entity_type || ''),
+        String(log.entity_id || ''),
+        String(log.ip_address || ''),
+        String(log.user_agent || ''),
+        String(log.created_at || ''),
+        String(log.status || ''),
+        presentation.details,
+      ].map(escapeCSVValue);
+    });
 
     const csvContent = `\uFEFF${columns.map(escapeCSVValue).join(',')}\n${rows.map((row) => row.join(',')).join('\n')}`;
     const downloadLink = document.createElement('a');
@@ -3611,7 +3699,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   };
 
   const handleSaveSystemSettings = async () => {
-    if (settingsLoading) return;
+    if (settingsLoading || securitySettingsSaving) return;
     const allowedEmailDomain = String(studentVerificationSettings.allowedEmailDomain || '').trim().replace(/^@+/, '').toLowerCase();
     const validEmailDomain = isValidEmailDomain(allowedEmailDomain);
     if (studentVerificationSettings.requireUniversityEmail && !validEmailDomain) {
@@ -3659,6 +3747,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       const savedSettings = data.settings || payload;
       savedSettingsRef.current = savedSettings;
       setSecuritySettings(savedSettings.security || payload.security);
+      securitySettingsRef.current = savedSettings.security || payload.security;
       setStudentVerificationSettings(savedSettings.studentVerification || payload.studentVerification);
       invalidateAdminSettingsCache();
       try {
@@ -5196,14 +5285,13 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         );
       }
       case 'product-management': {
+        const productStatusCounts = getAdminProductStatusCounts(productsList);
         const filteredProds = productsList.filter(product => {
           const matchesSearch =
             product.title?.toLowerCase().includes(prodSearch.toLowerCase()) ||
             product.seller?.toLowerCase().includes(prodSearch.toLowerCase()) ||
             product.seller_id?.toLowerCase().includes(prodSearch.toLowerCase());
-          const matchesStatus = prodStatusFilter
-            ? String(product.status || '').trim().toLowerCase() === prodStatusFilter.toLowerCase()
-            : true;
+          const matchesStatus = matchesAdminProductStatusFilter(product, prodStatusFilter);
           const matchesCategory = productCategoryFilter === 'All' || product.category === productCategoryFilter;
           const matchesSubcategory = productSubcategoryFilter === 'All' || product.subcategory === productSubcategoryFilter;
           return matchesSearch && matchesStatus && matchesCategory && matchesSubcategory;
@@ -5233,12 +5321,13 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               </div>
             </div>
 
-            <div className="grid min-w-0 grid-cols-1 gap-4 min-[420px]:grid-cols-2 md:grid-cols-4">
+            <div className="grid min-w-0 grid-cols-1 gap-4 min-[420px]:grid-cols-2 md:grid-cols-5">
               {[
-                { label: 'Total Products', value: productStats.total, tone: 'bg-sky-50 border-sky-200 text-sky-700' },
-                { label: 'Approved', value: productStats.approved, tone: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-                { label: 'Pending Review', value: productStats.pending, tone: 'bg-amber-50 border-amber-200 text-amber-700' },
-                { label: 'Flagged', value: productStats.flagged, tone: 'bg-rose-50 border-rose-200 text-rose-700' },
+                { label: 'Total Products', value: productStatusCounts.total, tone: 'bg-sky-50 border-sky-200 text-sky-700' },
+                { label: 'Available', value: productStatusCounts.available, tone: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
+                { label: 'Sold', value: productStatusCounts.sold, tone: 'bg-slate-100 border-slate-300 text-slate-700' },
+                { label: 'Pending Review', value: productStatusCounts.pending, tone: 'bg-amber-50 border-amber-200 text-amber-700' },
+                { label: 'Flagged', value: productStatusCounts.flagged, tone: 'bg-rose-50 border-rose-200 text-rose-700' },
               ].map((metric) => (
                 <div key={metric.label} className={`rounded-[24px] border p-5 shadow-sm ${metric.tone}`}>
                   <p className="text-[10px] font-bold uppercase tracking-[0.16em]">{metric.label}</p>
@@ -5287,27 +5376,41 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide">Filter by Status</label>
-                <select
-                  value={prodStatusFilter}
-                  onChange={(e) => setProdStatusFilter(e.target.value)}
-                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-blue-500 focus:bg-white focus:outline-none transition appearance-none"
-                >
-                  <option value="">All Statuses</option>
-                  <option value="Pending">Pending Review</option>
-                  <option value="Approved">Approved</option>
-                  <option value="Flagged">Flagged</option>
-                  <option value="Sold">Sold</option>
-                </select>
-              </div>
             </div>
 
             <div className="admin-product-review-queue min-w-0 rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm overflow-hidden">
+              <div className="mb-5 flex flex-wrap gap-2" role="group" aria-label="Filter products by status">
+                {[
+                  { key: 'all', label: 'All Products', count: productStatusCounts.total },
+                  { key: 'available', label: 'Available / Unsold', count: productStatusCounts.available },
+                  { key: 'sold', label: 'Sold', count: productStatusCounts.sold },
+                  { key: 'pending', label: 'Pending Review', count: productStatusCounts.pending },
+                  { key: 'flagged', label: 'Flagged', count: productStatusCounts.flagged },
+                ].map((filter) => {
+                  const isActive = prodStatusFilter === filter.key;
+                  return (
+                    <button
+                      key={filter.key}
+                      type="button"
+                      aria-pressed={isActive}
+                      onClick={() => setProdStatusFilter(filter.key)}
+                      className={`rounded-full border px-4 py-2 text-xs font-bold transition ${isActive ? 'border-blue-600 bg-blue-600 text-white shadow-sm' : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-slate-300 hover:bg-white'}`}
+                    >
+                      {filter.label} <span className={isActive ? 'text-blue-100' : 'text-slate-400'}>({filter.count})</span>
+                    </button>
+                  );
+                })}
+              </div>
               <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h3 className="text-lg font-bold text-slate-950">Product Review Queue</h3>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">Select pending products for a batch moderation action.</p>
+                  <h3 className="text-lg font-bold text-slate-950">
+                    {prodStatusFilter === 'pending' ? 'Product Review Queue' : 'Marketplace Product Catalog'}
+                  </h3>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">
+                    {prodStatusFilter === 'pending'
+                      ? 'Select pending products for a batch moderation action.'
+                      : 'Browse marketplace listings and manage catalog products.'}
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={handleBulkApproveProducts} disabled={!selectedProductIds.length} className="rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300">Approve Selected</button>
@@ -5366,7 +5469,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                         </td>
                         <td className="min-w-[110px] px-4 py-4 text-center">
                           <div className="flex flex-col items-center">
-                            <span className={`rounded-full px-3 py-1 text-xs font-bold border ${product.status === 'Approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : product.status === 'Flagged' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
+                            <span className={`rounded-full px-3 py-1 text-xs font-bold border ${matchesAdminProductStatusFilter(product, 'available') ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : String(product.status || '').trim().toLowerCase() === 'sold' ? 'bg-slate-100 text-slate-700 border-slate-200' : String(product.status || '').trim().toLowerCase() === 'flagged' ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
                               {product.status || 'Pending'}
                             </span>
                             {product.status === 'Flagged' && (product.moderation_reason || product.rejection_reason) && (
@@ -6039,10 +6142,9 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           const statusMatch = paymentStatusFilter === 'All' || payment.status === paymentStatusFilter;
           const methodMatch = paymentMethodFilter === 'All' || payment.payment_method === paymentMethodFilter;
           const paymentDate = new Date(payment.created_date || payment.date);
-          const fromDateMatch = !paymentFromDate || paymentDate >= new Date(`${paymentFromDate}T00:00:00`);
-          const toDateMatch = !paymentToDate || paymentDate <= new Date(`${paymentToDate}T23:59:59.999`);
+          const dateMatch = !paymentDateFilter || paymentDate.toDateString() === new Date(`${paymentDateFilter}T00:00:00`).toDateString();
 
-          return searchMatch && statusMatch && methodMatch && fromDateMatch && toDateMatch;
+          return searchMatch && statusMatch && methodMatch && dateMatch;
         });
         const totalPaymentPages = Math.max(1, Math.ceil(filteredPayments.length / PAYMENTS_PER_PAGE));
         const displayedPayments = filteredPayments.slice((paymentPage - 1) * PAYMENTS_PER_PAGE, paymentPage * PAYMENTS_PER_PAGE);
@@ -6151,7 +6253,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 <select
                   value={paymentStatusFilter}
                   onChange={(e) => { setPaymentStatusFilter(e.target.value); setPaymentPage(1); }}
-                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  className="min-w-[140px] shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Status: All</option>
                   <option value="Successful">Successful</option>
@@ -6162,14 +6264,19 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 <select
                   value={paymentMethodFilter}
                   onChange={(e) => { setPaymentMethodFilter(e.target.value); setPaymentPage(1); }}
-                  className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                  className="min-w-[200px] shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
                 >
                   <option value="All">Payment Method: All</option>
                   <option value="Chapa">Chapa</option>
                   <option value="Wallet">Wallet</option>
                 </select>
-                <input type="date" value={paymentFromDate} onChange={(e) => { setPaymentFromDate(e.target.value); setPaymentPage(1); }} aria-label="From date" className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
-                <input type="date" value={paymentToDate} onChange={(e) => { setPaymentToDate(e.target.value); setPaymentPage(1); }} aria-label="To date" className="min-w-0 flex-1 basis-[180px] rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" />
+                <input
+                  type="date"
+                  value={paymentDateFilter}
+                  onChange={(e) => { setPaymentDateFilter(e.target.value); setPaymentPage(1); }}
+                  aria-label="Filter by date"
+                  className="w-[180px] shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none"
+                />
               </div>
 
               <div className="mt-6 grid grid-cols-1 gap-3 md:hidden">
@@ -6346,10 +6453,14 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       }
       case 'support':
         return <AdminSupportInbox onItemsSeen={optimisticallyMarkAdminItemsSeen} />;
-      case 'admin-users':
-        return <AdminUsersPage />;
       case 'product-reviews':
-        return <AdminProductReviewsPage />;
+        return <AdminProductReviewsPage onNavigate={(target, params) => {
+          if (target === 'product-details') {
+            onNavigate?.(target, params);
+            return;
+          }
+          handleTabClick(target);
+        }} />;
       case 'reports': {
         const enrichedReports = reportsList.map((report) => ({
           ...report,
@@ -7078,10 +7189,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               </div>
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-[1.25fr_1fr]">
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="grid w-full grid-cols-1 items-start gap-6 lg:grid-cols-2">
+              <div className="min-w-0 w-full rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Student Growth</p>
-                <h3 className="mt-1 text-xl font-black text-slate-950">New Student Registrations</h3>
+                <h3 className="mt-1 break-normal text-xl font-black text-slate-950">New Student Registrations</h3>
 
                 <svg viewBox="0 0 640 160" className="mt-4 h-56 w-full" preserveAspectRatio="none">
                   <defs>
@@ -7105,7 +7216,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 </svg>
               </div>
 
-              <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="min-w-0 w-full rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Performance</p>
                 <h3 className="mt-1 text-xl font-black text-slate-950">Category Performance</h3>
 
@@ -7514,6 +7625,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           successfulLogins: auditLogSummary?.logins?.success || 0,
           failedLogins: auditLogSummary?.logins?.failed || 0,
           adminActions: auditLogSummary?.admin_actions || 0,
+          alertsTotal: auditLogSummary?.alerts?.total || 0,
           alerts: {
             critical: auditLogSummary?.alerts?.critical || 0,
             warning: auditLogSummary?.alerts?.warning || 0,
@@ -7524,16 +7636,27 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         var displayedAuditLogs = auditLogs;
         var selectedAuditContext = selectedLogDetails ? parseAuditDescription(selectedLogDetails.rawDescription) : null;
         var selectedAuditChanges = selectedLogDetails ? getAuditChanges(selectedLogDetails) : [];
-        const handleExportAuditLogsPDF = () => exportPDFFile(
-          `audit-logs-${new Date().toISOString().slice(0, 10)}.pdf`,
-          'Security & Action Audit Report',
-          ['Action', 'Performed By', 'Entity', 'Status', 'Date & Time'],
-          filteredAuditLogs.map((log) => [
-            String(log.action || 'System'), String(log.performed_by || 'System'),
-            `${String(log.entity_type || 'Unknown')}: ${String(log.entity_id || '')}`,
-            String(log.status || 'Unknown'), String(log.date_time || ''),
-          ])
-        );
+        const handleExportAuditLogsPDF = async () => {
+          try {
+            const logs = await fetchAllFilteredAuditLogs();
+            exportPDFFile(
+              `audit-logs-${new Date().toISOString().slice(0, 10)}.pdf`,
+              'Security & Action Audit Report',
+              ['Event Type', 'Category', 'Severity', 'Performed By', 'Entity', 'IP Address', 'Date & Time'],
+              logs.map((log) => [
+                String(log.event_type || log.action || 'System'),
+                String(log.category || 'SYSTEM'),
+                String(log.severity || 'INFO'),
+                String(log.actor_name || log.full_name || log.username || 'System'),
+                `${String(log.entity_type || 'Unknown')} #${String(log.entity_id || '')}`,
+                String(log.ip_address || 'Unknown'),
+                String(log.created_at || ''),
+              ])
+            );
+          } catch (error) {
+            setAuditLogsError(getErrorMessage(error));
+          }
+        };
 
         return (
           <div className="space-y-6 animate-fade-in text-slate-900">
@@ -7547,7 +7670,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   🟢 System Secure
                 </span>
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" onClick={() => handleExportAuditLogsCSV(filteredAuditLogs)} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
+                  <button type="button" onClick={handleExportAuditLogsCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
                   <button type="button" onClick={handleExportAuditLogsPDF} className="rounded-full bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-bold text-white shadow-sm transition cursor-pointer">Export PDF</button>
                 </div>
               </div>
@@ -7558,7 +7681,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 { label: 'Total Events', value: auditLogMetrics.total, accent: 'bg-slate-100 text-slate-800', icon: '📊' },
                 { label: 'Logins', value: auditLogMetrics.successfulLogins + auditLogMetrics.failedLogins, detail: `${auditLogMetrics.successfulLogins} successful · ${auditLogMetrics.failedLogins} failed`, accent: 'bg-sky-50 text-sky-700', icon: '🔐' },
                 { label: 'Admin Actions', value: auditLogMetrics.adminActions, accent: 'bg-violet-50 text-violet-700', icon: '🛡️' },
-                { label: 'Security Alerts', value: auditLogMetrics.alerts.critical + auditLogMetrics.alerts.warning + auditLogMetrics.alerts.informational, detail: `${auditLogMetrics.alerts.critical} critical · ${auditLogMetrics.alerts.warning} warning · ${auditLogMetrics.alerts.informational} informational`, accent: 'bg-rose-50 text-rose-700', icon: '🚨' }
+                { label: 'Security Alerts', value: auditLogMetrics.alertsTotal, detail: `${auditLogMetrics.alerts.critical} critical · ${auditLogMetrics.alerts.warning} warning · ${auditLogMetrics.alerts.informational} informational`, accent: 'bg-rose-50 text-rose-700', icon: '🚨' }
               ].map((card) => (
                 <div key={card.label} className={`rounded-[28px] border border-slate-200 p-5 shadow-sm ${card.accent}`}>
                   <div className="flex items-start justify-between">
@@ -7574,29 +7697,42 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
             </div>
 
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="flex flex-col gap-3 border-b border-slate-200 pb-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-col gap-4 border-b border-slate-200 pb-4">
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Activity stream</p>
                   <h3 className="mt-1 text-xl font-black text-slate-950">Access & Enforcement Timeline</h3>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex w-full flex-wrap items-center gap-2">
                   <input
                     type="text"
                     value={auditLogSearch}
                     onChange={(e) => { setAuditLogPage(1); setAuditLogSearch(e.target.value); }}
-                    placeholder="Search logs..."
-                    className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
+                    placeholder="Search action, actor, entity or IP..."
+                    aria-label="Search audit logs"
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none sm:w-auto sm:flex-1 sm:min-w-64"
                   />
                   <select
-                    value={auditLogFilterAction}
-                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterAction(e.target.value); }}
+                    value={auditLogFilterSeverity}
+                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterSeverity(e.target.value); }}
+                    aria-label="Filter audit logs by severity"
                     className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
                   >
-                    <option value="All">Action: All</option>
-                    <option value="Logins">Logins</option>
-                    <option value="Approvals">Approvals</option>
-                    <option value="Suspensions">Suspensions</option>
-                    <option value="Deletions">Deletions</option>
+                    <option value="All">All Severities</option>
+                    <option value="CRITICAL">Critical</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="INFO">Info</option>
+                  </select>
+                  <select
+                    value={auditLogFilterCategory}
+                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterCategory(e.target.value); }}
+                    aria-label="Filter audit logs by category"
+                    className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
+                  >
+                    <option value="All">All Categories</option>
+                    <option value="AUTH">Auth &amp; Logins</option>
+                    <option value="ADMIN">Admin Actions</option>
+                    <option value="FINANCIAL">Financial &amp; Payments</option>
+                    <option value="SECURITY">Security Alerts</option>
                   </select>
                   <select
                     value={auditLogFilterStatus}
@@ -7607,16 +7743,14 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <option value="SUCCESS">Success</option>
                     <option value="FAILED">Failed</option>
                   </select>
-                  <select
-                    value={auditLogFilterDate}
-                    onChange={(e) => { setAuditLogPage(1); setAuditLogFilterDate(e.target.value); }}
-                    className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-sky-500 focus:outline-none"
-                  >
-                    <option value="All">Date: All</option>
-                    <option value="Today">Today</option>
-                    <option value="Yesterday">Yesterday</option>
-                    <option value="Last 7 Days">Last 7 Days</option>
-                  </select>
+                  <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                    From
+                    <input aria-label="Audit logs start date" type="date" value={auditLogStartDate} onChange={(e) => { setAuditLogPage(1); setAuditLogStartDate(e.target.value); }} className="min-w-0 bg-transparent text-sm text-slate-800 focus:outline-none" />
+                  </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                    To
+                    <input aria-label="Audit logs end date" type="date" value={auditLogEndDate} onChange={(e) => { setAuditLogPage(1); setAuditLogEndDate(e.target.value); }} className="min-w-0 bg-transparent text-sm text-slate-800 focus:outline-none" />
+                  </label>
                 </div>
               </div>
 
@@ -7642,41 +7776,28 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   </div>
                 ) : (
                   displayedAuditLogs.map((log) => {
-                    const normalizedLogStatus = String(log.status || '').trim().toLowerCase();
-                    const isSuccessfulLog = normalizedLogStatus === 'success' || normalizedLogStatus === 'successful';
-                    const statusBadgeClass = isSuccessfulLog
-                      ? 'bg-emerald-500 text-white'
-                      : log.severity === 'warning'
-                        ? 'bg-amber-100 text-amber-700 border border-amber-200'
-                        : 'bg-rose-100 text-rose-700 border border-rose-200';
-
-                    const indicator =
-                      log.severity === 'success'
-                        ? '✓'
-                        : log.severity === 'warning'
-                          ? '⚠️'
-                          : '🟢';
-                    const circleColorClass = isSuccessfulLog
-                      ? 'bg-emerald-500 ring-4 ring-emerald-100'
-                      : log.severity === 'warning'
-                        ? 'bg-amber-100 text-amber-600'
-                        : 'bg-rose-100 text-rose-600';
+                    const severityPresentation = {
+                      INFO: { label: 'INFO', badge: 'bg-emerald-100 text-emerald-800 border border-emerald-200', marker: 'bg-emerald-500 ring-4 ring-emerald-100', icon: '✓' },
+                      WARNING: { label: 'WARNING', badge: 'bg-amber-100 text-amber-800 border border-amber-200', marker: 'bg-amber-100 text-amber-700', icon: '⚠' },
+                      CRITICAL: { label: 'CRITICAL', badge: 'bg-rose-100 text-rose-800 border border-rose-200', marker: 'bg-rose-100 text-rose-700', icon: '!' },
+                    }[log.severity] || { label: 'INFO', badge: 'bg-emerald-100 text-emerald-800 border border-emerald-200', marker: 'bg-emerald-500 ring-4 ring-emerald-100', icon: '✓' };
 
                     return (
                       <div key={log.id} className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
                           <div className="flex items-start gap-3">
-                            <div className={`flex h-10 w-10 items-center justify-center rounded-full text-lg ${circleColorClass}`}>
-                              {indicator}
+                            <div className={`flex h-10 w-10 items-center justify-center rounded-full text-lg ${severityPresentation.marker}`}>
+                              {severityPresentation.icon}
                             </div>
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-[0.2em] ${statusBadgeClass}`}>
-                                  {log.status}
+                                <span className={`rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-[0.2em] ${severityPresentation.badge}`}>
+                                  {severityPresentation.label}
                                 </span>
-                                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{log.actionType}</span>
+                                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{log.category}</span>
                               </div>
                               <p className="mt-2 text-base font-black text-slate-950">{log.action}</p>
+                              <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">{log.event_type}</p>
                               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{log.description}</p>
                             </div>
                           </div>
@@ -7692,18 +7813,26 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                           </div>
                         </div>
 
-                        <div className="mt-4 grid gap-3 md:grid-cols-3">
+                        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                           <div className="rounded-2xl bg-white p-3">
                             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Performed By</p>
-                            <p className="mt-2 text-sm font-bold text-slate-800">{log.performed_by}</p>
+                            <p className="mt-2 text-sm font-bold text-slate-800">{log.performed_by} <span className="font-medium text-slate-500">({log.actor_role} · #{log.actor_id})</span></p>
                           </div>
                           <div className="rounded-2xl bg-white p-3">
                             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Entity</p>
-                            <p className="mt-2 text-sm font-bold text-slate-800">{log.entity_type}: {log.entity_id}</p>
+                            <p className="mt-2 text-sm font-bold text-slate-800">{log.entity_type} #{log.entity_id}</p>
+                          </div>
+                          <div className="rounded-2xl bg-white p-3">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Client IP</p>
+                            <p className="mt-2 break-all text-sm font-bold text-slate-800">IP: {log.ip_address}</p>
                           </div>
                           <div className="rounded-2xl bg-white p-3">
                             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Date & Time</p>
-                            <p className="mt-2 text-sm font-bold text-slate-800">{new Date(log.date_time).toLocaleString()}</p>
+                            <p className="mt-2 text-sm font-bold text-slate-800">{log.date_time ? new Date(log.date_time).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'medium' }) : 'Unknown'}</p>
+                          </div>
+                          <div className="rounded-2xl bg-white p-3 md:col-span-2 xl:col-span-4">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Device</p>
+                            <p className="mt-2 truncate text-sm text-slate-700" title={log.user_agent}>{log.user_agent}</p>
                           </div>
                         </div>
                       </div>
@@ -7742,11 +7871,17 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <div className="mt-5 space-y-3">
                       {[
                         ['Event ID', selectedLogDetails.id],
+                        ['Event Type', selectedLogDetails.event_type],
+                        ['Category', selectedLogDetails.category],
+                        ['Severity', selectedLogDetails.severity],
                         ['Action', selectedLogDetails.action],
                         ['Performed By', selectedLogDetails.performed_by],
+                        ['Actor ID', selectedLogDetails.actor_id],
+                        ['Actor Role', selectedLogDetails.actor_role],
                         ['Entity Type', selectedLogDetails.entity_type],
                         ['Entity ID', selectedLogDetails.entity_id],
                         ['IP Address', selectedLogDetails.ip_address],
+                        ['Device / User Agent', selectedLogDetails.user_agent],
                         ['Date & Time', new Date(selectedLogDetails.date_time).toLocaleString()],
                         ['Status', selectedLogDetails.status]
                       ].map(([label, value]) => (
@@ -7758,7 +7893,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     </div>
 
                     <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Full Description</p>
+                      <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Full JSON Metadata</p>
                       <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm text-slate-800">{selectedLogDetails.rawDescription}</pre>
                     </div>
 
@@ -7839,15 +7974,21 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       case 'settings': {
         var toggleCard = (label, checked, description = '') => {
           const settingKey = SETTINGS_TOGGLE_PATHS[label];
+          const isSecuritySetting = settingKey?.startsWith('securitySettings.');
           return <SettingsToggle
             label={label}
             checked={checked}
             description={description}
-            disabled={settingsLoading}
+            disabled={settingsLoading || (isSecuritySetting && securitySettingsSaving)}
             onChange={(value) => {
               if (label === 'Auto Approve Students' && value && !window.confirm('Enable automatic approval for new student registrations?')) return;
               if (label === 'Require University Email' && value && !isValidEmailDomain(studentVerificationSettings.allowedEmailDomain)) {
                 notifyError(new Error('Enter a valid Allowed Email Domain before enabling this setting.'), 'admin-settings-domain');
+                return;
+              }
+              if (isSecuritySetting) {
+                const field = settingKey.split('.').at(-1);
+                saveSecuritySettings({ ...securitySettingsRef.current, [field]: value });
                 return;
               }
               updateSetting(settingKey, value);
@@ -8113,17 +8254,17 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Max Login Attempts</label>
-                      <input type="number" value={securitySettings.maxLoginAttempts} onChange={(e) => setSecuritySettings({ ...securitySettings, maxLoginAttempts: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
+                      <input type="number" min="1" value={securitySettings.maxLoginAttempts} disabled={settingsLoading} onChange={(e) => scheduleSecuritySettingsSave('maxLoginAttempts', Number(e.target.value) || 0)} onBlur={flushSecuritySettingsSave} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-60" />
                     </div>
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Session Timeout (min)</label>
-                      <input type="number" value={securitySettings.sessionTimeout} onChange={(e) => setSecuritySettings({ ...securitySettings, sessionTimeout: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
+                      <input type="number" min="1" value={securitySettings.sessionTimeout} disabled={settingsLoading} onChange={(e) => scheduleSecuritySettingsSave('sessionTimeout', Number(e.target.value) || 0)} onBlur={flushSecuritySettingsSave} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-60" />
                     </div>
                   </div>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Min Password Length</label>
-                      <input type="number" value={securitySettings.minPasswordLength} onChange={(e) => setSecuritySettings({ ...securitySettings, minPasswordLength: Number(e.target.value) || 0 })} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm" />
+                      <input type="number" min="8" value={securitySettings.minPasswordLength} disabled={settingsLoading} onChange={(e) => scheduleSecuritySettingsSave('minPasswordLength', Number(e.target.value) || 0)} onBlur={flushSecuritySettingsSave} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm disabled:opacity-60" />
                     </div>
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Audit Logging</label>
@@ -8193,10 +8334,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                 <button
                   type="button"
                   onClick={handleSaveSystemSettings}
-                  disabled={settingsLoading}
+                  disabled={settingsLoading || securitySettingsSaving}
                   className="btn-primary rounded-full px-6 py-3 text-sm font-bold shadow-sm"
                 >
-                  {settingsLoading ? 'Saving...' : 'Save System Configurations'}
+                  {settingsLoading ? 'Saving...' : securitySettingsSaving ? 'Saving security...' : 'Save System Configurations'}
                 </button>
               </div>
 

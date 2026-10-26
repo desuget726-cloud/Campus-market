@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test src/utils/*.test.js && vitest run --environment jsdom src/App.test.jsx src/Components/Dashboard/AdminReportLinkSearchResults.test.jsx src/Components/Dashboard/ReportsInbox.test.jsx src/Components/Dashboard/SellerModerationNotices.test.jsx src/Components/Dashboard/SellerCompletedOrders.test.jsx src/Components/Dashboard/SellerOperationsCenter.test.jsx src/Components/Home/ProductDetails.test.jsx src/Components/Dashboard/BuyerHubProductCard.test.jsx src/Components/Home/SimilarProductsSection.test.jsx",
+    "test": "node --test src/utils/*.test.js && vitest run --environment jsdom src/App.test.jsx src/Components/Dashboard/AdminDirectoryPages.test.jsx src/Components/Dashboard/AdminReportLinkSearchResults.test.jsx src/Components/Dashboard/ReportsInbox.test.jsx src/Components/Dashboard/SellerModerationNotices.test.jsx src/Components/Dashboard/SellerCompletedOrders.test.jsx src/Components/Dashboard/SellerOperationsCenter.test.jsx src/Components/Home/ProductDetails.test.jsx src/Components/Dashboard/BuyerHubProductCard.test.jsx src/Components/Home/SimilarProductsSection.test.jsx",
     "preview": "vite preview"
   },
   "dependencies": {

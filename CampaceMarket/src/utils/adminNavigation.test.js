@@ -18,6 +18,10 @@ test('finds the active admin menu group from a deep-link section', () => {
 test('sums child badges for collapsed groups', () => {
   const verificationGroup = ADMIN_NAVIGATION.find((entry) => entry.key === 'user-management-group');
   const reportsGroup = ADMIN_NAVIGATION.find((entry) => entry.key === 'reports-system');
+  assert.deepEqual(
+    verificationGroup.items.map((item) => item.label),
+    ['All Users / Students', 'Student Verification'],
+  );
   assert.equal(getAdminGroupBadgeTotal(verificationGroup, { pendingVerifications: 3 }), 3);
   assert.equal(getAdminGroupBadgeTotal(reportsGroup, { unseenReports: 5 }), 5);
   assert.equal(getAdminGroupBadgeTotal(reportsGroup, { unseenReports: 2, supportOverdue: 4 }), 2);

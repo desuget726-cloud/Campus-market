@@ -60,6 +60,7 @@ class PayWithoutOrderE2ETests(unittest.TestCase):
             wallet_balance=Decimal("500.00"),
             notif_order_email=False,
             notif_pay_email=False,
+            is_verified=True,
         )
         self.seller = Student(
             name="Test Seller",

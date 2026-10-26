@@ -413,7 +413,7 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:5173")
 
-    def test_product_views_exclude_owner_and_dedupe_authenticated_viewer_per_day(self):
+    def test_product_views_exclude_owner_and_dedupe_authenticated_viewer_within_24_hours(self):
         self.buyers_product.views = 4
         self.db.commit()
 
@@ -441,6 +441,79 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertEqual(
             self.db.query(ProductView).filter(ProductView.product_id == self.buyers_product.id).count(),
             2,
+        )
+
+    def test_product_views_use_a_rolling_24_hour_cooldown(self):
+        first_view = self.product_detail_for(self.seller)
+        view_record = self.db.query(ProductView).filter(
+            ProductView.product_id == self.buyers_product.id,
+            ProductView.viewer_id == self.seller.student_id,
+        ).one()
+
+        view_record.viewed_at = datetime.now() - timedelta(hours=23, minutes=59)
+        self.db.commit()
+        within_cooldown = self.product_detail_for(self.seller)
+
+        view_record.viewed_at = datetime.now() - timedelta(hours=24, seconds=1)
+        self.db.commit()
+        after_cooldown = self.product_detail_for(self.seller)
+
+        self.assertEqual(first_view["views"], 1)
+        self.assertEqual(within_cooldown["views"], 1)
+        self.assertEqual(after_cooldown["views"], 2)
+        self.assertEqual(
+            self.db.query(ProductView).filter(
+                ProductView.product_id == self.buyers_product.id,
+                ProductView.viewer_id == self.seller.student_id,
+            ).count(),
+            1,
+        )
+
+    def test_recent_legacy_daily_view_records_remain_deduplicated(self):
+        self.buyers_product.views = 3
+        self.db.add(ProductView(
+            product_id=self.buyers_product.id,
+            viewer_id=self.seller.student_id,
+            visitor_key=f"student:{self.seller.student_id}:{datetime.now().date().isoformat()}",
+            viewed_at=datetime.now() - timedelta(hours=1),
+        ))
+        self.db.commit()
+
+        result = self.product_detail_for(self.seller)
+
+        self.assertEqual(result["views"], 3)
+        self.assertEqual(
+            self.db.query(ProductView).filter(
+                ProductView.product_id == self.buyers_product.id,
+            ).count(),
+            1,
+        )
+
+    def test_product_view_tracking_can_be_skipped_when_browser_recently_viewed(self):
+        result = main_module.get_product_detail(
+            self.buyers_product.id,
+            Request({
+                "type": "http",
+                "method": "GET",
+                "path": f"/api/products/{self.buyers_product.id}",
+                "headers": [],
+                "query_string": b"",
+                "server": ("testserver", 80),
+                "client": ("testclient", 50000),
+                "scheme": "http",
+            }),
+            Response(),
+            track_view=False,
+            authorization=None,
+            db=self.db,
+        )
+
+        self.assertEqual(result["views"], 0)
+        self.assertEqual(
+            self.db.query(ProductView).filter(
+                ProductView.product_id == self.buyers_product.id,
+            ).count(),
+            0,
         )
 
     def test_similar_products_use_same_category_and_active_stock(self):

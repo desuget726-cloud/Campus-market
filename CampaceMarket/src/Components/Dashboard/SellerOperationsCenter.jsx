@@ -152,7 +152,6 @@ function SellerOperationsCenter({
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [selectedOrderLoading, setSelectedOrderLoading] = useState(false);
   const [selectedOrderError, setSelectedOrderError] = useState("");
-  const [viewedProductId, setViewedProductId] = useState(null);
   const [productActionState, setProductActionState] = useState({});
   const [productActionFeedback, setProductActionFeedback] = useState(null);
   const [productPage, setProductPage] = useState({
@@ -285,16 +284,6 @@ function SellerOperationsCenter({
     : Array.isArray(sellerData?.incomingOrders)
       ? sellerData.incomingOrders
       : [];
-  const viewedProduct = visibleListings.find(
-    (listing) => String(listing.id) === String(viewedProductId),
-  );
-  const viewedProductOrders = viewedProduct
-    ? orders.filter(
-      (order) =>
-        String(order.product_id ?? order.productId) ===
-        String(viewedProduct.id),
-    )
-    : [];
   const runProductAction = async (productId, action, callback) => {
     setProductActionFeedback(null);
     setProductActionState((previous) => ({ ...previous, [productId]: action }));
@@ -456,6 +445,9 @@ function SellerOperationsCenter({
       return;
     }
     onTabNavigate?.(target, payload);
+  };
+  const handleOpenProduct = (productId) => {
+    onNavigate("product-details", { productId, returnTo: "seller-hub" });
   };
 
   const getSessionToken = useCallback(
@@ -869,6 +861,7 @@ function SellerOperationsCenter({
                   </thead>
                   <tbody>
                     {productPage.items.map((listing) => {
+                      const productId = listing.id ?? listing.product_id;
                       const status = listing.status || "Pending";
                       const image = getSellerImage(listing.image);
                       const stock = Number(listing.stock ?? 0);
@@ -879,21 +872,34 @@ function SellerOperationsCenter({
                       const actionInProgress = Boolean(productActionState[listing.id]);
                       return (
                         <tr
-                          key={listing.id ?? listing.product_id ?? listing.title}
-                          className={`border-b border-slate-100 dark:border-slate-700 ${isSold ? "bg-slate-50 dark:bg-slate-800" : "bg-white dark:bg-slate-900"}`}
+                          key={productId ?? listing.title}
+                          onClick={() => handleOpenProduct(productId)}
+                          className={`cursor-pointer border-b border-slate-100 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/50 ${isSold ? "bg-slate-50 dark:bg-slate-800" : "bg-white dark:bg-slate-900"}`}
                         >
                           <td className="min-w-[180px] max-w-[360px] px-3 py-4 text-slate-900 dark:text-white">
                             <div className="flex min-w-0 items-center gap-3">
-                              <img
-                                src={image}
-                                alt={listing.title || "Product"}
-                                onError={(event) => {
-                                  event.currentTarget.onerror = null;
-                                  event.currentTarget.src =
-                                    SELLER_IMAGE_PLACEHOLDER;
+                              <button
+                                type="button"
+                                disabled={actionInProgress}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleOpenProduct(productId);
                                 }}
-                                className="h-20 w-20 rounded-xl object-cover"
-                              />
+                                title="Click to view product details"
+                                aria-label={`View details for ${listing.title || listing.name || "product"}`}
+                                className="shrink-0 cursor-pointer rounded-xl transition-transform duration-200 hover:scale-105 hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <img
+                                  src={image}
+                                  alt=""
+                                  onError={(event) => {
+                                    event.currentTarget.onerror = null;
+                                    event.currentTarget.src =
+                                      SELLER_IMAGE_PLACEHOLDER;
+                                  }}
+                                  className="h-20 w-20 rounded-xl object-cover"
+                                />
+                              </button>
                               <div className="flex min-w-0 max-w-[230px] flex-1 flex-col justify-center gap-1">
                                 <span
                                   className="block min-w-0 max-w-full whitespace-normal break-words font-bold leading-5 text-slate-900"
@@ -946,12 +952,15 @@ function SellerOperationsCenter({
                               ? new Date(listing.created_at).toLocaleDateString()
                               : "Unavailable"}
                           </td>
-                          <td className="px-3 py-4">
+                          <td className="px-3 py-4" onClick={(event) => event.stopPropagation()}>
                             <div className="flex flex-wrap gap-2">
                               <button
                                 type="button"
                                 disabled={actionInProgress}
-                                onClick={() => setViewedProductId(listing.id)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleOpenProduct(productId);
+                                }}
                                 className="btn-primary rounded-full px-3 py-1.5 text-xs font-bold transition"
                               >
                                 View
@@ -959,7 +968,10 @@ function SellerOperationsCenter({
                               <button
                                 type="button"
                                 disabled={actionInProgress}
-                                onClick={() => onEditProduct(listing.id)}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onEditProduct(listing.id);
+                                }}
                                 className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
                               >
                                 Edit
@@ -972,7 +984,8 @@ function SellerOperationsCenter({
                                     ? "This product has order history and cannot be deleted. You can still edit or mark it as unavailable."
                                     : undefined
                                 }
-                                onClick={() => {
+                                onClick={(event) => {
+                                  event.stopPropagation();
                                   if (hasOrders) return;
                                   const confirmed = typeof window === "undefined" || window.confirm(`Delete ${listing.title || "this product"}?`);
                                   if (confirmed) runProductAction(listing.id, "delete", onDeleteProduct);
@@ -998,7 +1011,8 @@ function SellerOperationsCenter({
                                         ? "Add stock via Edit before marking this product available."
                                         : undefined
                                     }
-                                    onClick={() => {
+                                    onClick={(event) => {
+                                      event.stopPropagation();
                                       if (!soldOut) runProductAction(listing.id, "available", onTogglePause);
                                     }}
                                     className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
@@ -1017,7 +1031,10 @@ function SellerOperationsCenter({
                                   <button
                                     type="button"
                                     disabled={actionInProgress}
-                                    onClick={() => runProductAction(listing.id, isPaused ? "resume" : "pause", onTogglePause)}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      runProductAction(listing.id, isPaused ? "resume" : "pause", onTogglePause);
+                                    }}
                                     className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
                                   >
                                     {actionInProgress ? "Updating..." : isPaused ? "Resume" : "Pause"}
@@ -1025,7 +1042,10 @@ function SellerOperationsCenter({
                                   <button
                                     type="button"
                                     disabled={actionInProgress}
-                                    onClick={() => runProductAction(listing.id, "sold", onMarkAsSold)}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      runProductAction(listing.id, "sold", onMarkAsSold);
+                                    }}
                                     className="rounded-full border border-amber-200 px-3 py-1.5 text-xs font-bold text-amber-700"
                                   >
                                     {actionInProgress ? "Updating..." : "Mark as Sold"}
@@ -1411,58 +1431,6 @@ function SellerOperationsCenter({
 
       </div>}
 
-      {viewedProduct && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Product Details</p>
-                <h2 className="mt-1 text-xl font-black text-slate-950">{viewedProduct.title || viewedProduct.name || "Untitled listing"}</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setViewedProductId(null)}
-                className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200"
-              >
-                Close
-              </button>
-            </div>
-            <div className="grid gap-6 p-6 md:grid-cols-[180px_1fr]">
-              <img
-                src={getSellerImage(viewedProduct.image)}
-                alt={viewedProduct.title || "Product"}
-                onError={(event) => {
-                  event.currentTarget.onerror = null;
-                  event.currentTarget.src = SELLER_IMAGE_PLACEHOLDER;
-                }}
-                className="h-44 w-full rounded-2xl object-cover"
-              />
-              <dl className="grid grid-cols-2 gap-x-5 gap-y-4 text-sm">
-                <div><dt className="text-slate-500">Price</dt><dd className="mt-1 font-bold text-emerald-600">{formatSellerEtb(String(viewedProduct.price || 0).replace(/[^0-9.]/g, ""))}</dd></div>
-                <div><dt className="text-slate-500">Category</dt><dd className="mt-1 font-semibold text-slate-900">{viewedProduct.category || "General"}</dd></div>
-                <div><dt className="text-slate-500">Stock</dt><dd className="mt-1 font-semibold text-slate-900">{Number(viewedProduct.stock ?? 0)}</dd></div>
-                <div><dt className="text-slate-500">Status</dt><dd className="mt-1 font-semibold text-slate-900">{viewedProduct.status === "Approved" ? "Active" : viewedProduct.status || "Pending"}</dd></div>
-                <div className="col-span-2"><dt className="text-slate-500">Created</dt><dd className="mt-1 font-semibold text-slate-900">{viewedProduct.created_at ? new Date(viewedProduct.created_at).toLocaleString() : "Unavailable"}</dd></div>
-              </dl>
-            </div>
-            <div className="border-t border-slate-200 px-6 py-5">
-              <h3 className="font-bold text-slate-950">Order Information</h3>
-              {viewedProductOrders.length ? (
-                <div className="mt-3 space-y-2 text-sm text-slate-600">
-                  {viewedProductOrders.map((order) => (
-                    <div key={order.id || order.order_id} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2">
-                      <span>Order #{order.id || order.order_id}</span>
-                      <span className="font-semibold text-slate-900">{order.status || "Pending"}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-2 text-sm text-slate-500">No order history is available for this product.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

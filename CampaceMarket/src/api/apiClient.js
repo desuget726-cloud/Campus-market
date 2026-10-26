@@ -61,6 +61,32 @@ export function getStoredAccessToken() {
   }
 }
 
+export async function adminApiPatch(path, body, options = {}) {
+  const token = getStoredAccessToken();
+  if (!token) {
+    const error = new Error("Your session expired, please sign in again");
+    error.status = 401;
+    throw error;
+  }
+  return apiPatch(path, body, {
+    ...options,
+    headers: { ...options.headers, Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function adminApiDelete(path, options = {}) {
+  const token = getStoredAccessToken();
+  if (!token) {
+    const error = new Error("Your session expired, please sign in again");
+    error.status = 401;
+    throw error;
+  }
+  return apiDelete(path, {
+    ...options,
+    headers: { ...options.headers, Authorization: `Bearer ${token}` },
+  });
+}
+
 export async function adminApiGet(path, options = {}) {
   const token = getStoredAccessToken();
   if (!token) {

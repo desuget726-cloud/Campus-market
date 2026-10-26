@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '../config';
+import { adminApiPatch } from './apiClient';
 
 let adminSettingsRequest;
 
@@ -20,4 +21,10 @@ export const getAdminSettings = () => {
   }
 
   return adminSettingsRequest;
+};
+
+export const patchAdminSettings = async (settings) => {
+  const saved = await adminApiPatch(`${API_BASE_URL}/api/admin/settings`, settings);
+  invalidateAdminSettingsCache();
+  return saved;
 };

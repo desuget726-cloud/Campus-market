@@ -2344,6 +2344,10 @@ class ReviewCreate(BaseModel):
     comment: str
 
 
+class AdminReviewVisibilityUpdate(BaseModel):
+    is_hidden: bool
+
+
 class ChatInitiateRequest(BaseModel):
     buyer_id: str
     product_id: int
@@ -2526,10 +2530,25 @@ class StudentVerificationSettingsModel(BaseModel):
 class AdminSecuritySettingsRequest(BaseModel):
     requireStudentVerification: StrictBool
     admin2FA: StrictBool
-    maxLoginAttempts: StrictInt
-    sessionTimeout: StrictInt
-    minPasswordLength: StrictInt
+    maxLoginAttempts: StrictInt = Field(ge=1)
+    sessionTimeout: StrictInt = Field(ge=1)
+    minPasswordLength: StrictInt = Field(ge=8)
     auditLogging: StrictBool
+
+
+class AdminSecuritySettingsPatchValues(BaseModel):
+    requireStudentVerification: Optional[StrictBool] = None
+    admin2FA: Optional[StrictBool] = None
+    maxLoginAttempts: Optional[StrictInt] = Field(default=None, ge=1)
+    sessionTimeout: Optional[StrictInt] = Field(default=None, ge=1)
+    minPasswordLength: Optional[StrictInt] = Field(default=None, ge=8)
+    auditLogging: Optional[StrictBool] = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdminSecuritySettingsPatchRequest(BaseModel):
+    security: AdminSecuritySettingsPatchValues
+    model_config = ConfigDict(extra="forbid")
 
 
 class AdminSecuritySettingsResponse(BaseModel):
@@ -2592,7 +2611,7 @@ def get_security_settings(db: Session) -> SecuritySettings:
 
     def positive_int(key: str) -> int:
         try:
-            return max(1, int(values[key]))
+            return max(defaults[key] if key == "minPasswordLength" else 1, int(values[key]))
         except (TypeError, ValueError):
             return defaults[key]
 
@@ -2610,6 +2629,90 @@ def _audit_logging_enabled(db: Session) -> bool:
     return get_security_settings(db).audit_logging
 
 
+def _audit_category(action: Optional[str], entity_type: Optional[str], supplied: Optional[str] = None) -> str:
+    if supplied and supplied.strip().upper() in {"AUTH", "ADMIN", "FINANCIAL", "SECURITY", "SYSTEM"}:
+        return supplied.strip().upper()
+    value = f"{action or ''} {entity_type or ''}".lower()
+    if any(term in value for term in ("login", "auth", "password", "2fa", "two-factor", "session")):
+        return "AUTH"
+    if any(term in value for term in ("payment", "payout", "wallet", "transaction", "refund", "order")):
+        return "FINANCIAL"
+    if any(term in value for term in ("fraud", "unauthorized", "permission violation", "banned", "ban ", "suspend", "escalat", "security alert", "audit_log", "mutation")):
+        return "SECURITY"
+    if any(term in value for term in ("admin", "report", "moderation", "support", "review", "product")):
+        return "ADMIN"
+    return "SYSTEM"
+
+
+def _audit_severity(action: Optional[str], severity: Optional[str], status: Optional[str] = None) -> str:
+    normalized = str(severity or "").strip().lower()
+    value = str(action or "").lower()
+    critical_terms = ("fraud", "unauthorized", "permission violation", "banned", "suspended", "system error")
+    warning_terms = ("failed login", "login failed", "escalat", "unlisted", "threshold", "multiple failed", "blocked")
+    if normalized in {"critical", "high"} or any(term in value for term in critical_terms):
+        return "CRITICAL"
+    if normalized in {"warning", "medium"} or any(term in value for term in warning_terms):
+        return "WARNING"
+    if str(status or "").strip().lower() in {"failed", "failure", "blocked", "denied"}:
+        return "WARNING"
+    return "INFO"
+
+
+def _audit_severity_expression():
+    action = func.lower(func.coalesce(AuditLog.action, ""))
+    severity = func.lower(func.coalesce(AuditLog.severity, ""))
+    status = func.lower(func.coalesce(AuditLog.status, ""))
+    critical_terms = ("fraud", "unauthorized", "permission violation", "banned", "suspended", "system error")
+    warning_terms = ("failed login", "login failed", "escalat", "unlisted", "threshold", "multiple failed", "blocked")
+    critical_action = or_(*(action.like(f"%{term}%") for term in critical_terms))
+    warning_action = or_(*(action.like(f"%{term}%") for term in warning_terms))
+    return case(
+        (or_(severity.in_(("critical", "high")), critical_action), "CRITICAL"),
+        (or_(severity.in_(("warning", "medium")), warning_action), "WARNING"),
+        (status.in_(("failed", "failure", "blocked", "denied")), "WARNING"),
+        else_="INFO",
+    )
+
+
+def _audit_category_expression():
+    action = func.lower(func.coalesce(AuditLog.action, ""))
+    entity = func.lower(func.coalesce(AuditLog.entity_type, ""))
+    auth_terms = ("login", "auth", "password", "2fa", "two-factor", "session")
+    financial_terms = ("payment", "payout", "wallet", "transaction", "refund", "order")
+    security_terms = ("fraud", "unauthorized", "permission violation", "banned", "ban ", "suspend", "escalat", "security alert", "audit_log", "mutation")
+    admin_terms = ("admin", "report", "moderation", "support", "review", "product")
+
+    def contains_any(terms):
+        return or_(*(action.like(f"%{term}%") | entity.like(f"%{term}%") for term in terms))
+
+    stored_category = func.upper(func.coalesce(AuditLog.category, ""))
+    return case(
+        (stored_category.in_(("AUTH", "ADMIN", "FINANCIAL", "SECURITY", "SYSTEM")), stored_category),
+        (contains_any(auth_terms), "AUTH"),
+        (contains_any(financial_terms), "FINANCIAL"),
+        (contains_any(security_terms), "SECURITY"),
+        (contains_any(admin_terms), "ADMIN"),
+        else_="SYSTEM",
+    )
+
+
+def _audit_event_type(action: Optional[str]) -> str:
+    normalized = re.sub(r"[^A-Z0-9]+", "_", str(action or "SYSTEM_EVENT").strip().upper()).strip("_")
+    return normalized or "SYSTEM_EVENT"
+
+
+def _audit_metadata(description: Optional[str]) -> dict:
+    if description:
+        try:
+            parsed = json.loads(description)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"payload": parsed}
+        except (TypeError, ValueError):
+            pass
+    return {"description": str(description or "")}
+
+
 def _add_audit_log(db: Session, **values) -> None:
     if _audit_logging_enabled(db):
         db.add(AuditLog(**values))
@@ -2617,6 +2720,14 @@ def _add_audit_log(db: Session, **values) -> None:
 
 def _session_password_min_length(db: Session) -> int:
     return get_security_settings(db).min_password_length
+
+
+def _require_verified_student(student: Student, db: Session, action: str) -> None:
+    if get_security_settings(db).require_student_verification and not student.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Verify your student account before {action}.",
+        )
 
 
 def _login_identifier(value: str) -> str:
@@ -2971,9 +3082,9 @@ def _create_admin_session(db: Session, admin: Admin, token: str, request: Reques
     return session
 
 
-def _validate_admin_password(password: str) -> None:
-    if len(password) < 8 or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password) or not re.search(r"\d", password) or not re.search(r"[^A-Za-z0-9]", password):
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters and include uppercase, lowercase, number, and special character.")
+def _validate_admin_password(password: str, minimum_length: int = 8) -> None:
+    if len(password) < minimum_length or not re.search(r"[A-Z]", password) or not re.search(r"[a-z]", password) or not re.search(r"\d", password) or not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(status_code=400, detail=f"Password must be at least {minimum_length} characters and include uppercase, lowercase, number, and special character.")
 
 
 def _add_admin_audit(db: Session, admin: Admin, request: Request, action: str, description: str) -> None:
@@ -2985,6 +3096,7 @@ def _add_admin_audit(db: Session, admin: Admin, request: Request, action: str, d
         description=description,
         status="SUCCESS",
         ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent", "")[:255] or None,
     ))
 
 
@@ -3870,7 +3982,6 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
 def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     security = get_security_settings(db)
     identifier = _login_identifier(data.id_or_email)
-    _check_login_lock(db, identifier, security)
 
     # 2.1 Check the administrator table first
     normalized_id = _login_identifier(data.id_or_email)
@@ -3881,6 +3992,22 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             func.lower(Admin.email) == normalized_id,
         )
     ).first()
+
+    if _is_email_identifier(normalized_id):
+        student = db.query(Student).filter(
+            func.lower(Student.email) == normalized_id
+        ).first()
+    else:
+        student = db.query(Student).filter(
+            func.lower(Student.student_id) == normalized_id
+        ).first()
+
+    attempt_identifier = (
+        f"admin:{admin.id}" if admin
+        else f"student:{student.student_id.lower()}" if student
+        else identifier
+    )
+    _check_login_lock(db, attempt_identifier, security)
 
     admin_locked_until = (
         _as_utc_datetime(admin.locked_until) if admin else None
@@ -3905,7 +4032,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     if admin and verify_password(data.password, admin.password_hash):
         admin.failed_login_attempts = 0
         admin.locked_until = None
-        _reset_login_attempts(db, identifier)
+        _reset_login_attempts(db, attempt_identifier)
 
         avatar_url = _get_avatar_url(admin, f"{admin.username}.jpg")
         require_admin_2fa = get_security_settings(db).admin_2fa
@@ -3915,113 +4042,19 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             and _decrypt_totp_secret(admin.two_factor_secret)
         )
 
-        # Require admin 2FA only when it has not been disabled.
-        if require_admin_2fa and not DISABLE_ADMIN_2FA:
-            bypass_enabled = (
-                os.getenv("ADMIN_2FA_BYPASS", "false").strip().lower()
-                == "true"
-            )
-
-            active_admin_count = (
-                db.query(Admin)
-                .filter(func.lower(Admin.status) == "active")
-                .count()
-            )
-
-            if (
-                bypass_enabled
-                and active_admin_count == 1
-                and str(admin.status or "").lower() == "active"
-            ):
-                db.add(AuditLog(
-                    admin_id=admin.id,
-                    action="Admin 2FA Emergency Bypass",
-                    entity_type="Admin",
-                    entity_id=admin.id,
-                    description=(
-                        "Password-only login used ADMIN_2FA_BYPASS for the "
-                        "last active administrator. Disable the bypass "
-                        "immediately after account recovery."
-                    ),
-                    status="BYPASS",
-                    severity="critical",
-                    ip_address=(
-                        request.client.host if request.client else None
-                    ),
-                ))
-            else:
-                challenge_token = _create_admin_login_challenge(db, admin)
-                db.commit()
-
-                return {
-                    "role": "admin",
-                    "requires_2fa": admin_2fa_configured,
-                    "requires_2fa_setup": not admin_2fa_configured,
-                    "challenge_token": challenge_token,
-                    "email_code_available": (
-                        admin_2fa_configured
-                        and _admin_login_email_is_configured()
-                    ),
-                    "remaining_backup_codes": (
-                        _admin_backup_codes_remaining(db, admin)
-                    ),
-                }
-
-        elif not DISABLE_ADMIN_2FA and admin_2fa_configured:
+        if require_admin_2fa or (admin_2fa_configured and not DISABLE_ADMIN_2FA):
             challenge_token = _create_admin_login_challenge(db, admin)
             db.commit()
 
             return {
                 "role": "admin",
-                "requires_2fa": True,
-                "requires_2fa_setup": False,
-                "two_factor_method": "authenticator",
+                "requires_2fa": admin_2fa_configured,
+                "requires_2fa_setup": not admin_2fa_configured,
                 "challenge_token": challenge_token,
-                "email_code_available": _admin_login_email_is_configured(),
-                "remaining_backup_codes": (
-                    _admin_backup_codes_remaining(db, admin)
+                "email_code_available": (
+                    admin_2fa_configured
+                    and _admin_login_email_is_configured()
                 ),
-                "message": (
-                    "Enter the six-digit code from your authenticator app, "
-                    "use a backup code, or request an email code."
-                ),
-            }
-
-        if not DISABLE_ADMIN_2FA and security.admin_2fa:
-            otp = _generate_otp_code()
-
-            db.add(PasswordReset(
-                email=admin.email,
-                otp_code=otp,
-                expires_at=(
-                    datetime.now(timezone.utc) + timedelta(minutes=10)
-                ),
-                is_used=False,
-            ))
-            db.commit()
-
-            email_sent = send_otp_email(admin.email, otp)
-
-            if not email_sent:
-                logging.getLogger(__name__).warning(
-                    "Admin login OTP email could not be sent."
-                )
-
-            return {
-                "role": "admin",
-                "requires_2fa": True,
-                "otp_email": admin.email,
-                "two_factor_method": "email",
-                "message": (
-                    "A verification code was sent to the administrator email."
-                    if email_sent
-                    else (
-                        "A verification code was generated, "
-                        "but email delivery failed."
-                    )
-                ),
-                "email_sent": email_sent,
-                "dev_mode": not email_sent,
                 "remaining_backup_codes": (
                     _admin_backup_codes_remaining(db, admin)
                 ),
@@ -4074,15 +4107,6 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         )
 
     # 2.2 Check the student table
-    if _is_email_identifier(normalized_id):
-        student = db.query(Student).filter(
-            func.lower(Student.email) == normalized_id
-        ).first()
-    else:
-        student = db.query(Student).filter(
-            func.lower(Student.student_id) == normalized_id
-        ).first()
-
     if student and verify_password(data.password, student.password):
         if security.require_student_verification and not student.is_verified:
             _record_failed_login(db, identifier, security)
@@ -4091,7 +4115,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 detail="Student verification is required before login.",
             )
 
-        _reset_login_attempts(db, identifier)
+        _reset_login_attempts(db, attempt_identifier)
         avatar_url = _get_avatar_url(student, f"{student.student_id}.jpg")
 
         if student.two_factor_enabled:
@@ -4161,7 +4185,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             admin.failed_login_attempts or 0
         ) + 1
 
-        if admin.failed_login_attempts >= 5:
+        if admin.failed_login_attempts >= security.max_login_attempts:
             admin.locked_until = (
                 datetime.now(timezone.utc) + timedelta(minutes=15)
             )
@@ -4172,7 +4196,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
 
             lockout_email_sent = send_otp_email(
                 admin.email,
-                "Admin account locked after 5 failed login attempts",
+                f"Admin account locked after {security.max_login_attempts} failed login attempts",
             )
 
             if not lockout_email_sent:
@@ -4186,7 +4210,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
 
         db.commit()
 
-    _record_failed_login(db, identifier, security)
+    _record_failed_login(db, attempt_identifier, security)
 
     raise HTTPException(
         status_code=400,
@@ -4217,7 +4241,7 @@ def send_admin_login_two_factor_email_code(
             )
             db.commit()
             raise HTTPException(
-                status_code=400,
+                status_code=503,
                 detail="Email verification is not configured. Add SENDER_EMAIL and SENDER_PASSWORD in Backend/.env.",
             )
 
@@ -4240,7 +4264,7 @@ def send_admin_login_two_factor_email_code(
                 )
                 db.commit()
                 raise HTTPException(
-                    status_code=400,
+                    status_code=429,
                     detail=f"Wait {retry_after} seconds before requesting another email code.",
                     headers={"Retry-After": str(retry_after)},
                 )
@@ -4270,7 +4294,7 @@ def send_admin_login_two_factor_email_code(
             )
             db.commit()
             raise HTTPException(
-                status_code=400,
+                status_code=429,
                 detail="Email code request limit reached. Try again later.",
                 headers={"Retry-After": str(retry_after)},
             )
@@ -5450,6 +5474,12 @@ def create_sub_admin(
     email = payload.email.strip().lower()
     if not username or not email or not payload.password:
         raise HTTPException(status_code=400, detail="Username, email, and password are required.")
+    minimum_password_length = _session_password_min_length(db)
+    if len(payload.password) < minimum_password_length:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {minimum_password_length} characters.",
+        )
 
     try:
         db.query(Admin).with_for_update().all()
@@ -5648,7 +5678,7 @@ def update_current_admin_profile(
         confirm_password = payload.confirm_password or ""
         if not secrets.compare_digest(payload.new_password, confirm_password):
             raise HTTPException(status_code=400, detail="New password and confirm password do not match.")
-        _validate_admin_password(payload.new_password)
+        _validate_admin_password(payload.new_password, _session_password_min_length(db))
         admin.password_hash = hash_password(payload.new_password)
 
     if username != admin.username:
@@ -5713,7 +5743,7 @@ def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Sess
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
         if not payload.confirm_password or not secrets.compare_digest(new_password, payload.confirm_password):
             raise HTTPException(status_code=400, detail="New password and confirm password do not match.")
-        _validate_admin_password(new_password)
+        _validate_admin_password(new_password, _session_password_min_length(db))
         admin.password_hash = hash_password(new_password)
 
     admin.full_name = full_name
@@ -5869,7 +5899,14 @@ def _student_session_from_token(db: Session, token: str) -> StudentSession:
         db.flush()
     if not session.is_active:
         raise HTTPException(status_code=401, detail="Student session has been revoked.")
-    session.last_active = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    last_active = _as_utc_datetime(session.last_active)
+    if last_active is None or now - last_active >= timedelta(minutes=get_security_settings(db).session_timeout):
+        session.is_active = False
+        db.commit()
+        raise HTTPException(status_code=401, detail="Student session expired due to inactivity. Please sign in again.")
+    session.last_active = now
+    db.commit()
     return session
 
 
@@ -6072,9 +6109,12 @@ def _student_session_from_authorization(
 
     now = datetime.now(timezone.utc)
     last_active = _as_utc_datetime(user_session.last_active_at)
-    if last_active is None or now - last_active >= timedelta(minutes=5):
-        user_session.last_active_at = now
+    if last_active is None or now - last_active >= timedelta(minutes=get_security_settings(db).session_timeout):
+        user_session.revoked_at = now
         db.commit()
+        raise HTTPException(status_code=401, detail="Student session expired due to inactivity. Please sign in again.")
+    user_session.last_active_at = now
+    db.commit()
     return student, user_session, token
 
 
@@ -6140,7 +6180,6 @@ def _legacy_student_from_authorization(authorization: Optional[str], db: Session
     student = db.query(Student).filter(func.lower(Student.student_id) == student_id).first()
     if not student:
         raise HTTPException(status_code=401, detail="Student session is no longer valid.")
-    session.last_active = datetime.now(timezone.utc)
     return student
 
 
@@ -6175,7 +6214,14 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
     if admin.username != claims["sub"]:
         logging.getLogger("app.auth").warning("Admin auth rejected: jwt_subject_session_mismatch.")
         raise HTTPException(status_code=401, detail="JWT subject does not match the admin session.")
-    session.last_active = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    last_active = _as_utc_datetime(session.last_active)
+    if last_active is None or now - last_active >= timedelta(minutes=get_security_settings(db).session_timeout):
+        session.is_active = False
+        db.commit()
+        raise HTTPException(status_code=401, detail="Admin session expired due to inactivity. Please sign in again.")
+    session.last_active = now
+    db.commit()
     return admin, session
 
 
@@ -6819,11 +6865,11 @@ def update_admin_settings(
         audit_current.get("payment", {}).pop("secretKey", None)
         changes = _settings_change_details(audit_current, normalized)
         audit_logging_enabled = _setting_bool(
-            audit_current.get("payment", {}).get("security", {}).get("auditLogging"),
-            PAYMENT_SETTINGS_SCHEMA["security"]["auditLogging"],
+            audit_current.get("security", {}).get("auditLogging"),
+            DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
         ) or _setting_bool(
-            normalized.get("payment", {}).get("security", {}).get("auditLogging"),
-            PAYMENT_SETTINGS_SCHEMA["security"]["auditLogging"],
+            normalized.get("security", {}).get("auditLogging"),
+            DEFAULT_SETTINGS_BLOCKS["security"]["auditLogging"],
         )
         if admin and changes and audit_logging_enabled:
             db.add(AuditLog(
@@ -6850,6 +6896,75 @@ def update_admin_settings(
         db.rollback()
         logger.exception("Failed to update admin settings: %s", error)
         raise HTTPException(status_code=500, detail="Could not save system settings.") from error
+
+
+@app.patch("/api/admin/settings", response_model=AdminSettingsSaveResponse)
+def patch_admin_security_settings(
+    payload: AdminSecuritySettingsPatchRequest,
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    try:
+        submitted = payload.security.model_dump(exclude_unset=True)
+        if not submitted or any(value is None for value in submitted.values()):
+            raise HTTPException(status_code=400, detail="Provide at least one security setting with a valid value.")
+
+        session_token = _extract_admin_token(authorization, None)
+        admin, _ = _admin_for_session(db, session_token)
+        current = get_admin_settings(db)
+        current_security = current["security"]
+        normalized_security = {**current_security, **submitted}
+        validated_security = AdminSecuritySettingsRequest(**normalized_security).model_dump()
+
+        if validated_security["admin2FA"] and not current_security["admin2FA"]:
+            if not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Set up your own authenticator before enabling this",
+                )
+
+        changes = [
+            f"security.{key}"
+            for key, value in validated_security.items()
+            if current_security[key] != value
+        ]
+        stored = db.query(SystemSetting).filter(SystemSetting.key == "security").first()
+        serialized = json.dumps(validated_security, ensure_ascii=False)
+        if stored:
+            stored.value = serialized
+        else:
+            db.add(SystemSetting(key="security", value=serialized))
+
+        if changes and (current_security["auditLogging"] or validated_security["auditLogging"]):
+            db.add(AuditLog(
+                admin_id=admin.id,
+                action="Admin Security Settings Updated",
+                entity_type="Settings",
+                entity_id=1,
+                description=json.dumps({
+                    "username": admin.username,
+                    "old_values": current_security,
+                    "new_values": validated_security,
+                    "changes": changes,
+                }, ensure_ascii=False),
+                status="SUCCESS",
+                ip_address="127.0.0.1",
+            ))
+        db.commit()
+
+        return {
+            "success": True,
+            "message": "Security settings saved successfully",
+            "settings": get_admin_settings(db),
+            "changes": changes,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as error:
+        db.rollback()
+        logger.exception("Failed to update admin security settings: %s", error)
+        raise HTTPException(status_code=500, detail="Could not save security settings.") from error
 
 
 @app.patch("/api/admin/settings/{id}")
@@ -7174,6 +7289,30 @@ def get_setting_by_id(id: int):
 def enforce_audit_log_append_only(session, flush_context, instances):
     new_audit_logs = [item for item in session.new if isinstance(item, AuditLog)]
     if new_audit_logs:
+        actor_roles = {}
+        for audit_log in new_audit_logs:
+            if not audit_log.actor_role:
+                if audit_log.admin_id:
+                    if audit_log.admin_id not in actor_roles:
+                        actor = session.get(Admin, audit_log.admin_id)
+                        actor_roles[audit_log.admin_id] = actor.role if actor else "system"
+                    raw_role = str(actor_roles[audit_log.admin_id] or "system").strip().lower().replace(" ", "_")
+                    audit_log.actor_role = {
+                        "admin": "admin",
+                        "super_admin": "superadmin",
+                        "superadministrator": "superadmin",
+                        "superadmin": "superadmin",
+                        "sub_admin": "staff",
+                        "staff": "staff",
+                    }.get(raw_role, raw_role if raw_role in {"student", "system"} else "admin")
+                else:
+                    audit_log.actor_role = "system"
+            audit_log.event_type = audit_log.event_type or _audit_event_type(audit_log.action)
+            audit_log.category = _audit_category(audit_log.action, audit_log.entity_type, audit_log.category)
+            audit_log.severity = _audit_severity(audit_log.action, audit_log.severity, audit_log.status)
+            if audit_log.metadata_json is None:
+                audit_log.metadata_json = _audit_metadata(audit_log.description)
+
         setting_row = session.connection().execute(
             text("SELECT value FROM system_settings WHERE `key` = 'security'")
         ).scalar()
@@ -7244,6 +7383,8 @@ def get_admin_audit_logs(
     search: Optional[str] = None,
     action: Optional[str] = None,
     status: Optional[str] = None,
+    severity: Optional[str] = None,
+    category: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     page: int = Query(1, ge=1),
@@ -7264,6 +7405,11 @@ def get_admin_audit_logs(
         AuditLog.ip_address,
         AuditLog.created_at,
         AuditLog.severity,
+        AuditLog.user_agent,
+        AuditLog.actor_role,
+        AuditLog.event_type,
+        AuditLog.category,
+        AuditLog.metadata_json,
         Admin.username,
         Admin.full_name,
         Admin.role,
@@ -7273,13 +7419,17 @@ def get_admin_audit_logs(
         like_value = f"%{search.strip()}%"
         search_filters = [
             AuditLog.action.ilike(like_value),
+            AuditLog.event_type.ilike(like_value),
             AuditLog.description.ilike(like_value),
             AuditLog.entity_type.ilike(like_value),
+            AuditLog.ip_address.ilike(like_value),
+            AuditLog.user_agent.ilike(like_value),
             Admin.username.ilike(like_value),
             Admin.full_name.ilike(like_value),
         ]
         if search.strip().isdigit():
             search_filters.append(AuditLog.entity_id == int(search.strip()))
+            search_filters.append(AuditLog.admin_id == int(search.strip()))
         query = query.filter(or_(*search_filters))
 
     if action and action.strip().lower() != "all":
@@ -7294,6 +7444,16 @@ def get_admin_audit_logs(
 
     if status and status.strip().lower() != "all":
         query = query.filter(func.upper(AuditLog.status) == status.strip().upper())
+    if severity and severity.strip().lower() != "all":
+        normalized_severity = severity.strip().upper()
+        if normalized_severity not in {"INFO", "WARNING", "CRITICAL"}:
+            raise HTTPException(status_code=400, detail="Unsupported audit severity.")
+        query = query.filter(_audit_severity_expression() == normalized_severity)
+    if category and category.strip().lower() != "all":
+        normalized_category = category.strip().upper()
+        if normalized_category not in {"AUTH", "ADMIN", "FINANCIAL", "SECURITY", "SYSTEM"}:
+            raise HTTPException(status_code=400, detail="Unsupported audit category.")
+        query = query.filter(_audit_category_expression() == normalized_category)
     if start_date:
         query = query.filter(AuditLog.created_at >= start_date)
     if end_date:
@@ -7301,21 +7461,52 @@ def get_admin_audit_logs(
 
     total = query.count()
     rows = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    items = [{
-        "id": row.id,
-        "admin_id": row.admin_id,
-        "action": row.action,
-        "entity_type": row.entity_type,
-        "entity_id": row.entity_id,
-        "description": row.description,
-        "status": row.status,
-        "ip_address": row.ip_address,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "severity": row.severity,
-        "username": row.username,
-        "full_name": row.full_name,
-        "role": row.role,
-    } for row in rows]
+    items = []
+    for row in rows:
+        raw_role = str(row.actor_role or row.role or "system").strip().lower().replace(" ", "_")
+        actor_role = {
+            "admin": "admin",
+            "super_admin": "superadmin",
+            "superadministrator": "superadmin",
+            "superadmin": "superadmin",
+            "sub_admin": "staff",
+            "staff": "staff",
+        }.get(raw_role, raw_role if raw_role in {"student", "system"} else "admin" if row.admin_id else "system")
+        metadata = row.metadata_json
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (TypeError, ValueError):
+                metadata = {"description": metadata}
+        if metadata is None:
+            metadata = _audit_metadata(row.description)
+        items.append({
+            "id": row.id,
+            "admin_id": row.admin_id,
+            "actor_id": row.admin_id,
+            "actor_username": row.username or ("System" if not row.admin_id else None),
+            "actor_name": row.full_name or row.username or ("System" if not row.admin_id else None),
+            "actor_role": actor_role,
+            "action": row.action,
+            "event_type": row.event_type or _audit_event_type(row.action),
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "description": row.description,
+            "metadata": metadata,
+            "status": row.status,
+            "ip_address": row.ip_address,
+            "user_agent": (row.user_agent or "")[:255] or None,
+            "created_at": (
+                row.created_at.replace(tzinfo=timezone.utc)
+                if row.created_at and row.created_at.tzinfo is None
+                else row.created_at.astimezone(timezone.utc) if row.created_at else None
+            ).isoformat().replace("+00:00", "Z") if row.created_at else None,
+            "severity": _audit_severity(row.action, row.severity, row.status),
+            "category": row.category or _audit_category(row.action, row.entity_type),
+            "username": row.username,
+            "full_name": row.full_name,
+            "role": row.role,
+        })
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
@@ -7327,22 +7518,31 @@ def get_admin_audit_logs_summary(
 ):
     _require_audit_log_reader(authorization, session_token, db)
     total_events = db.query(func.count(AuditLog.id)).scalar() or 0
-    admin_actions = db.query(func.count(AuditLog.id)).scalar() or 0
+    admin_actions = db.query(func.count(AuditLog.id)).outerjoin(
+        Admin, AuditLog.admin_id == Admin.id
+    ).filter(
+        func.lower(func.replace(Admin.role, " ", "_")).in_(
+            ("admin", "staff", "superadmin", "super_admin", "superadministrator", "sub_admin")
+        )
+    ).scalar() or 0
     successful_logins = db.query(func.count(AdminLoginHistory.id)).filter(
         func.lower(AdminLoginHistory.event_type).like("login_success%")
     ).scalar() or 0
     failed_logins = db.query(func.count(AdminLoginHistory.id)).filter(
         func.lower(AdminLoginHistory.event_type).like("login_failed%")
     ).scalar() or 0
+    effective_severity = _audit_severity_expression()
     severity_rows = db.query(
-        func.lower(AuditLog.severity),
+        effective_severity,
         func.count(AuditLog.id),
-    ).group_by(func.lower(AuditLog.severity)).all()
+    ).group_by(effective_severity).all()
     alerts = {"critical": 0, "warning": 0, "informational": 0}
     for severity, count in severity_rows:
-        normalized_severity = severity or "informational"
-        if normalized_severity in alerts:
-            alerts[normalized_severity] += count
+        normalized_severity = str(severity or "INFO").upper()
+        if normalized_severity == "CRITICAL":
+            alerts["critical"] += count
+        elif normalized_severity == "WARNING":
+            alerts["warning"] += count
         else:
             alerts["informational"] += count
     return {
@@ -7353,7 +7553,7 @@ def get_admin_audit_logs_summary(
             "total": successful_logins + failed_logins,
         },
         "admin_actions": admin_actions,
-        "alerts": {**alerts, "total": sum(alerts.values())},
+        "alerts": {**alerts, "total": alerts["critical"] + alerts["warning"]},
     }
 
 
@@ -7703,8 +7903,9 @@ def update_student_password(
 
     if student.has_password and not verify_password(payload.current_password or "", student.password):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
-    if len(payload.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters.")
+    minimum_password_length = _session_password_min_length(db)
+    if len(payload.new_password) < minimum_password_length:
+        raise HTTPException(status_code=400, detail=f"New password must be at least {minimum_password_length} characters.")
     if not secrets.compare_digest(payload.new_password, payload.confirm_password):
         raise HTTPException(status_code=400, detail="New password and confirmation do not match.")
 
@@ -8513,7 +8714,11 @@ def get_seller_payout_account(
 def get_unread_notifications_count(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
+        return {
+            "student_id": student_id,
+            "unreadCount": 0,
+            "unread_count": 0,
+        }
 
     unread_count = (
         db.query(Notification.id)
@@ -9033,6 +9238,7 @@ def get_product_detail(
     request: Request,
     response: Response,
     viewer_id: Optional[str] = None,
+    track_view: bool = True,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
@@ -9042,12 +9248,22 @@ def get_product_detail(
         raise HTTPException(status_code=404, detail="Product not found.")
 
     authenticated_student = None
+    authenticated_admin = False
     if authorization:
         try:
             authenticated_student = _student_from_authorization(authorization, db)
         except HTTPException as error:
             if error.status_code != status.HTTP_401_UNAUTHORIZED:
                 raise
+            try:
+                _require_admin_dashboard_access(authorization, None, db, "products")
+                authenticated_admin = True
+            except HTTPException as admin_error:
+                if admin_error.status_code not in {
+                    status.HTTP_401_UNAUTHORIZED,
+                    status.HTTP_403_FORBIDDEN,
+                }:
+                    raise
 
     seller = None
     if product.seller:
@@ -9057,7 +9273,7 @@ def get_product_detail(
 
     seller_id = seller.student_id if seller else product.seller
     is_owner = _is_product_owner(db, product, authenticated_student)
-    if not is_owner and not _public_marketplace_product_query(db).filter(Product.id == product_id).first():
+    if not is_owner and not authenticated_admin and not _public_marketplace_product_query(db).filter(Product.id == product_id).first():
         raise HTTPException(status_code=404, detail="Product not found.")
 
     viewer = authenticated_student or (
@@ -9067,26 +9283,82 @@ def get_product_detail(
     is_new_visitor_cookie = not visitor_cookie
     if is_new_visitor_cookie:
         visitor_cookie = secrets.token_urlsafe(24)
-    visitor_identity = f"student:{viewer.student_id}" if viewer else f"session:{visitor_cookie}"
-    today_start = datetime.combine(datetime.now().date(), time.min)
-    visitor_key = f"{visitor_identity}:{today_start.date().isoformat()}"
-    if not _is_product_owner(db, product, viewer):
-        daily_view_identity = [ProductView.visitor_key.in_((visitor_identity, visitor_key))]
-        if viewer:
-            daily_view_identity.append(ProductView.viewer_id == viewer.student_id)
-        existing_view = db.query(ProductView).filter(
+    tracking_viewer = authenticated_student
+    visitor_identity = (
+        f"student:{tracking_viewer.student_id}"
+        if tracking_viewer
+        else f"session:{visitor_cookie}"
+    )
+    now = datetime.now()
+    cooldown_start = now - timedelta(hours=24)
+    legacy_visitor_keys = (
+        visitor_identity,
+        f"{visitor_identity}:{now.date().isoformat()}",
+        f"{visitor_identity}:{(now - timedelta(days=1)).date().isoformat()}",
+    )
+    should_count_view = False
+    if track_view and not _is_product_owner(db, product, tracking_viewer):
+        view_identity_filters = [
+            ProductView.visitor_key.in_(legacy_visitor_keys),
+        ]
+        if tracking_viewer:
+            view_identity_filters.append(
+                ProductView.viewer_id == tracking_viewer.student_id,
+            )
+        existing_view_query = db.query(ProductView).filter(
             ProductView.product_id == product.id,
-            ProductView.viewed_at >= today_start,
-            or_(*daily_view_identity),
-        ).first()
-        if not existing_view:
-            db.add(ProductView(
-                product_id=product.id,
-                viewer_id=viewer.student_id if viewer else None,
-                visitor_key=visitor_key,
-                viewed_at=datetime.now(),
-            ))
-            product.views = int(product.views or 0) + 1
+            or_(*view_identity_filters),
+        )
+        recent_view = existing_view_query.filter(
+            ProductView.viewed_at > cooldown_start,
+        ).order_by(ProductView.viewed_at.desc()).first()
+        existing_view = None if recent_view else (
+            existing_view_query.filter(
+                ProductView.visitor_key == visitor_identity,
+            ).first()
+            or existing_view_query.order_by(ProductView.viewed_at.desc()).first()
+        )
+        if recent_view:
+            should_count_view = False
+        elif existing_view:
+            if existing_view.viewed_at <= cooldown_start:
+                should_count_view = (
+                    db.query(ProductView)
+                    .filter(
+                        ProductView.id == existing_view.id,
+                        ProductView.viewed_at <= cooldown_start,
+                    )
+                    .update(
+                        {
+                            ProductView.viewer_id: tracking_viewer.student_id if tracking_viewer else None,
+                            ProductView.visitor_key: visitor_identity,
+                            ProductView.viewed_at: now,
+                        },
+                        synchronize_session=False,
+                    )
+                    == 1
+                )
+        else:
+            try:
+                with db.begin_nested():
+                    db.add(ProductView(
+                        product_id=product.id,
+                        viewer_id=tracking_viewer.student_id if tracking_viewer else None,
+                        visitor_key=visitor_identity,
+                        viewed_at=now,
+                    ))
+                    db.flush()
+                should_count_view = True
+            except IntegrityError:
+                # Another request from this visitor recorded the unique view first.
+                should_count_view = False
+
+        if should_count_view:
+            db.query(Product).filter(Product.id == product.id).update(
+                {Product.views: func.coalesce(Product.views, 0) + 1},
+                synchronize_session=False,
+            )
+            db.refresh(product, attribute_names=["views"])
     if is_new_visitor_cookie and response:
         response.set_cookie("campace_viewer", visitor_cookie, max_age=60 * 60 * 24 * 365, httponly=True, samesite="lax")
 
@@ -9094,7 +9366,10 @@ def get_product_detail(
         Student, Student.student_id == Review.student_id
     ).join(
         Order, Order.id == Review.order_id
-    ).filter(Order.product_id == product.id).order_by(Review.created_at.desc()).all()
+    ).filter(
+        Order.product_id == product.id,
+        Review.is_hidden.is_(False),
+    ).order_by(Review.created_at.desc()).all()
     review_items = [
         {
             "id": review.id,
@@ -9118,6 +9393,7 @@ def get_product_detail(
             Order, Order.id == Review.order_id
         ).filter(
             Order.seller_id == seller_id,
+            Review.is_hidden.is_(False),
         ).first() or (0, 0)
         seller_items_sold = db.query(
             func.coalesce(func.sum(Order.quantity), 0),
@@ -9313,7 +9589,6 @@ def create_product(
     ተለጠፈ እቃ ፈጠር - ተማሪ ወይም ሻጭ አዲስ ምርት ሊለጥፉ ይችላሉ።
     """
     try:
-        require_student_verification = get_security_settings(db).require_student_verification
         title_value = str(title or "").strip()
         price_value = str(price or "").strip()
         if not title_value:
@@ -9358,11 +9633,7 @@ def create_product(
 
         authenticated_student = _student_from_authorization(authorization, db)
         normalized_student_id = authenticated_student.student_id
-        if require_student_verification and not authenticated_student.is_verified:
-            raise HTTPException(
-                status_code=403,
-                detail="Unverified profiles are restricted from creating listings.",
-            )
+        _require_verified_student(authenticated_student, db, "posting listings")
         payout_account = db.query(SellerPaymentAccount).filter(
             SellerPaymentAccount.student_id == normalized_student_id,
         ).first()
@@ -9869,7 +10140,8 @@ def get_seller_dashboard_data(
     ).join(
         Product, Order.product_id == Product.id
     ).filter(
-        seller_filter
+        seller_filter,
+        Review.is_hidden.is_(False),
     ).scalar()
     cancelled_orders = [
         order for order in received_orders
@@ -12897,7 +13169,20 @@ def delete_wishlist_item(id: int, db: Session = Depends(get_db)):
 def get_student_cart(student_id: str, db: Session = Depends(get_db)):
     student = db.query(Student).filter(Student.student_id == student_id).first()
     if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
+        return {
+            "items": [],
+            "total": 0,
+            "meta": {
+                "cart_item_count": 0,
+                "wishlist_item_count": 0,
+                "cart_count": 0,
+                "wishlist_count": 0,
+                "total_items": 0,
+            },
+            "subtotal": 0.0,
+            "platform_fee": 0.0,
+            "checkout_total": 0.0,
+        }
 
     cart_items = (
         db.query(CartItem)
@@ -13245,6 +13530,7 @@ def get_product_pay_summary(
     db: Session = Depends(get_db),
 ):
     buyer = _student_from_authorization(authorization, db)
+    _require_verified_student(buyer, db, "checking out")
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="This listing is not available for purchase.")
@@ -13296,6 +13582,7 @@ def pay_for_product(
     db: Session = Depends(get_db),
 ):
     buyer = _student_from_authorization(authorization, db)
+    _require_verified_student(buyer, db, "checking out")
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="This listing is not available for purchase.")
@@ -14833,7 +15120,42 @@ def get_admin_product_reviews(
         "rating": review.rating,
         "comment": review.comment,
         "created_at": review.created_at.isoformat() if review.created_at else None,
-    } for review, order, _product, student in rows]
+        "image": _normalize_product_image(product.image),
+        "is_hidden": bool(review.is_hidden),
+    } for review, order, product, student in rows]
+
+
+@app.patch("/api/admin/reviews/{review_id}/visibility")
+def update_admin_product_review_visibility(
+    review_id: int,
+    payload: AdminReviewVisibilityUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin_dashboard_access(authorization, session_token, db, "products")
+    review = db.query(Review).filter(Review.id == review_id).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="Product review not found.")
+    review.is_hidden = payload.is_hidden
+    db.commit()
+    return {"id": review.id, "is_hidden": review.is_hidden}
+
+
+@app.delete("/api/admin/reviews/{review_id}")
+def delete_admin_product_review(
+    review_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _require_admin_dashboard_access(authorization, session_token, db, "products")
+    review = db.query(Review).filter(Review.id == review_id).first()
+    if review is None:
+        raise HTTPException(status_code=404, detail="Product review not found.")
+    db.delete(review)
+    db.commit()
+    return {"success": True, "id": review_id}
 
 
 def _queue_communication_email(
@@ -20519,7 +20841,10 @@ def get_report_context(
     if report.seller_id:
         ratings = db.query(func.avg(Review.rating), func.count(Review.id)).join(
             Order, Order.id == Review.order_id,
-        ).filter(Order.seller_id == report.seller_id).one()
+        ).filter(
+            Order.seller_id == report.seller_id,
+            Review.is_hidden.is_(False),
+        ).one()
         rating_avg = float(ratings[0]) if ratings[0] is not None else None
         rating_count = int(ratings[1] or 0)
 

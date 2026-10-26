@@ -86,6 +86,7 @@ describe('ProductDetails guest actions', () => {
     clearPendingProductAction();
     mockSetCartItems.mockClear();
     mockCartItems.length = 0;
+    localStorage.removeItem('viewed_products');
     vi.stubGlobal('fetch', vi.fn((input, options = {}) => {
       const url = String(input);
       if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([similarProduct]));
@@ -105,6 +106,7 @@ describe('ProductDetails guest actions', () => {
   afterEach(() => {
     cleanup();
     clearPendingProductAction();
+    localStorage.removeItem('viewed_products');
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -151,6 +153,25 @@ describe('ProductDetails guest actions', () => {
     expect(screen.queryByText('productDetails.buyer.responseTime')).toBeNull();
   });
 
+  it('skips view tracking for a product revisited within 24 hours in this browser', async () => {
+    const fetchMock = globalThis.fetch;
+    const firstVisit = render(
+      <ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />,
+    );
+
+    await waitFor(() => expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/products/42')),
+    ).toBe(true));
+    expect(JSON.parse(localStorage.getItem('viewed_products'))['buyer-1:42']).toBeGreaterThan(0);
+
+    firstVisit.unmount();
+    render(<ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />);
+
+    await waitFor(() => expect(
+      fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/products/42?track_view=false')),
+    ).toBe(true));
+  });
+
   it('refreshes listing availability when the payment summary reports it out of stock', async () => {
     mockCartItems.push({ id: 8, product_id: 42, student_id: 'buyer-1', quantity: 1 });
     const fetchMock = vi.fn((input) => {
@@ -161,7 +182,7 @@ describe('ProductDetails guest actions', () => {
         }, 409));
       }
       if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
-      if (url.endsWith('/api/products/42')) return Promise.resolve(jsonResponse(detail));
+      if (/\/api\/products\/42(?:\?track_view=false)?$/.test(url)) return Promise.resolve(jsonResponse(detail));
       if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
       if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
       if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
@@ -171,7 +192,7 @@ describe('ProductDetails guest actions', () => {
 
     render(<ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Pay with wallet' }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Pay with wallet' }))[0]);
 
     expect((await screen.findByRole('alert')).textContent).toContain('This item is out of stock.');
     await waitFor(() => expect(screen.getAllByText('Sold out').length).toBeGreaterThan(0));

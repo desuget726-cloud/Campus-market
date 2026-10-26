@@ -29,6 +29,7 @@ from app.models import (
     Order,
     Product,
     Report,
+    Review,
     Student,
     SupportTicket,
     SupportTicketMessage,
@@ -538,7 +539,7 @@ class SupportCommunicationLoopTests(unittest.TestCase):
             price="15.00",
             seller=self.seller.student_id,
             seller_id=self.seller.student_id,
-            status="Approved",
+            status="Pending",
         )
         self.db.add(product)
         self.db.flush()
@@ -551,24 +552,65 @@ class SupportCommunicationLoopTests(unittest.TestCase):
         )
         self.db.add(order)
         self.db.flush()
-        from app.models import Review
-        self.db.add(Review(
+        review = Review(
             order_id=order.id,
             student_id=self.reporter.student_id,
             rating=4,
             comment="Good condition and quick handover.",
-        ))
+        )
+        self.db.add(review)
         self.db.commit()
 
         response = self._request("GET", "/api/admin/reviews", headers=self._admin_headers())
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()[0]["product"], "Reviewed item")
         self.assertEqual(response.json()[0]["reviewer_id"], self.reporter.student_id)
+        self.assertEqual(response.json()[0]["image"], None)
+        self.assertFalse(response.json()[0]["is_hidden"])
+        admin_product_details = self._request(
+            "GET",
+            f"/api/products/{product.id}",
+            headers=self._admin_headers(),
+        )
+        self.assertEqual(admin_product_details.status_code, 200, admin_product_details.text)
+        self.assertEqual(admin_product_details.json()["id"], product.id)
+        self.assertEqual(
+            self._request("GET", f"/api/products/{product.id}").status_code,
+            404,
+        )
         denied = self._request(
             "GET", "/api/admin/reviews",
             headers=self._headers(self.reporter.student_id),
         )
         self.assertEqual(denied.status_code, 403)
+
+        hidden = self._request(
+            "PATCH",
+            f"/api/admin/reviews/{review.id}/visibility",
+            headers=self._admin_headers(),
+            json_body={"is_hidden": True},
+        )
+        self.assertEqual(hidden.status_code, 200, hidden.text)
+        self.assertTrue(hidden.json()["is_hidden"])
+        admin_list = self._request("GET", "/api/admin/reviews", headers=self._admin_headers())
+        self.assertTrue(admin_list.json()[0]["is_hidden"])
+
+        product.status = "Approved"
+        self.db.commit()
+        product_detail = self._request("GET", f"/api/products/{product.id}")
+        self.assertEqual(product_detail.status_code, 200, product_detail.text)
+        self.assertEqual(product_detail.json()["reviews"], [])
+
+        deleted = self._request(
+            "DELETE",
+            f"/api/admin/reviews/{review.id}",
+            headers=self._admin_headers(),
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(
+            self._request("GET", "/api/admin/reviews", headers=self._admin_headers()).json(),
+            [],
+        )
 
     def test_sidebar_counts_include_unseen_reports_support_overdue_and_unread(self):
         old_ticket = SupportTicket(

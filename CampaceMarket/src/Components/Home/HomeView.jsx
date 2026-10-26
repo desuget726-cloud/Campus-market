@@ -107,7 +107,7 @@ const getCategoryAdCount = (value) => {
   return Number(match[1]) * multiplier;
 };
 
-function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages }) {
+function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages, onBackToSellerHub }) {
   const { t, language } = useLanguage();
   const contentContainerClass = 'w-full px-4 sm:px-6 lg:px-10 2xl:px-16';
   const PAGE_SIZE = 12;
@@ -411,7 +411,13 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
             onPendingActionHandled={onPendingProductActionHandled}
             onNavigate={onNavigate}
             onNavigateToMessages={onNavigateToMessages}
-            onBack={() => setSelectedProduct(null)}
+            onBack={() => {
+              if (onBackToSellerHub) {
+                onBackToSellerHub();
+                return;
+              }
+              setSelectedProduct(null);
+            }}
             onStartChat={() => {
               console.log('Start chat with seller', selectedProduct);
             }}

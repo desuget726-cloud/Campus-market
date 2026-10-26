@@ -14,6 +14,35 @@ import {
 import { buildOrderDashboardUrl } from '../../utils/orderDashboardLink';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
+const PRODUCT_VIEW_STORAGE_KEY = 'viewed_products';
+const PRODUCT_VIEW_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const hasRecentProductView = (productId, viewerKey) => {
+  try {
+    const viewedProducts = JSON.parse(localStorage.getItem(PRODUCT_VIEW_STORAGE_KEY) || '{}');
+    const viewedAt = Number(viewedProducts[`${viewerKey}:${productId}`]);
+    const elapsed = Date.now() - viewedAt;
+    return Number.isFinite(viewedAt) && elapsed >= 0 && elapsed < PRODUCT_VIEW_COOLDOWN_MS;
+  } catch (error) {
+    console.warn('Unable to read product view cooldown from local storage:', error);
+    return false;
+  }
+};
+const storeProductView = (productId, viewerKey) => {
+  try {
+    const viewedProducts = JSON.parse(localStorage.getItem(PRODUCT_VIEW_STORAGE_KEY) || '{}');
+    const now = Date.now();
+    Object.entries(viewedProducts).forEach(([key, value]) => {
+      const viewedAt = Number(value);
+      if (!Number.isFinite(viewedAt) || now - viewedAt < 0 || now - viewedAt >= PRODUCT_VIEW_COOLDOWN_MS) {
+        delete viewedProducts[key];
+      }
+    });
+    viewedProducts[`${viewerKey}:${productId}`] = now;
+    localStorage.setItem(PRODUCT_VIEW_STORAGE_KEY, JSON.stringify(viewedProducts));
+  } catch (error) {
+    console.warn('Unable to save product view cooldown to local storage:', error);
+  }
+};
 const formatRelativeTime = (value, language) => {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) return '';
@@ -193,13 +222,21 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
     const fetchProductDetails = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/products/${product.id}`, {
+        const viewerKey = String(
+          currentUser?.studentId || currentUser?.student_id || 'guest',
+        );
+        const recentlyViewed = hasRecentProductView(product.id, viewerKey);
+        const trackViewQuery = recentlyViewed ? '?track_view=false' : '';
+        const response = await fetch(`${API_BASE_URL}/api/products/${product.id}${trackViewQuery}`, {
           headers: currentUserAccessToken ? { Authorization: `Bearer ${currentUserAccessToken}` } : {},
         });
         if (!response.ok) {
           throw new Error('Failed to fetch product details');
         }
         const data = await response.json();
+        if (!recentlyViewed && !data.is_owner) {
+          storeProductView(product.id, viewerKey);
+        }
         setDetailedProduct(data);
         setOwnerStockDraft(String(data.stock ?? 0));
         const status = String(data.status || '').trim().toLowerCase();
