@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react
 import toast from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Check, Pencil, X } from 'lucide-react';
+import { Check, ChevronDown, Pencil, X } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { useCart } from '../../context/CartContext';
 import { getErrorMessage, notifyError, notifyInfo, notifySuccess } from '../../utils/notify';
@@ -19,6 +19,11 @@ import { isOrderRefunded } from '../../utils/orderReceiptState';
 import { shouldReduceUnreadNotificationCount } from '../../utils/notificationState';
 import { buildOrderDashboardUrl, parseOrderDashboardLink } from '../../utils/orderDashboardLink';
 import { filterPublicProducts } from '../../utils/publicListings';
+import {
+  getPayoutSetupStateAfterMethodChange,
+  isPayoutSetupValid,
+  isValidPayoutAccountNumber,
+} from '../../utils/payoutSetupValidation';
 
 const isVerifiedStudent = (student) => [true, 1, '1', 'true'].includes(student?.is_verified);
 const CREDIT_TRANSACTION_TYPES = new Set(['wallet deposit', 'escrow release', 'product sale', 'dispute release', 'refund']);
@@ -172,7 +177,6 @@ function StudentDashboard({
   user,
   initialTab = 'home',
   dashboardLink = null,
-  dashboardMessage = '',
   onDashboardLinkInvalid,
   initialProductToEdit = null,
   onInitialProductEditHandled,
@@ -509,6 +513,8 @@ function StudentDashboard({
   const [payoutSetupOpen, setPayoutSetupOpen] = useState(false);
   const [payoutSetupBanks, setPayoutSetupBanks] = useState([]);
   const [payoutSetupBanksLoading, setPayoutSetupBanksLoading] = useState(false);
+  const [payoutSetupBanksError, setPayoutSetupBanksError] = useState('');
+  const [payoutSetupRetryCount, setPayoutSetupRetryCount] = useState(0);
   const [payoutSetupError, setPayoutSetupError] = useState('');
   const [payoutSetupLoading, setPayoutSetupLoading] = useState(false);
   const payoutSetupInFlightRef = useRef(false);
@@ -556,7 +562,6 @@ function StudentDashboard({
     condition: 'New',
     pickupLocation: '',
     pickupHours: '12 AM:00-12:00 PM',
-    negotiable: false,
     imageNotes: [],
     description: '',
     image: null
@@ -2959,7 +2964,7 @@ function StudentDashboard({
     if (!showWithdrawModal || !payoutSetupOpen || payoutAccount || payoutSetupBanks.length) return undefined;
     const controller = new AbortController();
     setPayoutSetupBanksLoading(true);
-    setPayoutSetupError('');
+    setPayoutSetupBanksError('');
     fetch(`${API_BASE_URL}/api/banks`, { signal: controller.signal })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}));
@@ -2973,13 +2978,23 @@ function StudentDashboard({
       })
       .catch((error) => {
         if (error.name === 'AbortError') return;
-        setPayoutSetupError(getErrorMessage(error));
+        setPayoutSetupBanksError(getErrorMessage(error));
       })
       .finally(() => {
         if (!controller.signal.aborted) setPayoutSetupBanksLoading(false);
       });
     return () => controller.abort();
-  }, [payoutAccount, payoutSetupBanks.length, payoutSetupOpen, showWithdrawModal, t]);
+  }, [payoutAccount, payoutSetupBanks.length, payoutSetupOpen, payoutSetupRetryCount, showWithdrawModal, t]);
+
+  const visiblePayoutSetupProviders = payoutSetupBanks.filter((bank) => bank.method === payoutSetupType);
+  const payoutSetupValid = visiblePayoutSetupProviders.some((bank) => bank.code === payoutSetupBankCode)
+    && isPayoutSetupValid({
+      payoutType: payoutSetupType,
+      providerCode: payoutSetupBankCode,
+      holderName: payoutSetupAccountName,
+      expectedHolderName: user?.name,
+      accountNumber: payoutSetupAccountNumber,
+    });
 
   const handlePayoutSetupSubmit = async () => {
     if (payoutSetupInFlightRef.current) return;
@@ -2992,6 +3007,11 @@ function StudentDashboard({
       if (!verifiedStudent) throw new Error(t('walletPayout.verifiedRequired'));
       if (!payoutSetupBankCode || !payoutSetupAccountName.trim() || !payoutSetupAccountNumber.trim()) {
         throw new Error(t('walletPayout.setupFieldsRequired'));
+      }
+      if (!isValidPayoutAccountNumber(payoutSetupType, payoutSetupBankCode, payoutSetupAccountNumber)) {
+        throw new Error(payoutSetupType === 'mobile_wallet'
+          ? t('walletPayout.mobileNumberInvalid')
+          : t('walletPayout.accountNumberInvalid'));
       }
 
       const response = await fetch(`${API_BASE_URL}/api/student/seller/setup-payout`, {
@@ -3121,7 +3141,7 @@ function StudentDashboard({
   const resetProductForm = () => {
     setProductForm({
       name: '', title: '', category: '', subcategory: '', price: '', quantity: '1',
-      condition: 'New', pickupLocation: '', pickupHours: '08:00-17:00', negotiable: false, imageNotes: [], description: '', image: null
+      condition: 'New', pickupLocation: '', pickupHours: '08:00-17:00', imageNotes: [], description: '', image: null
     });
     setEditingProduct(null);
     setExistingProductImages([]);
@@ -3149,7 +3169,6 @@ function StudentDashboard({
       condition: product.condition || 'New',
       pickupLocation: product.pickup_location || product.pickupLocation || '',
       pickupHours: product.pickup_hours || '08:00-17:00',
-      negotiable: product.negotiable === true,
       imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
       description: product.description || '',
       image: []
@@ -3320,7 +3339,7 @@ function StudentDashboard({
           condition: productForm.condition || 'New',
           pickup_location: productForm.pickupLocation || '',
           pickup_hours: productForm.pickupHours || '08:00-17:00',
-          negotiable: productForm.negotiable === true,
+          negotiable: false,
           image_notes: productForm.imageNotes || [],
         }, {
           existingImages: existingProductImages,
@@ -3346,7 +3365,7 @@ function StudentDashboard({
       formData.append('condition', productForm.condition || 'New');
       formData.append('pickup_location', productForm.pickupLocation || '');
       formData.append('pickup_hours', productForm.pickupHours || '08:00-17:00');
-      formData.append('negotiable', String(productForm.negotiable === true));
+      formData.append('negotiable', 'false');
       formData.append('image_notes', JSON.stringify(productForm.imageNotes || []));
       formData.append('description', productForm.description || '');
       formData.append('student_id', user?.studentId || '');
@@ -4571,12 +4590,6 @@ function StudentDashboard({
           )}
 
           <section className={`grid min-w-0 w-full max-w-full grid-cols-[minmax(0,1fr)] gap-6 animate-fade-in [&>*]:min-w-0 [&>*]:max-w-full ${activeTab === 'messages' ? 'min-h-0 flex-1' : ''}`}>
-            {dashboardMessage && (
-              <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">
-                {dashboardMessage}
-              </p>
-            )}
-
             {/* 1. ገጽ 1፦ የዳሽቦርዱ መግቢያ (Home Tab) */}
             {activeTab === 'home' && (
               <div data-dashboard-view="home" className="min-w-0 space-y-6">
@@ -6270,8 +6283,8 @@ function StudentDashboard({
       </div>
 
       {showWithdrawModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
-          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4">
+          <div className="flex max-h-[90dvh] min-h-0 w-full max-w-md flex-col overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200 px-6 py-5">
               <div>
                 <h2 className="text-xl font-bold text-slate-950">Withdraw Funds</h2>
@@ -6292,7 +6305,8 @@ function StudentDashboard({
               </button>
             </div>
 
-            <form onSubmit={handleWithdrawSubmit} className="space-y-5 px-6 py-6">
+            <form onSubmit={handleWithdrawSubmit} className="flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-6">
               <div>
                 <label htmlFor="withdraw-amount" className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
                 <input
@@ -6345,8 +6359,11 @@ function StudentDashboard({
                     <select
                       value={payoutSetupType}
                       onChange={(event) => {
-                        setPayoutSetupType(event.target.value);
-                        setPayoutSetupBankCode('');
+                        const nextState = getPayoutSetupStateAfterMethodChange(event.target.value);
+                        setPayoutSetupType(nextState.payoutType);
+                        setPayoutSetupBankCode(nextState.providerCode);
+                        setPayoutSetupAccountNumber('');
+                        setPayoutSetupError('');
                       }}
                       disabled={payoutSetupLoading}
                       className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
@@ -6355,20 +6372,71 @@ function StudentDashboard({
                       <option value="mobile_wallet">{t('walletPayout.mobileMoney')}</option>
                     </select>
                   </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileProvider') : t('walletPayout.bank')}
-                    <select
-                      value={payoutSetupBankCode}
-                      onChange={(event) => setPayoutSetupBankCode(event.target.value)}
-                      disabled={payoutSetupBanksLoading || payoutSetupLoading || payoutSetupBanks.length === 0}
-                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
-                    >
-                      <option value="">{payoutSetupBanksLoading ? t('walletPayout.loadingBanks') : t('walletPayout.chooseProvider')}</option>
-                      {payoutSetupBanks
-                        .filter((bank) => bank.method === payoutSetupType)
-                        .map((bank) => <option key={bank.code} value={bank.code}>{bank.name}</option>)}
-                    </select>
-                  </label>
+                  <div className="block text-sm font-semibold text-slate-700">
+                    <span id="payout-provider-label">
+                      {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileProvider') : t('walletPayout.bank')}
+                    </span>
+                    <details className="group" aria-labelledby="payout-provider-label">
+                      <summary
+                        onClick={(event) => {
+                          if (payoutSetupBanksLoading || payoutSetupLoading || !visiblePayoutSetupProviders.length) {
+                            event.preventDefault();
+                          }
+                        }}
+                        aria-disabled={payoutSetupBanksLoading || payoutSetupLoading || !visiblePayoutSetupProviders.length}
+                        className="mt-1 flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                      >
+                        <span>
+                          {visiblePayoutSetupProviders.find((bank) => bank.code === payoutSetupBankCode)?.name
+                            || (payoutSetupBanksLoading ? t('walletPayout.loadingBanks') : t('walletPayout.chooseProvider'))}
+                        </span>
+                        <ChevronDown className="h-4 w-4 transition group-open:rotate-180" aria-hidden="true" />
+                      </summary>
+                      <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1">
+                        {visiblePayoutSetupProviders.length ? visiblePayoutSetupProviders.map((bank) => (
+                          <button
+                            key={bank.code}
+                            type="button"
+                            aria-pressed={payoutSetupBankCode === bank.code}
+                            onClick={(event) => {
+                              setPayoutSetupBankCode(bank.code);
+                              event.currentTarget.closest('details')?.removeAttribute('open');
+                            }}
+                            className="block w-full rounded-lg px-3 py-2 text-left font-normal hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          >
+                            {bank.name}
+                          </button>
+                        )) : (
+                          <p className="px-3 py-2 text-sm font-normal text-slate-500">{t('walletPayout.noProviders')}</p>
+                        )}
+                      </div>
+                    </details>
+                  </div>
+                  {payoutSetupBanksLoading && (
+                    <p role="status" className="text-sm text-slate-600">{t('walletPayout.loadingBanks')}</p>
+                  )}
+                  {payoutSetupBanksError && (
+                    <div className="space-y-2" role="alert">
+                      <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{payoutSetupBanksError}</p>
+                      {!payoutSetupLoading && !payoutSetupBanksLoading && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPayoutSetupBanksError('');
+                            setPayoutSetupRetryCount((count) => count + 1);
+                          }}
+                          className="font-semibold text-emerald-700 underline underline-offset-2"
+                        >
+                          {t('walletPayout.retryProviders')}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {payoutSetupError && (
+                    <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      {payoutSetupError}
+                    </p>
+                  )}
                   <label className="block text-sm font-semibold text-slate-700">
                     {t('walletPayout.holderName')}
                     <input
@@ -6385,20 +6453,26 @@ function StudentDashboard({
                       value={payoutSetupAccountNumber}
                       onChange={(event) => setPayoutSetupAccountNumber(event.target.value.replace(/\D/g, ''))}
                       inputMode="numeric"
+                      type="tel"
+                      pattern={payoutSetupType === 'mobile_wallet' ? '(09|07)[0-9]{8}' : undefined}
+                      minLength={payoutSetupType === 'mobile_wallet' ? 10 : 10}
+                      maxLength={payoutSetupType === 'mobile_wallet' ? 10 : 15}
                       autoComplete="off"
                       disabled={payoutSetupLoading}
                       className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
                     />
                   </label>
-                  {payoutSetupError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{payoutSetupError}</p>}
-                  <div className="flex gap-2">
-                    <button type="button" onClick={handlePayoutSetupSubmit} disabled={payoutSetupLoading || payoutSetupBanksLoading} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
-                      {payoutSetupLoading ? t('walletPayout.saving') : t('walletPayout.saveAndContinue')}
-                    </button>
-                    <button type="button" onClick={() => setPayoutSetupOpen(false)} disabled={payoutSetupLoading} className="rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">
-                      {t('walletPayout.cancel')}
-                    </button>
-                  </div>
+                  {payoutSetupAccountNumber && !isValidPayoutAccountNumber(payoutSetupType, payoutSetupBankCode, payoutSetupAccountNumber) && (
+                    <p className="text-sm text-red-700">
+                      {payoutSetupType === 'mobile_wallet'
+                        ? t('walletPayout.mobileNumberInvalid')
+                        : t('walletPayout.accountNumberInvalid')}
+                    </p>
+                  )}
+                  {payoutSetupAccountName.trim() && user?.name
+                    && payoutSetupAccountName.trim().replace(/\s+/g, ' ').toLowerCase()
+                      !== user.name.trim().replace(/\s+/g, ' ').toLowerCase()
+                    && <p className="text-sm text-red-700">{t('walletPayout.holderNameInvalid')}</p>}
                 </section>
               )}
 
@@ -6425,13 +6499,27 @@ function StudentDashboard({
                 </div>
               ) : withdrawError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{withdrawError}</p>}
 
-              <button
-                type="submit"
-                disabled={payoutAccountLoading || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
-                className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
-              >
-                {withdrawLoading ? t('walletPayout.processing') : t('walletPayout.submitWithdrawal')}
-              </button>
+              </div>
+              <div className="shrink-0 border-t border-slate-200 bg-white px-6 py-4">
+                {payoutSetupOpen && !payoutAccount ? (
+                  <div className="flex gap-2">
+                    <button type="button" onClick={handlePayoutSetupSubmit} disabled={payoutSetupLoading || payoutSetupBanksLoading || !payoutSetupValid} className="flex-1 rounded-xl bg-emerald-600 px-3 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60">
+                      {payoutSetupLoading ? t('walletPayout.saving') : t('walletPayout.saveAndContinue')}
+                    </button>
+                    <button type="button" onClick={() => setPayoutSetupOpen(false)} disabled={payoutSetupLoading} className="rounded-xl border border-slate-300 px-3 py-2.5 text-sm font-semibold text-slate-700 disabled:opacity-60">
+                      {t('walletPayout.cancel')}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={payoutAccountLoading || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
+                    className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+                  >
+                    {withdrawLoading ? t('walletPayout.processing') : t('walletPayout.submitWithdrawal')}
+                  </button>
+                )}
+              </div>
             </form>
           </div>
         </div>
@@ -6458,31 +6546,12 @@ function StudentDashboard({
             </div>
 
             <form onSubmit={handleAddProductSubmit} className="max-h-[calc(90vh-7rem)] overflow-y-auto overflow-x-hidden px-6 py-6">
-              {editingProduct && (
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                  <p className="text-sm font-bold text-emerald-900">AI Seller Advisor Tip</p>
-                  <p className="mt-1 text-sm text-emerald-800">A 3% price reduction can improve conversion while keeping this listing competitive.</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const currentPrice = Number(String(productForm.price || editingProduct.price || 0).replace(/[^0-9.]/g, '')) || 0;
-                      setProductForm((previous) => ({ ...previous, price: (currentPrice * 0.97).toFixed(2) }));
-                    }}
-                    className="btn-primary mt-3 rounded-full px-4 py-2 text-xs font-bold transition"
-                  >
-                    Apply AI Price Suggestion
-                  </button>
-                </div>
-              )}
-              <div className="grid gap-4 lg:grid-cols-2">
+              <div className="grid gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700">Condition</label>
                   <select value={productForm.condition} onChange={(e) => setProductForm((prev) => ({ ...prev, condition: e.target.value }))} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 focus:border-sky-500 focus:bg-white focus:outline-none">
                     <option>New</option><option>Used</option><option>Gently Used</option>
                   </select>
-                </div>
-                <div className="flex items-end pb-3">
-                  <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={productForm.negotiable} onChange={(e) => setProductForm((prev) => ({ ...prev, negotiable: e.target.checked }))} /> Negotiable price</label>
                 </div>
               </div>
 

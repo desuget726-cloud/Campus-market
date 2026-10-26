@@ -56,7 +56,7 @@ vi.mock('./Components/Dashboard/AdminDashboard', () => ({
 }));
 
 vi.mock('./Components/Dashboard/StudentDashboard', () => ({
-  default: function MockStudentDashboard({ initialTab, dashboardLink, dashboardMessage, onTabChange }) {
+  default: function MockStudentDashboard({ initialTab, dashboardLink, onTabChange }) {
     useEffect(() => {
       onTabChange?.(initialTab);
     }, [initialTab, onTabChange]);
@@ -64,7 +64,6 @@ vi.mock('./Components/Dashboard/StudentDashboard', () => ({
       <div data-testid="student-dashboard">
         <span>Student tab: {initialTab}</span>
         <span>Student section: {dashboardLink?.section || 'none'}</span>
-        <span>Dashboard message: {dashboardMessage || 'none'}</span>
       </div>
     );
   },
@@ -142,13 +141,13 @@ describe('admin dashboard default section', () => {
       expect(screen.getByText('Student section: warnings')).toBeTruthy();
     });
 
-    it('falls back to Home with a message for an unknown dashboard section', async () => {
+    it('falls back to Home without a warning for an unknown dashboard section', async () => {
       window.history.replaceState({}, '', '/dashboard?tab=seller&section=unknown');
 
       render(<App />);
 
       expect(await screen.findByText('Student tab: home')).toBeTruthy();
-      expect(screen.getByText('Dashboard message: This dashboard section is unavailable, so Home is shown.')).toBeTruthy();
+      expect(screen.queryByRole('status')).toBeNull();
     });
   });
 

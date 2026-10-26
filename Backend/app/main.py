@@ -65,6 +65,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
 import socket
+import ssl
 import ipaddress
 import io
 import warnings
@@ -118,6 +119,18 @@ PRIVATE_SUPPORT_UPLOAD_DIR = os.path.join(BACKEND_DIR, "private_uploads", "suppo
 PRIVATE_REPORT_UPLOAD_DIR = os.path.join(BACKEND_DIR, "private_uploads", "reports")
 _chapa_banks_cache: List[dict] = []
 _chapa_banks_cache_expires_at = 0.0
+_CHAPA_BANKS_CACHE_CLASSIFICATION_VERSION = 2
+_chapa_banks_cache_classification_version = 0
+
+# Chapa's List Banks page does not publish a classification field in its response
+# schema. These codes come from our Chapa provider catalog; the supported-methods
+# page lists payouts for CBEBirr, M-Pesa, and telebirr, but not YaYaWallet.
+_CHAPA_MOBILE_PROVIDER_PAYOUT_SUPPORT = {
+    "128": True,
+    "266": True,
+    "855": True,
+    "867": False,
+}
 
 GOOGLE_REDIRECT_URI_DEFAULT = "http://localhost:8000/auth/google/callback"
 GOOGLE_OAUTH_STATE_TTL = timedelta(minutes=10)
@@ -1399,81 +1412,139 @@ if not email_logger.handlers:
 
 def send_otp_email(receiver_email: str, otp: str) -> bool:
     """Send ONLY the raw 6-digit OTP number as a plain-text email body."""
-    try:
-        import os
-        import httpx
-
-        if not _notifications_enabled(None, "emailNotifs"):
-            message = "OTP email skipped: emailNotifs is disabled."
-            email_logger.warning(message)
-            print(f"[EMAIL WARNING] {message}", flush=True)
-            return False
-
-        if not receiver_email:
-            message = "OTP email was not sent: receiver_email is empty."
-            email_logger.error(message)
-            print(f"[EMAIL ERROR] {message}", flush=True)
-            return False
-
-        api_key = os.getenv("BREVO_API_KEY", "").strip()
-        sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
-
-        if not api_key:
-            message = "OTP email was not sent: BREVO_API_KEY is missing."
-            email_logger.error(message)
-            print(f"[EMAIL ERROR] {message}", flush=True)
-            return False
-
-        if not sender_email:
-            message = "OTP email was not sent: SENDER_EMAIL is missing."
-            email_logger.error(message)
-            print(f"[EMAIL ERROR] {message}", flush=True)
-            return False
-
-        response = httpx.post(
-            "https://api.brevo.com/v3/smtp/email",
-            headers={
-                "accept": "application/json",
-                "api-key": api_key,
-                "content-type": "application/json",
-            },
-            json={
-                "sender": {
-                    "name": "DG Market",
-                    "email": sender_email,
-                },
-                "to": [{"email": receiver_email}],
-                "subject": "DG Market",
-                "textContent": str(otp),
-            },
-            timeout=20.0,
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    app_environment = os.getenv("APP_ENV", "").strip().lower()
+    if environment in {"development", "dev", "local"} or app_environment in {
+        "development",
+        "dev",
+        "local",
+    }:
+        print(
+            f"\n[DEV FALLBACK] OTP for {receiver_email} is: {otp}\n",
+            flush=True,
         )
 
-        if response.status_code not in (200, 201, 202):
-            message = (
-                f"Brevo API failed: status={response.status_code}, "
-                f"response={response.text[:500]}"
+    if not _notifications_enabled(None, "emailNotifs"):
+        message = "OTP email skipped: emailNotifs is disabled."
+        email_logger.warning("%s recipient=%s", message, receiver_email)
+        print(f"[EMAIL WARNING] {message}", flush=True)
+        return False
+
+    if not receiver_email:
+        message = "OTP email was not sent: recipient email is empty."
+        email_logger.error(message)
+        print(f"[EMAIL ERROR] {message}", flush=True)
+        return False
+
+    sender_email = (
+        os.getenv("SMTP_USER", "").strip()
+        or os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
+    )
+    sender_password = (
+        os.getenv("SMTP_PASSWORD", "").strip()
+        or os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip()
+    ).replace(" ", "")
+    if not sender_email or not sender_password:
+        missing = []
+        if not sender_email:
+            missing.append("SMTP_USER/SENDER_EMAIL")
+        if not sender_password:
+            missing.append("SMTP_PASSWORD/SENDER_PASSWORD")
+        detail = f"missing configuration: {', '.join(missing)}"
+        email_logger.error(
+            "OTP email not sent recipient=%s error=%s",
+            receiver_email,
+            detail,
+        )
+        print(f"[EMAIL ERROR] {detail}", flush=True)
+        return False
+
+    message = MIMEText(str(otp), "plain")
+    message["Subject"] = "Password recovery verification code"
+    message["From"] = sender_email
+    message["To"] = receiver_email
+
+    smtp_stage = "TLS connection"
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(
+            "smtp.gmail.com",
+            465,
+            context=context,
+            timeout=15,
+        ) as server:
+            smtp_stage = "authentication"
+            server.login(sender_email, sender_password)
+            smtp_stage = "message delivery"
+            refused_recipients = server.sendmail(
+                sender_email,
+                receiver_email,
+                message.as_string(),
             )
-            email_logger.error(message)
-            print(f"[EMAIL API ERROR] {message}", flush=True)
+        if refused_recipients:
+            detail = refused_recipients.get(receiver_email, refused_recipients)
+            email_logger.error(
+                "OTP email recipient was refused recipient=%s error=%s",
+                receiver_email,
+                detail,
+            )
+            print(f"[EMAIL SMTP ERROR] Recipient refused: {detail}", flush=True)
             return False
 
-        email_logger.info("OTP email accepted by Brevo for %s", receiver_email)
+        email_logger.info("OTP email sent successfully recipient=%s", receiver_email)
         return True
 
-    except httpx.TimeoutException:
-        email_logger.exception("Timed out while sending OTP through Brevo.")
-        print("[EMAIL TIMEOUT] Brevo API request timed out.", flush=True)
+    except smtplib.SMTPAuthenticationError as error:
+        email_logger.error(
+            "OTP email SMTP authentication failed recipient=%s error=%s",
+            receiver_email,
+            error,
+        )
+        print(f"[EMAIL SMTP AUTH ERROR] {error}", flush=True)
         return False
 
-    except httpx.RequestError as error:
-        email_logger.exception("Network error connecting to Brevo API: %s", error)
-        print(f"[EMAIL NETWORK ERROR] Brevo API: {error}", flush=True)
+    except smtplib.SMTPConnectError as error:
+        email_logger.error(
+            "OTP email SMTP connection failed recipient=%s error=%s",
+            receiver_email,
+            error,
+        )
+        print(f"[EMAIL SMTP CONNECT ERROR] {error}", flush=True)
         return False
 
-    except Exception as error:
-        email_logger.exception("Unexpected error while sending OTP through Brevo.")
-        print(f"[EMAIL UNEXPECTED ERROR] {error}", flush=True)
+    except smtplib.SMTPResponseException as error:
+        detail = error.smtp_error.decode(errors="replace") if isinstance(
+            error.smtp_error, bytes
+        ) else error.smtp_error
+        email_logger.error(
+            "OTP email SMTP response error recipient=%s code=%s error=%s",
+            receiver_email,
+            error.smtp_code,
+            detail,
+        )
+        print(
+            f"[EMAIL SMTP RESPONSE ERROR] code={error.smtp_code} error={detail}",
+            flush=True,
+        )
+        return False
+
+    except TimeoutError as error:
+        email_logger.error(
+            "OTP email SMTP timed out recipient=%s error=%s",
+            receiver_email,
+            error,
+        )
+        print(f"[EMAIL SMTP TIMEOUT] {error}", flush=True)
+        return False
+
+    except (smtplib.SMTPException, OSError) as error:
+        email_logger.error(
+            "OTP email SMTP failed during %s recipient=%s error=%s",
+            smtp_stage,
+            receiver_email,
+            error,
+        )
+        print(f"[EMAIL SMTP ERROR] {smtp_stage}: {error}", flush=True)
         return False
 
 
@@ -1508,8 +1579,13 @@ def send_verification_status_email(receiver_email: str, status: str, reason: Opt
         msg["To"] = receiver_email
         msg.attach(MIMEText("\n".join(body_lines), "plain"))
 
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.starttls()
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(
+            "smtp.gmail.com",
+            465,
+            context=context,
+            timeout=15,
+        ) as server:
             server.login(normalized_sender_email, normalized_sender_password)
             server.sendmail(normalized_sender_email, receiver_email, msg.as_string())
 
@@ -3049,8 +3125,13 @@ def _send_student_notification_email(student: Student, subject: str, message: st
         email_message["From"] = SENDER_EMAIL
         email_message["To"] = student.email
         email_message.attach(MIMEText(message, "html"))
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.starttls()
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(
+            "smtp.gmail.com",
+            465,
+            context=context,
+            timeout=15,
+        ) as server:
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.sendmail(SENDER_EMAIL, student.email, email_message.as_string())
         return True
@@ -6812,7 +6893,11 @@ def test_chapa_connection(db: Session = Depends(get_db)):
 @app.get("/api/payment/banks")
 async def get_chapa_banks():
     """Return Chapa's current bank list without exposing the server-side secret."""
-    global _chapa_banks_cache, _chapa_banks_cache_expires_at
+    global _chapa_banks_cache, _chapa_banks_cache_expires_at, _chapa_banks_cache_classification_version
+    if _chapa_banks_cache_classification_version != _CHAPA_BANKS_CACHE_CLASSIFICATION_VERSION:
+        _chapa_banks_cache = []
+        _chapa_banks_cache_expires_at = 0.0
+        _chapa_banks_cache_classification_version = _CHAPA_BANKS_CACHE_CLASSIFICATION_VERSION
     if _chapa_banks_cache and monotonic() < _chapa_banks_cache_expires_at:
         return list(_chapa_banks_cache)
 
@@ -6856,19 +6941,21 @@ async def get_chapa_banks():
         code = bank.get("code") or bank.get("bank_code") or bank.get("id")
         name = bank.get("name") or bank.get("bank_name")
         if code is not None and name:
-            bank_type = bank.get("type") or bank.get("category") or bank.get("account_type")
+            normalized_code = str(code).strip()
+            mobile_payout_supported = _CHAPA_MOBILE_PROVIDER_PAYOUT_SUPPORT.get(normalized_code)
+            if mobile_payout_supported is False:
+                continue
+            method = "mobile_wallet" if mobile_payout_supported is True else "bank"
             banks.append({
-                "code": str(code),
+                "code": normalized_code,
                 "name": str(name),
-                "type": str(bank_type).strip().lower() if bank_type else None,
-                "method": "mobile_wallet" if any(
-                    marker in str(bank_type or "").strip().lower()
-                    for marker in ("mobile", "wallet", "m-money")
-                ) else "bank",
+                "type": method,
+                "method": method,
             })
 
     _chapa_banks_cache = banks
     _chapa_banks_cache_expires_at = monotonic() + 3600
+    _chapa_banks_cache_classification_version = _CHAPA_BANKS_CACHE_CLASSIFICATION_VERSION
     return banks
 
 
@@ -6879,6 +6966,10 @@ def _normalize_payout_type(value: Optional[str]) -> str:
     if normalized != "bank":
         raise HTTPException(status_code=400, detail="Payout type must be 'bank' or 'wallet'.")
     return "bank"
+
+
+def _is_valid_mobile_money_number(value: str) -> bool:
+    return re.fullmatch(r"(?:09|07)[0-9]{8}", value) is not None
 
 
 def _seed_default_payout_providers(db: Session) -> List[PayoutProvider]:
@@ -8004,6 +8095,14 @@ async def _create_chapa_subaccount(
             method, path, response.status_code, request_fields, message,
             validation_fields, validation_errors,
         )
+        if "this subaccount does exist" in message.casefold():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Chapa already has a subaccount for these payout details. "
+                    "Contact support to reconcile the existing subaccount before retrying."
+                ),
+            )
         if response.status_code in {401, 403, 429}:
             raise HTTPException(
                 status_code=503,
@@ -8131,8 +8230,8 @@ async def _create_student_payout_account(
         or provider.integration_status != "available"
     ):
         raise HTTPException(status_code=409, detail="This payout provider is not currently available.")
-    if payout_type == "mobile_wallet" and len(account_number) != 10:
-        raise HTTPException(status_code=400, detail="Mobile money numbers must be exactly 10 digits.")
+    if payout_type == "mobile_wallet" and not _is_valid_mobile_money_number(account_number):
+        raise HTTPException(status_code=400, detail="Mobile money numbers must use the Ethiopian format 09XXXXXXXX or 07XXXXXXXX.")
     if payout_type == "bank" and bank_code.lower() == "comari" and len(account_number) != 13:
         raise HTTPException(status_code=400, detail="Commercial Bank of Ethiopia accounts must be exactly 13 digits.")
     if payout_type == "bank" and bank_code.lower() != "comari" and not 10 <= len(account_number) <= 15:
@@ -8271,8 +8370,8 @@ async def update_seller_payout_account(
         raise HTTPException(status_code=400, detail="Account number is required.")
     if not target_number.isdigit():
         raise HTTPException(status_code=400, detail="Account number must contain digits only.")
-    if payout_type == "mobile_wallet" and len(target_number) != 10:
-        raise HTTPException(status_code=400, detail="Mobile wallet numbers must be exactly 10 digits.")
+    if payout_type == "mobile_wallet" and not _is_valid_mobile_money_number(target_number):
+        raise HTTPException(status_code=400, detail="Mobile money numbers must use the Ethiopian format 09XXXXXXXX or 07XXXXXXXX.")
     if payout_type == "bank" and provider.code.lower() == "comari" and len(target_number) != 13:
         raise HTTPException(status_code=400, detail="Commercial Bank of Ethiopia accounts must be exactly 13 digits.")
     if payout_type == "bank" and provider.code.lower() != "comari" and not 10 <= len(target_number) <= 15:
@@ -14776,8 +14875,13 @@ def _send_outbox_email(recipient: str, subject: str, body: str) -> None:
     escaped_body = "<br>".join(html.escape(line) for line in body.splitlines())
     email.attach(MIMEText(body, "plain", "utf-8"))
     email.attach(MIMEText(f"<p>{escaped_body}</p>", "html", "utf-8"))
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-        server.starttls()
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL(
+        "smtp.gmail.com",
+        465,
+        context=context,
+        timeout=15,
+    ) as server:
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
         server.sendmail(SENDER_EMAIL, recipient, email.as_string())
 

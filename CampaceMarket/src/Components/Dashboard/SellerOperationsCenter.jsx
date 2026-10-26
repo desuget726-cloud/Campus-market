@@ -435,7 +435,6 @@ function SellerOperationsCenter({
   const totalInventoryCount = Number(
     dashboardStats.total_listings ?? visibleListings.length + productsSold,
   );
-  const advisor = sellerDashboardData?.advisor;
   const chartMax = Math.max(
     ...salesAnalytics.points.map((point) => Number(point.total) || 0),
     1,
@@ -511,17 +510,6 @@ function SellerOperationsCenter({
       cancelled = true;
     };
   }, [chartRange, salesAnalyticsRetry, sessionToken]);
-
-  useEffect(() => {
-    const advisorMessage =
-      document.querySelector("#seller-analytics")
-        ?.nextElementSibling?.querySelector("h3 + p");
-    if (advisorMessage) {
-      advisorMessage.textContent = advisor
-        ? `${advisor.product_title} received ${advisor.views.toLocaleString()} views and ${advisor.completed_orders} completed order${advisor.completed_orders === 1 ? "" : "s"} (${Number(advisor.conversion_rate).toFixed(2)}% conversion). Consider updating its images or price.`
-        : "Your listings do not have enough view or completed-order activity for a conversion recommendation yet.";
-    }
-  }, [advisor]);
 
   const fetchSellerOrderDetails = useCallback(async (orderId) => {
     setSelectedOrderLoading(true);
@@ -872,7 +860,7 @@ function SellerOperationsCenter({
                   <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:text-slate-300">
                     <tr>
                       <th className="px-3 py-3">Product</th>
-                      <th className="px-3 py-3">Price</th>
+                      <th className="min-w-[120px] whitespace-nowrap px-3 py-3">Price</th>
                       <th className="whitespace-nowrap px-3 py-3">Stock</th>
                       <th className="whitespace-nowrap px-3 py-3">Status</th>
                       <th className="whitespace-nowrap px-3 py-3">Created</th>
@@ -929,7 +917,7 @@ function SellerOperationsCenter({
                             </div>
                           </td>
                           <td
-                            className={`px-3 py-4 font-bold ${isSold ? "text-slate-500" : "text-emerald-600"}`}
+                            className={`min-w-[120px] whitespace-nowrap px-3 py-4 font-bold ${isSold ? "text-slate-500" : "text-emerald-600"}`}
                           >
                             {formatSellerEtb(
                               String(listing.price || 0).replace(/[^0-9.]/g, ""),
@@ -1250,10 +1238,10 @@ function SellerOperationsCenter({
           }}
         />
 
-        <div className="grid gap-6 xl:grid-cols-[1.4fr_0.6fr]">
+        <div className="grid gap-6">
           <section
             id="seller-analytics"
-            className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
+            className="w-full rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
           >
             <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
               <div>
@@ -1353,24 +1341,6 @@ function SellerOperationsCenter({
                 </text>
               ))}
             </svg>
-          </section>
-          <section className="rounded-[28px] border border-slate-200 bg-slate-950 p-6 text-white shadow-xl">
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">
-              🤖 AI Seller Advisor
-            </p>
-            <h3 className="mt-2 text-xl font-black">Improve your conversion</h3>
-            <p className="mt-4 text-sm leading-6 text-slate-300">
-              Your Dell XPS 13 received high views but low conversion. Consider
-              updating images or adjusting the price by 3% to match the market
-              average.
-            </p>
-            <button
-              type="button"
-              onClick={onAddProduct}
-              className="btn-primary mt-5 rounded-full px-4 py-2.5 text-sm font-bold"
-            >
-              Edit target product
-            </button>
           </section>
         </div>
         <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">

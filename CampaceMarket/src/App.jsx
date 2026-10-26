@@ -36,12 +36,12 @@ const SESSION_STORAGE_KEY = 'campaceSession';
 const ADMIN_SECTION_SESSION_KEY = 'campaceAdminSection';
 const getStudentDashboardLink = () => {
   if (typeof window === 'undefined') {
-    return { tab: 'home', section: null, itemId: null, fallbackMessage: '' };
+    return { tab: 'home', section: null, itemId: null };
   }
   const orderLink = parseOrderDashboardLink(window.location.href);
-  if (orderLink?.hasOrderParameter) return { ...orderLink, fallbackMessage: '' };
+  if (orderLink?.hasOrderParameter) return orderLink;
   return parseStudentDashboardLink(window.location.href)
-    || { tab: 'home', section: null, itemId: null, fallbackMessage: '' };
+    || { tab: 'home', section: null, itemId: null };
 };
 
 const getStoredAdminTab = () => {
@@ -164,9 +164,6 @@ function AppContent() {
   const [adminTab, setAdminTab] = useState(() => getStoredAdminTab());
   const [studentDashboardLink, setStudentDashboardLink] = useState(getStudentDashboardLink);
   const [studentTab, setStudentTab] = useState(() => studentDashboardLink.tab || 'home');
-  const [studentDashboardMessage, setStudentDashboardMessage] = useState(
-    () => studentDashboardLink.fallbackMessage || '',
-  );
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(() => (
@@ -552,11 +549,9 @@ function AppContent() {
   const isStudentMessagesView = currentView === 'student-dashboard' && studentTab === 'messages';
   const isHomeView = currentView === 'home';
 
-  const handleStudentDashboardFallback = useCallback((message) => {
-    const fallbackLink = { tab: 'home', section: null, itemId: null, fallbackMessage: message };
-    setStudentDashboardLink(fallbackLink);
+  const handleStudentDashboardFallback = useCallback(() => {
+    setStudentDashboardLink({ tab: 'home', section: null, itemId: null });
     setStudentTab('home');
-    setStudentDashboardMessage(message);
     setCurrentView('student-dashboard');
     window.history.replaceState({}, '', '/dashboard?tab=home');
   }, []);
@@ -566,8 +561,7 @@ function AppContent() {
       setStudentTab(tab);
       return;
     }
-    setStudentDashboardLink({ tab, section: null, itemId: null, fallbackMessage: '' });
-    setStudentDashboardMessage('');
+    setStudentDashboardLink({ tab, section: null, itemId: null });
     setStudentTab(tab);
   }, [studentDashboardLink.tab]);
 
@@ -575,8 +569,7 @@ function AppContent() {
     const dashboardLink = typeof view === 'string' ? parseOrderDashboardLink(view) : null;
     if (dashboardLink?.hasOrderParameter) {
       setStudentTab(dashboardLink.tab);
-      setStudentDashboardLink({ ...dashboardLink, fallbackMessage: '' });
-      setStudentDashboardMessage('');
+      setStudentDashboardLink(dashboardLink);
       setCurrentView('student-dashboard');
       const nextUrl = new URL(view, window.location.origin);
       const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -591,7 +584,6 @@ function AppContent() {
       : null;
     if (studentDashboardLinkFromUrl) {
       setStudentDashboardLink(studentDashboardLinkFromUrl);
-      setStudentDashboardMessage(studentDashboardLinkFromUrl.fallbackMessage || '');
       setStudentTab(studentDashboardLinkFromUrl.tab);
       setCurrentView('student-dashboard');
       const nextUrl = new URL(view, window.location.origin);
@@ -691,7 +683,6 @@ function AppContent() {
       const studentDashboardLinkFromUrl = parseStudentDashboardLink(window.location.href);
       if (studentDashboardLinkFromUrl) {
         setStudentDashboardLink(studentDashboardLinkFromUrl);
-        setStudentDashboardMessage(studentDashboardLinkFromUrl.fallbackMessage || '');
         setStudentTab(studentDashboardLinkFromUrl.tab);
         setCurrentView('student-dashboard');
         return;
@@ -939,7 +930,6 @@ function AppContent() {
               user={user}
               initialTab={studentTab}
               dashboardLink={studentDashboardLink}
-              dashboardMessage={studentDashboardMessage}
               onDashboardLinkInvalid={handleStudentDashboardFallback}
               onTabChange={handleStudentTabChange}
               initialProductToEdit={pendingSellerProductEdit}
@@ -958,7 +948,6 @@ function AppContent() {
               user={user}
               initialTab={studentTab}
               dashboardLink={studentDashboardLink}
-              dashboardMessage={studentDashboardMessage}
               onDashboardLinkInvalid={handleStudentDashboardFallback}
               onTabChange={handleStudentTabChange}
               initialProductToEdit={pendingSellerProductEdit}

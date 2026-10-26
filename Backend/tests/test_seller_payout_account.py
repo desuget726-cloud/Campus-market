@@ -326,6 +326,31 @@ class SellerPayoutAccountTests(unittest.TestCase):
         self.assertNotIn("test-secret", diagnostic)
         self.assert_payout_account_unchanged(account)
 
+    def test_duplicate_chapa_subaccount_returns_conflict_without_echoing_details(self):
+        client = self.make_chapa_client(
+            400,
+            {"status": "failed", "message": "This subaccount does exist"},
+        )
+        sensitive_account_number = "9876543210123"
+
+        with patch.object(main_module.httpx, "AsyncClient", return_value=client), \
+                patch.dict(os.environ, {"CHAPA_MODE": "test", "CHAPA_TEST_SECRET_KEY": "test-secret"}):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(main_module._create_chapa_subaccount(
+                    self.db,
+                    {
+                        "business_name": "Test Shop",
+                        "bank_code": self.provider.code,
+                        "account_number": sensitive_account_number,
+                        "account_name": "Payout Seller",
+                    },
+                    "test-secret",
+                ))
+
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertIn("already has a subaccount", error.exception.detail)
+        self.assertNotIn(sensitive_account_number, error.exception.detail)
+
     def test_chapa_server_error_returns_502_and_keeps_database_unchanged(self):
         account = self.create_account(chapa_sub_account_id="chapa-test-subaccount")
         client = self.make_chapa_client(500, {"message": "Temporary provider error"})
