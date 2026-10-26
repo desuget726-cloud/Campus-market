@@ -94,7 +94,7 @@ from .models import (
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
     AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
 )
-from .database import get_db, init_db, SessionLocal, Base, engine
+from .database import get_db, init_db, SessionLocal, Base, engine, DATABASE_URL
 from .config import get_dispute_window_hours, get_pay_lock_minutes, get_pay_max_failed_attempts
 from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_secret_key, get_chapa_webhook_secret, get_payout_adapter
 from .ollama_service import OllamaServiceError, get_ollama_service
@@ -165,34 +165,208 @@ class OAuthTokenExchangeError(HTTPException):
         self.error_description = error_description
 
 
-def _get_public_payment_url(environment_name: str) -> str:
-    value = os.getenv(environment_name, "").strip()
-    if not value:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Payment setup issue: {environment_name} must be configured with a public URL.",
-        )
+def _is_local_or_tunnel_hostname(hostname: str) -> bool:
+    local_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+    normalized = hostname.lower()
+    return (
+        normalized in local_hosts
+        or normalized.endswith(".localhost")
+        or normalized == "loca.lt"
+        or normalized.endswith(".loca.lt")
+    )
 
+
+def _public_url_is_valid(value: str, *, allow_tunnel: bool = False) -> bool:
     try:
         parsed = urlsplit(value)
         hostname = (parsed.hostname or "").lower()
     except ValueError:
-        parsed = None
-        hostname = ""
-    local_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
-    if (
-        parsed is None
-        or
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or not hostname
-        or hostname in local_hosts
+        return False
+    return bool(
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc
+        and hostname
+        and hostname not in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+        and not hostname.endswith(".localhost")
+        and (allow_tunnel or not _is_local_or_tunnel_hostname(hostname))
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _get_public_payment_url(environment_name: str) -> str:
+    payment_paths = {
+        "CHAPA_CALLBACK_URL": "/api/payment/webhook",
+        "CHAPA_RETURN_URL": "/api/payment/return",
+    }
+    if environment_name not in payment_paths:
+        raise ValueError(f"Unsupported payment URL setting: {environment_name}")
+
+    base_url = _configured_public_base_url()
+    base_url = base_url.rstrip("/")
+    if not _public_url_is_valid(
+        base_url,
+        allow_tunnel=not _is_production_environment(),
     ):
         raise HTTPException(
-            status_code=422,
-            detail=f"Payment setup issue: {environment_name} must be a valid public http(s) URL. Configure an ngrok or tunnel URL for local development.",
+            status_code=503,
+            detail="Payment setup issue: configure PUBLIC_BASE_URL as a public HTTPS URL.",
         )
-    return value
+    parsed = urlsplit(base_url)
+    return urlunsplit((
+        parsed.scheme,
+        parsed.netloc,
+        f"{parsed.path.rstrip('/')}{payment_paths[environment_name]}",
+        "",
+        "",
+    ))
+
+
+def _get_chapa_return_url() -> str:
+    if _is_production_environment():
+        return _get_public_payment_url("CHAPA_RETURN_URL")
+
+    frontend_url = (
+        os.getenv("FRONTEND_BASE_URL", "").strip()
+        or os.getenv("FRONTEND_URL", "").strip()
+        or "http://localhost:5173"
+    )
+    try:
+        parsed = urlsplit(frontend_url)
+        hostname = parsed.hostname or ""
+    except ValueError:
+        parsed = None
+        hostname = ""
+    if (
+        parsed is None
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Payment setup issue: FRONTEND_BASE_URL must be a valid browser URL.",
+        )
+    return urlunsplit((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path.rstrip("/") or "/",
+        "",
+        "",
+    ))
+
+
+def _is_production_environment() -> bool:
+    return (
+        os.getenv("RENDER", "").strip().lower() == "true"
+        or bool(os.getenv("RENDER_SERVICE_ID", "").strip())
+        or os.getenv("ENVIRONMENT", "").strip().lower() == "production"
+        or os.getenv("APP_ENV", "").strip().lower() == "production"
+    )
+
+
+def _configured_public_base_url() -> str:
+    if _is_production_environment():
+        return os.getenv("PUBLIC_BASE_URL", "").strip()
+    return (
+        os.getenv("BASE_URL", "").strip()
+        or os.getenv("PUBLIC_BASE_URL", "").strip()
+    )
+
+
+def _check_production_configuration() -> None:
+    try:
+        database_hostname = (urlsplit(str(DATABASE_URL or "")).hostname or "").lower()
+    except ValueError:
+        database_hostname = ""
+    settings = {
+        "CHAPA_SECRET_KEY": False,
+        "PUBLIC_BASE_URL": False,
+        "CHAPA_CALLBACK_URL": False,
+        "CHAPA_RETURN_URL": False,
+        "PAYOUT_ACCOUNT_ENCRYPTION_KEY": bool(os.getenv("PAYOUT_ACCOUNT_ENCRYPTION_KEY", "").strip()),
+        "TOTP_ENCRYPTION_KEY": bool(os.getenv("TOTP_ENCRYPTION_KEY", "").strip()),
+        "DATABASE_URL": bool(
+            database_hostname and not _is_local_or_tunnel_hostname(database_hostname)
+        ),
+        "FRONTEND_BASE_URL": False,
+    }
+
+    try:
+        settings["CHAPA_SECRET_KEY"] = bool(get_chapa_secret_key())
+    except PayoutProviderError:
+        pass
+
+    public_base_url = _configured_public_base_url()
+    public_base_is_valid = _public_url_is_valid(
+        public_base_url,
+        allow_tunnel=not _is_production_environment(),
+    )
+    settings["PUBLIC_BASE_URL"] = public_base_is_valid
+    settings["CHAPA_CALLBACK_URL"] = public_base_is_valid
+    settings["CHAPA_RETURN_URL"] = public_base_is_valid
+
+    frontend_base_url = os.getenv("FRONTEND_BASE_URL", "").strip()
+    settings["FRONTEND_BASE_URL"] = _public_url_is_valid(frontend_base_url)
+
+    invalid_settings = [name for name, configured in settings.items() if not configured]
+    if not invalid_settings:
+        logging.getLogger("app.startup").info("Required production configuration is present.")
+        return
+
+    logger = logging.getLogger("app.startup")
+    if _is_production_environment():
+        logger.error(
+            "Required production settings are missing or not public: %s",
+            ", ".join(invalid_settings),
+        )
+        raise RuntimeError(
+            "Production configuration is incomplete. Check the named settings in the startup log."
+        )
+    logger.warning(
+        "Production settings are missing or not public: %s",
+        ", ".join(invalid_settings),
+    )
+
+
+def _chapa_error_detail(code: str, message: str, correlation_id: str) -> dict:
+    return {
+        "code": code,
+        "message": message,
+        "correlation_id": correlation_id,
+    }
+
+
+def _sanitized_chapa_response_body(response: httpx.Response, secret: str) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return "<non-JSON response omitted>"
+    if not isinstance(payload, dict):
+        return "<response body omitted>"
+
+    safe_payload = {}
+    for key in ("status", "message", "error"):
+        value = payload.get(key)
+        if isinstance(value, (str, int, float, bool)):
+            safe_value = str(value)
+            if secret:
+                safe_value = safe_value.replace(secret, "[REDACTED]")
+            safe_value = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED]", safe_value)
+            safe_value = re.sub(
+                r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+                "[REDACTED_EMAIL]",
+                safe_value,
+                flags=re.IGNORECASE,
+            )
+            safe_payload[key] = safe_value[:300]
+    return json.dumps(safe_payload, ensure_ascii=True, sort_keys=True)
 
 
 class ChapaWebhookPayload(BaseModel):
@@ -3332,6 +3506,7 @@ async def on_startup():
     global payment_scheduler
     startup_logger = logging.getLogger("app.startup")
     logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogRedactionFilter())
+    _check_production_configuration()
     google_redirect_uri = (
         os.getenv("GOOGLE_REDIRECT_URI", "").strip()
         or GOOGLE_REDIRECT_URI_DEFAULT
@@ -3352,17 +3527,8 @@ async def on_startup():
         )
     else:
         startup_logger.info("AI provider: %s", ai_provider)
-    try:
-        callback_url = _get_public_payment_url("CHAPA_CALLBACK_URL")
-        return_url = _get_public_payment_url("CHAPA_RETURN_URL")
-    except HTTPException as exc:
-        startup_logger.error("Chapa payment URL configuration is invalid: %s", exc.detail)
-        raise RuntimeError(str(exc.detail)) from exc
-    startup_logger.info(
-        "Chapa payment URLs: callback_url=%s return_url=%s",
-        callback_url,
-        return_url,
-    )
+    if _public_url_is_valid(os.getenv("PUBLIC_BASE_URL", "").strip()):
+        startup_logger.info("Chapa callback and return URLs are derived from PUBLIC_BASE_URL.")
     google_config = {
         variable_name: os.getenv(variable_name, "").strip()
         for variable_name in (
@@ -12075,29 +12241,24 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"[WS DISCONNECT] {student_id} closed connection")
-        removed = await manager.disconnect(student_id, websocket)
-        if removed:
-            await manager.broadcast({
-                "type": "online_status",
-                "student_id": student_id,
-                "status": "offline",
-            }, exclude_student_id=student_id)
     except Exception as exc:
         logger.error(f"[WS FATAL ERROR] {student_id}: {str(exc)}", exc_info=True)
         try:
             await websocket.send_json({"success": False, "error": "WebSocket error"})
         except Exception:
             pass
-        removed = await manager.disconnect(student_id, websocket)
-        if removed:
-            await manager.broadcast({
-                "type": "online_status",
-                "student_id": student_id,
-                "status": "offline",
-            }, exclude_student_id=student_id)
     finally:
-        if db:
-            db.close()
+        try:
+            removed = await manager.disconnect(student_id, websocket)
+            if removed:
+                await manager.broadcast({
+                    "type": "online_status",
+                    "student_id": student_id,
+                    "status": "offline",
+                }, exclude_student_id=student_id)
+        finally:
+            if db:
+                db.close()
 
 
 @app.post("/api/student/messages/send")
@@ -14278,6 +14439,15 @@ FRONTEND_BASE_URL = (
 ).rstrip("/")
 
 
+@app.get("/api/payment/return")
+async def chapa_payment_return(request: Request):
+    """Send Chapa's browser return back to the configured frontend."""
+    target_url = FRONTEND_BASE_URL
+    if request.url.query:
+        target_url = f"{target_url}/?{request.url.query}"
+    return RedirectResponse(url=target_url, status_code=303)
+
+
 def _support_ticket_payload(
     ticket: SupportTicket,
     *,
@@ -16104,6 +16274,13 @@ async def initialize_payment(
     if amount_value > Decimal("1000000.00"):
         raise HTTPException(status_code=400, detail="The deposit amount must not exceed 1,000,000 ETB.")
 
+    customer_email = (request.email or student.email or "").strip()
+    if (
+        len(customer_email) > 254
+        or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", customer_email)
+    ):
+        raise HTTPException(status_code=422, detail="A valid email address is required for payment.")
+
     duplicate_cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
     if payment_settings["security"]["duplicateTransactionProtection"]:
         existing_transaction = (
@@ -16128,13 +16305,28 @@ async def initialize_payment(
             }
     
     tx_ref = f"TX-{uuid.uuid4().hex[:8].upper()}"
+    correlation_id = uuid.uuid4().hex
 
     try:
         secret = get_chapa_secret_key()
     except PayoutProviderError as error:
-        raise HTTPException(status_code=503, detail="Chapa payment is not configured.") from error
+        raise HTTPException(
+            status_code=503,
+            detail=_chapa_error_detail(
+                "CHAPA_NOT_CONFIGURED",
+                "Payment is not available right now. Please contact support.",
+                correlation_id,
+            ),
+        ) from error
     if not secret:
-        raise HTTPException(status_code=503, detail="Chapa payment is not configured.")
+        raise HTTPException(
+            status_code=503,
+            detail=_chapa_error_detail(
+                "CHAPA_NOT_CONFIGURED",
+                "Payment is not available right now. Please contact support.",
+                correlation_id,
+            ),
+        )
 
     marketplace_name = str(
         _get_setting_value(db, "general", "marketplaceName", DEFAULT_SETTINGS_BLOCKS["general"]["marketplaceName"]) or DEFAULT_SETTINGS_BLOCKS["general"]["marketplaceName"]
@@ -16142,18 +16334,26 @@ async def initialize_payment(
     cleaned_marketplace_name = marketplace_name[:16]
 
     name_parts = (student.name or "Student").strip().split(maxsplit=1)
-    callback_url = _get_public_payment_url("CHAPA_CALLBACK_URL")
-    return_url = _get_public_payment_url("CHAPA_RETURN_URL")
-    logging.getLogger("app.payments").info(
-        "Initializing Chapa payment tx_ref=%s callback_url=%s return_url=%s",
-        tx_ref,
-        callback_url,
-        return_url,
-    )
+    try:
+        callback_url = _get_public_payment_url("CHAPA_CALLBACK_URL")
+        return_url = _get_chapa_return_url()
+    except HTTPException as error:
+        logging.getLogger("app.payments").error(
+            "Payment URL configuration error correlation_id=%s setting=PUBLIC_BASE_URL",
+            correlation_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=_chapa_error_detail(
+                "PAYMENT_CONFIGURATION_ERROR",
+                "Payment setup is incomplete. Configure PUBLIC_BASE_URL as the public HTTPS backend URL.",
+                correlation_id,
+            ),
+        ) from error
     chapa_payload = {
         "amount": f"{amount_value:.2f}",
         "currency": "ETB",
-        "email": request.email or student.email,
+        "email": customer_email,
         "first_name": name_parts[0],
         "last_name": name_parts[1] if len(name_parts) > 1 else name_parts[0],
         "tx_ref": tx_ref,
@@ -16188,7 +16388,39 @@ async def initialize_payment(
 
     payment_logger = logging.getLogger("app.payments")
     response = None
-    payment_logger.info("Initializing Chapa wallet deposit tx_ref=%s amount=%s ETB.", tx_ref, amount_value)
+    payment_logger.info(
+        "Initializing Chapa wallet deposit tx_ref=%s correlation_id=%s amount=%s ETB.",
+        tx_ref,
+        correlation_id,
+        amount_value,
+    )
+
+    def fail_initialization(
+        *,
+        status_code: int,
+        code: str,
+        message: str,
+        provider_status: Optional[int] = None,
+        response_body: Optional[str] = None,
+        exception_type: Optional[str] = None,
+        mark_failed: bool = True,
+    ) -> None:
+        if mark_failed:
+            transaction.status = "Failed"
+            db.commit()
+        payment_logger.error(
+            "Chapa initialize failed correlation_id=%s tx_ref=%s exception_type=%s "
+            "http_status=%s response_body=%s",
+            correlation_id,
+            tx_ref,
+            exception_type or "none",
+            provider_status if provider_status is not None else "unavailable",
+            response_body or "<unavailable>",
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail=_chapa_error_detail(code, message, correlation_id),
+        )
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
@@ -16198,41 +16430,77 @@ async def initialize_payment(
             )
             payment_logger.info("Chapa initialize response tx_ref=%s status=%s", tx_ref, response.status_code)
             response_payload = response.json()
-    except httpx.HTTPError as exc:
-        payment_logger.error(
-            "Chapa initialize transport error tx_ref=%s error_type=%s",
-            tx_ref,
-            type(exc).__name__,
-        )
-        raise HTTPException(
+    except httpx.TimeoutException as error:
+        fail_initialization(
             status_code=503,
-            detail="Payment service is temporarily unavailable. Please try again shortly.",
-        ) from None
-    except ValueError as exc:
-        payment_logger.error(
-            "Chapa initialize returned invalid JSON tx_ref=%s status=%s error_type=%s",
-            tx_ref,
-            response.status_code if response is not None else "unknown",
-            type(exc).__name__,
+            code="CHAPA_TIMEOUT",
+            message="The payment provider did not respond in time. Please try again.",
+            exception_type=type(error).__name__,
+            mark_failed=False,
         )
-        raise HTTPException(
+    except httpx.HTTPError as error:
+        fail_initialization(
             status_code=503,
-            detail="Payment service is temporarily unavailable. Please try again shortly.",
-        ) from None
+            code="CHAPA_NETWORK_ERROR",
+            message="The payment provider is temporarily unavailable. Please try again.",
+            exception_type=type(error).__name__,
+            mark_failed=False,
+        )
+    except ValueError as error:
+        fail_initialization(
+            status_code=502,
+            code="CHAPA_INVALID_RESPONSE",
+            message="The payment provider returned an invalid response. Please try again.",
+            provider_status=response.status_code if response is not None else None,
+            response_body=(
+                _sanitized_chapa_response_body(response, secret)
+                if response is not None
+                else None
+            ),
+            exception_type=type(error).__name__,
+            mark_failed=False,
+        )
 
     response_data = response_payload.get("data") if isinstance(response_payload, dict) else None
     checkout_url = response_data.get("checkout_url") if isinstance(response_data, dict) else None
     if response.is_error or not checkout_url:
-        payment_logger.warning(
-            "Chapa rejected wallet deposit initialization tx_ref=%s status=%s.",
-            tx_ref,
-            response.status_code,
-        )
-        transaction.status = "Failed"
-        db.commit()
-        raise HTTPException(
-            status_code=422,
-            detail="Payment setup issue: Chapa rejected the payment configuration. Please contact support.",
+        provider_text = ""
+        if isinstance(response_payload, dict):
+            provider_text = " ".join(
+                str(response_payload.get(key) or "")
+                for key in ("message", "error", "status")
+            ).lower()
+
+        if response.status_code in {401, 403} or any(
+            marker in provider_text
+            for marker in ("invalid key", "invalid authorization", "unauthorized")
+        ):
+            failure_status = 502
+            failure_code = "CHAPA_INVALID_KEY"
+            failure_message = "The payment provider rejected its payment credentials. Please contact support."
+        elif any(marker in provider_text for marker in ("amount", "email")) and any(
+            marker in provider_text for marker in ("invalid", "required", "incorrect")
+        ):
+            failure_status = 502
+            failure_code = "CHAPA_INVALID_AMOUNT_OR_EMAIL"
+            failure_message = "The payment provider rejected the payment amount or email. Check the details and try again."
+        elif response.status_code == 429 or response.status_code >= 500:
+            failure_status = 503
+            failure_code = "CHAPA_UNAVAILABLE"
+            failure_message = "The payment provider is temporarily unavailable. Please try again."
+        else:
+            failure_status = 502
+            failure_code = "CHAPA_REQUEST_REJECTED"
+            failure_message = "The payment provider could not initialize this payment. Please try again."
+
+        fail_initialization(
+            status_code=failure_status,
+            code=failure_code,
+            message=failure_message,
+            provider_status=response.status_code,
+            response_body=_sanitized_chapa_response_body(response, secret),
+            exception_type="ProviderResponseError" if response.is_error else "InvalidProviderPayload",
+            mark_failed=not (response.status_code >= 500),
         )
 
     return {

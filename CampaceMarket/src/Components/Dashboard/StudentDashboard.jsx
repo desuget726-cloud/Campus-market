@@ -2700,15 +2700,18 @@ function StudentDashboard({
 
       const data = await res.json();
       if (!res.ok) {
-        const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+        const responseDetail = data?.detail;
+        const detail = typeof responseDetail === 'string'
+          ? responseDetail
+          : responseDetail?.message;
+        const correlationId = responseDetail?.correlation_id;
+        const message = detail || 'Payment service is temporarily unavailable. Please try again shortly.';
         const error = new Error(
-          res.status === 422
-            ? getErrorMessage({ detail })
-            : res.status >= 500
-              ? 'Payment service is temporarily unavailable. Please try again shortly.'
-              : getErrorMessage({ detail })
+          correlationId ? `${message} (Reference: ${correlationId})` : message
         );
         error.status = res.status;
+        error.code = responseDetail?.code;
+        error.correlationId = correlationId;
         throw error;
       }
 

@@ -3024,3 +3024,423 @@ Traceback (most recent call last):
   File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 405, in getreply
     raise SMTPServerDisconnected("Connection unexpectedly closed")
 smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:30:20,033 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\backend\app\main.py", line 2880, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:39:53,708 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2966, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:39:56,476 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2966, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:40:14,457 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2966, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:40:15,859 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2966, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:40:56,278 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2974, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:40:57,902 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2974, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:42:13,996 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2981, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:42:15,670 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2981, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 19:57:06,494 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\backend\app\main.py", line 2880, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:01:28,336 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2984, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:02:15,838 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2984, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:03:21,671 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2998, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:06:04,884 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2998, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:06:18,494 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 2998, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:09:23,910 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 3011, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:11:40,113 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 3016, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:11:55,435 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 3016, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:12:29,589 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\backend\app\main.py", line 3016, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-26 20:14:41,035 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\user.MKAU\Documents\Campus-market\Backend\app\main.py", line 3054, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 753, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 651, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 441, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\user.MKAU\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 414, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed

@@ -33,8 +33,11 @@ class FakeChapaResponse:
 
 
 class FakeChapaClient:
-    def __init__(self, response):
+    def __init__(self, response=None, error=None):
         self.response = response
+        self.error = error
+        self.post_called = False
+        self.post_kwargs = {}
 
     async def __aenter__(self):
         return self
@@ -42,7 +45,11 @@ class FakeChapaClient:
     async def __aexit__(self, *_args):
         return False
 
-    async def post(self, *_args, **_kwargs):
+    async def post(self, *_args, **kwargs):
+        self.post_called = True
+        self.post_kwargs = kwargs
+        if self.error is not None:
+            raise self.error
         return self.response
 
 
@@ -115,42 +122,218 @@ class WalletDepositTests(unittest.TestCase):
         self.db.commit()
         return transaction
 
-    def test_initializing_deposit_does_not_require_a_payout_account(self):
-        async def run_initialization():
-            with patch.object(main_module, "_student_from_authorization", return_value=self.student), \
-                    patch.object(main_module, "get_payment_settings", return_value={
-                        "enableOnlinePayment": True,
-                        "security": {"duplicateTransactionProtection": False},
-                    }), \
-                    patch.object(main_module, "get_chapa_secret_key", return_value="test-secret"), \
-                    patch.object(main_module, "_get_public_payment_url", return_value="https://example.test/callback"), \
-                    patch.object(
-                        main_module.httpx,
-                        "AsyncClient",
-                        return_value=FakeChapaClient(FakeChapaResponse({
-                            "status": "success",
-                            "data": {"checkout_url": "https://checkout.chapa.co/test"},
-                        })),
-                    ):
-                return await main_module.initialize_payment(
-                    main_module.DepositRequest(
-                        student_id=self.student.student_id,
-                        amount=Decimal("75.00"),
-                    ),
-                    authorization="student-token",
-                    db=self.db,
-                )
+    def _initialize_deposit(self, chapa_client, email=None):
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "get_payment_settings", return_value={
+                    "enableOnlinePayment": True,
+                    "security": {"duplicateTransactionProtection": False},
+                }), \
+                patch.object(main_module, "get_chapa_secret_key", return_value="test-secret"), \
+                patch.object(main_module, "_get_public_payment_url", return_value="https://example.test/payment"), \
+                patch.object(main_module.httpx, "AsyncClient", return_value=chapa_client):
+            return asyncio.run(main_module.initialize_payment(
+                main_module.DepositRequest(
+                    student_id=self.student.student_id,
+                    amount=Decimal("75.00"),
+                    email=email,
+                ),
+                authorization="student-token",
+                db=self.db,
+            ))
 
-        result = asyncio.run(run_initialization())
+    def test_chapa_urls_are_derived_from_one_public_base_url(self):
+        with patch.dict(os.environ, {
+            "PUBLIC_BASE_URL": "https://api.example.test/service",
+            "BASE_URL": "",
+            "RENDER": "",
+            "RENDER_SERVICE_ID": "",
+            "ENVIRONMENT": "development",
+            "APP_ENV": "development",
+        }):
+            callback_url = main_module._get_public_payment_url("CHAPA_CALLBACK_URL")
+            return_url = main_module._get_public_payment_url("CHAPA_RETURN_URL")
+
+        self.assertEqual(callback_url, "https://api.example.test/service/api/payment/webhook")
+        self.assertEqual(return_url, "https://api.example.test/service/api/payment/return")
+        self.assertFalse(main_module._public_url_is_valid("https://example.loca.lt"))
+        self.assertTrue(main_module._public_url_is_valid(
+            "https://example.loca.lt",
+            allow_tunnel=True,
+        ))
+
+    def test_local_chapa_urls_accept_legacy_base_url_tunnel(self):
+        with patch.dict(os.environ, {
+            "PUBLIC_BASE_URL": "https://stale.example.test",
+            "BASE_URL": "https://honest-suits-pick.loca.lt",
+            "RENDER": "",
+            "RENDER_SERVICE_ID": "",
+            "ENVIRONMENT": "development",
+            "APP_ENV": "development",
+        }):
+            callback_url = main_module._get_public_payment_url("CHAPA_CALLBACK_URL")
+            return_url = main_module._get_public_payment_url("CHAPA_RETURN_URL")
+
+        self.assertEqual(
+            callback_url,
+            "https://honest-suits-pick.loca.lt/api/payment/webhook",
+        )
+        self.assertEqual(
+            return_url,
+            "https://honest-suits-pick.loca.lt/api/payment/return",
+        )
+
+    def test_local_chapa_return_goes_directly_to_frontend(self):
+        with patch.dict(os.environ, {
+            "FRONTEND_BASE_URL": "http://localhost:5173/",
+            "FRONTEND_URL": "",
+            "RENDER": "",
+            "RENDER_SERVICE_ID": "",
+            "ENVIRONMENT": "development",
+            "APP_ENV": "development",
+        }):
+            return_url = main_module._get_chapa_return_url()
+
+        self.assertEqual(return_url, "http://localhost:5173/")
+
+    def test_production_uses_public_base_url_instead_of_local_base_url(self):
+        with patch.dict(os.environ, {
+            "PUBLIC_BASE_URL": "https://api.example.test",
+            "BASE_URL": "https://honest-suits-pick.loca.lt",
+            "RENDER": "true",
+        }):
+            callback_url = main_module._get_public_payment_url("CHAPA_CALLBACK_URL")
+            return_url = main_module._get_chapa_return_url()
+
+        self.assertEqual(callback_url, "https://api.example.test/api/payment/webhook")
+        self.assertEqual(return_url, "https://api.example.test/api/payment/return")
+
+    def test_production_configuration_fails_with_setting_names_only(self):
+        with patch.dict(os.environ, {
+            "RENDER": "true",
+            "PUBLIC_BASE_URL": "https://honest-suits-pick.loca.lt",
+            "FRONTEND_BASE_URL": "http://localhost:5173",
+            "PAYOUT_ACCOUNT_ENCRYPTION_KEY": "",
+            "TOTP_ENCRYPTION_KEY": "",
+        }, clear=False), \
+                patch.object(main_module, "get_chapa_secret_key", return_value=""):
+            with self.assertLogs("app.startup", level="ERROR") as captured_logs:
+                with self.assertRaises(RuntimeError):
+                    main_module._check_production_configuration()
+
+        logged = "\n".join(captured_logs.output)
+        self.assertIn("PUBLIC_BASE_URL", logged)
+        self.assertIn("CHAPA_CALLBACK_URL", logged)
+        self.assertIn("DATABASE_URL", logged)
+        self.assertNotIn("https://", logged)
+
+    def test_initializing_deposit_does_not_require_a_payout_account(self):
+        chapa_client = FakeChapaClient(FakeChapaResponse({
+            "status": "success",
+            "data": {"checkout_url": "https://checkout.chapa.co/test"},
+        }))
+        result = self._initialize_deposit(chapa_client)
 
         self.assertEqual(result["status"], "success")
         self.assertTrue(result["checkout_url"].startswith("https://checkout.chapa.co/"))
+        self.assertTrue(chapa_client.post_kwargs["headers"]["Authorization"].startswith("Bearer "))
         self.assertEqual(self.db.query(main_module.SellerPaymentAccount).count(), 0)
         self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").count(), 1)
         self.assertEqual(self.db.query(PaymentIdempotency).filter(
             PaymentIdempotency.idempotency_key.startswith("chapa-wallet:")
         ).count(), 1)
         self.assertEqual(self.wallet.balance, Decimal("0.00"))
+
+    def test_invalid_email_is_rejected_before_calling_chapa(self):
+        chapa_client = FakeChapaClient(FakeChapaResponse({
+            "status": "success",
+            "data": {"checkout_url": "https://checkout.chapa.co/test"},
+        }))
+        with self.assertRaises(HTTPException) as error:
+            self._initialize_deposit(chapa_client, email="not-an-email")
+
+        self.assertEqual(error.exception.status_code, 422)
+        self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").count(), 0)
+        self.assertFalse(chapa_client.post_called)
+
+    def test_missing_public_payment_url_returns_correlation_id_and_logs_it(self):
+        chapa_client = FakeChapaClient(FakeChapaResponse({
+            "status": "success",
+            "data": {"checkout_url": "https://checkout.chapa.co/test"},
+        }))
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "get_payment_settings", return_value={
+                    "enableOnlinePayment": True,
+                    "security": {"duplicateTransactionProtection": False},
+                }), \
+                patch.object(main_module, "get_chapa_secret_key", return_value="test-secret"), \
+                patch.object(
+                    main_module,
+                    "_get_public_payment_url",
+                    side_effect=HTTPException(status_code=503, detail="Missing public URL"),
+                ), self.assertLogs("app.payments", level="ERROR") as captured_logs:
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(main_module.initialize_payment(
+                    main_module.DepositRequest(
+                        student_id=self.student.student_id,
+                        amount=Decimal("75.00"),
+                    ),
+                    authorization="student-token",
+                    db=self.db,
+                ))
+
+        detail = error.exception.detail
+        logged = "\n".join(captured_logs.output)
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(detail["code"], "PAYMENT_CONFIGURATION_ERROR")
+        self.assertIn("PUBLIC_BASE_URL", detail["message"])
+        self.assertIn(detail["correlation_id"], logged)
+        self.assertFalse(chapa_client.post_called)
+        self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").count(), 0)
+
+    def test_invalid_chapa_key_returns_correlation_id_and_redacts_secret_from_logs(self):
+        chapa_client = FakeChapaClient(FakeChapaResponse(
+            {"message": "Invalid secret key test-secret"},
+            status_code=401,
+        ))
+        with self.assertLogs("app.payments", level="ERROR") as captured_logs:
+            with self.assertRaises(HTTPException) as error:
+                self._initialize_deposit(chapa_client)
+
+        detail = error.exception.detail
+        self.assertEqual(error.exception.status_code, 502)
+        self.assertEqual(detail["code"], "CHAPA_INVALID_KEY")
+        self.assertTrue(detail["correlation_id"])
+        self.assertIn(detail["correlation_id"], "\n".join(captured_logs.output))
+        self.assertNotIn("test-secret", "\n".join(captured_logs.output))
+        self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").one().status, "Failed")
+
+    def test_chapa_timeout_returns_clean_error_with_correlation_id(self):
+        chapa_client = FakeChapaClient(error=main_module.httpx.TimeoutException("request timed out"))
+        with self.assertLogs("app.payments", level="ERROR") as captured_logs:
+            with self.assertRaises(HTTPException) as error:
+                self._initialize_deposit(chapa_client)
+
+        detail = error.exception.detail
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(detail["code"], "CHAPA_TIMEOUT")
+        self.assertTrue(detail["correlation_id"])
+        self.assertIn("TimeoutException", "\n".join(captured_logs.output))
+        self.assertNotIn("test-secret", "\n".join(captured_logs.output))
+        self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").one().status, "Pending")
+
+    def test_chapa_rejected_email_returns_a_safe_provider_error(self):
+        chapa_client = FakeChapaClient(FakeChapaResponse(
+            {"message": "Invalid email address"},
+            status_code=400,
+        ))
+        with self.assertLogs("app.payments", level="ERROR") as captured_logs:
+            with self.assertRaises(HTTPException) as error:
+                self._initialize_deposit(chapa_client)
+
+        self.assertEqual(error.exception.status_code, 502)
+        self.assertEqual(error.exception.detail["code"], "CHAPA_INVALID_AMOUNT_OR_EMAIL")
+        self.assertTrue(error.exception.detail["correlation_id"])
+        self.assertNotIn("test-secret", "\n".join(captured_logs.output))
 
     def test_unverified_and_unauthenticated_students_cannot_initialize_deposits(self):
         request = main_module.DepositRequest(
