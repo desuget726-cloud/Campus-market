@@ -16,6 +16,7 @@ ENV_FILE_PATH = os.path.join(BACKEND_DIR, ".env")
 ENV_FILE_EXISTS = os.path.isfile(ENV_FILE_PATH)
 ENV_FILE_LOADED = load_dotenv(ENV_FILE_PATH)
 DISABLE_ADMIN_2FA = os.getenv("DISABLE_ADMIN_2FA", "false").strip().lower() == "true"
+ADMIN_SUB_ADMINS_ENABLED = os.getenv("ADMIN_SUB_ADMINS_ENABLED", "false").strip().lower() == "true"
 try:
     MAX_TOTAL_ADMINS = max(1, int(os.getenv("MAX_TOTAL_ADMINS", "3").strip()))
 except ValueError:
@@ -1840,6 +1841,8 @@ class ReportReviewRequest(BaseModel):
 class ReportDecisionRequest(BaseModel):
     decision: str
     reason: str = Field(min_length=10, max_length=1000)
+    reporter_message: Optional[str] = Field(default=None, max_length=5000)
+    review_by: Optional[date] = None
 
     @field_validator("decision")
     @classmethod
@@ -1854,6 +1857,7 @@ class ReportLinkRequest(BaseModel):
     seller_id: Optional[str] = Field(default=None, min_length=1, max_length=50)
     product_id: Optional[int] = Field(default=None, gt=0)
     order_id: Optional[int] = Field(default=None, gt=0)
+    confirm_product_owner: bool = False
 
 
 class ReportAppealRequest(BaseModel):
@@ -3461,6 +3465,7 @@ async def on_startup():
         try:
             ensure_database_compatibility(db)
             _seed_default_system_settings(db)
+            backfill_report_targets(db)
             database_name = (
                 db.execute(text("SELECT DATABASE()")).scalar()
                 if engine.dialect.name == "mysql"
@@ -5148,6 +5153,17 @@ def _sub_admin_limit_payload(db: Session) -> dict:
     }
 
 
+def _require_sub_admins_enabled() -> None:
+    if not ADMIN_SUB_ADMINS_ENABLED:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "FEATURE_DISABLED",
+                "message": "Sub-admin management is disabled.",
+            },
+        )
+
+
 @app.get("/api/admin/sub-admins")
 def get_sub_admins(
     authorization: Optional[str] = Header(None),
@@ -5182,6 +5198,7 @@ def create_sub_admin(
     db: Session = Depends(get_db),
 ):
     _require_admin(authorization, session_token, db)
+    _require_sub_admins_enabled()
     username = payload.username.strip()
     email = payload.email.strip().lower()
     if not username or not email or not payload.password:
@@ -5226,6 +5243,7 @@ def update_sub_admin_status(
     db: Session = Depends(get_db),
 ):
     _require_admin(authorization, session_token, db)
+    _require_sub_admins_enabled()
     sub_admin = db.query(Admin).filter(
         Admin.id == admin_id,
         func.lower(Admin.role) == "sub_admin",
@@ -5249,6 +5267,7 @@ def delete_sub_admin(
     db: Session = Depends(get_db),
 ):
     _require_admin(authorization, session_token, db)
+    _require_sub_admins_enabled()
     sub_admin = db.query(Admin).filter(
         Admin.id == admin_id,
         func.lower(Admin.role) == "sub_admin",
@@ -5314,6 +5333,7 @@ def get_current_admin_profile(
         "avatarUrl": avatar_url,
         "two_factor_enabled": _admin_two_factor_configured(admin),
         "permissions": _admin_permissions(admin),
+        "admin_sub_admins_enabled": ADMIN_SUB_ADMINS_ENABLED,
     }
 
 
@@ -10504,30 +10524,11 @@ def create_report(
             if order is None:
                 _reject_own_product_action(db, product, authenticated_student)
 
-        reported_seller_id = (
-            order.seller_id if order and order.seller_id
-            else product.seller_id if product and product.seller_id
-            else seller_id.strip() if seller_id and not product
-            else None
-        )
-        if reported_seller_id and product and not product.seller_id:
-            seller_match = db.query(Student).filter(
-                or_(
-                    Student.student_id == reported_seller_id,
-                    Student.name == reported_seller_id,
-                )
-            ).first()
-            if seller_match:
-                reported_seller_id = seller_match.student_id
-        if reported_seller_id and not product:
-            seller_match = db.query(Student).filter(
-                or_(
-                    Student.student_id == reported_seller_id,
-                    Student.name == reported_seller_id,
-                )
-            ).first()
-            if seller_match:
-                reported_seller_id = seller_match.student_id
+        owner_student_id = get_product_owner_student_id(db, product)
+        seller_match = _student_by_exact_id(db, owner_student_id)
+        if not seller_match and not product and not order:
+            seller_match = _student_by_exact_id(db, seller_id)
+        reported_seller_id = seller_match.student_id if seller_match else None
 
         evidence_url = None
         if evidence_image and evidence_image.filename:
@@ -11251,6 +11252,77 @@ def get_student_notifications(
         "allNotifications": all_notifications,
         "notifications": all_notifications,
     }
+
+
+def _student_moderation_notice_payload(
+    db: Session,
+    student: Student,
+    notification: Notification,
+) -> dict:
+    report_id = int(notification.reference_id) if (notification.reference_id or "").isdigit() else None
+    report = db.query(Report).filter(Report.id == report_id).first() if report_id else None
+    product = db.query(Product).filter(Product.id == report.product_id).first() if report and report.product_id else None
+    action_by_title = {
+        "Marketplace warning": "warning",
+        "Product hidden": "product_hidden",
+        "Account suspended": "suspended",
+        "Account deactivated": "deactivated",
+    }
+    return {
+        "id": notification.id,
+        "report_id": report_id,
+        "action": action_by_title.get(notification.title, "moderation_notice"),
+        "title": notification.title or "Marketplace notice",
+        "reason": notification.message,
+        "created_at": notification.created_at.isoformat() if notification.created_at else None,
+        "product": {
+            "id": product.id,
+            "title": product.title,
+            "status": product.status,
+            "warning_count": db.query(ReportSellerWarning.id).filter(
+                ReportSellerWarning.seller_id == student.student_id,
+            ).count(),
+        } if product else None,
+        "account_status": student.status if notification.title in {
+            "Account suspended",
+            "Account deactivated",
+        } else None,
+    }
+
+
+@app.get("/api/student/moderation/notices")
+def list_student_moderation_notices(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    notices = db.query(Notification).filter(
+        Notification.student_id == student.student_id,
+        Notification.type == "moderation_action",
+    ).order_by(Notification.created_at.desc(), Notification.id.desc()).all()
+    return {
+        "items": [
+            _student_moderation_notice_payload(db, student, notice)
+            for notice in notices
+        ],
+    }
+
+
+@app.get("/api/student/moderation/notices/{report_id}")
+def get_student_moderation_notice(
+    report_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    notification = db.query(Notification).filter(
+        Notification.student_id == student.student_id,
+        Notification.type == "moderation_action",
+        Notification.reference_id == str(report_id),
+    ).order_by(Notification.created_at.desc(), Notification.id.desc()).first()
+    if not notification:
+        raise HTTPException(status_code=404, detail="Moderation notice not found.")
+    return _student_moderation_notice_payload(db, student, notification)
 
 
 @app.post("/api/student/notifications/mark-all-read")
@@ -19299,6 +19371,81 @@ def _report_payment_transaction(db: Session, order: Order) -> Optional[Transacti
     )
 
 
+def _student_by_exact_id(db: Session, student_id: Optional[str]) -> Optional[Student]:
+    value = (student_id or "").strip()
+    if not value:
+        return None
+    candidates = db.query(Student).filter(Student.student_id == value).all()
+    matches = [student for student in candidates if student.student_id == value]
+    return matches[0] if len(matches) == 1 else None
+
+
+def get_product_owner_student_id(db: Session, product: Optional[Product]) -> Optional[str]:
+    if not product:
+        return None
+    if product.seller_id:
+        owner = _student_by_exact_id(db, product.seller_id)
+        return owner.student_id if owner else None
+    legacy_owner = _student_by_exact_id(db, product.seller)
+    return legacy_owner.student_id if legacy_owner else None
+
+
+def _auto_link_report_targets(
+    db: Session,
+    report: Report,
+    admin_id: Optional[int] = None,
+    request: Optional[Request] = None,
+) -> Optional[str]:
+    """Fill only absent report targets using authoritative order/product ownership."""
+    source = None
+    order = db.query(Order).filter(Order.id == report.order_id).first() if report.order_id else None
+    if order:
+        order_product = db.query(Product).filter(Product.id == order.product_id).first()
+        if order_product and report.product_id != order_product.id:
+            report.product_id = order_product.id
+            source = "order"
+        product = order_product
+        owner_student_id = get_product_owner_student_id(db, product)
+        if not report.seller_id and owner_student_id:
+            report.seller_id = owner_student_id
+            source = source or "product"
+    else:
+        product = db.query(Product).filter(Product.id == report.product_id).first() if report.product_id else None
+        owner_student_id = get_product_owner_student_id(db, product)
+        if not report.seller_id and owner_student_id:
+            report.seller_id = owner_student_id
+            source = "product"
+
+    if source:
+        db.add(AuditLog(
+            admin_id=admin_id,
+            action="Report Targets Auto-Linked",
+            entity_type="Report",
+            entity_id=report.id,
+            description=(
+                f"Automatically linked report targets from {source}: "
+                f"seller={report.seller_id or 'none'}, product={report.product_id or 'none'}, "
+                f"order={report.order_id or 'none'}."
+            ),
+            status="SUCCESS",
+            ip_address=request.client.host if request and request.client else None,
+        ))
+    return source
+
+
+def backfill_report_targets(db: Session) -> int:
+    reports = db.query(Report).filter(
+        or_(Report.seller_id.is_(None), Report.product_id.is_(None)),
+    ).order_by(Report.id.asc()).all()
+    linked_count = 0
+    for report in reports:
+        if _auto_link_report_targets(db, report):
+            linked_count += 1
+    if linked_count:
+        db.commit()
+    return linked_count
+
+
 def _report_payload(db: Session, report: Report) -> dict:
     product, order = _report_product_and_order(db, report)
     reviewer = db.query(Admin).filter(Admin.id == report.reviewed_by).first() if report.reviewed_by else None
@@ -19326,6 +19473,7 @@ def _report_payload(db: Session, report: Report) -> dict:
         "status": report.status,
         "date": report.created_at.isoformat() if report.created_at else None,
         "priority": report.priority,
+        "review_by": report.review_by.isoformat() if report.review_by else None,
         "decision": _normalize_report_decision(report.decision),
         "decision_reason": report.decision_reason,
         "reviewed_by": report.reviewed_by,
@@ -19675,36 +19823,106 @@ def get_report_link_options(
     search = q.strip()
     if len(search) < 2:
         return {"sellers": [], "products": [], "orders": []}
-    pattern = f"%{search}%"
-    sellers = db.query(Student).filter(
-        or_(Student.name.ilike(pattern), Student.student_id.ilike(pattern)),
-    ).order_by(Student.name.asc()).limit(20).all()
-    products = db.query(Product).filter(
-        Product.title.ilike(pattern),
-    ).order_by(Product.title.asc()).limit(20).all()
-    order_query = db.query(Order)
+    pattern = f"%{search.lower()}%"
+    matching_students = db.query(Student).filter(or_(
+        func.lower(Student.name).like(pattern),
+        func.lower(Student.student_id).like(pattern),
+        func.lower(Student.email).like(pattern),
+    )).order_by(Student.name.asc()).limit(100).all()
+    matching_student_ids = {student.student_id for student in matching_students}
+    product_terms = [
+        func.lower(Product.title).like(pattern),
+        func.lower(Product.seller).like(pattern),
+        func.lower(Product.seller_id).like(pattern),
+    ]
+    if matching_student_ids:
+        product_terms.append(Product.seller_id.in_(matching_student_ids))
+    products = db.query(Product).filter(or_(*product_terms)).order_by(Product.title.asc()).limit(100).all()
+    product_ids = {product.id for product in products}
+    product_owner_ids = {
+        product.id: get_product_owner_student_id(db, product)
+        for product in products
+    }
+    seller_ids_for_products = {
+        owner_id for owner_id in product_owner_ids.values() if owner_id
+    } | matching_student_ids
+    seller_products = db.query(Product).filter(
+        Product.seller_id.in_(seller_ids_for_products),
+    ).order_by(Product.title.asc()).limit(500).all() if seller_ids_for_products else []
+    seller_product_names = {}
+    for seller_product in seller_products:
+        seller_product_names.setdefault(seller_product.seller_id, []).append({
+            "id": seller_product.id,
+            "title": seller_product.title,
+        })
+    student_ids_for_owners = seller_ids_for_products
+    seller_lookup = {
+        student.student_id: student
+        for student in db.query(Student).filter(
+            Student.student_id.in_(student_ids_for_owners),
+        ).all()
+        if student.student_id in student_ids_for_owners
+    } if student_ids_for_owners else {}
+    order_terms = [func.lower(Order.title).like(pattern)]
     if search.isdigit():
-        order_query = order_query.filter(
-            or_(Order.id == int(search), Order.title.ilike(pattern)),
-        )
-    else:
-        order_query = order_query.filter(Order.title.ilike(pattern))
-    orders = order_query.order_by(Order.id.desc()).limit(20).all()
+        order_terms.append(Order.id == int(search))
+    if product_ids:
+        order_terms.append(Order.product_id.in_(product_ids))
+    if matching_student_ids:
+        order_terms.append(Order.student_id.in_(matching_student_ids))
+    orders = db.query(Order).filter(or_(*order_terms)).order_by(Order.id.desc()).limit(20).all()
+    order_products = {
+        product.id: product
+        for product in db.query(Product).filter(
+            Product.id.in_({order.product_id for order in orders}),
+        ).all()
+    } if orders else {}
+    order_buyers = {
+        student.student_id: student
+        for student in db.query(Student).filter(
+            Student.student_id.in_({order.student_id for order in orders}),
+        ).all()
+    } if orders else {}
+    order_sellers = {}
+    for order in orders:
+        product = order_products.get(order.product_id)
+        owner_student_id = get_product_owner_student_id(db, product)
+        order_sellers[order.id] = _student_by_exact_id(db, owner_student_id)
+    order_seller_ids = {
+        seller.student_id for seller in order_sellers.values() if seller
+    } - seller_product_names.keys()
+    if order_seller_ids:
+        for seller_product in db.query(Product).filter(
+            Product.seller_id.in_(order_seller_ids),
+        ).order_by(Product.title.asc()).limit(500).all():
+            seller_product_names.setdefault(seller_product.seller_id, []).append({
+                "id": seller_product.id,
+                "title": seller_product.title,
+            })
     return {
         "sellers": [{
             "student_id": student.student_id,
             "name": student.name,
-        } for student in sellers],
+            "email": student.email,
+            "products": seller_product_names.get(student.student_id, []),
+        } for student in matching_students[:20]],
         "products": [{
             "id": product.id,
             "title": product.title,
-            "seller_id": product.seller_id,
+            "seller_id": product_owner_ids.get(product.id),
+            "seller_name": seller_lookup.get(product_owner_ids.get(product.id)).name if seller_lookup.get(product_owner_ids.get(product.id)) else None,
+            "seller_products": seller_product_names.get(product_owner_ids.get(product.id), []),
         } for product in products],
         "orders": [{
             "id": order.id,
             "title": order.title,
+            "product_title": order_products.get(order.product_id).title if order_products.get(order.product_id) else order.title,
             "product_id": order.product_id,
             "student_id": order.student_id,
+            "buyer_name": order_buyers.get(order.student_id).name if order_buyers.get(order.student_id) else order.buyer_name,
+            "seller_id": order_sellers[order.id].student_id if order_sellers[order.id] else None,
+            "seller_name": order_sellers[order.id].name if order_sellers[order.id] else None,
+            "seller_products": seller_product_names.get(order_sellers[order.id].student_id, []) if order_sellers[order.id] else [],
         } for order in orders],
     }
 
@@ -19728,12 +19946,14 @@ def link_report_targets(
         seller_id = (data.seller_id or report.seller_id or "").strip()
         product_id = data.product_id if data.product_id is not None else report.product_id
         order_id = data.order_id if data.order_id is not None else report.order_id
-        seller = db.query(Student).filter(Student.student_id == seller_id).first() if seller_id else None
+        seller = _student_by_exact_id(db, seller_id)
         if seller_id and not seller:
             raise HTTPException(status_code=409, detail={
                 "code": "TARGET_NOT_LINKED",
                 "message": "The selected seller does not exist.",
             })
+        if seller:
+            seller_id = seller.student_id
 
         order = db.query(Order).filter(Order.id == order_id).first() if order_id else None
         if order_id and not order:
@@ -19749,14 +19969,76 @@ def link_report_targets(
                 "code": "TARGET_NOT_LINKED",
                 "message": "The selected product does not exist.",
             })
-        if product and not seller_id:
-            seller_id = product.seller_id or ""
-            seller = db.query(Student).filter(Student.student_id == seller_id).first() if seller_id else None
-        if product and (not seller or product.seller_id != seller.student_id):
-            raise HTTPException(status_code=409, detail={
-                "code": "TARGET_NOT_LINKED",
-                "message": "The selected product does not belong to the selected seller.",
-            })
+        owner_updated = False
+        if product:
+            owner_student_id = get_product_owner_student_id(db, product)
+            owner = _student_by_exact_id(db, owner_student_id)
+            selected_seller = _student_by_exact_id(db, data.seller_id) if data.seller_id else seller
+            selected_seller_payload = {
+                "name": selected_seller.name,
+                "student_id": selected_seller.student_id,
+            } if selected_seller else None
+            owner_payload = {
+                "name": owner.name,
+                "student_id": owner.student_id,
+            } if owner else None
+            if owner:
+                if not selected_seller:
+                    selected_seller = owner
+                    seller_id = owner.student_id
+                elif selected_seller.student_id != owner.student_id:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "PRODUCT_OWNER_MISMATCH",
+                        "message": (
+                            "This product belongs to "
+                            f"{owner.name} ({owner.student_id}), not "
+                            f"{selected_seller.name} ({selected_seller.student_id}). "
+                            "Choose another seller."
+                        ),
+                        "product_id": product.id,
+                        "owner": owner_payload,
+                        "selected_seller": selected_seller_payload,
+                    })
+            else:
+                if not data.seller_id or not selected_seller:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "PRODUCT_OWNER_UNVERIFIED",
+                        "message": (
+                            "This product has no verified owner. Pick a seller explicitly, "
+                            "then confirm that this seller owns the product."
+                        ),
+                        "product_id": product.id,
+                        "owner": None,
+                        "selected_seller": selected_seller_payload,
+                    })
+                if not data.confirm_product_owner:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "PRODUCT_OWNER_CONFIRMATION_REQUIRED",
+                        "message": (
+                            "This product has no verified owner. Confirm that "
+                            f"{selected_seller.name} ({selected_seller.student_id}) owns it "
+                            "to save this seller as the product owner."
+                        ),
+                        "product_id": product.id,
+                        "owner": None,
+                        "selected_seller": selected_seller_payload,
+                    })
+                product.seller_id = selected_seller.student_id
+                seller_id = selected_seller.student_id
+                owner_updated = True
+                db.add(AuditLog(
+                    admin_id=admin.id,
+                    action="Product Owner Set From Report",
+                    entity_type="Product",
+                    entity_id=product.id,
+                    description=(
+                        f"Set verified owner for product {product.id} to "
+                        f"{selected_seller.student_id} while linking report RPT-{report.id:04d}."
+                    ),
+                    status="SUCCESS",
+                    ip_address=request.client.host if request.client else None,
+                ))
+            seller = selected_seller or owner
         if order:
             if not product or order.product_id != product.id:
                 raise HTTPException(status_code=409, detail={
@@ -19768,17 +20050,29 @@ def link_report_targets(
                     "code": "TARGET_NOT_LINKED",
                     "message": "The selected order buyer does not match the linked reporter.",
                 })
-            if order.seller_id and order.seller_id != seller_id:
+            order_seller = _student_by_exact_id(db, order.seller_id) if order.seller_id else None
+            if order_seller and order_seller.student_id != seller_id:
                 raise HTTPException(status_code=409, detail={
                     "code": "TARGET_NOT_LINKED",
-                    "message": "The selected order does not match the linked seller.",
+                    "message": (
+                        f"The selected order belongs to {order_seller.name} "
+                        f"({order_seller.student_id}), not the selected seller."
+                    ),
+                    "owner": {
+                        "name": order_seller.name,
+                        "student_id": order_seller.student_id,
+                    },
+                    "selected_seller": {
+                        "name": seller.name,
+                        "student_id": seller.student_id,
+                    } if seller else None,
                 })
 
         previous_values = (report.seller_id, report.product_id, report.order_id)
         updated_seller_id = seller_id or None
         updated_product_id = product.id if product else None
         updated_order_id = order.id if order else None
-        if previous_values == (updated_seller_id, updated_product_id, updated_order_id):
+        if previous_values == (updated_seller_id, updated_product_id, updated_order_id) and not owner_updated:
             raise HTTPException(status_code=409, detail={
                 "code": "TARGET_NOT_LINKED",
                 "message": "No report target changed.",
@@ -19823,10 +20117,14 @@ def get_report_context(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: Session = Depends(get_db),
 ):
-    _require_report_admin(authorization, db)
+    admin = _require_report_admin(authorization, db)
     report = db.query(Report).filter(Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
+    auto_link_source = _auto_link_report_targets(db, report, admin.id)
+    if auto_link_source:
+        db.commit()
+        db.refresh(report)
 
     reporter = db.query(Student).filter(Student.student_id == report.student_id).first() if report.student_id else None
     seller = db.query(Student).filter(Student.student_id == report.seller_id).first() if report.seller_id else None
@@ -19870,7 +20168,11 @@ def get_report_context(
             wallet_status.append("Released to seller")
     payment = _report_payment_transaction(db, order) if order else None
     seller_linked = seller is not None
-    product_linked = product is not None and seller_linked and product.seller_id == seller.student_id
+    product_linked = (
+        product is not None
+        and seller_linked
+        and get_product_owner_student_id(db, product) == seller.student_id
+    )
     decision_availability = {
         "dismiss": {"enabled": True, "reason": None},
         "warn": {
@@ -19882,15 +20184,33 @@ def get_report_context(
             "reason": None if product_linked else "No product linked to the reported seller: link a seller and product first",
         },
         "suspend": {
-            "enabled": False,
-            "reason": "No seller linked: link a seller first" if not seller_linked else "Suspension is not available in this implementation step.",
+            "enabled": seller_linked,
+            "reason": None if seller_linked else "No seller linked: link a seller first",
         },
         "deactivate": {
-            "enabled": False,
-            "reason": "No seller linked: link a seller first" if not seller_linked else "Deactivation is not available in this implementation step.",
+            "enabled": seller_linked,
+            "reason": None if seller_linked else "No seller linked: link a seller first",
         },
-        "escalate": {"enabled": False, "reason": "Escalation is not available in this implementation step."},
+        "escalate": {"enabled": True, "reason": None},
     }
+    auto_link_audit = db.query(AuditLog).filter(
+        AuditLog.entity_type == "Report",
+        AuditLog.entity_id == report.id,
+        AuditLog.action == "Report Targets Auto-Linked",
+        AuditLog.description.like("%from product:%"),
+    ).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).first()
+    product_owner_student_id = get_product_owner_student_id(db, product)
+    product_owner = _student_by_exact_id(db, product_owner_student_id)
+    auto_linked_from_product = bool(
+        auto_link_audit
+        and product_owner_student_id
+        and product_owner_student_id == report.seller_id
+        and product_owner
+    )
+    internal_notes = db.query(ReportMessage).filter(
+        ReportMessage.report_id == report.id,
+        ReportMessage.is_internal.is_(True),
+    ).order_by(ReportMessage.created_at.asc(), ReportMessage.id.asc()).all()
     return {
         "reporter": {
             "report_count": reporter_report_count,
@@ -19921,6 +20241,13 @@ def get_report_context(
         },
         "decision_options": list(REPORT_DECISION_OPTIONS),
         "decision_availability": decision_availability,
+        "auto_linked_from_product": auto_linked_from_product,
+        "review_by": report.review_by.isoformat() if report.review_by else None,
+        "review_overdue": bool(report.review_by and report.review_by < date.today()),
+        "internal_notes": [{
+            "body": note.body,
+            "created_at": note.created_at.isoformat() if note.created_at else None,
+        } for note in internal_notes],
         "seller_history": {
             "warnings": [{
                 "id": warning.id,
@@ -19939,6 +20266,8 @@ def get_report_context(
         "product": {
             "id": product.id if product else report.product_id,
             "title": product.title if product else "Not linked",
+            "owner_student_id": product_owner_student_id,
+            "owner_name": product_owner.name if product_owner else None,
         },
         "order": {
             "id": order.id,
@@ -20045,10 +20374,10 @@ def resolve_report(
                 "code": "ALREADY_RESOLVED",
                 "message": "Review this report before resolving it.",
             })
-        if data.decision not in {"dismiss", "warn", "hide_product"}:
+        if data.decision not in {"dismiss", "warn", "hide_product", "suspend", "deactivate", "escalate"}:
             raise HTTPException(status_code=409, detail={
                 "code": "DECISION_NOT_AVAILABLE",
-                "message": "This decision is not available yet. Choose dismiss, warn, or hide product.",
+                "message": "This decision is not available.",
             })
 
         product, _order = _report_product_and_order(db, report)
@@ -20059,12 +20388,56 @@ def resolve_report(
                 "message": "No seller linked: link a seller first.",
             })
         if data.decision == "hide_product" and (
-            not product or not seller or product.seller_id != seller.student_id
+            not product
+            or not seller
+            or get_product_owner_student_id(db, product) != seller.student_id
         ):
             raise HTTPException(status_code=409, detail={
                 "code": "TARGET_NOT_LINKED",
                 "message": "No product linked to the reported seller: link a seller and product first.",
             })
+        if data.decision in {"suspend", "deactivate"} and not seller:
+            raise HTTPException(status_code=409, detail={
+                "code": "TARGET_NOT_LINKED",
+                "message": "No seller linked: link a seller first.",
+            })
+
+        if data.decision == "escalate":
+            db.add(ReportMessage(
+                report_id=report.id,
+                admin_id=admin.id,
+                body=reason,
+                is_internal=True,
+            ))
+            if data.reporter_message and data.reporter_message.strip():
+                reporter_message = data.reporter_message.strip()
+                db.add(ReportMessage(
+                    report_id=report.id,
+                    admin_id=admin.id,
+                    body=reporter_message,
+                    is_internal=False,
+                ))
+                _add_report_notification(
+                    db,
+                    report.student_id,
+                    report,
+                    f"More information requested for RPT-{report.id:04d}",
+                    reporter_message,
+                )
+            report.review_by = data.review_by
+            report.decision = "escalate"
+            db.add(AuditLog(
+                admin_id=admin.id,
+                action="Report Escalated",
+                entity_type="Report",
+                entity_id=report.id,
+                description=f"Internal note recorded for RPT-{report.id:04d}; report remains Under Review.",
+                status="SUCCESS",
+                ip_address=request.client.host if request.client else None,
+            ))
+            db.commit()
+            db.refresh(report)
+            return _report_payload(db, report)
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         if data.decision == "warn":
@@ -20077,6 +20450,12 @@ def resolve_report(
         elif data.decision == "hide_product":
             product.status = "Hidden"
             product.moderation_reason = reason
+        elif data.decision == "suspend":
+            seller.status = "Suspended"
+            seller.restriction_reason = reason
+        elif data.decision == "deactivate":
+            seller.status = "Deactivated"
+            seller.restriction_reason = reason
 
         report.status = "Dismissed" if data.decision == "dismiss" else "Resolved"
         report.decision = data.decision
@@ -20102,15 +20481,29 @@ def resolve_report(
             if reporter_outbox_id:
                 outbox_ids.append(reporter_outbox_id)
 
-        if data.decision in {"warn", "hide_product"} and seller and seller.student_id != report.student_id:
+        if data.decision in {"warn", "hide_product", "suspend", "deactivate"} and seller and seller.student_id != report.student_id:
+            notice_section = (
+                "warnings"
+                if data.decision in {"warn", "hide_product"}
+                else "account-notices"
+            )
             seller_outbox_id = _queue_student_item_notification(
                 db,
                 seller,
-                title="Marketplace warning" if data.decision == "warn" else "Product hidden",
+                title=(
+                    "Marketplace warning" if data.decision == "warn"
+                    else "Product hidden" if data.decision == "hide_product"
+                    else "Account suspended" if data.decision == "suspend"
+                    else "Account deactivated"
+                ),
                 message=reason,
                 item_type="moderation_action",
+                # moderation_action.reference_id identifies the reviewed Report.
                 item_id=report.id,
-                action_url="/dashboard",
+                action_url=(
+                    f"/dashboard?tab=seller&section={notice_section}"
+                    f"&item=report-{report.id}"
+                ),
                 email_subject=f"Marketplace update for RPT-{report.id:04d}",
                 email_summary="An administrator reviewed a marketplace report.",
                 email_status=report.status,
@@ -20139,6 +20532,8 @@ def resolve_report(
                 "dismiss": "Report Dismissed",
                 "warn": "Seller Warned",
                 "hide_product": "Product Hidden",
+                "suspend": "Seller Suspended",
+                "deactivate": "Seller Deactivated",
             }[data.decision],
             entity_type="Report",
             entity_id=report.id,

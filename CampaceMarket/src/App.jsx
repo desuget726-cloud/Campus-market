@@ -27,12 +27,22 @@ import {
   normalizeInternalReturnTo,
 } from './utils/productActionState';
 import { parseOrderDashboardLink } from './utils/orderDashboardLink';
+import { parseStudentDashboardLink } from './utils/studentDashboardLink';
 import { getAdminSectionFromSearch, normalizeAdminSection, setAdminSectionUrl } from './utils/adminDashboardSection';
 import { isSessionExpiryResponse } from './utils/sessionExpiry';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
 const ADMIN_SECTION_SESSION_KEY = 'campaceAdminSection';
+const getStudentDashboardLink = () => {
+  if (typeof window === 'undefined') {
+    return { tab: 'home', section: null, itemId: null, fallbackMessage: '' };
+  }
+  const orderLink = parseOrderDashboardLink(window.location.href);
+  if (orderLink?.hasOrderParameter) return { ...orderLink, fallbackMessage: '' };
+  return parseStudentDashboardLink(window.location.href)
+    || { tab: 'home', section: null, itemId: null, fallbackMessage: '' };
+};
 
 const getStoredAdminTab = () => {
   if (typeof window === 'undefined') return 'dashboard';
@@ -152,11 +162,11 @@ function AppContent() {
     }
   });
   const [adminTab, setAdminTab] = useState(() => getStoredAdminTab());
-  const [studentTab, setStudentTab] = useState(() => (
-    typeof window === 'undefined'
-      ? 'home'
-      : parseOrderDashboardLink(window.location.href)?.tab || 'home'
-  ));
+  const [studentDashboardLink, setStudentDashboardLink] = useState(getStudentDashboardLink);
+  const [studentTab, setStudentTab] = useState(() => studentDashboardLink.tab || 'home');
+  const [studentDashboardMessage, setStudentDashboardMessage] = useState(
+    () => studentDashboardLink.fallbackMessage || '',
+  );
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(() => (
@@ -542,10 +552,31 @@ function AppContent() {
   const isStudentMessagesView = currentView === 'student-dashboard' && studentTab === 'messages';
   const isHomeView = currentView === 'home';
 
+  const handleStudentDashboardFallback = useCallback((message) => {
+    const fallbackLink = { tab: 'home', section: null, itemId: null, fallbackMessage: message };
+    setStudentDashboardLink(fallbackLink);
+    setStudentTab('home');
+    setStudentDashboardMessage(message);
+    setCurrentView('student-dashboard');
+    window.history.replaceState({}, '', '/dashboard?tab=home');
+  }, []);
+
+  const handleStudentTabChange = useCallback((tab) => {
+    if (studentDashboardLink.tab === tab) {
+      setStudentTab(tab);
+      return;
+    }
+    setStudentDashboardLink({ tab, section: null, itemId: null, fallbackMessage: '' });
+    setStudentDashboardMessage('');
+    setStudentTab(tab);
+  }, [studentDashboardLink.tab]);
+
   const handleNavigate = (view, params = {}) => {
     const dashboardLink = typeof view === 'string' ? parseOrderDashboardLink(view) : null;
-    if (dashboardLink) {
+    if (dashboardLink?.hasOrderParameter) {
       setStudentTab(dashboardLink.tab);
+      setStudentDashboardLink({ ...dashboardLink, fallbackMessage: '' });
+      setStudentDashboardMessage('');
       setCurrentView('student-dashboard');
       const nextUrl = new URL(view, window.location.origin);
       const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -553,6 +584,20 @@ function AppContent() {
       if (destination !== currentUrl) {
         window.history.pushState({ dashboardOrderId: dashboardLink.orderId }, '', destination);
       }
+      return;
+    }
+    const studentDashboardLinkFromUrl = typeof view === 'string'
+      ? parseStudentDashboardLink(view)
+      : null;
+    if (studentDashboardLinkFromUrl) {
+      setStudentDashboardLink(studentDashboardLinkFromUrl);
+      setStudentDashboardMessage(studentDashboardLinkFromUrl.fallbackMessage || '');
+      setStudentTab(studentDashboardLinkFromUrl.tab);
+      setCurrentView('student-dashboard');
+      const nextUrl = new URL(view, window.location.origin);
+      const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      const destination = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+      if (destination !== currentUrl) window.history.pushState({}, '', destination);
       return;
     }
 
@@ -637,8 +682,17 @@ function AppContent() {
   useEffect(() => {
     const syncViewFromHistory = () => {
       const dashboardLink = parseOrderDashboardLink(window.location.href);
-      if (dashboardLink) {
+      if (dashboardLink?.hasOrderParameter) {
         setStudentTab(dashboardLink.tab);
+        setCurrentView('student-dashboard');
+        return;
+      }
+
+      const studentDashboardLinkFromUrl = parseStudentDashboardLink(window.location.href);
+      if (studentDashboardLinkFromUrl) {
+        setStudentDashboardLink(studentDashboardLinkFromUrl);
+        setStudentDashboardMessage(studentDashboardLinkFromUrl.fallbackMessage || '');
+        setStudentTab(studentDashboardLinkFromUrl.tab);
         setCurrentView('student-dashboard');
         return;
       }
@@ -766,7 +820,7 @@ function AppContent() {
         }}
       />
       <PaymentSuccessToast />
-      {!['login', 'register'].includes(currentView) && !hasUser && !isRestoringStudentSession && <TopBar onNavigate={handleNavigate} />}
+      {!['login', 'register'].includes(currentView) && currentView !== 'student-dashboard' && !hasUser && !isRestoringStudentSession && <TopBar onNavigate={handleNavigate} />}
       {!['login', 'register'].includes(currentView) && (
         <Navbar
           variant={isDashboardView ? 'dashboard' : 'public'}
@@ -791,7 +845,7 @@ function AppContent() {
           }}
         />
       )}
-      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-dvh min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-[calc(100dvh-72px)] lg:overflow-hidden' : 'min-h-0'}`}>
+      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-[calc(100dvh-72px)] min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-[calc(100dvh-72px)] lg:overflow-hidden' : currentView === 'student-dashboard' ? 'h-[calc(100dvh-72px)] !min-h-0 overflow-hidden' : 'min-h-0'}`}>
         <main className={isStudentMessagesView
           ? 'app-main-content app-main-content--messages min-h-0 min-w-0 w-full flex-1 overflow-hidden'
           : ['login', 'register'].includes(currentView)
@@ -800,7 +854,7 @@ function AppContent() {
               ? 'app-main-content w-full min-w-0 flex-1 px-0'
               : ['about', 'services', 'contact'].includes(currentView)
                 ? 'app-main-content w-full min-w-0 flex-1 px-0'
-              : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-full !pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' || currentView === 'admin-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
+              : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-full !pb-0' : currentView === 'student-dashboard' ? '!min-h-0 h-full !pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' || currentView === 'admin-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
           {currentView === 'login' && !user && (
             <div className="py-8">
               <LoginForm
@@ -884,11 +938,14 @@ function AppContent() {
             <StudentDashboard
               user={user}
               initialTab={studentTab}
+              dashboardLink={studentDashboardLink}
+              dashboardMessage={studentDashboardMessage}
+              onDashboardLinkInvalid={handleStudentDashboardFallback}
+              onTabChange={handleStudentTabChange}
               initialProductToEdit={pendingSellerProductEdit}
               onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
               initialMessagesProductId={pendingMessagesProductId}
               onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
-              onTabChange={setStudentTab}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}
               appUnreadNotificationCount={unreadCount}
@@ -900,11 +957,14 @@ function AppContent() {
             <StudentDashboard
               user={user}
               initialTab={studentTab}
+              dashboardLink={studentDashboardLink}
+              dashboardMessage={studentDashboardMessage}
+              onDashboardLinkInvalid={handleStudentDashboardFallback}
+              onTabChange={handleStudentTabChange}
               initialProductToEdit={pendingSellerProductEdit}
               onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
               initialMessagesProductId={pendingMessagesProductId}
               onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
-              onTabChange={setStudentTab}
               onUserUpdate={setUser}
               onNavigate={handleNavigate}
               appUnreadNotificationCount={unreadCount}

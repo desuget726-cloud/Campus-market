@@ -4,7 +4,10 @@ import ProductDetails from './ProductDetails';
 import { IMAGE_PLACEHOLDER } from '../../config';
 import { clearPendingProductAction, getPendingProductAction } from '../../utils/productActionState';
 
-const { mockSetCartItems } = vi.hoisted(() => ({ mockSetCartItems: vi.fn() }));
+const { mockSetCartItems, mockCartItems } = vi.hoisted(() => ({
+  mockSetCartItems: vi.fn(),
+  mockCartItems: [],
+}));
 
 vi.mock('../../context/LanguageContext', () => ({
   useLanguage: () => ({
@@ -15,7 +18,7 @@ vi.mock('../../context/LanguageContext', () => ({
 
 vi.mock('../../context/CartContext', () => ({
   useCart: () => ({
-    items: [],
+    items: mockCartItems,
     setItems: mockSetCartItems,
     loadedStudentId: 'buyer-1',
     loading: false,
@@ -82,6 +85,7 @@ describe('ProductDetails guest actions', () => {
   beforeEach(() => {
     clearPendingProductAction();
     mockSetCartItems.mockClear();
+    mockCartItems.length = 0;
     vi.stubGlobal('fetch', vi.fn((input, options = {}) => {
       const url = String(input);
       if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([similarProduct]));
@@ -145,6 +149,33 @@ describe('ProductDetails guest actions', () => {
 
     await waitFor(() => expect(screen.getByText('Seller')).toBeTruthy());
     expect(screen.queryByText('productDetails.buyer.responseTime')).toBeNull();
+  });
+
+  it('refreshes listing availability when the payment summary reports it out of stock', async () => {
+    mockCartItems.push({ id: 8, product_id: 42, student_id: 'buyer-1', quantity: 1 });
+    const fetchMock = vi.fn((input) => {
+      const url = String(input);
+      if (url.includes('/pay-summary')) {
+        return Promise.resolve(jsonResponse({
+          detail: { code: 'OUT_OF_STOCK', message: 'This item is out of stock.' },
+        }, 409));
+      }
+      if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
+      if (url.endsWith('/api/products/42')) return Promise.resolve(jsonResponse(detail));
+      if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+      if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+      if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Pay with wallet' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('This item is out of stock.');
+    await waitFor(() => expect(screen.getAllByText('Sold out').length).toBeGreaterThan(0));
+    expect(screen.queryByRole('button', { name: 'Pay with wallet' })).toBeNull();
   });
 
   it.each([

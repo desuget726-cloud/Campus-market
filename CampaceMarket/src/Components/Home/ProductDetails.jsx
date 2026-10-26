@@ -473,13 +473,23 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
   const refreshPaySummary = useCallback(async () => {
     const token = getStudentAccessToken(currentUser);
+    const requestedProductId = item?.id || product?.id;
     const response = await fetch(
-      `${API_BASE_URL}/api/products/${encodeURIComponent(item?.id || product?.id)}/pay-summary?quantity=${selectedQuantity}`,
+      `${API_BASE_URL}/api/products/${encodeURIComponent(requestedProductId)}/pay-summary?quantity=${selectedQuantity}`,
       { headers: token ? { Authorization: `Bearer ${token}` } : {} },
     );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = data.detail;
+      if (detail?.code === 'OUT_OF_STOCK') {
+        const stock = Math.max(0, Number(detail.stock) || 0);
+        setDetailedProduct((previous) => (
+          String(previous?.id) === String(requestedProductId)
+            ? { ...previous, stock, ...(stock === 0 ? { status: 'Sold' } : {}) }
+            : previous
+        ));
+      }
+      setPaySummary(null);
       throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to load payment details.');
     }
     setPaySummary(data);
@@ -493,6 +503,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       return;
     }
     setPayResult(null);
+    setPaySummary(null);
     setPayPassword('');
     setPayError('');
     setPayMissingAmount('');

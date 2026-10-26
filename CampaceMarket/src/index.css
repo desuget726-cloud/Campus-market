@@ -39,10 +39,6 @@
 }
 
 .student-mobile-sidebar {
-  top: var(--header-h);
-  bottom: 0;
-  height: calc(100dvh - var(--header-h));
-  overflow: hidden;
   overscroll-behavior: contain;
   user-select: none;
 }
@@ -96,28 +92,22 @@
   display: none;
 }
 
-html:has(.student-dashboard-content) {
-  overflow-y: scroll;
-  scrollbar-gutter: stable;
-}
-
-html:has(.student-dashboard-content) body {
-  width: auto;
-  min-width: 0;
-}
-
 .student-dashboard-content {
-  padding-bottom: 120px;
+  scrollbar-color: rgba(100, 116, 139, 0.4) transparent;
+  scrollbar-width: thin;
 }
 
-@media (min-width: 768px) {
-  .student-dashboard-content {
-    scrollbar-width: none;
-  }
+.student-dashboard-content::-webkit-scrollbar {
+  width: 6px;
+}
 
-  .student-dashboard-content::-webkit-scrollbar {
-    display: none;
-  }
+.student-dashboard-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.student-dashboard-content::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(100, 116, 139, 0.4);
 }
 
 .student-sidebar-menu::-webkit-scrollbar {
@@ -360,18 +350,6 @@ html:has(.student-dashboard-content) body {
   }
 }
 
-@media (min-width: 768px) {
-  .student-mobile-sidebar {
-    position: sticky;
-    top: var(--header-h);
-    bottom: auto;
-    align-self: flex-start;
-    height: calc(100vh - var(--header-h));
-    height: calc(100dvh - var(--header-h));
-    transform: none !important;
-  }
-}
-
 .hamburger-btn {
   display: flex;
   border: 0;
@@ -443,6 +421,30 @@ body>.skiptranslate,
   min-height: 100dvh;
   height: auto;
   background: #ffffff;
+}
+
+html:has(#student-mobile-navigation),
+body:has(#student-mobile-navigation) {
+  height: 100%;
+  overflow: hidden;
+}
+
+#root:has(#student-mobile-navigation) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#root:has(#student-mobile-navigation) > div:first-child {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-page-shell:has(#student-mobile-navigation) {
+  height: 0;
+  min-height: 0;
+  flex: 1 1 0%;
 }
 
 @media print {

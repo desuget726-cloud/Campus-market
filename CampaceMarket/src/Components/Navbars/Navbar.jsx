@@ -183,7 +183,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           {(!isDashboardLayout || !isAdmin) && (
             <button
               type="button"
-              aria-label={isDashboardLayout ? 'Open sidebar' : 'Toggle mobile navigation'}
+              aria-label={isDashboardLayout ? (isAdmin ? 'Open admin navigation' : 'Open student navigation') : 'Toggle mobile navigation'}
               aria-expanded={!isDashboardLayout && isMobileMenuOpen}
               aria-controls={isDashboardLayout ? 'student-mobile-navigation' : 'mobile-navigation'}
               onClick={() => {
@@ -193,7 +193,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 }
                 setIsMobileMenuOpen((isOpen) => !isOpen);
               }}
-              className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-white/15 text-white transition hover:bg-white/25 md:hidden"
+              className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-white/15 text-white transition hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${isDashboardLayout && !isAdmin ? 'lg:hidden' : 'md:hidden'}`}
             >
               <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                 <path d="M4 6h16M4 12h16M4 18h16" />

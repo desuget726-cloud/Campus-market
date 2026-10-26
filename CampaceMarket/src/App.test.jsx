@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useEffect } from 'react';
 import App from './App';
 
 vi.mock('./Components/Navbars/Navbar', () => ({
@@ -55,7 +56,18 @@ vi.mock('./Components/Dashboard/AdminDashboard', () => ({
 }));
 
 vi.mock('./Components/Dashboard/StudentDashboard', () => ({
-  default: () => <div>Student Dashboard</div>,
+  default: function MockStudentDashboard({ initialTab, dashboardLink, dashboardMessage, onTabChange }) {
+    useEffect(() => {
+      onTabChange?.(initialTab);
+    }, [initialTab, onTabChange]);
+    return (
+      <div data-testid="student-dashboard">
+        <span>Student tab: {initialTab}</span>
+        <span>Student section: {dashboardLink?.section || 'none'}</span>
+        <span>Dashboard message: {dashboardMessage || 'none'}</span>
+      </div>
+    );
+  },
 }));
 
 vi.mock('./Components/Authontication/SuccessModal', () => ({
@@ -87,11 +99,57 @@ const buildAdminSession = (overrides = {}) => ({
   ...overrides,
 });
 
+const buildStudentSession = () => ({
+  user: {
+    studentId: 'seller-1',
+    role: 'student',
+    access_token: 'student-token',
+  },
+  userRole: 'student',
+  currentView: 'student-dashboard',
+  access_token: 'student-token',
+});
+
 describe('admin dashboard default section', () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     window.history.replaceState({}, '', '/');
+  });
+
+  describe('student dashboard deep links', () => {
+    beforeEach(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      window.history.replaceState({}, '', '/');
+      window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(buildStudentSession()));
+    });
+
+    afterEach(() => {
+      cleanup();
+    });
+
+    it('opens and restores a seller warning deep link after remount', async () => {
+      window.history.replaceState({}, '', '/dashboard?tab=seller&section=warnings&item=report-16');
+
+      const firstRender = render(<App />);
+      expect(await screen.findByText('Student tab: seller')).toBeTruthy();
+      expect(screen.getByText('Student section: warnings')).toBeTruthy();
+      firstRender.unmount();
+
+      render(<App />);
+      expect(await screen.findByText('Student tab: seller')).toBeTruthy();
+      expect(screen.getByText('Student section: warnings')).toBeTruthy();
+    });
+
+    it('falls back to Home with a message for an unknown dashboard section', async () => {
+      window.history.replaceState({}, '', '/dashboard?tab=seller&section=unknown');
+
+      render(<App />);
+
+      expect(await screen.findByText('Student tab: home')).toBeTruthy();
+      expect(screen.getByText('Dashboard message: This dashboard section is unavailable, so Home is shown.')).toBeTruthy();
+    });
   });
 
   afterEach(() => {

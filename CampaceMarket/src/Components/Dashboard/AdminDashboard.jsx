@@ -5,12 +5,17 @@ import autoTable from 'jspdf-autotable';
 import { Check, Copy, Eye, Pencil, Trash2, X } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
 import AdminSupportInbox from './AdminSupportInbox';
+import AdminReportLinkSearchResults from './AdminReportLinkSearchResults';
 import { AdminProductReviewsPage, AdminUsersPage } from './AdminDirectoryPages';
 import AdminProfileMenu from './AdminProfileMenu';
 import AdminSidebarNavigation from './AdminSidebarNavigation';
 import { getErrorMessage, notifyError, notifySuccess } from '../../utils/notify';
 import { adminApiGet, apiFetch, getStoredAccessToken } from '../../api/apiClient';
 import { normalizeAdminSection } from '../../utils/adminDashboardSection';
+import {
+  getAdminSecuritySections,
+  normalizeAdminSecuritySection,
+} from '../../utils/adminSecuritySections';
 import {
   ADMIN_NAVIGATION,
   filterAdminNavigation,
@@ -21,6 +26,7 @@ import { notifyAdminSeenChanged, subscribeToAdminSeenChanges } from '../../utils
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { getAdminSettings, invalidateAdminSettingsCache } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
+import { applyReportLinkSelection } from './reportLinkSelection';
 import {
   analyticsSalesPeriods,
   buildAnalyticsRevenueChart,
@@ -479,8 +485,8 @@ class AdminDashboardErrorBoundary extends Component {
 }
 
 function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' }) {
-  const [section, setSection] = useState(initialSection);
-  const [profile, setProfile] = useState({ id: null, full_name: '', username: '', email: '', phone: '', role: '', two_factor_enabled: false, permissions: {}, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
+  const [requestedSection, setSection] = useState(initialSection);
+  const [profile, setProfile] = useState({ id: null, full_name: '', username: '', email: '', phone: '', role: '', two_factor_enabled: false, permissions: {}, admin_sub_admins_enabled: false, avatarUrl: ADMIN_AVATAR_PLACEHOLDER });
   const [form, setForm] = useState({ full_name: '', username: '', email: '', phone: '', current_password: '', new_password: '', confirm_password: '', logout_all_sessions: false });
   const [sessions, setSessions] = useState([]);
   const [history, setHistoryState] = useState([]);
@@ -595,7 +601,16 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
       setProfileLoading(true);
       try {
         const data = await request(`${API_BASE_URL}/api/admin/me`, { headers: { Authorization: `Bearer ${token()}` } });
-        setProfile((current) => ({ ...current, ...data, two_factor_enabled: Boolean(data.two_factor_enabled) }));
+        const subAdminsEnabled = data.admin_sub_admins_enabled === true;
+        setProfile((current) => ({
+          ...current,
+          ...data,
+          two_factor_enabled: Boolean(data.two_factor_enabled),
+          admin_sub_admins_enabled: subAdminsEnabled,
+        }));
+        onUserUpdate?.((currentUser) => currentUser
+          ? { ...currentUser, admin_sub_admins_enabled: subAdminsEnabled }
+          : currentUser);
         setPermissionState((current) => ({ ...current, ...(data.permissions || {}) }));
         setForm((current) => ({
           ...current,
@@ -608,6 +623,10 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
           confirm_password: '',
         }));
       } catch (error) {
+        setProfile((current) => ({ ...current, admin_sub_admins_enabled: false }));
+        onUserUpdate?.((currentUser) => currentUser
+          ? { ...currentUser, admin_sub_admins_enabled: false }
+          : currentUser);
         notifyError(error, 'admin-profile-load');
       } finally {
         setProfileLoading(false);
@@ -625,8 +644,14 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const updateProfile = async (event) => { event.preventDefault(); if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/me`, { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify(form) }); setProfile((current) => ({ ...current, ...data })); onUserUpdate?.((currentUser) => ({ ...currentUser, ...data })); setForm((current) => ({ ...current, current_password: '', new_password: '', confirm_password: '' })); notifySuccess('Profile saved successfully', 'admin-profile-save'); refreshSecurityData(); } catch (error) { notifyError(error, 'admin-profile-save'); } finally { setBusy(false); } };
   const normalizedRole = String(profile.role || '').trim().toLowerCase().replace(/_/g, ' ');
   const isMainAdmin = normalizedRole === 'admin';
+  const subAdminsEnabled = profile.admin_sub_admins_enabled === true;
+  const section = normalizeAdminSecuritySection(requestedSection, subAdminsEnabled, isMainAdmin);
+  const sections = getAdminSecuritySections(subAdminsEnabled, isMainAdmin);
   const canEditPermissions = ['admin', 'super admin', 'superadministrator'].includes(normalizedRole);
   const permissionDefinitions = [['users', 'Users'], ['products', 'Products'], ['orders', 'Orders'], ['payments', 'Payments'], ['reports', 'Reports'], ['support', 'Support'], ['ai', 'AI'], ['analytics', 'Analytics'], ['audit_logs', 'Audit Logs'], ['settings', 'Settings']];
+  useEffect(() => {
+    if (requestedSection !== section) setSection(section);
+  }, [requestedSection, section]);
   const savePermissions = async () => { if (!canEditPermissions || !profile.id || permissionsSaving) return; setPermissionsSaving(true); try { const data = await request(`${API_BASE_URL}/api/admin/${profile.id}/permissions`, { method: 'PUT', headers: { Authorization: `Bearer ${token()}` }, body: JSON.stringify({ permissions: permissionState }) }); setPermissionState(data.permissions || permissionState); setProfile((current) => ({ ...current, permissions: data.permissions || permissionState })); notifySuccess('Permissions saved successfully', 'admin-permissions-save'); } catch (error) { notifyError(error, 'admin-permissions-save'); } finally { setPermissionsSaving(false); } };
   const securityAction = async (path) => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/${path}`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); if (data.backup_codes) setBackupCodes(data.backup_codes); if (typeof data.enabled === 'boolean') setProfile((current) => ({ ...current, two_factor_enabled: data.enabled })); notifySuccess(data.message || 'Security action completed.', `admin-security-${path}`); refreshSecurityData(); } catch (error) { notifyError(error, `admin-security-${path}`); } finally { setBusy(false); } };
   const startTwoFactorSetup = async () => { if (busy) return; setBusy(true); try { const data = await request(`${API_BASE_URL}/api/admin/2fa/setup`, { method: 'POST', body: JSON.stringify({ session_token: token() }) }); setSetupData(data); setSetupCode(''); notifySuccess('Authenticator setup started', 'admin-2fa-setup'); } catch (error) { notifyError(error, 'admin-2fa-setup'); } finally { setBusy(false); } };
@@ -719,7 +744,6 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
       setAvatarUploading(false);
     }
   };
-  const sections = [['personal', 'Personal Information'], ['password', 'Password & Security'], ['2fa', 'Two-Factor Authentication'], ['sessions', 'Active Sessions'], ['history', 'Login History'], ['permissions', 'Role & Permissions'], ...(isMainAdmin ? [['admin-accounts', 'Admin Accounts']] : [])];
   const field = (label, key, type = 'text') => <label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{label}</span><input type={type} value={form[key]} onChange={(event) => setForm((current) => ({ ...current, [key]: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-emerald-500" /></label>;
   if (profileLoading) return <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm font-semibold text-slate-500 shadow-sm" role="status">Loading your admin profile...</div>;
   return <div className="space-y-6 p-1 text-slate-900"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Security Access</p><h2 className="mt-2 text-2xl font-black">Admin Security Profile</h2></div><span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Protected</span></div><div className="mt-6 flex flex-wrap gap-2">{sections.map(([id, label]) => <button key={id} type="button" onClick={() => setSection(id)} className={`rounded-xl px-3 py-2 text-xs font-bold ${section === id ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}</div></div>
@@ -942,6 +966,11 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   useEffect(() => {
     setIsSidebarOpen(false);
   }, [activeTab]);
+  useEffect(() => {
+    if (activeTab !== 'admin-accounts' || user?.admin_sub_admins_enabled !== false) return;
+    setActiveTab('profile');
+    onTabChange?.('profile');
+  }, [activeTab, onTabChange, user?.admin_sub_admins_enabled]);
   useEffect(() => {
     if (!activeGroup) return;
     setExpandedGroups((current) => current.includes(activeGroup) ? current : [...current, activeGroup]);
@@ -1186,6 +1215,13 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [reportLinkSearch, setReportLinkSearch] = useState('');
   const [reportLinkOptions, setReportLinkOptions] = useState({ sellers: [], products: [], orders: [] });
   const [reportLinkSelection, setReportLinkSelection] = useState({ seller_id: '', product_id: '', order_id: '' });
+  const [reportLinkSelectedSeller, setReportLinkSelectedSeller] = useState(null);
+  const [reportLinkConfirmed, setReportLinkConfirmed] = useState(false);
+  const [reportLinkConflict, setReportLinkConflict] = useState(null);
+  const [reportLinkSearchLoading, setReportLinkSearchLoading] = useState(false);
+  const [reportLinkSearchError, setReportLinkSearchError] = useState('');
+  const [reportReporterMessage, setReportReporterMessage] = useState('');
+  const [reportReviewBy, setReportReviewBy] = useState('');
   const [reportLinksSaving, setReportLinksSaving] = useState(false);
   const [broadcastSending, setBroadcastSending] = useState(false);
   const [evidenceImage, setEvidenceImage] = useState(null);
@@ -1193,13 +1229,34 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [conversationLoading, setConversationLoading] = useState(false);
   const [reportToast, setReportToast] = useState('');
 
+  const handleReportLinkResultSelect = (type, target) => {
+    setReportLinkSelection((current) => applyReportLinkSelection(current, type, target));
+    setReportLinkConflict(null);
+    const seller = type === 'student'
+      ? target
+      : target.seller_id
+        ? {
+          student_id: target.seller_id,
+          name: target.seller_name || 'Selected seller',
+          products: target.products || target.seller_products || [],
+        }
+        : null;
+    setReportLinkSelectedSeller(seller);
+    setReportLinkConfirmed(false);
+  };
+
   useEffect(() => {
     const query = reportLinkSearch.trim();
     if (!showReportModal || query.length < 2) {
       setReportLinkOptions({ sellers: [], products: [], orders: [] });
+      setReportLinkSearchLoading(false);
+      setReportLinkSearchError('');
       return undefined;
     }
     const controller = new AbortController();
+    setReportLinkOptions({ sellers: [], products: [], orders: [] });
+    setReportLinkSearchLoading(true);
+    setReportLinkSearchError('');
     const timeout = window.setTimeout(async () => {
       try {
         const response = await fetch(
@@ -1215,8 +1272,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         });
       } catch (error) {
         if (error.name !== 'AbortError') {
-          setReportError(getErrorMessage(error));
+          setReportLinkSearchError(getErrorMessage(error));
         }
+      } finally {
+        if (!controller.signal.aborted) setReportLinkSearchLoading(false);
       }
     }, 250);
     return () => {
@@ -3169,6 +3228,9 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     if (reportDecision === 'hide_product' && !window.confirm(
       `Hide "${reportContext?.product?.title || report.product_name}" from listings and prevent purchases? The product and existing orders will be kept.`,
     )) return;
+    if (reportDecision === 'deactivate' && !window.confirm(
+      `Deactivate "${reportContext?.seller?.seller_name || report.seller_name || report.seller_id}"? This will prevent the seller from using their account.`,
+    )) return;
 
     reportActionInFlightRef.current = true;
     setReportActionLoading(true);
@@ -3181,6 +3243,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         body: JSON.stringify({
           decision: reportDecision,
           reason,
+          ...(reportDecision === 'escalate' ? {
+            reporter_message: reportReporterMessage.trim() || null,
+            review_by: reportReviewBy || null,
+          } : {}),
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -3194,12 +3260,22 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       }
 
       setReportsList(prev => prev.map(r => r.id === id ? { ...r, ...payload } : r));
-      setSelectedReport(null);
-      setShowReportModal(false);
-      setReportContext(null);
       await fetchReportsData();
       refreshAuditLogs();
-      notifySuccess(t('adminReports.resolved'), `admin-report-resolve-${id}`);
+      if (reportDecision === 'escalate') {
+        setSelectedReport((current) => current?.id === id ? { ...current, ...payload } : current);
+        setReportDecision('');
+        setReportReason('');
+        setReportReporterMessage('');
+        setReportReviewBy('');
+        await loadReportContext(id, false);
+        notifySuccess('Report escalated and remains Under Review.', `admin-report-escalate-${id}`);
+      } else {
+        setSelectedReport(null);
+        setShowReportModal(false);
+        setReportContext(null);
+        notifySuccess(t('adminReports.resolved'), `admin-report-resolve-${id}`);
+      }
     } catch (err) {
       console.error('Error resolving report:', err);
       setReportError(getErrorMessage(err));
@@ -3209,7 +3285,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   };
 
-  const handleSaveReportLinks = async () => {
+  const handleSaveReportLinks = async (confirmProductOwner = false) => {
     if (!selectedReport || reportLinksSaving) return;
     const links = Object.fromEntries(
       Object.entries(reportLinkSelection).filter(([, value]) => value !== ''),
@@ -3220,6 +3296,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
     setReportLinksSaving(true);
     setReportError('');
+    setReportLinkConflict(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/admin/reports/${selectedReport.id}/links`, {
         method: 'POST',
@@ -3228,11 +3305,16 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           ...links,
           ...(links.product_id ? { product_id: Number(links.product_id) } : {}),
           ...(links.order_id ? { order_id: Number(links.order_id) } : {}),
+          confirm_product_owner: confirmProductOwner,
         }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const detail = payload.detail;
+        if (response.status === 409 && typeof detail === 'object' && detail !== null) {
+          setReportLinkConflict(detail);
+          return;
+        }
         const code = typeof detail === 'object' && detail !== null ? detail.code : null;
         const message = typeof detail === 'object' && detail !== null
           ? detail.message || 'Unable to link report targets.'
@@ -3242,7 +3324,11 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       setSelectedReport((current) => current?.id === selectedReport.id ? { ...current, ...payload } : current);
       setReportsList((current) => current.map((item) => item.id === selectedReport.id ? { ...item, ...payload } : item));
       setReportLinkSelection({ seller_id: '', product_id: '', order_id: '' });
+      setReportLinkSelectedSeller(null);
+      setReportLinkConfirmed(false);
       setReportLinkSearch('');
+      setReportLinkSearchError('');
+      setReportLinkConflict(null);
       await loadReportContext(selectedReport.id, false);
     } catch (error) {
       setReportError(getErrorMessage(error));
@@ -3293,6 +3379,12 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setReportDecisionOptions([]);
     setReportLinkSearch('');
     setReportLinkSelection({ seller_id: '', product_id: '', order_id: '' });
+    setReportLinkSelectedSeller(null);
+    setReportLinkConfirmed(false);
+    setReportLinkConflict(null);
+    setReportLinkSearchError('');
+    setReportReporterMessage('');
+    setReportReviewBy('');
     setReportContext(null);
     setReportError('');
     setReportReviewOwned(false);
@@ -6516,6 +6608,25 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                         </div>
                       )}
                       {reportReviewLoading && <p role="status" className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-semibold text-sky-800">{t('adminReports.openingReview')}</p>}
+                      {reportContext?.auto_linked_from_product && (
+                        <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+                          Linked automatically from product
+                        </p>
+                      )}
+                      {reportContext?.review_by && (
+                        <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                          Review by {new Date(`${reportContext.review_by}T00:00:00`).toLocaleDateString()}
+                          {reportContext.review_overdue ? ' · Overdue' : ''}
+                        </p>
+                      )}
+                      {reportContext?.internal_notes?.length > 0 && (
+                        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                          <h4 className="text-sm font-bold text-amber-900">Internal admin notes</h4>
+                          {reportContext.internal_notes.map((note, index) => (
+                            <p key={`${note.created_at}-${index}`} className="mt-2 whitespace-pre-wrap text-sm text-amber-950">{note.body}</p>
+                          ))}
+                        </section>
+                      )}
 
                       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -6550,6 +6661,11 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                               {productTitle}
                             </button>
                           ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
+                          {reportContext?.product?.owner_student_id && (
+                            <p className="mt-2 text-xs text-slate-600">
+                              Verified owner: {reportContext.product.owner_name || 'Unknown'} ({reportContext.product.owner_student_id})
+                            </p>
+                          )}
                           <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.order')}</p>
                           {reportContext?.order ? (
                             <p className="mt-2 font-black text-slate-900">#{reportContext.order.id} · {reportContext.order.title}</p>
@@ -6626,32 +6742,127 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                             <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                               <div>
                                 <p className="text-sm font-bold text-slate-800">Link missing report targets</p>
-                                <p className="mt-1 text-xs text-slate-600">Search students by name or ID, products by title, or orders by ID.</p>
+                                <p className="mt-1 text-xs text-slate-600">Search students by name, ID, or email; products by title or seller; and orders by ID, product, or buyer.</p>
                               </div>
                               <label className="block text-xs font-semibold text-slate-700" htmlFor="report-link-search">Search targets
-                                <input id="report-link-search" type="search" value={reportLinkSearch} onChange={(event) => setReportLinkSearch(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Name, student ID, product title, or order ID" />
+                                <input id="report-link-search" type="search" value={reportLinkSearch} onChange={(event) => setReportLinkSearch(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Name, student ID, email, product, or order ID" />
                               </label>
+                              {reportLinkSearch.trim().length < 2 && <p className="text-xs text-slate-500">Enter at least 2 characters to search.</p>}
+                              {reportLinkSearchLoading && <p role="status" className="text-sm font-semibold text-sky-700">Searching report targets…</p>}
+                              {reportLinkSearchError && <p role="alert" className="text-sm font-semibold text-rose-700">{reportLinkSearchError}</p>}
+                              {reportLinkConflict && (
+                                <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+                                  <p className="font-bold">{reportLinkConflict.message}</p>
+                                  <p>Product owner: {reportLinkConflict.owner
+                                    ? `${reportLinkConflict.owner.name} (${reportLinkConflict.owner.student_id})`
+                                    : 'No verified owner'}</p>
+                                  <p>Selected seller: {reportLinkConflict.selected_seller
+                                    ? `${reportLinkConflict.selected_seller.name} (${reportLinkConflict.selected_seller.student_id})`
+                                    : 'None'}</p>
+                                  {reportLinkConflict.owner == null && reportLinkSelectedSeller && (
+                                    <button type="button" onClick={() => {
+                                      if (!window.confirm(`Set ${reportLinkSelectedSeller.name} (${reportLinkSelectedSeller.student_id}) as the verified owner of this product? This change will be saved and audited.`)) return;
+                                      handleSaveReportLinks(true);
+                                    }} disabled={reportLinksSaving} className="rounded-full bg-amber-700 px-4 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">
+                                      {reportLinksSaving ? 'Saving owner…' : 'Fix owner'}
+                                    </button>
+                                  )}
+                                  <button type="button" onClick={() => {
+                                    setReportLinkSelection((current) => ({ ...current, seller_id: '' }));
+                                    setReportLinkSelectedSeller(null);
+                                    setReportLinkConfirmed(false);
+                                    setReportLinkConflict(null);
+                                  }} className="ml-2 rounded-full border border-rose-300 bg-white px-4 py-2 text-xs font-bold text-rose-800 hover:bg-rose-100">
+                                    Choose another seller
+                                  </button>
+                                </div>
+                              )}
+                              {!reportLinkSearchLoading && !reportLinkSearchError && reportLinkSearch.trim().length >= 2
+                                && !reportLinkOptions.sellers.length && !reportLinkOptions.products.length && !reportLinkOptions.orders.length
+                                && <p role="status" className="text-sm font-semibold text-slate-600">No results</p>}
+                              <AdminReportLinkSearchResults
+                                options={reportLinkOptions}
+                                onSelect={handleReportLinkResultSelect}
+                              />
                               <div className="grid gap-3 sm:grid-cols-3">
                                 <label className="text-xs font-semibold text-slate-700">Seller
-                                  <select value={reportLinkSelection.seller_id} onChange={(event) => setReportLinkSelection((current) => ({ ...current, seller_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                  <select value={reportLinkSelection.seller_id} onChange={(event) => {
+                                    const seller = reportLinkOptions.sellers.find((item) => item.student_id === event.target.value);
+                                    setReportLinkSelection((current) => ({ ...current, seller_id: event.target.value }));
+                                    setReportLinkSelectedSeller(seller || null);
+                                    setReportLinkConfirmed(false);
+                                    setReportLinkConflict(null);
+                                  }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
                                     <option value="">Keep current</option>
                                     {reportLinkOptions.sellers.map((seller) => <option key={seller.student_id} value={seller.student_id}>{seller.name} ({seller.student_id})</option>)}
                                   </select>
                                 </label>
                                 <label className="text-xs font-semibold text-slate-700">Product
-                                  <select value={reportLinkSelection.product_id} onChange={(event) => setReportLinkSelection((current) => ({ ...current, product_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                  <select value={reportLinkSelection.product_id} onChange={(event) => {
+                                    const product = reportLinkOptions.products.find((item) => String(item.id) === event.target.value);
+                                    setReportLinkSelection((current) => ({
+                                      ...current,
+                                      product_id: event.target.value,
+                                      ...(product?.seller_id ? { seller_id: product.seller_id } : {}),
+                                    }));
+                                    setReportLinkSelectedSeller(product?.seller_id ? {
+                                      student_id: product.seller_id,
+                                      name: product.seller_name || 'Selected seller',
+                                      products: product.seller_products || [],
+                                    } : null);
+                                    setReportLinkConfirmed(false);
+                                    setReportLinkConflict(null);
+                                  }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
                                     <option value="">Keep current</option>
                                     {reportLinkOptions.products.map((product) => <option key={product.id} value={product.id}>{product.title} (seller {product.seller_id || 'not linked'})</option>)}
                                   </select>
                                 </label>
                                 <label className="text-xs font-semibold text-slate-700">Order
-                                  <select value={reportLinkSelection.order_id} onChange={(event) => setReportLinkSelection((current) => ({ ...current, order_id: event.target.value }))} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                                  <select value={reportLinkSelection.order_id} onChange={(event) => {
+                                    const order = reportLinkOptions.orders.find((item) => String(item.id) === event.target.value);
+                                    setReportLinkSelection((current) => ({
+                                      ...current,
+                                      order_id: event.target.value,
+                                      ...(order ? { product_id: String(order.product_id) } : {}),
+                                      ...(order?.seller_id ? { seller_id: order.seller_id } : {}),
+                                    }));
+                                    setReportLinkSelectedSeller(order?.seller_id ? {
+                                      student_id: order.seller_id,
+                                      name: order.seller_name || 'Selected seller',
+                                      products: order.seller_products || [],
+                                    } : null);
+                                    setReportLinkConfirmed(false);
+                                    setReportLinkConflict(null);
+                                  }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
                                     <option value="">Keep current</option>
                                     {reportLinkOptions.orders.map((order) => <option key={order.id} value={order.id}>#{order.id} · {order.title}</option>)}
                                   </select>
                                 </label>
                               </div>
-                              <button type="button" onClick={handleSaveReportLinks} disabled={reportLinksSaving || !Object.values(reportLinkSelection).some(Boolean)} className="rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50">{reportLinksSaving ? 'Saving links…' : 'Save links'}</button>
+                              {reportLinkSelectedSeller && (
+                                <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
+                                  <p className="font-bold">Confirm seller: {reportLinkSelectedSeller.name} ({reportLinkSelectedSeller.student_id})</p>
+                                  <p className="mt-1 text-xs">Their products: {reportLinkSelectedSeller.products?.map((product) => product.title).join(', ') || 'No products found'}</p>
+                                  <label className="mt-2 flex items-center gap-2 text-xs font-semibold">
+                                    <input type="checkbox" checked={reportLinkConfirmed} onChange={(event) => setReportLinkConfirmed(event.target.checked)} />
+                                    Confirm these report targets before saving
+                                  </label>
+                                </div>
+                              )}
+                              <button type="button" onClick={handleSaveReportLinks} disabled={reportLinksSaving || !Object.values(reportLinkSelection).some(Boolean) || !reportLinkConfirmed} className="rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50">{reportLinksSaving ? 'Saving links…' : 'Save links'}</button>
+                            </div>
+                          )}
+                          {reportDecision === 'escalate' && (
+                            <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2">
+                              <label className="block text-xs font-semibold text-slate-700" htmlFor="report-review-by">
+                                Optional review-by date
+                                <input id="report-review-by" type="date" value={reportReviewBy} onChange={(event) => setReportReviewBy(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" />
+                              </label>
+                              <label className="block text-xs font-semibold text-slate-700 sm:col-span-2" htmlFor="report-reporter-message">
+                                Optional message to reporter
+                                <textarea id="report-reporter-message" rows="2" maxLength={5000} value={reportReporterMessage} onChange={(event) => setReportReporterMessage(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Request additional information from the reporter" />
+                              </label>
+                              <p className="text-xs text-amber-900 sm:col-span-2">Escalation records the internal note and leaves this report Under Review.</p>
                             </div>
                           )}
                           {reportContext?.reporter?.flagged_for_admin_attention && (
@@ -6660,8 +6871,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                             </p>
                           )}
                           <div>
-                            <label className="block text-sm font-bold text-slate-700" htmlFor="admin-report-reason">{t('adminReports.reason')}</label>
-                            <textarea id="admin-report-reason" rows="3" maxLength={1000} value={reportReason} onChange={(event) => setReportReason(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" placeholder={t('adminReports.reasonPlaceholder')} />
+                            <label className="block text-sm font-bold text-slate-700" htmlFor="admin-report-reason">{reportDecision === 'escalate' ? 'Internal admin note' : t('adminReports.reason')}</label>
+                            <textarea id="admin-report-reason" rows="3" maxLength={1000} value={reportReason} onChange={(event) => setReportReason(event.target.value)} className="mt-2 block w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 focus:border-sky-500 focus:outline-none" placeholder={reportDecision === 'escalate' ? 'Internal note (not visible to students)' : t('adminReports.reasonPlaceholder')} />
                             <p className={`mt-1 text-xs ${reportReason.trim().length < 10 ? 'text-rose-600' : 'text-slate-500'}`}>{t('adminReports.reasonMinLength')}: {reportReason.trim().length}/1000</p>
                           </div>
                           {resolveRequirements.length > 0 && <ul className="list-disc space-y-1 pl-5 text-xs font-semibold text-slate-600">{resolveRequirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul>}

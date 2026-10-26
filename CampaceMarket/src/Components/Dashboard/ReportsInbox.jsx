@@ -30,13 +30,14 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString();
 }
 
-function ReportsInbox() {
+function ReportsInbox({ onInvalidReportLink }) {
   const token = getStoredAccessToken();
   const [reports, setReports] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [unreadKeys, setUnreadKeys] = useState(new Set());
   const [selected, setSelected] = useState(readSelectedItem);
   const [detail, setDetail] = useState(null);
+  const [ticketNotFound, setTicketNotFound] = useState(false);
   const [filter, setFilter] = useState('All');
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -93,18 +94,35 @@ function ReportsInbox() {
   }, [refreshLists]);
 
   useEffect(() => {
-    const syncSelection = () => setSelected(readSelectedItem());
+    const syncSelection = () => {
+      setSelected(readSelectedItem());
+      setTicketNotFound(false);
+      setError('');
+    };
     window.addEventListener('popstate', syncSelection);
     return () => window.removeEventListener('popstate', syncSelection);
   }, []);
 
   const selectItem = useCallback((kind, id) => {
+    setTicketNotFound(false);
+    setError('');
     const params = new URLSearchParams(window.location.search);
     params.set('tab', 'buyer');
     params.set('section', 'reports-support');
     params.set('item', `${kind}-${id}`);
     window.history.pushState({}, '', `/dashboard?${params.toString()}`);
     setSelected({ kind, id });
+  }, []);
+
+  const returnToTicketList = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete('item');
+    const query = params.toString();
+    window.history.pushState({}, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+    setSelected(null);
+    setDetail(null);
+    setTicketNotFound(false);
+    setError('');
   }, []);
 
   useEffect(() => {
@@ -114,6 +132,7 @@ function ReportsInbox() {
     const controller = new AbortController();
     const loadDetail = async () => {
       setDetailLoading(true);
+      setTicketNotFound(false);
       setError('');
       try {
         const item = selected.kind === 'report'
@@ -134,7 +153,15 @@ function ReportsInbox() {
         });
       } catch (requestError) {
         if (requestError.name === 'AbortError') return;
-        setError(getErrorMessage(requestError));
+        if (selected.kind === 'report' && requestError.status === 404) {
+          onInvalidReportLink?.('This report is unavailable for your account, so Home is shown.');
+          setError('');
+        } else if (selected.kind === 'support' && requestError.status === 404) {
+          setTicketNotFound(true);
+          setError('');
+        } else {
+          setError(getErrorMessage(requestError));
+        }
         setDetail(null);
       } finally {
         setDetailLoading(false);
@@ -142,7 +169,7 @@ function ReportsInbox() {
     };
     void Promise.resolve().then(loadDetail);
     return () => controller.abort();
-  }, [headers, selected, token]);
+  }, [headers, onInvalidReportLink, selected, token]);
 
   const submitTicket = async (event) => {
     event.preventDefault();
@@ -375,6 +402,13 @@ function ReportsInbox() {
               <div className="h-6 w-1/2 animate-pulse rounded bg-slate-100" />
               <div className="h-24 animate-pulse rounded-xl bg-slate-100" />
               <div className="h-16 animate-pulse rounded-xl bg-slate-100" />
+            </div>
+          ) : ticketNotFound ? (
+            <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50 p-6">
+              <p role="alert" className="text-sm font-semibold text-amber-900">Ticket not found or not yours.</p>
+              <button type="button" onClick={returnToTicketList} className="rounded-full bg-sky-700 px-4 py-2 text-sm font-bold text-white hover:bg-sky-800">
+                Back to ticket list
+              </button>
             </div>
           ) : !detail || !selected || detail.id !== selected.id ? (
             <p className="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-600">Select a report or support request to view its updates.</p>

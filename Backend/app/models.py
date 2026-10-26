@@ -2,7 +2,7 @@
 from decimal import Decimal
 from datetime import datetime, timezone
 import uuid
-from sqlalchemy import CheckConstraint, Column, Integer, String, ForeignKey, Boolean, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
+from sqlalchemy import CheckConstraint, Column, Integer, String, ForeignKey, Boolean, Date, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base
@@ -639,6 +639,7 @@ class Report(Base):
     reviewed_at = Column(DateTime, nullable=True)
     decision = Column(String(50), nullable=True)
     decision_reason = Column(Text, nullable=True)
+    review_by = Column(Date, nullable=True)
     resolved_by = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True, index=True)
     resolved_at = Column(DateTime, nullable=True)
     refunded_amount = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)

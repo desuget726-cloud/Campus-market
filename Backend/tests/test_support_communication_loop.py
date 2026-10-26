@@ -174,6 +174,48 @@ class SupportCommunicationLoopTests(unittest.TestCase):
             },
         )
 
+    def test_student_ticket_detail_is_available_to_owner_only(self):
+        ticket_id = self._create_ticket().json()["ticket"]["id"]
+
+        owner_response = self._request(
+            "GET",
+            f"/api/student/support/tickets/{ticket_id}",
+            headers=self._headers(self.reporter.student_id),
+        )
+        other_student_response = self._request(
+            "GET",
+            f"/api/student/support/tickets/{ticket_id}",
+            headers=self._headers(self.other_student.student_id),
+        )
+        unknown_response = self._request(
+            "GET",
+            "/api/student/support/tickets/99999",
+            headers=self._headers(self.reporter.student_id),
+        )
+
+        self.assertEqual(owner_response.status_code, 200, owner_response.text)
+        self.assertEqual(owner_response.json()["id"], ticket_id)
+        self.assertEqual(other_student_response.status_code, 404)
+        self.assertEqual(unknown_response.status_code, 404)
+
+    def test_student_cannot_access_admin_ticket_detail_route(self):
+        ticket_id = self._create_ticket().json()["ticket"]["id"]
+
+        response = self._request(
+            "GET",
+            f"/support/tickets/{ticket_id}",
+            headers=self._headers(self.reporter.student_id),
+        )
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_openapi_exposes_one_student_ticket_detail_route(self):
+        paths = main_module.app.openapi()["paths"]
+
+        self.assertIn("/api/student/support/tickets/{ticket_id}", paths)
+        self.assertIn("get", paths["/api/student/support/tickets/{ticket_id}"])
+        self.assertNotIn("/api/student/support/ticket/{ticket_id}", paths)
+
     def _create_report(self):
         return self._request(
             "POST",
@@ -193,8 +235,12 @@ class SupportCommunicationLoopTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         ticket = response.json()["ticket"]
         self.assertEqual(ticket["ticket_number"], "SUP-0001")
-        self.assertIn("section=reports-support&item=support-1", response.json()["ticket"]["id"] and
-                      self.db.query(Notification).filter(Notification.type == "support").first().action_url)
+        notification = self.db.query(Notification).filter(Notification.type == "support").one()
+        self.assertEqual(
+            notification.action_url,
+            f"/dashboard?tab=buyer&section=reports-support&item=support-{ticket['id']}",
+        )
+        self.assertEqual(notification.student_id, self.reporter.student_id)
         self.assertEqual(self.db.query(Notification).filter(Notification.student_id == self.reporter.student_id).count(), 1)
         self.assertEqual(self.db.query(Notification).filter(Notification.student_id == self.seller.student_id).count(), 0)
         self.assertGreater(self.db.query(AdminNotification).filter(AdminNotification.reference_type == "support").count(), 0)

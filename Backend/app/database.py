@@ -187,6 +187,43 @@ def init_db() -> None:
                 statement = "DROP INDEX uq_notifications_user_type_reference"
             with engine.begin() as connection:
                 connection.execute(text(statement))
+        changed_moderation_links = 0
+        with engine.begin() as connection:
+            legacy_notices = connection.execute(text(
+                "SELECT id, title, reference_id FROM notifications "
+                "WHERE type = :notification_type AND action_url = :legacy_url"
+            ), {
+                "notification_type": "moderation_action",
+                "legacy_url": "/dashboard",
+            }).mappings().all()
+            for notice in legacy_notices:
+                report_id = str(notice["reference_id"] or "").strip()
+                if not report_id.isdigit() or int(report_id) < 1:
+                    continue
+                section = (
+                    "warnings"
+                    if notice["title"] in {"Marketplace warning", "Product hidden"}
+                    else "account-notices"
+                    if notice["title"] in {"Account suspended", "Account deactivated"}
+                    else None
+                )
+                if section is None:
+                    continue
+                connection.execute(text(
+                    "UPDATE notifications SET action_url = :action_url "
+                    "WHERE id = :notification_id AND action_url = :legacy_url"
+                ), {
+                    "action_url": (
+                        f"/dashboard?tab=seller&section={section}&item=report-{int(report_id)}"
+                    ),
+                    "notification_id": notice["id"],
+                    "legacy_url": "/dashboard",
+                })
+                changed_moderation_links += 1
+        logging.getLogger("app.startup").info(
+            "Moderation notification link migration updated %d rows.",
+            changed_moderation_links,
+        )
     if "admin_login_history" in inspect(engine).get_table_names():
         login_history_columns = {
             column["name"] for column in inspect(engine).get_columns("admin_login_history")
@@ -253,6 +290,7 @@ def init_db() -> None:
             "reviewed_at": "DATETIME NULL",
             "decision": "VARCHAR(50) NULL",
             "decision_reason": "TEXT NULL",
+            "review_by": "DATE NULL",
             "resolved_by": "INT NULL",
             "resolved_at": "DATETIME NULL",
             "refunded_amount": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
