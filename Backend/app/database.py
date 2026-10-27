@@ -6,7 +6,7 @@ from typing import Generator, Iterable, Optional
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
@@ -139,6 +139,67 @@ def missing_model_columns(table_names: Optional[Iterable[str]] = None) -> dict[s
     return missing
 
 
+def _migrate_legacy_notification_index() -> None:
+    notification_indexes = inspect(engine).get_indexes("notifications")
+    legacy_unique_index = next(
+        (
+            index for index in notification_indexes
+            if index["name"] == "uq_notifications_user_type_reference"
+            and index.get("unique")
+        ),
+        None,
+    )
+    if legacy_unique_index is None:
+        return
+
+    if engine.dialect.name == "mysql":
+        has_student_id_index = any(
+            index.get("column_names") == ["student_id"]
+            for index in notification_indexes
+        )
+        if not has_student_id_index:
+            try:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        "CREATE INDEX idx_notifications_student_id "
+                        "ON notifications (student_id)"
+                    ))
+            except OperationalError as error:
+                error_args = getattr(error.orig, "args", ())
+                error_code = error_args[0] if error_args else None
+                if error_code != 1061:
+                    raise
+                refreshed_indexes = inspect(engine).get_indexes("notifications")
+                if not any(
+                    index.get("column_names") == ["student_id"]
+                    for index in refreshed_indexes
+                ):
+                    raise
+
+    if engine.dialect.name == "mysql":
+        statement = (
+            "ALTER TABLE notifications "
+            "DROP INDEX uq_notifications_user_type_reference"
+        )
+    else:
+        statement = "DROP INDEX uq_notifications_user_type_reference"
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(statement))
+    except OperationalError as error:
+        error_args = getattr(error.orig, "args", ())
+        error_code = error_args[0] if error_args else None
+        if engine.dialect.name != "mysql" or error_code not in {1091, 1553}:
+            raise
+        logging.getLogger("app.startup").warning(
+            "Could not drop legacy notification index "
+            "uq_notifications_user_type_reference (MySQL error %s); "
+            "leaving the existing index in place",
+            error_code,
+        )
+
+
 def init_db() -> None:
     """Create database tables for all models inheriting from `Base`.
 
@@ -225,17 +286,7 @@ def init_db() -> None:
                 "WHERE updated_at IS NULL"
             ))
     if "notifications" in inspector.get_table_names():
-        notification_indexes = {
-            index["name"]: index for index in inspect(engine).get_indexes("notifications")
-        }
-        legacy_unique_index = notification_indexes.get("uq_notifications_user_type_reference")
-        if legacy_unique_index and legacy_unique_index.get("unique"):
-            if engine.dialect.name == "mysql":
-                statement = "ALTER TABLE notifications DROP INDEX uq_notifications_user_type_reference"
-            else:
-                statement = "DROP INDEX uq_notifications_user_type_reference"
-            with engine.begin() as connection:
-                connection.execute(text(statement))
+        _migrate_legacy_notification_index()
         changed_moderation_links = 0
         with engine.begin() as connection:
             legacy_notices = connection.execute(text(
