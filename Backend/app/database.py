@@ -418,7 +418,7 @@ def init_db() -> None:
         product_columns = {column["name"] for column in inspector.get_columns("products")}
         missing_product_columns = {
             "negotiable": "BOOLEAN NOT NULL DEFAULT FALSE",
-            "pickup_location": "VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
+            "pickup_location": "VARCHAR(255) NOT NULL DEFAULT ''",
             "pickup_hours": "VARCHAR(120) NOT NULL DEFAULT '08:00-17:00'",
             "image_notes": "TEXT NULL",
             "seller_id": "VARCHAR(50) NULL",

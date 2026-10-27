@@ -2728,6 +2728,56 @@ def _audit_metadata(description: Optional[str]) -> dict:
     return {"description": str(description or "")}
 
 
+def _record_auth_login(
+    db: Session,
+    request: Optional[Request],
+    *,
+    success: bool,
+    actor_name: Optional[str],
+    actor_id: Optional[Any],
+    actor_role: str,
+    identifier: Optional[str] = None,
+    reason: Optional[str] = None,
+    login_method: str = "credentials",
+    severity: str = "WARNING",
+    admin_id: Optional[int] = None,
+    entity_id: Optional[int] = None,
+) -> None:
+    action = (
+        "ADMIN_LOGIN_SUCCESS" if actor_role == "admin" else "USER_LOGIN_SUCCESS"
+    ) if success else "AUTH_LOGIN_FAILED"
+    ip_address = _request_client_ip(request)
+    user_agent = (request.headers.get("user-agent", "")[:255] or None) if request else None
+    details = (
+        {"message": f"Login successful via {login_method}"}
+        if success
+        else {"reason": reason or "Invalid password or unverified account"}
+    )
+    metadata = {
+        "actor_name": actor_name,
+        "actor_id": actor_id,
+        "device": _session_device_name(user_agent),
+        "details": details,
+    }
+    if identifier:
+        metadata["attempted_identifier"] = identifier
+    _add_audit_log(
+        db,
+        admin_id=admin_id,
+        action=action,
+        entity_type="User Account",
+        entity_id=entity_id,
+        description=json.dumps(details),
+        status="SUCCESS" if success else "FAILURE",
+        severity="INFO" if success else severity,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        actor_role=actor_role,
+        category="AUTH",
+        metadata_json=metadata,
+    )
+
+
 def _add_audit_log(db: Session, **values) -> None:
     if _audit_logging_enabled(db):
         db.add(AuditLog(**values))
@@ -3006,16 +3056,18 @@ def _record_admin_login_challenge_failure(
     exhausted = challenge.failed_attempts >= 5
     if exhausted:
         challenge.used = True
-    db.add(AuditLog(
+    _record_auth_login(
+        db,
+        request,
+        success=False,
+        actor_name=admin.email,
+        actor_id=admin.id,
+        actor_role="admin",
+        identifier=admin.email,
+        reason=description,
         admin_id=admin.id,
-        action="Admin 2FA Login Failed",
-        entity_type="Admin",
         entity_id=admin.id,
-        description=description,
-        status="FAILURE",
-        severity="warning",
-        ip_address=request.client.host if request.client else None,
-    ))
+    )
     db.commit()
     if exhausted:
         raise HTTPException(
@@ -3029,7 +3081,6 @@ def _complete_admin_login(
     db: Session,
     admin: Admin,
     request: Request,
-    audit_action: str = "Admin 2FA Login Succeeded",
 ) -> dict:
     token = _create_session_token(
         admin.username,
@@ -3045,15 +3096,17 @@ def _complete_admin_login(
         request,
         admin_session_id=admin_session.id,
     )
-    db.add(AuditLog(
+    _record_auth_login(
+        db,
+        request,
+        success=True,
+        actor_name=admin.full_name or admin.username,
+        actor_id=admin.id,
+        actor_role="admin",
+        login_method="two-factor verification",
         admin_id=admin.id,
-        action=audit_action,
-        entity_type="Admin",
         entity_id=admin.id,
-        description="Administrator completed the login 2FA challenge.",
-        status="SUCCESS",
-        ip_address=request.client.host if request.client else None,
-    ))
+    )
     db.flush()
     return {
         "role": "admin",
@@ -4129,6 +4182,7 @@ def register_student(student_data: StudentRegister, db: Session = Depends(get_db
 # 2. የጋራ የሎጊን ኤፒአይ ኤንድፖይንት (POST /api/login)
 
 @app.post("/api/login")
+@app.post("/api/auth/login")
 def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_db)):
     security = get_security_settings(db)
     identifier = _login_identifier(data.id_or_email)
@@ -4157,7 +4211,24 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         else f"student:{student.student_id.lower()}" if student
         else identifier
     )
-    _check_login_lock(db, attempt_identifier, security)
+    try:
+        _check_login_lock(db, attempt_identifier, security)
+    except HTTPException:
+        _record_auth_login(
+            db,
+            request,
+            success=False,
+            actor_name=identifier,
+            actor_id=admin.id if admin else student.student_id if student else None,
+            actor_role="admin" if admin else "student" if student else "unknown",
+            identifier=identifier,
+            reason="Account temporarily locked after repeated failed login attempts",
+            severity="CRITICAL",
+            admin_id=admin.id if admin else None,
+            entity_id=admin.id if admin else student.id if student else None,
+        )
+        db.commit()
+        raise
 
     admin_locked_until = (
         _as_utc_datetime(admin.locked_until) if admin else None
@@ -4168,6 +4239,19 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         and admin_locked_until
         and admin_locked_until > datetime.now(timezone.utc)
     ):
+        _record_auth_login(
+            db,
+            request,
+            success=False,
+            actor_name=identifier,
+            actor_id=admin.id,
+            actor_role="admin",
+            identifier=identifier,
+            reason="Administrator account is temporarily locked",
+            severity="CRITICAL",
+            admin_id=admin.id,
+            entity_id=admin.id,
+        )
         _record_admin_login_event(db, admin.id, "login_locked", request)
         db.commit()
         retry_at = admin_locked_until.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -4181,6 +4265,19 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
 
     if admin and verify_password(data.password, admin.password_hash):
         if str(admin.status or "").strip().lower() != "active":
+            _record_auth_login(
+                db,
+                request,
+                success=False,
+                actor_name=identifier,
+                actor_id=admin.id,
+                actor_role="admin",
+                identifier=identifier,
+                reason="Administrator account is inactive",
+                admin_id=admin.id,
+                entity_id=admin.id,
+            )
+            db.commit()
             raise HTTPException(status_code=403, detail="This administrator account is inactive.")
         admin.failed_login_attempts = 0
         admin.locked_until = None
@@ -4229,6 +4326,16 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             request,
             admin_session_id=admin_session.id,
         )
+        _record_auth_login(
+            db,
+            request,
+            success=True,
+            actor_name=admin.full_name or admin.username,
+            actor_id=admin.id,
+            actor_role="admin",
+            admin_id=admin.id,
+            entity_id=admin.id,
+        )
 
         db.commit()
 
@@ -4261,7 +4368,18 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
     # 2.2 Check the student table
     if student and verify_password(data.password, student.password):
         if security.require_student_verification and not student.is_verified:
-            _record_failed_login(db, identifier, security)
+            _record_auth_login(
+                db,
+                request,
+                success=False,
+                actor_name=identifier,
+                actor_id=student.student_id,
+                actor_role="student",
+                identifier=identifier,
+                reason="Invalid password or unverified account",
+                entity_id=student.id,
+            )
+            _record_failed_login(db, attempt_identifier, security)
             raise HTTPException(
                 status_code=403,
                 detail="Student verification is required before login.",
@@ -4315,6 +4433,15 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             session_id=user_session.id,
         )
 
+        _record_auth_login(
+            db,
+            request,
+            success=True,
+            actor_name=student.name,
+            actor_id=student.student_id,
+            actor_role="student",
+            entity_id=student.id,
+        )
         db.commit()
 
         return {
@@ -4332,6 +4459,9 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         }
 
     # Failed login handling
+    failed_attempt = db.query(LoginAttempt).filter(
+        LoginAttempt.identifier == attempt_identifier
+    ).first()
     if admin:
         admin.failed_login_attempts = int(
             admin.failed_login_attempts or 0
@@ -4360,7 +4490,24 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 db, admin.id, "login_failed", request
             )
 
-        db.commit()
+    failure_count = (
+        int(admin.failed_login_attempts or 0)
+        if admin
+        else int(failed_attempt.failed_attempts if failed_attempt else 0) + 1
+    )
+    _record_auth_login(
+        db,
+        request,
+        success=False,
+        actor_name=identifier,
+        actor_id=admin.id if admin else student.student_id if student else None,
+        actor_role="admin" if admin else "student" if student else "unknown",
+        identifier=identifier,
+        reason="Invalid password or unverified account",
+        severity="CRITICAL" if failure_count >= security.max_login_attempts else "WARNING",
+        admin_id=admin.id if admin else None,
+        entity_id=admin.id if admin else student.id if student else None,
+    )
 
     _record_failed_login(db, attempt_identifier, security)
 
@@ -4719,7 +4866,7 @@ def complete_admin_login_two_factor_setup(
     if not challenge.setup_verified or not admin.two_factor_enabled or not _decrypt_totp_secret(admin.two_factor_secret):
         raise HTTPException(status_code=400, detail="Verify your authenticator and save the backup codes first.")
     challenge.used = True
-    result = _complete_admin_login(db, admin, request, audit_action="Admin Login After 2FA Setup")
+    result = _complete_admin_login(db, admin, request)
     db.commit()
     return result
 
@@ -4944,6 +5091,16 @@ def _create_secure_session_for_student(student: Student, response: Response, db:
         SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
         session_id=user_session.id,
+    )
+    _record_auth_login(
+        db,
+        request,
+        success=True,
+        actor_name=student.name,
+        actor_id=student.student_id,
+        actor_role="student",
+        login_method="OAuth",
+        entity_id=student.id,
     )
     db.commit()
     response.set_cookie(
@@ -5319,10 +5476,32 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
     email = request.email.strip().lower()
     otp = request.otp_code.strip()
     if not otp.isdigit() or len(otp) != 6:
+        _record_auth_login(
+            db,
+            http_request,
+            success=False,
+            actor_name=email,
+            actor_id=None,
+            actor_role="unknown",
+            identifier=email,
+            reason="Invalid student verification code format",
+        )
+        db.commit()
         raise HTTPException(status_code=400, detail="Invalid OTP format.")
 
     student = db.query(Student).filter(Student.email.ilike(email)).first()
     if not student:
+        _record_auth_login(
+            db,
+            http_request,
+            success=False,
+            actor_name=email,
+            actor_id=None,
+            actor_role="unknown",
+            identifier=email,
+            reason="Invalid or expired student verification code",
+        )
+        db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
     otp_record = (
         db.query(PasswordReset)
@@ -5336,6 +5515,18 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         .first()
     )
     if not otp_record:
+        _record_auth_login(
+            db,
+            http_request,
+            success=False,
+            actor_name=email,
+            actor_id=student.student_id,
+            actor_role="student",
+            identifier=email,
+            reason="Invalid or expired student verification code",
+            entity_id=student.id,
+        )
+        db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
 
     otp_record.is_used = True
@@ -5346,6 +5537,16 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
         session_id=user_session.id,
+    )
+    _record_auth_login(
+        db,
+        http_request,
+        success=True,
+        actor_name=student.name,
+        actor_id=student.student_id,
+        actor_role="student",
+        login_method="OTP",
+        entity_id=student.id,
     )
     db.commit()
     return {
@@ -5371,16 +5572,18 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         get_security_settings(db).admin_2fa
         or (admin.two_factor_enabled and _decrypt_totp_secret(admin.two_factor_secret))
     ):
-        db.add(AuditLog(
+        _record_auth_login(
+            db,
+            http_request,
+            success=False,
+            actor_name=admin.email,
+            actor_id=admin.id,
+            actor_role="admin",
+            identifier=admin.email,
+            reason="Rejected legacy OTP verification because this account requires the password-bound login challenge",
             admin_id=admin.id,
-            action="Admin 2FA Login Failed",
-            entity_type="Admin",
             entity_id=admin.id,
-            description="Rejected legacy OTP verification because this account requires the password-bound login challenge.",
-            status="FAILURE",
-            severity="warning",
-            ip_address=http_request.client.host if http_request.client else None,
-        ))
+        )
         db.commit()
         raise HTTPException(status_code=400, detail="Use the active password login challenge to verify 2FA.")
     if admin.two_factor_enabled:
@@ -5399,6 +5602,17 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
             _record_admin_login_event(
                 db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
             )
+            _record_auth_login(
+                db,
+                http_request,
+                success=True,
+                actor_name=admin.full_name or admin.username,
+                actor_id=admin.id,
+                actor_role="admin",
+                login_method="two-factor verification",
+                admin_id=admin.id,
+                entity_id=admin.id,
+            )
             db.commit()
             return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}, "remaining_backup_codes": _admin_backup_codes_remaining(db, admin)}
         if admin.two_factor_secret:
@@ -5416,12 +5630,36 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         .first()
     )
     if not otp_record:
+        _record_auth_login(
+            db,
+            http_request,
+            success=False,
+            actor_name=admin.full_name or admin.username,
+            actor_id=admin.id,
+            actor_role="admin",
+            identifier=admin.email,
+            reason="Invalid or expired administrator verification code",
+            admin_id=admin.id,
+            entity_id=admin.id,
+        )
+        db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     otp_record.is_used = True
     token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
     admin_session, token = _create_or_reuse_admin_session(db, admin, token, http_request)
     _record_admin_login_event(
         db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
+    )
+    _record_auth_login(
+        db,
+        http_request,
+        success=True,
+        actor_name=admin.full_name or admin.username,
+        actor_id=admin.id,
+        actor_role="admin",
+        login_method="two-factor verification",
+        admin_id=admin.id,
+        entity_id=admin.id,
     )
     db.commit()
     return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}}
@@ -7725,7 +7963,7 @@ def get_admin_audit_logs(
             "superadmin": "superadmin",
             "sub_admin": "staff",
             "staff": "staff",
-        }.get(raw_role, raw_role if raw_role in {"student", "system"} else "admin" if row.admin_id else "system")
+        }.get(raw_role, raw_role if raw_role in {"student", "system", "unknown"} else "admin" if row.admin_id else "system")
         metadata = row.metadata_json
         if isinstance(metadata, str):
             try:
@@ -7734,12 +7972,22 @@ def get_admin_audit_logs(
                 metadata = {"description": metadata}
         if metadata is None:
             metadata = _audit_metadata(row.description)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        actor_id = metadata.get("actor_id", row.admin_id)
+        actor_name = metadata.get("actor_name") or row.full_name or row.username
+        actor_username = (
+            metadata.get("attempted_identifier")
+            if row.action == "AUTH_LOGIN_FAILED"
+            else metadata.get("actor_name") or row.username
+        )
+        if not actor_name:
+            actor_name = actor_username or ("System" if not row.admin_id else None)
         items.append({
             "id": row.id,
             "admin_id": row.admin_id,
-            "actor_id": row.admin_id,
-            "actor_username": row.username or ("System" if not row.admin_id else None),
-            "actor_name": row.full_name or row.username or ("System" if not row.admin_id else None),
+            "actor_id": actor_id,
+            "actor_username": actor_username or ("System" if not row.admin_id else None),
+            "actor_name": actor_name,
             "actor_role": actor_role,
             "action": row.action,
             "event_type": row.event_type or _audit_event_type(row.action),
@@ -7779,11 +8027,11 @@ def get_admin_audit_logs_summary(
             ("admin", "staff", "superadmin", "super_admin", "superadministrator", "sub_admin")
         )
     ).scalar() or 0
-    successful_logins = db.query(func.count(AdminLoginHistory.id)).filter(
-        func.lower(AdminLoginHistory.event_type).like("login_success%")
+    successful_logins = db.query(func.count(AuditLog.id)).filter(
+        AuditLog.action.in_(("ADMIN_LOGIN_SUCCESS", "USER_LOGIN_SUCCESS"))
     ).scalar() or 0
-    failed_logins = db.query(func.count(AdminLoginHistory.id)).filter(
-        func.lower(AdminLoginHistory.event_type).like("login_failed%")
+    failed_logins = db.query(func.count(AuditLog.id)).filter(
+        AuditLog.action == "AUTH_LOGIN_FAILED"
     ).scalar() or 0
     effective_severity = _audit_severity_expression()
     severity_rows = db.query(
@@ -9940,7 +10188,7 @@ def create_product(
             seller=seller_value,
             seller_id=normalized_student_id,
             negotiable=negotiable,
-            pickup_location=(str(pickup_location or "").strip() or "Student Center"),
+            pickup_location=str(pickup_location or "").strip(),
             pickup_hours=(pickup_hours or "08:00-17:00").strip(),
             status=initial_status
         )

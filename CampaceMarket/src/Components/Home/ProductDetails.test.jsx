@@ -153,6 +153,17 @@ describe('ProductDetails guest actions', () => {
     expect(screen.queryByText('productDetails.buyer.responseTime')).toBeNull();
   });
 
+  it('shows the saved pickup location instead of a default handover location', async () => {
+    vi.stubGlobal('fetch', galleryFetchMock({
+      42: { ...detail, pickup_location: 'Dormitory Gate 2' },
+    }));
+
+    render(<ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />);
+
+    expect(await screen.findByText('productDetails.buyer.handover: Dormitory Gate 2')).toBeTruthy();
+    expect(screen.queryByText(/Student Center/)).toBeNull();
+  });
+
   it('skips view tracking for a product revisited within 24 hours in this browser', async () => {
     const fetchMock = globalThis.fetch;
     const firstVisit = render(

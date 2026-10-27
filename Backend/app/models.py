@@ -254,7 +254,7 @@ class Product(Base):
     seller = Column(String(100), nullable=True)
     seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, index=True)
     negotiable = Column(Boolean, default=False, nullable=False)
-    pickup_location = Column(String(255), default="Student Center", nullable=False)
+    pickup_location = Column(String(255), default="", nullable=False)
     pickup_hours = Column(String(120), default="08:00-17:00", nullable=False)
     image_notes = Column(Text, nullable=True)
     status = Column(String(50), default="Pending", nullable=False)

@@ -46,6 +46,7 @@ export const setAdminSectionUrl = (pathname, search, section) => {
   const nextSection = normalizeAdminSection(section, DEFAULT_ADMIN_SECTION);
   const params = new URLSearchParams(search || '');
   params.delete('section');
+  if (nextSection === 'reports') params.delete('error');
   params.set('tab', nextSection);
   const query = params.toString();
   return `${pathname}${query ? `?${query}` : ''}`;

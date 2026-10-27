@@ -3215,7 +3215,7 @@ function StudentDashboard({
       price: product.price || '',
       quantity: String(product.stock ?? product.quantity ?? 1),
       condition: product.condition || 'New',
-      pickupLocation: product.pickup_location || product.pickupLocation || '',
+      pickupLocation: product.pickup_location || product.pickup_point || product.handover_location || product.location || product.pickupLocation || '',
       pickupHours: product.pickup_hours || '08:00-17:00',
       imageNotes: Array.isArray(product.image_notes) ? product.image_notes : [],
       description: product.description || '',
@@ -5376,7 +5376,10 @@ function StudentDashboard({
                 )}
 
                 {buyerTab === 'reports-support' && (
-                  <ReportsInbox onInvalidReportLink={onDashboardLinkInvalid} />
+                  <ReportsInbox
+                    accessToken={getStudentSessionToken()}
+                    onInvalidReportLink={onDashboardLinkInvalid}
+                  />
                 )}
 
                 {/* Sub-tab 4: Payments */}

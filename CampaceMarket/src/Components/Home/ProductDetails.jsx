@@ -923,7 +923,13 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const formattedPrice = Number.isFinite(priceValue)
     ? `${priceValue.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`
     : 'Negotiable';
-  const campusLocation = String(item?.pickup_location || '').trim();
+  const campusLocation = String(
+    item?.pickup_location
+      || item?.pickup_point
+      || item?.handover_location
+      || item?.location
+      || '',
+  ).trim() || 'Not specified';
   const toGalleryEntry = (image) => (
     typeof image === 'string' ? { url: image, note: null } : image
   );
@@ -1094,14 +1100,14 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-y border-slate-100 py-3 text-xs font-semibold text-slate-500 sm:text-sm">
               {showBuyerView ? (
                 <>
-                  {campusLocation && <span>{t('productDetails.buyer.handover')}: {campusLocation}</span>}
+                  <span>{t('productDetails.buyer.handover')}: {campusLocation}</span>
                   {pickupHours && <span>{t('productDetails.buyer.availableHours')}: {pickupHours}</span>}
                   <span title={postedFullDate}>{t('productDetails.buyer.posted')} {postedRelativeTime || t('productDetails.buyer.recently')}</span>
                   <span>{viewCount} {t('productDetails.buyer.peopleViewed')}</span>
                 </>
               ) : (
                 <>
-                  <span>{campusLocation || 'Student Center'}</span>
+                  <span>{t('productDetails.buyer.handover')}: {campusLocation}</span>
                   {pickupHours && <span>{pickupHours}</span>}
                   <span>Posted {item.created_at ? new Date(item.created_at).toLocaleDateString() : 'recently'}</span>
                   <span>{viewCount} people viewed this listing</span>
@@ -1160,7 +1166,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                     <span className="flex min-w-0 flex-1 flex-col p-3">
                       <span className="text-sm font-bold text-emerald-700">{similar.price ? `${Number(similar.price).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB` : 'Negotiable'}</span>
                       <span className="mt-1 line-clamp-2 break-words text-sm font-semibold text-slate-900">{similar.title || 'Campus item'}</span>
-                      <span className="mt-2 line-clamp-1 text-xs text-slate-500">{similar.pickup_location || similar.location || 'Student Center'}</span>
+                      <span className="mt-2 line-clamp-1 text-xs text-slate-500">{similar.pickup_location || similar.location || 'Not specified'}</span>
                     </span>
                   </button>
                 ))}

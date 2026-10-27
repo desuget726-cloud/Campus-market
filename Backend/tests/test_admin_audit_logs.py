@@ -171,7 +171,7 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
         self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:5173")
         self.assertIn("authorization", response.headers.get("access-control-allow-headers", "").lower())
 
-    def test_summary_uses_login_history_and_audit_severity_counts(self):
+    def test_summary_uses_auth_audit_logs_and_audit_severity_counts(self):
         self.db.add_all([
             AuditLog(
                 action="Background task complete",
@@ -196,6 +196,47 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
                 status="SUCCESS",
                 severity="critical",
             ),
+            AuditLog(
+                admin_id=self.admin.id,
+                action="ADMIN_LOGIN_SUCCESS",
+                entity_type="User Account",
+                description='{"message":"Login successful via credentials"}',
+                status="SUCCESS",
+                severity="INFO",
+                category="AUTH",
+                actor_role="admin",
+                metadata_json={"actor_name": "Audit Admin", "actor_id": self.admin.id},
+            ),
+            AuditLog(
+                action="USER_LOGIN_SUCCESS",
+                entity_type="User Account",
+                description='{"message":"Login successful via credentials"}',
+                status="SUCCESS",
+                severity="INFO",
+                category="AUTH",
+                actor_role="student",
+                metadata_json={"actor_name": "Student Example", "actor_id": "MAU1600001"},
+            ),
+            AuditLog(
+                action="AUTH_LOGIN_FAILED",
+                entity_type="User Account",
+                description='{"reason":"Invalid password or unverified account"}',
+                status="FAILURE",
+                severity="WARNING",
+                category="AUTH",
+                actor_role="unknown",
+                metadata_json={"actor_name": "missing@example.test"},
+            ),
+            AuditLog(
+                action="AUTH_LOGIN_FAILED",
+                entity_type="User Account",
+                description='{"reason":"Invalid password or unverified account"}',
+                status="FAILURE",
+                severity="WARNING",
+                category="AUTH",
+                actor_role="student",
+                metadata_json={"actor_name": "student@example.test"},
+            ),
         ])
         self.db.commit()
         response = self.client.get(
@@ -205,11 +246,55 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
-            "total_events": 28,
+            "total_events": 32,
             "logins": {"success": 2, "failed": 2, "total": 4},
-            "admin_actions": 27,
-            "alerts": {"critical": 1, "warning": 1, "informational": 26, "total": 2},
+            "admin_actions": 28,
+            "alerts": {"critical": 1, "warning": 3, "informational": 28, "total": 4},
         })
+
+    def test_auth_category_includes_successful_and_failed_login_events(self):
+        self.db.add_all([
+            AuditLog(
+                action="USER_LOGIN_SUCCESS",
+                entity_type="User Account",
+                description="Login successful",
+                status="SUCCESS",
+                severity="INFO",
+                category="AUTH",
+                actor_role="student",
+                metadata_json={"actor_name": "Student Example", "actor_id": "MAU1600001"},
+            ),
+            AuditLog(
+                action="AUTH_LOGIN_FAILED",
+                entity_type="User Account",
+                description="Invalid password",
+                status="FAILURE",
+                severity="WARNING",
+                category="AUTH",
+                actor_role="unknown",
+                metadata_json={
+                    "actor_name": "missing@example.test",
+                    "attempted_identifier": "missing@example.test",
+                    "device": "Windows / Chrome",
+                },
+                ip_address="203.0.113.10",
+            ),
+        ])
+        self.db.commit()
+
+        response = self.get_logs(category="AUTH")
+
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual({item["action"] for item in items}, {
+            "USER_LOGIN_SUCCESS",
+            "AUTH_LOGIN_FAILED",
+        })
+        failed_login = next(item for item in items if item["action"] == "AUTH_LOGIN_FAILED")
+        self.assertEqual(failed_login["actor_name"], "missing@example.test")
+        self.assertEqual(failed_login["actor_role"], "unknown")
+        self.assertEqual(failed_login["actor_id"], None)
+        self.assertEqual(failed_login["metadata"]["attempted_identifier"], "missing@example.test")
 
     def test_filters_by_ip_severity_and_category(self):
         self.db.add_all([

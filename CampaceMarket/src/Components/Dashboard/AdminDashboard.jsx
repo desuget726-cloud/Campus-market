@@ -1550,11 +1550,11 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         ]);
         if (cancelled) return;
         const mappedLogs = (Array.isArray(data.items) ? data.items : []).map((log) => {
-          const description = getAuditDescriptionPresentation(log.metadata ?? log.description);
+          const description = getAuditDescriptionPresentation(log.metadata?.details ?? log.metadata ?? log.description);
           const rowStatus = String(log.status || '').toUpperCase();
           const performedBy = log.actor_name || log.full_name || log.username || 'System';
           const actorRole = log.actor_role || (log.admin_id ? 'admin' : 'system');
-          const device = log.device || log.user_agent;
+          const device = log.device || log.metadata?.device || log.user_agent;
           const isSystemActor = String(actorRole).toLowerCase() === 'system' || String(performedBy).toLowerCase() === 'system';
           return {
             id: log.id,
@@ -1566,6 +1566,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
             performed_by: performedBy,
             actor_id: log.actor_id ?? log.admin_id ?? '',
             actor_role: actorRole,
+            attempted_identifier: log.metadata?.attempted_identifier || '',
             is_system_actor: isSystemActor,
             entity_type: log.entity_type || 'System',
             entity_id: log.entity_id ?? 'N/A',
@@ -6692,11 +6693,19 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
             </div>
 
             {selectedReport && (() => {
+              const reportErrorDetail = typeof reportError === 'string'
+                ? reportError
+                : reportError?.response?.data?.detail || reportError?.detail;
+              const reportErrorMessage = typeof reportErrorDetail === 'string'
+                ? reportErrorDetail
+                : reportErrorDetail?.message || reportError?.message || t('adminReports.contextError');
               const generalReport = /general/i.test(selectedReport.category || '');
               const noContextLabel = generalReport ? t('adminReports.notSpecified') : t('adminReports.notRecorded');
               const productId = reportContext?.product?.id || selectedReport.product_id;
               const productTitle = reportContext?.product?.title || selectedReport.product_name;
               const sellerName = reportContext?.seller?.seller_name || selectedReport.seller_name || selectedReport.seller_id;
+              const linkedOrderId = reportContext?.order?.id || selectedReport.order_id;
+              const hasLinkedTargets = Boolean(sellerName || productId || productTitle || linkedOrderId);
               const closedReport = ['Resolved', 'Dismissed'].includes(selectedReport.status);
               const decisionAvailability = reportContext?.decision_availability?.[reportDecision];
               const selectedDecisionEnabled = Boolean(reportDecision && decisionAvailability?.enabled);
@@ -6746,7 +6755,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-7 sm:py-5">
                       {reportError && (
                         <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800">
-                          <p>{reportError}</p>
+                          <p>{reportErrorMessage}</p>
                           <button type="button" onClick={() => handleOpenReportModal(selectedReport)} disabled={reportReviewLoading} className="rounded-full border border-rose-300 bg-white px-4 py-2 text-xs font-bold text-rose-800 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50">
                             Retry
                           </button>
@@ -6782,41 +6791,51 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                           <p className="mt-1 text-xs text-slate-600">{t('adminReports.verified')}: {reportContext?.reporter?.verified_student == null ? noContextLabel : reportContext.reporter.verified_student ? t('adminReports.yes') : t('adminReports.no')}</p>
                           <p className="mt-1 text-xs text-slate-600">{t('adminReports.accountAge')}: {accountAgeLabel(reportContext?.reporter?.account_created_at)}</p>
                         </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.reportedSeller')}</p>
-                          <p className="mt-2 font-black text-slate-900">{sellerName || noContextLabel}</p>
-                          {reportContext?.seller && (
-                            <>
-                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.complaints')}: {reportContext.seller.complaint_count}</p>
-                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.rating')}: {reportContext.seller.average_rating == null ? t('adminReports.noRatings') : `${reportContext.seller.average_rating.toFixed(1)} / 5 (${reportContext.seller.rating_count})`}</p>
-                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.verified')}: {reportContext.seller.verified_student ? t('adminReports.yes') : t('adminReports.no')}</p>
-                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.accountAge')}: {accountAgeLabel(reportContext.seller.account_created_at)}</p>
-                              <p className="mt-1 text-xs text-slate-600">{t('adminReports.walletStatus')}: {reportContext.seller.wallet_status?.join(', ') || noContextLabel}</p>
-                            </>
-                          )}
-                        </div>
-                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.product')}</p>
-                          {productId && productTitle ? (
-                            <button
-                              type="button"
-                              onClick={() => onNavigate?.('product-details', { productId })}
-                              className="mt-2 text-left font-black text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900"
-                            >
-                              {productTitle}
-                            </button>
-                          ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
-                          {reportContext?.product?.owner_student_id && (
-                            <p className="mt-2 text-xs text-slate-600">
-                              Verified owner: {reportContext.product.owner_name || 'Unknown'} ({reportContext.product.owner_student_id})
-                            </p>
-                          )}
-                          <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.order')}</p>
-                          {reportContext?.order ? (
-                            <p className="mt-2 font-black text-slate-900">#{reportContext.order.id} · {reportContext.order.title}</p>
-                          ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
-                          {reportContext?.order?.paid_amount && <p className="mt-1 text-xs text-slate-600">{t('adminReports.paidAmount')}: {Number(reportContext.order.paid_amount).toFixed(2)} ETB</p>}
-                        </div>
+                        {!hasLinkedTargets ? (
+                          <p role="status" className="self-start rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900">
+                            ⚠️ Unlinked Report: Reporter did not specify a seller or order.
+                          </p>
+                        ) : (
+                          <>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                              <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.reportedSeller')}</p>
+                              <p className="mt-2 font-black text-slate-900">{sellerName || noContextLabel}</p>
+                              {reportContext?.seller && (
+                                <>
+                                  <p className="mt-1 text-xs text-slate-600">{t('adminReports.complaints')}: {reportContext.seller.complaint_count}</p>
+                                  <p className="mt-1 text-xs text-slate-600">{t('adminReports.rating')}: {reportContext.seller.average_rating == null ? t('adminReports.noRatings') : `${reportContext.seller.average_rating.toFixed(1)} / 5 (${reportContext.seller.rating_count})`}</p>
+                                  <p className="mt-1 text-xs text-slate-600">{t('adminReports.verified')}: {reportContext.seller.verified_student ? t('adminReports.yes') : t('adminReports.no')}</p>
+                                  <p className="mt-1 text-xs text-slate-600">{t('adminReports.accountAge')}: {accountAgeLabel(reportContext.seller.account_created_at)}</p>
+                                  <p className="mt-1 text-xs text-slate-600">{t('adminReports.walletStatus')}: {reportContext.seller.wallet_status?.join(', ') || noContextLabel}</p>
+                                </>
+                              )}
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                              <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.product')}</p>
+                              {productId && productTitle ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onNavigate?.('product-details', { productId })}
+                                  className="mt-2 text-left font-black text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900"
+                                >
+                                  {productTitle}
+                                </button>
+                              ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
+                              {reportContext?.product?.owner_student_id && (
+                                <p className="mt-2 text-xs text-slate-600">
+                                  Verified owner: {reportContext.product.owner_name || 'Unknown'} ({reportContext.product.owner_student_id})
+                                </p>
+                              )}
+                              <p className="mt-3 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">{t('adminReports.order')}</p>
+                              {reportContext?.order ? (
+                                <p className="mt-2 font-black text-slate-900">#{reportContext.order.id} · {reportContext.order.title}</p>
+                              ) : linkedOrderId ? (
+                                <p className="mt-2 font-black text-slate-900">#{linkedOrderId}</p>
+                              ) : <p className="mt-2 font-black text-slate-900">{noContextLabel}</p>}
+                              {reportContext?.order?.paid_amount && <p className="mt-1 text-xs text-slate-600">{t('adminReports.paidAmount')}: {Number(reportContext.order.paid_amount).toFixed(2)} ETB</p>}
+                            </div>
+                          </>
+                        )}
                       </div>
 
                       {reportContextLoading && <p role="status" className="text-sm font-semibold text-slate-500">{t('adminReports.loadingContext')}</p>}
@@ -6882,13 +6901,27 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                               })}
                             </select>
                           </div>
-                          <p className="text-xs font-medium text-slate-500">To refund a buyer, use the order&apos;s dispute.</p>
+                          {linkedOrderId && (
+                            <p className="text-xs font-medium text-slate-500">
+                              To refund a buyer, use the order&apos;s{' '}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  closeReportModal();
+                                  handleTabClick('disputes');
+                                }}
+                                className="font-bold text-sky-700 underline underline-offset-2 hover:text-sky-900"
+                              >
+                                dispute (order #{linkedOrderId})
+                              </button>
+                              .
+                            </p>
+                          )}
                           {!closedReport && (
-                            <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                              <div>
-                                <p className="text-sm font-bold text-slate-800">Link missing report targets</p>
-                                <p className="mt-1 text-xs text-slate-600">Search students by name, ID, or email; products by title or seller; and orders by ID, product, or buyer.</p>
-                              </div>
+                            <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                              <summary className="cursor-pointer text-sm font-bold text-slate-800">Link Targets (Optional)</summary>
+                              <div className="mt-3 space-y-3">
+                                <p className="text-xs text-slate-600">Search students by name, ID, or email; products by title or seller; and orders by ID, product, or buyer.</p>
                               <label className="block text-xs font-semibold text-slate-700" htmlFor="report-link-search">Search targets
                                 <input id="report-link-search" type="search" value={reportLinkSearch} onChange={(event) => setReportLinkSearch(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Name, student ID, email, product, or order ID" />
                               </label>
@@ -6994,8 +7027,9 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                                   </label>
                                 </div>
                               )}
-                              <button type="button" onClick={handleSaveReportLinks} disabled={reportLinksSaving || !Object.values(reportLinkSelection).some(Boolean) || !reportLinkConfirmed} className="rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50">{reportLinksSaving ? 'Saving links…' : 'Save links'}</button>
-                            </div>
+                              <button type="button" onClick={() => handleSaveReportLinks()} disabled={reportLinksSaving || !Object.values(reportLinkSelection).some(Boolean) || !reportLinkConfirmed} className="rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50">{reportLinksSaving ? 'Saving links…' : 'Save links'}</button>
+                              </div>
+                            </details>
                           )}
                           {reportDecision === 'escalate' && (
                             <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2">
@@ -7810,11 +7844,24 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   </div>
                 ) : (
                   displayedAuditLogs.map((log) => {
+                    const isFailedAuthLogin = log.event_type === 'AUTH_LOGIN_FAILED' || log.action === 'AUTH_LOGIN_FAILED';
+                    const isSuccessfulAuthLogin = ['ADMIN_LOGIN_SUCCESS', 'USER_LOGIN_SUCCESS'].includes(log.action);
                     const severityPresentation = {
                       INFO: { label: 'INFO', badge: 'bg-emerald-100 text-emerald-800 border border-emerald-200', marker: 'bg-emerald-500 ring-4 ring-emerald-100', icon: '✓' },
                       WARNING: { label: 'WARNING', badge: 'bg-amber-100 text-amber-800 border border-amber-200', marker: 'bg-amber-100 text-amber-700', icon: '⚠' },
                       CRITICAL: { label: 'CRITICAL', badge: 'bg-rose-100 text-rose-800 border border-rose-200', marker: 'bg-rose-100 text-rose-700', icon: '!' },
                     }[log.severity] || { label: 'INFO', badge: 'bg-emerald-100 text-emerald-800 border border-emerald-200', marker: 'bg-emerald-500 ring-4 ring-emerald-100', icon: '✓' };
+                    if (isFailedAuthLogin) {
+                      severityPresentation.label = 'LOGIN FAILED';
+                      severityPresentation.badge = 'bg-rose-100 text-rose-800 border border-rose-200';
+                      severityPresentation.marker = 'bg-rose-100 text-rose-700';
+                      severityPresentation.icon = '!';
+                    } else if (isSuccessfulAuthLogin) {
+                      severityPresentation.label = 'LOGIN SUCCESS';
+                      severityPresentation.badge = 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+                      severityPresentation.marker = 'bg-emerald-500 ring-4 ring-emerald-100';
+                      severityPresentation.icon = '✓';
+                    }
 
                     return (
                       <div key={log.id} className="rounded-[24px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
@@ -7832,7 +7879,13 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                               </div>
                               <p className="mt-2 text-base font-black text-slate-950">{log.action}</p>
                               <p className="mt-1 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">{log.event_type}</p>
-                              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{log.description}</p>
+                              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                                {isFailedAuthLogin
+                                  ? `Attempted: ${log.attempted_identifier || log.performed_by} · IP: ${log.ip_address}`
+                                  : isSuccessfulAuthLogin
+                                    ? `${log.performed_by} · ${log.actor_role}${log.actor_id !== null && log.actor_id !== undefined && String(log.actor_id).trim() ? ` · ${log.actor_id}` : ''} · IP: ${log.ip_address}`
+                                    : log.description}
+                              </p>
                             </div>
                           </div>
 

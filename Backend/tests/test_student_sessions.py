@@ -17,7 +17,7 @@ os.environ["SESSION_SECRET"] = "student-session-test-secret"
 
 from app import main as main_module
 from app.database import Base
-from app.models import Notification, Student, StudentSession, UserSession
+from app.models import AuditLog, Notification, Student, StudentSession, UserSession
 from app.password_security import hash_password
 
 
@@ -120,6 +120,46 @@ class StudentSessionTests(unittest.TestCase):
         notifications = self.db.query(Notification).filter_by(student_id=self.student.student_id).all()
         self.assertEqual(len(notifications), 2)
         self.assertTrue(all(notification.message.startswith("New login from ") for notification in notifications))
+
+    def test_successful_login_records_auth_audit_event(self):
+        self._login()
+
+        audit_log = self.db.query(AuditLog).filter_by(action="USER_LOGIN_SUCCESS").one()
+        self.assertEqual(audit_log.category, "AUTH")
+        self.assertEqual(audit_log.severity, "INFO")
+        self.assertEqual(audit_log.actor_role, "student")
+        self.assertEqual(audit_log.entity_type, "User Account")
+        self.assertEqual(audit_log.ip_address, "8.8.8.8")
+        self.assertEqual(audit_log.metadata_json["actor_name"], self.student.name)
+        self.assertEqual(audit_log.metadata_json["actor_id"], self.student.student_id)
+        self.assertEqual(audit_log.metadata_json["details"], {
+            "message": "Login successful via credentials",
+        })
+
+    def test_invalid_password_records_auth_failure_audit_event(self):
+        request = self._request("8.8.4.4", "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")
+
+        with self.assertRaises(HTTPException):
+            main_module.login_user(
+                main_module.LoginRequest(
+                    id_or_email=self.student.email,
+                    password="incorrect-password",
+                ),
+                request,
+                self.db,
+            )
+
+        audit_log = self.db.query(AuditLog).filter_by(action="AUTH_LOGIN_FAILED").one()
+        self.assertEqual(audit_log.category, "AUTH")
+        self.assertEqual(audit_log.severity, "WARNING")
+        self.assertEqual(audit_log.status, "FAILURE")
+        self.assertEqual(audit_log.actor_role, "student")
+        self.assertEqual(audit_log.ip_address, "8.8.4.4")
+        self.assertEqual(audit_log.metadata_json["actor_name"], self.student.email.lower())
+        self.assertEqual(audit_log.metadata_json["attempted_identifier"], self.student.email.lower())
+        self.assertEqual(audit_log.metadata_json["details"], {
+            "reason": "Invalid password or unverified account",
+        })
 
     def test_login_token_expiry_is_fixed_at_seven_days(self):
         started_at = datetime.now(timezone.utc)

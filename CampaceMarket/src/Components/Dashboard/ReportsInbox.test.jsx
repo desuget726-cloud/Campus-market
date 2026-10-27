@@ -5,7 +5,6 @@ import ReportsInbox from './ReportsInbox';
 const apiMocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
   apiGet: vi.fn(),
-  getStoredAccessToken: vi.fn(),
 }));
 
 vi.mock('../../api/apiClient', () => apiMocks);
@@ -15,7 +14,6 @@ beforeEach(() => {
     user: { studentId: 'reporter-1' },
   }));
   window.history.pushState({}, '', '/dashboard?item=support-1');
-  apiMocks.getStoredAccessToken.mockReturnValue('student-token');
   apiMocks.apiFetch.mockResolvedValue({});
   apiMocks.apiGet.mockImplementation((path) => {
     if (path === '/api/student/reports/participating') return Promise.resolve([]);
@@ -48,9 +46,15 @@ afterEach(() => {
 
 describe('ReportsInbox', () => {
   it('shows a not-found message for a deep-linked ticket and returns to the ticket list', async () => {
-    render(<ReportsInbox />);
+    render(<ReportsInbox accessToken="student-token" />);
 
     expect((await screen.findByRole('alert')).textContent).toContain('Ticket not found or not yours');
+    expect(apiMocks.apiGet).toHaveBeenCalledWith(
+      '/api/student/support/tickets',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer student-token' },
+      }),
+    );
     expect(apiMocks.apiGet.mock.calls.some(([path]) => (
       path === '/api/student/support/tickets/1'
     ))).toBe(true);

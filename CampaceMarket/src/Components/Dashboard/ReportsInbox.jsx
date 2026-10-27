@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { apiFetch, apiGet, getStoredAccessToken } from '../../api/apiClient';
+import { apiFetch, apiGet } from '../../api/apiClient';
 import { API_BASE_URL } from '../../config';
 import { getErrorMessage } from '../../utils/notify';
 
@@ -30,8 +30,8 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString();
 }
 
-function ReportsInbox({ onInvalidReportLink }) {
-  const token = getStoredAccessToken();
+function ReportsInbox({ accessToken, onInvalidReportLink }) {
+  const token = accessToken || '';
   const [reports, setReports] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [unreadKeys, setUnreadKeys] = useState(new Set());

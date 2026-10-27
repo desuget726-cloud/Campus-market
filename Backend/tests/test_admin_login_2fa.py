@@ -177,7 +177,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         self.assertEqual(self.db.query(AdminSession).count(), 1)
         self.assertEqual(self.db.query(AdminLoginHistory).count(), 1)
         self.assertEqual(
-            self.db.query(AuditLog).filter_by(action="Admin 2FA Login Succeeded").count(),
+            self.db.query(AuditLog).filter_by(action="ADMIN_LOGIN_SUCCESS").count(),
             1,
         )
 
@@ -268,7 +268,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         self.assertEqual(self.db.query(AdminLoginHistory).count(), 0)
         self.assertEqual(
             self.db.query(AuditLog).filter_by(
-                action="Admin 2FA Login Failed",
+                action="AUTH_LOGIN_FAILED",
                 status="FAILURE",
             ).count(),
             2,
@@ -291,12 +291,56 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         self.assertEqual(self.db.query(AdminLoginHistory).count(), 0)
         self.assertEqual(
             self.db.query(AuditLog).filter_by(
-                action="Admin 2FA Login Failed",
+                action="AUTH_LOGIN_FAILED",
                 status="FAILURE",
             ).count(),
             5,
         )
         self.assertTrue(self.db.query(AdminLoginChallenge).one().used)
+
+    def test_invalid_admin_password_records_auth_failure(self):
+        with patch.object(main_module, "verify_password", return_value=False):
+            response = self.client.post(
+                "/api/auth/login",
+                json={"id_or_email": self.admin.email, "password": "incorrect"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        audit_log = self.db.query(AuditLog).filter_by(action="AUTH_LOGIN_FAILED").one()
+        self.assertEqual(audit_log.category, "AUTH")
+        self.assertEqual(audit_log.severity, "WARNING")
+        self.assertEqual(audit_log.actor_role, "admin")
+        self.assertEqual(audit_log.metadata_json["actor_name"], self.admin.email.lower())
+        self.assertEqual(audit_log.metadata_json["attempted_identifier"], self.admin.email.lower())
+        self.assertEqual(audit_log.metadata_json["details"], {
+            "reason": "Invalid password or unverified account",
+        })
+
+    def test_admin_login_records_success_when_no_second_factor_is_required(self):
+        self.db.query(SystemSetting).filter_by(key="security").update({
+            "value": json.dumps({
+                "requireStudentVerification": True,
+                "admin2FA": False,
+                "maxLoginAttempts": 5,
+                "sessionTimeout": 30,
+                "minPasswordLength": 8,
+                "auditLogging": True,
+            }),
+        })
+        self.db.commit()
+
+        response = self.login()
+
+        self.assertEqual(response.status_code, 200, response.text)
+        audit_log = self.db.query(AuditLog).filter_by(action="ADMIN_LOGIN_SUCCESS").one()
+        self.assertEqual(audit_log.category, "AUTH")
+        self.assertEqual(audit_log.severity, "INFO")
+        self.assertEqual(audit_log.actor_role, "admin")
+        self.assertEqual(audit_log.metadata_json["actor_name"], self.admin.full_name)
+        self.assertEqual(audit_log.metadata_json["actor_id"], self.admin.id)
+        self.assertEqual(audit_log.metadata_json["details"], {
+            "message": "Login successful via credentials",
+        })
 
     def test_setup_displays_hashed_backup_codes_before_session_is_created(self):
         challenge_token = self.login().json()["challenge_token"]
