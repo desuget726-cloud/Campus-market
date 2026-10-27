@@ -323,3 +323,86 @@ describe('SellerOperationsCenter product pagination', () => {
     expect(fetchAnalytics).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('SellerOperationsCenter overview metrics', () => {
+  let scrollIntoView;
+
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/seller?tab=seller');
+    scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    vi.stubGlobal('fetch', vi.fn(async (url) => (
+      String(url).includes('/seller/products')
+        ? { ok: true, json: async () => createPageResponse(1, 0, 0) }
+        : createAnalyticsResponse()
+    )));
+  });
+
+  afterEach(() => {
+    delete HTMLElement.prototype.scrollIntoView;
+  });
+
+  it('renders all four metric cards as titled interactive buttons', () => {
+    renderProductManagement();
+
+    expect(screen.getByTitle('View your listings').tagName).toBe('BUTTON');
+    expect(screen.getByTitle('View received orders').tagName).toBe('BUTTON');
+    expect(screen.getByTitle('View revenue and analytics').tagName).toBe('BUTTON');
+    expect(screen.getByTitle('View legacy order records').tagName).toBe('BUTTON');
+    for (const title of [
+      'View your listings',
+      'View received orders',
+      'View revenue and analytics',
+      'View legacy order records',
+    ]) {
+      expect(screen.getByTitle(title).className).toContain('hover:-translate-y-0.5');
+      expect(screen.getByTitle(title).className).toContain('hover:border-blue-400');
+      expect(screen.getByTitle(title).className).toContain('hover:shadow-lg');
+      expect(screen.getByTitle(title).className).toContain('duration-200');
+      expect(screen.getByTitle(title).className).toContain('select-none');
+    }
+  });
+
+  it('opens inventory and smoothly scrolls to My Products', async () => {
+    const user = userEvent.setup();
+    renderProductManagement();
+
+    await user.click(screen.getByTitle('View your listings'));
+    expect(await screen.findByText('My Products')).toBeTruthy();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' }));
+    expect(scrollIntoView.mock.contexts[0].id).toBe('seller-products');
+  });
+
+  it('opens received orders and smoothly scrolls to the legacy order history', async () => {
+    const user = userEvent.setup();
+    renderProductManagement();
+
+    await user.click(screen.getByTitle('View received orders'));
+    expect(await screen.findByText('Historical Customer Orders')).toBeTruthy();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' }));
+    expect(scrollIntoView.mock.contexts[0].id).toBe('seller-orders');
+  });
+
+  it('opens analytics and smoothly scrolls to Sales Analytics', async () => {
+    const user = userEvent.setup();
+    renderProductManagement();
+
+    await user.click(screen.getByTitle('View revenue and analytics'));
+    expect(await screen.findByText('Sales Performance')).toBeTruthy();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' }));
+    expect(scrollIntoView.mock.contexts[0].id).toBe('seller-analytics');
+  });
+
+  it('opens historical records and smoothly scrolls to legacy orders', async () => {
+    const user = userEvent.setup();
+    renderProductManagement();
+
+    await user.click(screen.getByTitle('View legacy order records'));
+    expect(await screen.findByText('Historical Customer Orders')).toBeTruthy();
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' }));
+    expect(scrollIntoView.mock.contexts[0].id).toBe('seller-orders');
+  });
+});

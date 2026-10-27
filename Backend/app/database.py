@@ -1,9 +1,11 @@
 import os
 import logging
+import ssl
+from pathlib import Path
 from typing import Generator, Iterable, Optional
-from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
@@ -26,24 +28,48 @@ if not DATABASE_URL:
     ]
     if missing_variables:
         raise RuntimeError(
-            "Database configuration is missing. Set DATABASE_URL or Railway MySQL variables: "
+            "Database configuration is missing. Set DATABASE_URL or MySQL environment variables: "
             + ", ".join(missing_variables)
         )
-    DATABASE_URL = (
-        f"mysql+pymysql://{quote_plus(db_user)}:{quote_plus(db_password)}"
-        f"@{db_host}:{db_port}/{db_name}"
+    database_url = URL.create(
+        "mysql+pymysql",
+        username=db_user,
+        password=db_password,
+        host=db_host,
+        port=int(db_port),
+        database=db_name,
     )
+    DATABASE_URL = database_url.render_as_string(hide_password=False)
+else:
+    database_url = make_url(DATABASE_URL)
+
+if database_url.get_backend_name() == "mysql":
+    database_url = database_url.set(drivername="mysql+pymysql")
 
 
 # Create SQLAlchemy engine and session factory
-if DATABASE_URL.startswith("sqlite"):
+if database_url.get_backend_name() == "sqlite":
     sqlite_options = {"connect_args": {"check_same_thread": False}}
-    if DATABASE_URL in {"sqlite://", "sqlite:///:memory:"}:
+    if str(database_url) in {"sqlite://", "sqlite:///:memory:"}:
         sqlite_options["poolclass"] = StaticPool
-    engine = create_engine(DATABASE_URL, **sqlite_options)
+    engine = create_engine(database_url, **sqlite_options)
 else:
+    connect_args = {}
+    if database_url.get_backend_name() == "mysql":
+        ca_path = Path(__file__).resolve().parent / "ca.pem"
+        if not ca_path.is_file():
+            raise RuntimeError(
+                f"MySQL TLS CA certificate is missing: {ca_path}. "
+                "Deploy the Aiven CA certificate as Backend/app/ca.pem."
+            )
+        connect_args["ssl"] = {
+            "ca": str(ca_path),
+            "check_hostname": True,
+            "verify_mode": ssl.CERT_REQUIRED,
+        }
     engine = create_engine(
-        DATABASE_URL,
+        database_url,
+        connect_args=connect_args,
         pool_pre_ping=True,
         pool_size=20,
         max_overflow=10,
@@ -56,8 +82,9 @@ Base = declarative_base()
 def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency that yields a SQLAlchemy DB session.
 
-    Configure DB connection via the `DATABASE_URL` env var, or set
-    `DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT`/`DB_NAME` environment variables.
+    Configure DB connection via `DATABASE_URL` or `MYSQL_URL`, or set
+    `MYSQLUSER`/`MYSQLPASSWORD`/`MYSQLHOST`/`MYSQLPORT`/`MYSQLDATABASE`
+    or `DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT`/`DB_NAME` variables.
     """
     db = SessionLocal()
     try:
@@ -440,6 +467,7 @@ def init_db() -> None:
         missing_student_columns = {
             "pay_failed_attempts": "INT NOT NULL DEFAULT 0",
             "pay_locked_until": "DATETIME NULL",
+            "wallet_pin_hash": "VARCHAR(255) NULL",
         }
         for column_name, column_definition in missing_student_columns.items():
             if column_name not in student_columns:

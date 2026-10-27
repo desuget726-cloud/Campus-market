@@ -45,6 +45,7 @@ class Student(Base):
     college = Column(String(150), nullable=True)
     department = Column(String(150), nullable=True)
     wallet_balance = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    wallet_pin_hash = Column(String(255), nullable=True)
     pay_failed_attempts = Column(Integer, default=0, nullable=False)
     pay_locked_until = Column(DateTime, nullable=True)
     status = Column(String(50), default="Active", nullable=False)
@@ -64,6 +65,10 @@ class Student(Base):
     id_card_url = Column(String(500), nullable=True)
     avatar_url = Column(String(500), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    @property
+    def has_wallet_pin(self) -> bool:
+        return bool(self.wallet_pin_hash)
 
     # 1. ሬላሽንሺፖቹ በምን አምድ በኩል መገናኘት እንዳለባቸው በ "primaryjoin" በግልጽ አስቀምጠነዋል
     reports = relationship("Report", primaryjoin="Student.student_id == Report.student_id", back_populates="student")

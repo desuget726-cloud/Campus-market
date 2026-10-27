@@ -46,6 +46,7 @@ def market(monkeypatch, tmp_path):
             email="buyer@example.test",
             password=hash_password("correct-app-password"),
             has_password=True,
+            wallet_pin_hash=hash_password("1234"),
             wallet_balance=Decimal("500.00"),
             is_verified=True,
         )
@@ -125,11 +126,11 @@ def _headers(user="buyer-1", key=None):
     return headers
 
 
-def _pay(client, product_id, *, password="correct-app-password", quantity=1, key="payment-key-001"):
+def _pay(client, product_id, *, pin="1234", quantity=1, key="payment-key-001"):
     return client.post(
         f"/api/products/{product_id}/pay",
         headers=_headers(key=key),
-        json={"password": password, "quantity": quantity},
+        json={"pin": pin, "quantity": quantity},
     )
 
 
@@ -155,7 +156,7 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
     assert summary.json()["quantity_limit"] == 3
     assert summary.json()["seller_name"] == "Seller"
     assert summary.json()["wallet_balance"] == "500.00"
-    assert summary.json()["needs_password_setup"] is False
+    assert summary.json()["has_wallet_pin"] is True
     assert _snapshot(session_factory)["orders"] == 0
 
     response = _pay(client, product_id, quantity=2)
@@ -229,10 +230,10 @@ def test_wallet_payment_requires_product_in_buyer_cart(market):
     assert snapshot["transactions"] == 0
 
 
-def test_password_failures_are_committed_and_lock_even_correct_password(market):
+def test_pin_failures_are_committed_and_lock_even_correct_pin(market):
     client, session_factory, product_id = market
     responses = [
-        _pay(client, product_id, password="not-the-password", key=f"wrong-key-{i:02d}")
+        _pay(client, product_id, pin="0000", key=f"wrong-key-{i:02d}")
         for i in range(5)
     ]
     assert [response.status_code for response in responses] == [401, 401, 401, 401, 423]
@@ -246,11 +247,11 @@ def test_password_failures_are_committed_and_lock_even_correct_password(market):
         assert buyer.pay_failed_attempts == 5
         assert buyer.pay_locked_until is not None
         logs = db.query(AuditLog).filter(
-            AuditLog.action.in_(["payment_password_failed", "payment_locked"]),
+            AuditLog.action.in_(["payment_pin_failed", "payment_locked"]),
         ).all()
         assert len(logs) == 5
-        assert all("not-the-password" not in (log.description or "") for log in logs)
-        assert "not-the-password" not in json.dumps([response.json() for response in responses])
+        assert all("0000" not in (log.description or "") for log in logs)
+        assert "0000" not in json.dumps([response.json() for response in responses])
 
         buyer.pay_locked_until = datetime.utcnow() - timedelta(seconds=1)
         db.commit()
@@ -259,35 +260,63 @@ def test_password_failures_are_committed_and_lock_even_correct_password(market):
     assert success.status_code == 200, success.text
 
 
-def test_google_only_buyer_must_set_password_before_payment(market):
+def test_google_only_buyer_can_set_wallet_pin_without_an_app_password(market):
     client, session_factory, product_id = market
     with session_factory() as db:
         buyer = db.query(Student).filter_by(student_id="buyer-1").one()
         buyer.has_password = False
         buyer.password = ""
+        buyer.wallet_pin_hash = None
         db.commit()
 
     response = _pay(client, product_id)
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PASSWORD_NOT_SET"
-    assert response.json()["detail"]["action"] == "set_password"
-    assert "Settings > Security" in response.json()["detail"]["message"]
+    assert response.json()["detail"]["code"] == "PIN_NOT_SET"
+    assert response.json()["detail"]["action"] == "set_pin"
     assert _snapshot(session_factory)["orders"] == 0
 
-    password_update = client.put(
-        "/api/student/profile/password",
+    setup_response = client.post(
+        "/api/wallet/set-pin",
         headers=_headers(),
-        json={
-            "new_password": "new-app-password",
-            "confirm_password": "new-app-password",
-        },
+        json={"pin": "2468"},
     )
-    assert password_update.status_code == 200, password_update.text
+    assert setup_response.status_code == 200, setup_response.text
+    assert setup_response.json()["has_wallet_pin"] is True
     with session_factory() as db:
         buyer = db.query(Student).filter_by(student_id="buyer-1").one()
-        assert buyer.has_password is True
-        assert verify_password("new-app-password", buyer.password)
-    assert _pay(client, product_id, password="new-app-password").status_code == 200
+        assert buyer.has_password is False
+        assert buyer.wallet_pin_hash != "2468"
+        assert verify_password("2468", buyer.wallet_pin_hash)
+    assert _pay(client, product_id, pin="2468").status_code == 200
+
+
+def test_wallet_pin_change_requires_current_pin_and_validates_four_digits(market):
+    client, session_factory, product_id = market
+    missing_current_pin = client.post(
+        "/api/wallet/set-pin",
+        headers=_headers(),
+        json={"pin": "5678"},
+    )
+    assert missing_current_pin.status_code == 401
+    assert missing_current_pin.json()["detail"]["code"] == "INCORRECT_PIN"
+
+    changed = client.post(
+        "/api/wallet/set-pin",
+        headers=_headers(),
+        json={"current_pin": "1234", "pin": "5678"},
+    )
+    assert changed.status_code == 200, changed.text
+    assert _pay(client, product_id, pin="5678").status_code == 200
+
+    invalid_pin = client.post(
+        "/api/wallet/set-pin",
+        headers=_headers(),
+        json={"pin": "12a4"},
+    )
+    assert invalid_pin.status_code == 422
+    with session_factory() as db:
+        buyer = db.query(Student).filter_by(student_id="buyer-1").one()
+        assert verify_password("5678", buyer.wallet_pin_hash)
 
 
 def test_same_idempotency_key_returns_same_order_and_different_product_conflicts(market):

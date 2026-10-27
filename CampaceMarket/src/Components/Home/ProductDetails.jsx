@@ -134,7 +134,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const [offerAmount, setOfferAmount] = useState('');
   const [showPayModal, setShowPayModal] = useState(false);
   const [paySummary, setPaySummary] = useState(null);
-  const [payPassword, setPayPassword] = useState('');
+  const [payPin, setPayPin] = useState('');
+  const [setupPin, setSetupPin] = useState('');
+  const [confirmSetupPin, setConfirmSetupPin] = useState('');
+  const [pinSetupSaving, setPinSetupSaving] = useState(false);
   const [payError, setPayError] = useState('');
   const [payMissingAmount, setPayMissingAmount] = useState('');
   const [payAttemptsLeft, setPayAttemptsLeft] = useState(null);
@@ -541,7 +544,9 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     }
     setPayResult(null);
     setPaySummary(null);
-    setPayPassword('');
+    setPayPin('');
+    setSetupPin('');
+    setConfirmSetupPin('');
     setPayError('');
     setPayMissingAmount('');
     setShowPayModal(true);
@@ -554,7 +559,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
   const submitProductPayment = async (event) => {
     event.preventDefault();
-    if (!payPassword || payLoading || paySummary?.needs_password_setup) return;
+    if (!/^\d{4}$/.test(payPin) || payLoading || !paySummary?.has_wallet_pin) return;
     setPayLoading(true);
     setPayError('');
     setPayMissingAmount('');
@@ -585,7 +590,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
           'Idempotency-Key': requestKey,
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ password: payPassword, quantity: selectedQuantity }),
+        body: JSON.stringify({ pin: payPin, quantity: selectedQuantity }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -593,11 +598,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         if (response.status >= 400 && response.status < 500) {
           clearPaymentAttempt();
         }
-        if (detail?.code === 'PASSWORD_NOT_SET') {
+        if (detail?.code === 'PIN_NOT_SET') {
           setPaySummary((current) => ({
             ...current,
-            needs_password_setup: true,
-            setup_message: detail.message,
+            has_wallet_pin: false,
           }));
         }
         if (detail?.code === 'INSUFFICIENT_BALANCE') setPayMissingAmount(detail.missing || '');
@@ -607,13 +611,43 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         return;
       }
       setPayResult(data);
-      setPayPassword('');
+      setPayPin('');
       clearPaymentAttempt();
       await refreshPaySummary().catch(() => {});
     } catch (error) {
       setPayError(error.message || 'Connection error. Retry this payment to safely check its status.');
     } finally {
       setPayLoading(false);
+    }
+  };
+
+  const submitWalletPinSetup = async (event) => {
+    event.preventDefault();
+    if (!/^\d{4}$/.test(setupPin) || setupPin !== confirmSetupPin || pinSetupSaving) return;
+    setPinSetupSaving(true);
+    setPayError('');
+    try {
+      const token = getStudentAccessToken(currentUser);
+      const response = await fetch(`${API_BASE_URL}/api/wallet/set-pin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ pin: setupPin }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to set up your Wallet PIN.');
+      }
+      setPaySummary((current) => ({ ...current, has_wallet_pin: true }));
+      setSetupPin('');
+      setConfirmSetupPin('');
+    } catch (error) {
+      setPayError(error.message || 'Unable to set up your Wallet PIN.');
+    } finally {
+      setPinSetupSaving(false);
     }
   };
 
@@ -1502,18 +1536,8 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                     <div className="flex justify-between gap-4"><dt className="text-slate-500">Wallet balance</dt><dd className="font-bold text-slate-900">{paySummary.wallet_balance} ETB</dd></div>
                   </dl>
                 )}
-                {paySummary?.needs_password_setup && (
-                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                    <p className="text-sm font-semibold text-amber-900">{paySummary.setup_message}</p>
-                    <button type="button" onClick={() => {
-                      window.sessionStorage.setItem('campusmarket:settings-tab', 'security');
-                      setShowPayModal(false);
-                      onNavigate?.('student-dashboard', { tab: 'settings' });
-                    }} className="mt-3 rounded-full bg-amber-700 px-4 py-2 text-sm font-bold text-white hover:bg-amber-800">Go to Settings &gt; Security</button>
-                  </div>
-                )}
                 {payError && <p role="alert" className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{payError}</p>}
-                {payAttemptsLeft !== null && <p className="mt-2 text-sm font-bold text-rose-700">{payAttemptsLeft} password attempt{payAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
+                {payAttemptsLeft !== null && <p className="mt-2 text-sm font-bold text-rose-700">{payAttemptsLeft} PIN attempt{payAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
                 {payRetryAfterSeconds !== null && <p className="mt-2 text-sm font-bold text-rose-700">Try again in {Math.ceil(payRetryAfterSeconds / 60)} minute{Math.ceil(payRetryAfterSeconds / 60) === 1 ? '' : 's'}.</p>}
                 {payMissingAmount && (
                   <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
@@ -1523,11 +1547,22 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   </div>
                 )}
                 {!paySummary && <p className="mt-5 text-sm text-slate-500">Loading payment summary…</p>}
-                {paySummary && !paySummary.needs_password_setup && (
+                {paySummary && !paySummary.has_wallet_pin && (
+                  <form onSubmit={submitWalletPinSetup} className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <h3 className="font-bold text-amber-950">Set up a 4-digit Wallet PIN to secure your wallet transactions</h3>
+                    <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-setup">Choose a 4-digit PIN</label>
+                    <input id="wallet-pin-setup" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={setupPin} onChange={(event) => setSetupPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={pinSetupSaving} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
+                    <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-confirm">Confirm your Wallet PIN</label>
+                    <input id="wallet-pin-confirm" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={confirmSetupPin} onChange={(event) => setConfirmSetupPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={pinSetupSaving} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
+                    {setupPin && confirmSetupPin && setupPin !== confirmSetupPin && <p role="alert" className="text-sm font-semibold text-rose-700">PINs do not match.</p>}
+                    <button type="submit" disabled={pinSetupSaving || setupPin.length !== 4 || setupPin !== confirmSetupPin} className="w-full rounded-full bg-amber-700 py-3.5 text-sm font-black text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50">{pinSetupSaving ? 'Saving PIN…' : 'Set Wallet PIN'}</button>
+                  </form>
+                )}
+                {paySummary?.has_wallet_pin && (
                   <form onSubmit={submitProductPayment} className="mt-5 space-y-4">
-                    <label className="block text-sm font-bold text-slate-700" htmlFor="wallet-payment-password">Your app login password</label>
-                    <input id="wallet-payment-password" type="password" autoComplete="current-password" value={payPassword} onChange={(event) => setPayPassword(event.target.value)} required disabled={payLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
-                    <button type="submit" disabled={payLoading || !payPassword} className="w-full rounded-full bg-emerald-600 py-3.5 text-sm font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{payLoading ? 'Processing payment…' : `Pay ${paySummary.total} ETB`}</button>
+                    <label className="block text-sm font-bold text-slate-700" htmlFor="wallet-payment-pin">Enter your 4-digit Wallet PIN</label>
+                    <input id="wallet-payment-pin" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={payPin} onChange={(event) => setPayPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={payLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
+                    <button type="submit" disabled={payLoading || payPin.length !== 4} className="w-full rounded-full bg-emerald-600 py-3.5 text-sm font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{payLoading ? 'Processing payment…' : `Pay ${paySummary.total} ETB`}</button>
                   </form>
                 )}
               </>

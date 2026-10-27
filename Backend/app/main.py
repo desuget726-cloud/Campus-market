@@ -2240,9 +2240,33 @@ class WalletWithdrawalRequest(BaseModel):
 
 
 class ProductPaymentRequest(BaseModel):
-    password: SecretStr
+    pin: SecretStr
     quantity: int = Field(ge=1, strict=True)
 
+    @field_validator("pin")
+    @classmethod
+    def validate_pin(cls, value: SecretStr) -> SecretStr:
+        pin = value.get_secret_value()
+        if len(pin) != 4 or not pin.isascii() or not pin.isdigit():
+            raise ValueError("Wallet PIN must contain exactly four digits.")
+        return value
+
+
+class WalletPinSetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pin: SecretStr
+    current_pin: Optional[SecretStr] = None
+
+    @field_validator("pin", "current_pin")
+    @classmethod
+    def validate_pin(cls, value: Optional[SecretStr]) -> Optional[SecretStr]:
+        if value is None:
+            return value
+        pin = value.get_secret_value()
+        if len(pin) != 4 or not pin.isascii() or not pin.isdigit():
+            raise ValueError("Wallet PIN must contain exactly four digits.")
+        return value
 
 
 
@@ -4013,6 +4037,9 @@ async def on_startup():
         print(smtp_warning)
         smtp_logger.warning(smtp_warning)
     try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1")).scalar_one()
+        startup_logger.info("Database connectivity test succeeded.")
         init_db()
         db = SessionLocal()
         try:
@@ -13951,18 +13978,9 @@ def delete_cart_item(item_id: int, db: Session = Depends(get_db)):
 
 
 
-def _payment_password_matches(student: Student, password: str) -> bool:
-    if not bool(getattr(student, "has_password", True)):
-        return False
-    stored_hash = str(student.password or "")
-    if stored_hash.startswith(("$2a$", "$2b$", "$2y$")):
-        return verify_password(password, stored_hash)
-    if stored_hash.startswith("$argon2"):
-        try:
-            return PasswordHasher().verify(stored_hash, password)
-        except (InvalidHashError, VerifyMismatchError, TypeError, ValueError):
-            return False
-    return False
+def _wallet_pin_matches(student: Student, pin: str) -> bool:
+    stored_hash = str(student.wallet_pin_hash or "")
+    return bool(stored_hash) and verify_password(pin, stored_hash)
 
 
 def _payment_product_seller(db: Session, product: Product) -> Optional[Student]:
@@ -14002,7 +14020,7 @@ def _payment_result(order: Order, *, already_paid: bool) -> dict:
     }
 
 
-def _audit_payment_password_failure(
+def _audit_wallet_pin_failure(
     db: Session,
     student: Student,
     request: Request,
@@ -14011,17 +14029,86 @@ def _audit_payment_password_failure(
 ) -> None:
     db.add(AuditLog(
         admin_id=None,
-        action="payment_locked" if locked else "payment_password_failed",
+        action="payment_locked" if locked else "payment_pin_failed",
         entity_type="Student",
         entity_id=student.id,
         description=(
-            "Payment password attempts reached the lockout limit."
-            if locked else "A payment password verification failed."
+            "Wallet PIN attempts reached the lockout limit."
+            if locked else "A wallet PIN verification failed."
         ),
         status="FAILURE",
         severity="warning" if locked else "informational",
         ip_address=request.client.host if request.client else None,
     ))
+
+
+def _wallet_pin_lock_detail(retry_after_seconds: int) -> dict:
+    return {
+        "code": "PAYMENTS_LOCKED",
+        "message": "Wallet payments are locked after too many incorrect PIN attempts.",
+        "retry_after_seconds": retry_after_seconds,
+    }
+
+
+@app.get("/api/wallet/pin-status")
+def get_wallet_pin_status(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    return {"has_wallet_pin": student.has_wallet_pin}
+
+
+@app.post("/api/wallet/set-pin")
+def set_wallet_pin(
+    payload: WalletPinSetRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    _require_verified_student(student, db, "setting up a wallet PIN")
+    locked_student = db.query(Student).filter(
+        Student.student_id == student.student_id,
+    ).with_for_update().first()
+    if not locked_student:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if locked_student.pay_locked_until and locked_student.pay_locked_until > now:
+        retry_after_seconds = max(1, int((locked_student.pay_locked_until - now).total_seconds()))
+        db.rollback()
+        raise HTTPException(status_code=423, detail=_wallet_pin_lock_detail(retry_after_seconds))
+    if locked_student.pay_locked_until and locked_student.pay_locked_until <= now:
+        locked_student.pay_failed_attempts = 0
+        locked_student.pay_locked_until = None
+
+    if locked_student.has_wallet_pin:
+        current_pin = payload.current_pin.get_secret_value() if payload.current_pin else ""
+        if not current_pin or not _wallet_pin_matches(locked_student, current_pin):
+            locked_student.pay_failed_attempts = int(locked_student.pay_failed_attempts or 0) + 1
+            attempts_left = max(0, get_pay_max_failed_attempts() - locked_student.pay_failed_attempts)
+            should_lock = attempts_left == 0
+            if should_lock:
+                locked_student.pay_locked_until = now + timedelta(minutes=get_pay_lock_minutes())
+            _audit_wallet_pin_failure(db, locked_student, request, locked=should_lock)
+            db.commit()
+            if should_lock:
+                raise HTTPException(
+                    status_code=423,
+                    detail=_wallet_pin_lock_detail(get_pay_lock_minutes() * 60),
+                )
+            raise HTTPException(status_code=401, detail={
+                "code": "INCORRECT_PIN",
+                "message": "Current wallet PIN is incorrect.",
+                "attempts_left": attempts_left,
+            })
+
+    locked_student.wallet_pin_hash = hash_password(payload.pin.get_secret_value())
+    locked_student.pay_failed_attempts = 0
+    locked_student.pay_locked_until = None
+    db.commit()
+    return {"has_wallet_pin": True, "message": "Wallet PIN saved successfully."}
 
 
 @app.get("/api/products/{product_id}/pay-summary")
@@ -14054,7 +14141,6 @@ def get_product_pay_summary(
     unit_price = _validated_payment_unit_price(product.price)
     wallet = db.query(Wallet).filter(Wallet.student_id == buyer.student_id).first()
     balance = Decimal(str(wallet.balance if wallet else buyer.wallet_balance or 0)).quantize(Decimal("0.01"))
-    needs_password_setup = not bool(getattr(buyer, "has_password", True)) or not bool(str(buyer.password or "").strip())
     return {
         "product_id": product.id,
         "title": product.title,
@@ -14066,11 +14152,7 @@ def get_product_pay_summary(
         "total": str((unit_price * quantity).quantize(Decimal("0.01"))),
         "seller_name": seller.name,
         "wallet_balance": str(balance),
-        "needs_password_setup": needs_password_setup,
-        "setup_message": (
-            "Set an app password in Settings > Security before paying. Google-only accounts need an app password to use wallet payments."
-            if needs_password_setup else None
-        ),
+        "has_wallet_pin": buyer.has_wallet_pin,
     }
 
 
@@ -14118,7 +14200,7 @@ def pay_for_product(
         if order:
             return _payment_result(order, already_paid=True)
 
-    # Password attempts are committed independently so failed-attempt counters
+    # PIN attempts are committed independently so failed-attempt counters
     # cannot be erased by a later rollback in the wallet transaction.
     try:
         locked_buyer = db.query(Student).filter(
@@ -14134,33 +14216,33 @@ def pay_for_product(
                 status_code=423,
                 detail={
                     "code": "PAYMENTS_LOCKED",
-                    "message": "Payments are locked after too many incorrect password attempts.",
+                    "message": "Wallet payments are locked after too many incorrect PIN attempts.",
                     "retry_after_seconds": retry_after_seconds,
                 },
             )
-        if not bool(locked_buyer.has_password) or not str(locked_buyer.password or "").strip():
+        if not locked_buyer.has_wallet_pin:
             db.rollback()
             raise HTTPException(status_code=409, detail={
-                "code": "PASSWORD_NOT_SET",
-                "message": "Set an app password in Settings > Security before paying. Google-only accounts need an app password to use wallet payments.",
-                "action": "set_password",
+                "code": "PIN_NOT_SET",
+                "message": "Set up a 4-digit Wallet PIN before paying.",
+                "action": "set_pin",
             })
         if locked_buyer.pay_locked_until and locked_buyer.pay_locked_until <= now:
             locked_buyer.pay_failed_attempts = 0
             locked_buyer.pay_locked_until = None
-        if not _payment_password_matches(locked_buyer, payload.password.get_secret_value()):
+        if not _wallet_pin_matches(locked_buyer, payload.pin.get_secret_value()):
             locked_buyer.pay_failed_attempts = int(locked_buyer.pay_failed_attempts or 0) + 1
             attempts_left = max(0, get_pay_max_failed_attempts() - locked_buyer.pay_failed_attempts)
             should_lock = attempts_left == 0
             if should_lock:
                 locked_buyer.pay_locked_until = now + timedelta(minutes=get_pay_lock_minutes())
-            _audit_payment_password_failure(db, locked_buyer, request, locked=should_lock)
+            _audit_wallet_pin_failure(db, locked_buyer, request, locked=should_lock)
             if should_lock:
                 _add_student_notification(
                     db,
                     locked_buyer,
                     "Payments temporarily locked",
-                    f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect password attempts.",
+                    f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
                     "payment",
                 )
             db.commit()
@@ -14168,20 +14250,20 @@ def pay_for_product(
                 _send_student_notification_email(
                     locked_buyer,
                     "Payments temporarily locked",
-                    f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect password attempts.",
+                    f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
                     "payment",
                 )
                 raise HTTPException(
                     status_code=423,
                     detail={
                         "code": "PAYMENTS_LOCKED",
-                        "message": f"Payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect password attempts.",
+                        "message": f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
                         "retry_after_seconds": get_pay_lock_minutes() * 60,
                     },
                 )
             raise HTTPException(status_code=401, detail={
-                "code": "INCORRECT_PASSWORD",
-                "message": "Incorrect app password.",
+                "code": "INCORRECT_PIN",
+                "message": "Incorrect wallet PIN.",
                 "attempts_left": attempts_left,
             })
         locked_buyer.pay_failed_attempts = 0

@@ -5300,23 +5300,6 @@ function StudentDashboard({
                                 </div>
                               )}
 
-                              {isDisputeEligibleOrder(order) && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedOrder(order);
-                                    setDisputeOrderId(order.id);
-                                    setDisputeReason('');
-                                    setDisputeDescription('');
-                                    setDisputeFeedback('');
-                                  }}
-                                  className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
-                                >
-                                  Report a problem
-                                </button>
-                              )}
-
-
                               {orderStatus === 'Completed' && (
                                 <div className="mt-6 rounded-[24px] border border-emerald-200 bg-emerald-50 p-4">
                                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

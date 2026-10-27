@@ -446,6 +446,12 @@ function SellerOperationsCenter({
     }
     onTabNavigate?.(target, payload);
   };
+  const navigateToSellerSection = (view, sectionId) => {
+    dispatchHubView({ type: view });
+    window.setTimeout(() => {
+      document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth" });
+    }, 0);
+  };
   const handleOpenProduct = (productId) => {
     onNavigate("product-details", { productId, returnTo: "seller-hub" });
   };
@@ -743,14 +749,43 @@ function SellerOperationsCenter({
             "text-rose-600",
           ],
         ].map(([label, value, detail, icon, tone]) => {
-          const isListingsCard = label === 'My Listings';
-          const StatCard = isListingsCard ? 'button' : 'div';
+          const cardNavigation = {
+            "My Listings": {
+              title: "View your listings",
+              onClick: () => navigateToSellerSection(
+                "open-product-management",
+                "seller-products",
+              ),
+            },
+            "Received Orders": {
+              title: "View received orders",
+              onClick: () => navigateToSellerSection(
+                "open-operations",
+                "seller-orders",
+              ),
+            },
+            "Total Revenue": {
+              title: "View revenue and analytics",
+              onClick: () => navigateToSellerSection(
+                "open-operations",
+                "seller-analytics",
+              ),
+            },
+            "Legacy Orders": {
+              title: "View legacy order records",
+              onClick: () => navigateToSellerSection(
+                "open-operations",
+                "seller-orders",
+              ),
+            },
+          }[label];
           return (
-            <StatCard
+            <button
               key={label}
-              type={isListingsCard ? 'button' : undefined}
-              onClick={isListingsCard ? () => dispatchHubView({ type: 'open-product-management' }) : undefined}
-              className="rounded-[24px] border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-1 hover:shadow-md"
+              type="button"
+              onClick={cardNavigation.onClick}
+              title={cardNavigation.title}
+              className="cursor-pointer select-none rounded-[24px] border border-slate-200 bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-blue-400 hover:shadow-lg"
             >
               <div className="flex items-start justify-between">
                 <div>
@@ -764,7 +799,7 @@ function SellerOperationsCenter({
                 </div>
                 <span className={`text-2xl ${tone}`}>{icon}</span>
               </div>
-            </StatCard>
+            </button>
           );
         })}
       </div>}
@@ -800,7 +835,7 @@ function SellerOperationsCenter({
               + Add Product
             </button>
           </div>
-          <section className="min-w-0 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+          <section id="seller-products" className="min-w-0 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">

@@ -119,6 +119,11 @@ function SettingsCenter({
     const [securityMessage, setSecurityMessage] = useState('');
     const [securityError, setSecurityError] = useState('');
     const [securitySaving, setSecuritySaving] = useState(false);
+    const [hasWalletPin, setHasWalletPin] = useState(null);
+    const [walletPinForm, setWalletPinForm] = useState({ currentPin: '', pin: '', confirmPin: '' });
+    const [walletPinMessage, setWalletPinMessage] = useState('');
+    const [walletPinError, setWalletPinError] = useState('');
+    const [walletPinSaving, setWalletPinSaving] = useState(false);
     const [showConfirmPasswordModal, setShowConfirmPasswordModal] = useState(false);
     const [confirmPassword, setConfirmPassword] = useState('');
     const [confirmPasswordError, setConfirmPasswordError] = useState('');
@@ -520,6 +525,48 @@ function SettingsCenter({
             );
         }
         if (settingsTab === 'security') {
+            const handleWalletPinSubmit = async (event) => {
+                event.preventDefault();
+                setWalletPinMessage('');
+                setWalletPinError('');
+                if (!/^\d{4}$/.test(walletPinForm.pin) || walletPinForm.pin !== walletPinForm.confirmPin) {
+                    setWalletPinError('Enter and confirm the same 4-digit Wallet PIN.');
+                    return;
+                }
+                if (hasWalletPin && !/^\d{4}$/.test(walletPinForm.currentPin)) {
+                    setWalletPinError('Enter your current 4-digit Wallet PIN.');
+                    return;
+                }
+
+                setWalletPinSaving(true);
+                try {
+                    const token = getStudentSessionToken();
+                    const response = await fetch(`${API_BASE_URL}/api/wallet/set-pin`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                        },
+                        body: JSON.stringify({
+                            pin: walletPinForm.pin,
+                            ...(hasWalletPin ? { current_pin: walletPinForm.currentPin } : {}),
+                        }),
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        const detail = data?.detail;
+                        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to save Wallet PIN.');
+                    }
+                    setHasWalletPin(true);
+                    setWalletPinForm({ currentPin: '', pin: '', confirmPin: '' });
+                    setWalletPinMessage(hasWalletPin ? 'Wallet PIN changed successfully.' : 'Wallet PIN set up successfully.');
+                } catch (error) {
+                    setWalletPinError(error.message || 'Unable to save Wallet PIN.');
+                } finally {
+                    setWalletPinSaving(false);
+                }
+            };
+
             const handlePasswordSubmit = async (event) => {
                 event.preventDefault();
                 setSecurityMessage('');
@@ -663,7 +710,7 @@ function SettingsCenter({
                     <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
                         <form onSubmit={handlePasswordSubmit} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                             <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Password</p>
-                            <p className="mt-2 text-sm leading-6 text-slate-600">Google-only accounts do not have an app password yet. Create one here before paying at handover. If you already have an app password, enter it below to change it.</p>
+                            <p className="mt-2 text-sm leading-6 text-slate-600">Use a Wallet PIN—not your login password—to authorize wallet payments at handover. Google-only accounts can set a Wallet PIN without creating an app password.</p>
                             <div className="mt-4 space-y-4">
                                 <Field label="Current Password (if already set)">
                                     <input type="password" value={securityForm.currentPassword} onChange={(event) => setSecurityForm((previous) => ({ ...previous, currentPassword: event.target.value }))} className={inputClass} placeholder="Enter current password" />
@@ -683,6 +730,26 @@ function SettingsCenter({
                         </form>
 
                         <div className="space-y-4">
+                            <form onSubmit={handleWalletPinSubmit} className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
+                                <h3 className="text-sm font-black text-sky-950">{hasWalletPin ? 'Change Wallet PIN' : 'Set up Wallet PIN'}</h3>
+                                {hasWalletPin === null && <p role="status" className="mt-2 text-sm text-sky-800">Checking Wallet PIN status…</p>}
+                                {hasWalletPin && (
+                                    <Field label="Current 4-digit Wallet PIN">
+                                        <input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={walletPinForm.currentPin} onChange={(event) => setWalletPinForm((previous) => ({ ...previous, currentPin: event.target.value.replace(/\D/g, '').slice(0, 4) }))} className={inputClass} />
+                                    </Field>
+                                )}
+                                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                    <Field label="New 4-digit Wallet PIN">
+                                        <input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={walletPinForm.pin} onChange={(event) => setWalletPinForm((previous) => ({ ...previous, pin: event.target.value.replace(/\D/g, '').slice(0, 4) }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="Confirm Wallet PIN">
+                                        <input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={walletPinForm.confirmPin} onChange={(event) => setWalletPinForm((previous) => ({ ...previous, confirmPin: event.target.value.replace(/\D/g, '').slice(0, 4) }))} className={inputClass} />
+                                    </Field>
+                                </div>
+                                <button type="submit" disabled={walletPinSaving || hasWalletPin === null || walletPinForm.pin.length !== 4 || walletPinForm.pin !== walletPinForm.confirmPin || (hasWalletPin && walletPinForm.currentPin.length !== 4)} className="mt-4 rounded-full bg-sky-700 px-5 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{walletPinSaving ? 'Saving PIN…' : hasWalletPin ? 'Change Wallet PIN' : 'Set Wallet PIN'}</button>
+                                {walletPinMessage && <p role="status" className="mt-3 text-sm font-semibold text-emerald-700">{walletPinMessage}</p>}
+                                {walletPinError && <p role="alert" className="mt-3 text-sm font-semibold text-rose-700">{walletPinError}</p>}
+                            </form>
                             <Toggle label="Two-Factor Authentication" checked={twoFactor} onChange={handle2FAToggle} />
                             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
                                 <div className="flex items-center justify-between gap-3">
@@ -906,6 +973,27 @@ function SettingsCenter({
             loadActiveSessions();
         }
     }, [settingsTab, user, loadSessionInfo, loadActiveSessions]);
+
+    useEffect(() => {
+        if (settingsTab !== 'security') return undefined;
+        let active = true;
+        const token = getStudentSessionToken();
+        fetch(`${API_BASE_URL}/api/wallet/pin-status`, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+            .then(async (response) => {
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    const detail = data?.detail;
+                    throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to check Wallet PIN status.');
+                }
+                if (active) setHasWalletPin(Boolean(data.has_wallet_pin));
+            })
+            .catch((error) => {
+                if (active) setWalletPinError(error.message || 'Unable to check Wallet PIN status.');
+            });
+        return () => { active = false; };
+    }, [settingsTab, user, getStudentSessionToken]);
 
     return (
         <div data-dashboard-view="settings" className="min-h-screen w-full min-w-0 max-w-none bg-slate-50 px-0 pb-10 pt-16 text-slate-900 lg:pt-10">
