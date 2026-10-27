@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { LockKeyhole, LogOut, Monitor, Smartphone, Tablet } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
 import { notifyError, notifySuccess } from '../../utils/notify';
+import { formatSessionTimestamp } from '../../utils/sessionTimestamp';
 import PayoutAccountPanel from './PayoutAccountPanel';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 
@@ -68,24 +69,6 @@ const Field = ({ label, children }) => (
         {children}
     </label>
 );
-
-const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-const formatRelativeTime = (value) => {
-    if (!value) return 'Unavailable';
-    const timestamp = new Date(value).getTime();
-    if (Number.isNaN(timestamp)) return 'Unavailable';
-    const seconds = Math.round((timestamp - Date.now()) / 1000);
-    const units = [
-        ['year', 60 * 60 * 24 * 365],
-        ['month', 60 * 60 * 24 * 30],
-        ['day', 60 * 60 * 24],
-        ['hour', 60 * 60],
-        ['minute', 60],
-        ['second', 1],
-    ];
-    const [unit, unitSeconds] = units.find(([, secondsPerUnit]) => Math.abs(seconds) >= secondsPerUnit) || units[units.length - 1];
-    return relativeTimeFormatter.format(Math.round(seconds / unitSeconds), unit);
-};
 
 const Toggle = ({ label, checked, onChange }) => (
     <button type="button" onClick={onChange} className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-left text-sm font-semibold text-slate-700">
@@ -770,11 +753,13 @@ function SettingsCenter({
                                                                 </div>
                                                                 <div className="flex items-start justify-between gap-4">
                                                                     <span className="shrink-0 font-medium text-slate-500">Signed in</span>
-                                                                    <span className="text-right font-semibold text-slate-900">{formatRelativeTime(session.created_at)}</span>
+                                                                    <span className="text-right font-semibold text-slate-900">{formatSessionTimestamp(session.signed_in_at || session.created_at)}</span>
                                                                 </div>
                                                                 <div className="flex items-start justify-between gap-4">
                                                                     <span className="shrink-0 font-medium text-slate-500">Last active</span>
-                                                                    <span className="text-right font-semibold text-slate-900">{formatRelativeTime(session.last_active_at)}</span>
+                                                                    {session.is_current
+                                                                        ? <span className="inline-flex items-center gap-1.5 text-right font-semibold text-emerald-700"><span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true" />Active now</span>
+                                                                        : <span className="text-right font-semibold text-slate-900">{formatSessionTimestamp(session.last_active_at)}</span>}
                                                                 </div>
                                                             </div>
                                                         </div>

@@ -318,14 +318,17 @@ const redactAuditText = (value) => String(value || '')
   );
 
 const getAuditDescriptionPresentation = (description) => {
-  const rawText = String(description || 'No additional description provided.');
-  const parsed = parseAuditJson(rawText);
+  const parsed = parseAuditJson(description);
   if (!parsed || typeof parsed !== 'object') {
+    const rawText = String(description || 'No additional description provided.');
     const safeText = redactAuditText(rawText);
     return { summary: safeText, details: safeText };
   }
 
   const safeValue = redactAuditJson(parsed);
+  const preferredSummary = ['message', 'summary', 'note']
+    .map((key) => safeValue[key])
+    .find((value) => value !== undefined && value !== null && value !== '');
   const summaryParts = Object.entries(safeValue)
     .filter(([key, value]) => !AUDIT_SECRET_KEY.test(key) && !['old_values', 'new_values', 'changes'].includes(key) && ['string', 'number', 'boolean'].includes(typeof value))
     .slice(0, 3)
@@ -338,7 +341,9 @@ const getAuditDescriptionPresentation = (description) => {
   if (changedFields.length) summaryParts.push(`Changed ${changedFields.slice(0, 2).join('; ')}`);
 
   return {
-    summary: summaryParts.join(' · ') || 'Structured audit event',
+    summary: preferredSummary !== undefined
+      ? redactAuditText(typeof preferredSummary === 'object' ? JSON.stringify(preferredSummary) : String(preferredSummary))
+      : summaryParts.join(' · ') || 'Structured audit event',
     details: JSON.stringify(safeValue, null, 2),
   };
 };
@@ -515,7 +520,7 @@ function AdminSecurityProfile({ user, onUserUpdate, initialSection = 'personal' 
   const [permissionsSaving, setPermissionsSaving] = useState(false);
   const { language } = useLanguage();
   const token = () => {
-    try { const saved = JSON.parse(window.localStorage.getItem('campaceSession') || '{}'); return saved.access_token || saved.accessToken || user?.access_token || user?.accessToken || user?.token || ''; } catch { return user?.access_token || user?.accessToken || user?.token || ''; }
+    return getStoredAccessToken();
   };
   const setHistory = (data) => {
     setHistoryState(Array.isArray(data) ? data : data?.items || []);
@@ -1026,22 +1031,38 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   });
 
   const getAdminSessionToken = () => {
-    return getStoredAccessToken() || user?.access_token || user?.accessToken || user?.token || '';
+    return getStoredAccessToken();
   };
   const getReportRequestHeaders = () => {
     const token = getAdminSessionToken();
     return token ? { Authorization: `Bearer ${token}` } : {};
   };
 
+  const sidebarPollingStoppedRef = useRef(false);
+  const sidebarRequestInFlightRef = useRef(false);
   const refreshSidebarCounts = useCallback(async () => {
+    if (
+      sidebarPollingStoppedRef.current
+      || sidebarRequestInFlightRef.current
+      || !getStoredAccessToken()
+    ) return;
+    sidebarRequestInFlightRef.current = true;
     try {
       const counts = await adminApiGet('/api/admin/sidebar-counts');
+      if (sidebarPollingStoppedRef.current) return;
       setSidebarCounts(counts || {});
     } catch (error) {
+      if (error?.status === 401) {
+        sidebarPollingStoppedRef.current = true;
+        onSessionExpired?.();
+        return;
+      }
       setSidebarCounts({});
       console.error('Unable to refresh admin sidebar counts.', error);
+    } finally {
+      sidebarRequestInFlightRef.current = false;
     }
-  }, []);
+  }, [onSessionExpired]);
 
   const optimisticallyMarkAdminItemsSeen = useCallback((countKey, count = 1) => {
     if (count > 0) {
@@ -1052,10 +1073,16 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
 
   useEffect(() => {
     void refreshSidebarCounts();
-    const handleFocus = () => void refreshSidebarCounts();
+    const handleFocus = () => {
+      if (!sidebarPollingStoppedRef.current) void refreshSidebarCounts();
+    };
     window.addEventListener('focus', handleFocus);
-    const intervalId = window.setInterval(() => void refreshSidebarCounts(), 60000);
-    const unsubscribeSeenChanges = subscribeToAdminSeenChanges(() => void refreshSidebarCounts());
+    const intervalId = window.setInterval(() => {
+      if (!sidebarPollingStoppedRef.current) void refreshSidebarCounts();
+    }, 60000);
+    const unsubscribeSeenChanges = subscribeToAdminSeenChanges(() => {
+      if (!sidebarPollingStoppedRef.current) void refreshSidebarCounts();
+    });
     return () => {
       window.removeEventListener('focus', handleFocus);
       window.clearInterval(intervalId);
@@ -1525,6 +1552,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         const mappedLogs = (Array.isArray(data.items) ? data.items : []).map((log) => {
           const description = getAuditDescriptionPresentation(log.metadata ?? log.description);
           const rowStatus = String(log.status || '').toUpperCase();
+          const performedBy = log.actor_name || log.full_name || log.username || 'System';
+          const actorRole = log.actor_role || (log.admin_id ? 'admin' : 'system');
+          const device = log.device || log.user_agent;
+          const isSystemActor = String(actorRole).toLowerCase() === 'system' || String(performedBy).toLowerCase() === 'system';
           return {
             id: log.id,
             action: log.action || 'System Event',
@@ -1532,13 +1563,16 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
             category: log.category || 'SYSTEM',
             description: description.summary,
             rawDescription: description.details,
-            performed_by: log.actor_name || log.full_name || log.username || 'System',
-            actor_id: log.actor_id ?? log.admin_id ?? 'N/A',
-            actor_role: log.actor_role || (log.admin_id ? 'admin' : 'system'),
+            performed_by: performedBy,
+            actor_id: log.actor_id ?? log.admin_id ?? '',
+            actor_role: actorRole,
+            is_system_actor: isSystemActor,
             entity_type: log.entity_type || 'System',
             entity_id: log.entity_id ?? 'N/A',
             ip_address: log.ip_address || 'Unknown',
-            user_agent: log.user_agent || 'Unknown',
+            user_agent: !device || !String(device).trim() || String(device).trim().toLowerCase() === 'unknown'
+              ? isSystemActor ? 'Internal Service' : 'Web / Client'
+              : device,
             date_time: log.created_at,
             status: ['SUCCESS', 'SUCCESSFUL', 'COMPLETED'].includes(rowStatus) ? 'SUCCESS' : 'FAILED',
             severity: String(log.severity || 'INFO').toUpperCase(),
@@ -7816,7 +7850,15 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                           <div className="rounded-2xl bg-white p-3">
                             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Performed By</p>
-                            <p className="mt-2 text-sm font-bold text-slate-800">{log.performed_by} <span className="font-medium text-slate-500">({log.actor_role} · #{log.actor_id})</span></p>
+                            <p className="mt-2 text-sm font-bold text-slate-800">
+                              {log.is_system_actor ? (
+                                <span className="font-semibold text-gray-800">System <span className="text-xs font-normal text-gray-500">(Automated Task)</span></span>
+                              ) : (
+                                <span className="font-semibold text-gray-800">
+                                  {log.performed_by} <span className="text-xs font-normal text-gray-500">({log.actor_role}{log.actor_id !== null && log.actor_id !== undefined && String(log.actor_id).trim() ? ` · #${log.actor_id}` : ''})</span>
+                                </span>
+                              )}
+                            </p>
                           </div>
                           <div className="rounded-2xl bg-white p-3">
                             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Entity</p>

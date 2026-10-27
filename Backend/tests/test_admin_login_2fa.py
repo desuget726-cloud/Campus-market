@@ -208,6 +208,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
             admin_id=self.admin.id,
             session_token=token,
             is_active=True,
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=31),
             last_active=datetime.now(timezone.utc) - timedelta(minutes=31),
         )
         self.db.add(session)

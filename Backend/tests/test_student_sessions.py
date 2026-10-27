@@ -133,6 +133,26 @@ class StudentSessionTests(unittest.TestCase):
             delta=10,
         )
 
+    def test_login_timestamp_is_persisted_and_serialized_as_utc_iso(self):
+        started_at = datetime.now(timezone.utc)
+        result = self._login()
+        finished_at = datetime.now(timezone.utc)
+        session_id = self._session_id(result["access_token"])
+        session = self.db.query(UserSession).filter(UserSession.id == session_id).one()
+        expected_signed_in_at = main_module._as_utc_datetime(session.created_at)
+
+        self.assertGreaterEqual(expected_signed_in_at, started_at)
+        self.assertLessEqual(expected_signed_in_at, finished_at)
+
+        sessions = main_module.get_student_sessions(
+            authorization=f"Bearer {result['access_token']}",
+            db=self.db,
+        )
+        current_session = next(item for item in sessions if item["is_current"])
+        self.assertEqual(current_session["created_at"], expected_signed_in_at.isoformat())
+        self.assertEqual(current_session["signed_in_at"], expected_signed_in_at.isoformat())
+        self.assertTrue(current_session["last_active_at"].endswith("+00:00"))
+
     def test_forwarded_ip_is_only_used_from_a_configured_trusted_proxy(self):
         request = self._request(
             "127.0.0.1",

@@ -132,6 +132,9 @@ def init_db() -> None:
                 table.dialect_options["mysql"]["collate"] = student_id_collation
     Base.metadata.create_all(bind=engine, tables=tables)
     inspector = inspect(engine)
+    if "admin_sessions" in inspector.get_table_names():
+        _add_column_if_missing("admin_sessions", "revoked_at", "DATETIME NULL")
+        _add_column_if_missing("admin_sessions", "revoke_reason", "VARCHAR(60) NULL")
     if "audit_logs" in inspector.get_table_names():
         audit_log_additions = {
             "user_agent": "VARCHAR(255) NULL",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Navbar from './Components/Navbars/Navbar';
 import TopBar from './Components/Navbars/TopBar';
 import RegisterForm from './Components/Authontication/RegisterForm';
@@ -191,6 +191,7 @@ function AppContent() {
   const [showFooterPrivacy, setShowFooterPrivacy] = useState(false);
   const [showFooterTerms, setShowFooterTerms] = useState(false);
   const [loginMessage, setLoginMessage] = useState('');
+  const unauthorizedHandledRef = useRef(false);
   const [isRestoringStudentSession, setIsRestoringStudentSession] = useState(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -211,12 +212,17 @@ function AppContent() {
   const expectedDashboardView = activeRole === 'admin' ? 'admin-dashboard' : activeRole === 'student' ? 'student-dashboard' : null;
 
   const handleLogout = () => {
-    void fetch(`${API_BASE_URL}/api/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    }).catch((error) => {
-      console.error('Logout request failed:', error);
-    });
+    const token = getAccessToken(null, user);
+    const logoutRequest = activeRole === 'admin'
+      ? fetch(`${API_BASE_URL}/api/admin/logout`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      : fetch(`${API_BASE_URL}/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+    void logoutRequest.catch((error) => console.error('Logout request failed:', error));
     setUser(null);
     setUserRole(null);
     setIsStudentSessionVerified(false);
@@ -239,7 +245,9 @@ function AppContent() {
     setCurrentView('login');
   };
 
-  const handleApiUnauthorized = useCallback(() => {
+  const handleApiUnauthorized = useCallback((event) => {
+    if (unauthorizedHandledRef.current) return;
+    unauthorizedHandledRef.current = true;
     try {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
     } catch (error) {
@@ -254,7 +262,15 @@ function AppContent() {
     setDashboardTab('home');
     setStudentTab('home');
     setAdminTab('dashboard');
-    setLoginMessage('Session expired, please log in again');
+    const code = event?.detail?.code;
+    const message = code === 'session_replaced'
+      ? 'This admin session was replaced by a newer login. Please sign in again.'
+      : code === 'session_inactive'
+        ? 'Your admin session expired due to inactivity. Please sign in again.'
+        : code === 'session_revoked'
+          ? 'Your admin session was revoked. Please sign in again.'
+          : 'Session expired, please log in again';
+    setLoginMessage(message);
     try {
       window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
     } catch {
@@ -298,7 +314,13 @@ function AppContent() {
           authorizationHeader: headers.get('Authorization') || '',
           credentials: args[1]?.credentials || request?.credentials || 'same-origin',
         })) {
-          window.dispatchEvent(new Event('campace:api-unauthorized'));
+          const payload = await response.clone().json().catch(() => null);
+          const detail = payload?.detail;
+          window.dispatchEvent(new CustomEvent('campace:api-unauthorized', {
+            detail: {
+              code: typeof detail === 'object' && !Array.isArray(detail) ? detail.code : null,
+            },
+          }));
         }
       }
       return response;
@@ -438,7 +460,30 @@ function AppContent() {
       try {
         const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
         const session = saved ? JSON.parse(saved) : null;
-        if (session?.user) setUser(session.user);
+        const role = session?.userRole || session?.user?.role;
+        if (
+          !session?.user
+          || !getAccessToken(session, session.user)
+          || !['admin', 'student'].includes(String(role || '').toLowerCase())
+        ) {
+          setUser(null);
+          setUserRole(null);
+          setIsStudentSessionVerified(false);
+          setUnreadCount(0);
+          setShowSuccessModal(false);
+          setCurrentView('login');
+          setLoginMessage('You were signed out in another tab.');
+          return;
+        }
+        setUser(session.user);
+        setUserRole(role || null);
+        setIsStudentSessionVerified(
+          (session.userRole || session.user.role) === 'student' && Boolean(getStudentId(session.user)),
+        );
+        setCurrentView((session.userRole || session.user.role) === 'admin'
+          ? 'admin-dashboard'
+          : 'student-dashboard');
+        unauthorizedHandledRef.current = false;
       } catch (error) {
         console.error('Failed to synchronize user session:', error);
       }
@@ -528,6 +573,7 @@ function AppContent() {
   };
 
   const handleLoginSuccess = (userData, role) => {
+    unauthorizedHandledRef.current = false;
     setLoginMessage('');
     const productAction = getPendingProductAction();
     const returnTo = normalizeInternalReturnTo(new URLSearchParams(window.location.search).get('returnTo'));

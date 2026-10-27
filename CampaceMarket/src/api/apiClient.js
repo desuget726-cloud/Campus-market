@@ -14,6 +14,8 @@ async function handleResponse(res) {
       ? detail
       : Array.isArray(detail)
         ? detail[0]?.msg || text
+        : detail && typeof detail === "object"
+          ? detail.message || text
         : text || res.statusText;
     const err = new Error(message);
     err.status = res.status;
@@ -53,6 +55,10 @@ export function getStoredAccessToken() {
   if (typeof window === "undefined") return "";
   try {
     const session = JSON.parse(window.localStorage.getItem("campaceSession") || "{}");
+    const role = String(session?.userRole || session?.user?.role || "")
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    if (!session?.user || !["admin", "sub_admin", "super_admin"].includes(role)) return "";
     const sessionUser = session?.user || {};
     return session.access_token || session.accessToken || session.token
       || sessionUser.access_token || sessionUser.accessToken || sessionUser.token || "";

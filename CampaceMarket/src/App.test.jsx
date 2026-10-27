@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEffect } from 'react';
 import App from './App';
+import { API_BASE_URL } from './config';
 
 vi.mock('./Components/Navbars/Navbar', () => ({
   default: () => <div>Navbar</div>,
@@ -238,6 +239,65 @@ describe('admin dashboard default section', () => {
     expect(dashboard).toBeTruthy();
     expect(screen.getByText(/Dashboard tab: dashboard/i)).toBeTruthy();
     await waitFor(() => expect(window.location.search).toContain('tab=dashboard'));
+  });
+
+  it('does not request admin profile or sidebar counts before an admin session is stored', async () => {
+    const fetchMock = vi.spyOn(window, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const adminSessionRequests = fetchMock.mock.calls.filter(([request]) => {
+      const requestUrl = typeof request === 'string' ? request : request.url;
+      return requestUrl.includes('/api/admin/me')
+        || requestUrl.includes('/api/admin/sidebar-counts');
+    });
+    expect(adminSessionRequests).toHaveLength(0);
+  });
+
+  it('clears and redirects once when an authenticated admin request returns a session code', async () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(buildAdminSession()));
+    const fetchMock = vi.spyOn(window, 'fetch').mockImplementation(async (request) => {
+      const requestUrl = typeof request === 'string' ? request : request.url;
+      if (requestUrl.includes('/api/admin/me')) {
+        return {
+          ok: false,
+          status: 401,
+          clone: () => ({
+            json: async () => ({
+              detail: {
+                code: 'session_replaced',
+                message: 'This admin session was replaced.',
+              },
+            }),
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({}),
+      };
+    });
+
+    render(<App />);
+    await waitFor(() => expect(window.fetch).not.toBe(fetchMock));
+    await window.fetch(`${API_BASE_URL}/api/admin/me`, {
+      headers: { Authorization: 'Bearer token-123' },
+    });
+
+    expect(await screen.findByText('Login Form')).toBeTruthy();
+    expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([request]) => {
+      const requestUrl = typeof request === 'string' ? request : request.url;
+      return requestUrl.includes('/api/admin/me');
+    })).toHaveLength(1);
   });
 
   it('falls back to Dashboard for an unknown admin section', async () => {

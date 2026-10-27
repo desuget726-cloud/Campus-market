@@ -12,6 +12,8 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
   const { t } = useLanguage();
   const [formData, setFormData] = useState({ studentId: '', password: '' });
   const [error, setError] = useState('');
+  const [isLoginPending, setIsLoginPending] = useState(false);
+  const submitInFlightRef = useRef(false);
   const [isGoogleRedirecting, setIsGoogleRedirecting] = useState(false);
   const googleRedirectStartedRef = useRef(false);
   const [isSuccess, setIsSuccess] = useState(false);
@@ -197,6 +199,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (submitInFlightRef.current) return;
     const validationError = validate();
 
     if (validationError) {
@@ -205,6 +208,8 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
       return;
     }
 
+    submitInFlightRef.current = true;
+    setIsLoginPending(true);
     try {
       const response = await fetch(apiUrl('/api/login'), {
         method: 'POST',
@@ -225,6 +230,8 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
           ? detail[0]?.msg || t('auth.loginFailed')
           : typeof detail === 'string'
             ? detail
+            : detail?.message
+              ? detail.message
             : t('auth.loginFailed');
 
         setError(message);
@@ -289,6 +296,9 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
     } catch {
       setError(t('auth.couldNotConnect'));
       setIsSuccess(false);
+    } finally {
+      submitInFlightRef.current = false;
+      setIsLoginPending(false);
     }
   };
 
@@ -718,8 +728,8 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
                     </button>
                   </div>
 
-                  <button type="submit" className="login-submit">
-                    Login
+                  <button type="submit" className="login-submit" disabled={isLoginPending}>
+                    {isLoginPending ? 'Signing in…' : 'Login'}
                   </button>
                 </form>
 

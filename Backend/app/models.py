@@ -556,6 +556,8 @@ class AdminSession(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     last_active = Column(DateTime, server_default=func.now(), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    revoke_reason = Column(String(60), nullable=True)
 
     admin = relationship("Admin", back_populates="sessions")
 

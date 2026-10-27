@@ -135,6 +135,21 @@ _CHAPA_MOBILE_PROVIDER_PAYOUT_SUPPORT = {
 GOOGLE_REDIRECT_URI_DEFAULT = "http://localhost:8000/auth/google/callback"
 GOOGLE_OAUTH_STATE_TTL = timedelta(minutes=10)
 SESSION_TOKEN_TIMEOUT_MINUTES = 7 * 24 * 60
+ADMIN_SESSION_INACTIVITY_DEFAULT_MINUTES = 30
+ADMIN_SESSION_INACTIVITY_MIN_MINUTES = 5
+AdminSessionRevokeReason = Literal[
+    "logout",
+    "new_login_single_session",
+    "password_changed",
+    "admin_deactivated",
+    "inactivity_cleanup",
+    "admin_forced",
+    "other",
+]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class OAuthAccessLogRedactionFilter(logging.Filter):
@@ -2786,6 +2801,7 @@ def _create_session_token(
         "sub": subject,
         "role": role,
         "exp": int((datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)).timestamp()),
+        "jti": secrets.token_urlsafe(16),
     }
     if session_id:
         payload["session_id"] = session_id
@@ -3021,7 +3037,7 @@ def _complete_admin_login(
         SESSION_TOKEN_TIMEOUT_MINUTES,
         _get_session_secret(),
     )
-    admin_session = _create_admin_session(db, admin, token, request)
+    admin_session, token = _create_or_reuse_admin_session(db, admin, token, request)
     _record_admin_login_event(
         db,
         admin.id,
@@ -3070,16 +3086,139 @@ def _record_admin_login_event(
 
 
 def _create_admin_session(db: Session, admin: Admin, token: str, request: Request) -> AdminSession:
+    now = _utc_now().replace(tzinfo=None)
     session = AdminSession(
         admin_id=admin.id,
         session_token=token,
         ip_address=request.client.host if request.client else None,
         device_browser=request.headers.get("user-agent"),
         is_active=True,
+        last_active=now,
+        created_at=now,
     )
     db.add(session)
     db.flush()
     return session
+
+
+def _admin_single_session_enabled() -> bool:
+    return os.getenv("ADMIN_SINGLE_SESSION", "false").strip().lower() == "true"
+
+
+def _admin_session_inactivity_minutes() -> int:
+    value = os.getenv(
+        "ADMIN_SESSION_INACTIVITY_MINUTES",
+        str(ADMIN_SESSION_INACTIVITY_DEFAULT_MINUTES),
+    ).strip()
+    try:
+        minutes = int(value)
+    except ValueError as error:
+        raise RuntimeError(
+            "ADMIN_SESSION_INACTIVITY_MINUTES must be an integer of at least 5."
+        ) from error
+    if minutes < ADMIN_SESSION_INACTIVITY_MIN_MINUTES:
+        raise RuntimeError(
+            "ADMIN_SESSION_INACTIVITY_MINUTES must be an integer of at least 5."
+        )
+    return minutes
+
+
+def _admin_session_is_inactive(
+    session: AdminSession,
+    now: datetime,
+    timeout: timedelta,
+) -> bool:
+    cutoff = now - timeout
+    last_active = _as_utc_datetime(session.last_active)
+    created_at = _as_utc_datetime(session.created_at)
+    return bool(
+        last_active is not None
+        and created_at is not None
+        and last_active < cutoff
+        and created_at < cutoff
+    )
+
+
+def _revoke_admin_session(
+    session: AdminSession,
+    reason: AdminSessionRevokeReason,
+    now: Optional[datetime] = None,
+) -> bool:
+    if not session.is_active:
+        return False
+    revoked_at = now or _utc_now()
+    if revoked_at.tzinfo is not None:
+        revoked_at = revoked_at.astimezone(timezone.utc).replace(tzinfo=None)
+    session.is_active = False
+    session.last_active = revoked_at
+    session.revoked_at = revoked_at
+    session.revoke_reason = reason
+    logging.getLogger("app.auth").info(
+        "Admin session revoked: session_id=%s reason=%s",
+        session.id,
+        reason,
+    )
+    return True
+
+
+def _revoke_admin_sessions(
+    db: Session,
+    admin_id: int,
+    reason: AdminSessionRevokeReason,
+    except_session_id: Optional[int] = None,
+    except_token: Optional[str] = None,
+) -> int:
+    query = db.query(AdminSession).filter(
+        AdminSession.admin_id == admin_id,
+        AdminSession.is_active.is_(True),
+    )
+    if except_session_id is not None:
+        query = query.filter(AdminSession.id != except_session_id)
+    if except_token is not None:
+        query = query.filter(AdminSession.session_token != except_token)
+    now = _utc_now()
+    sessions = query.with_for_update().all()
+    return sum(_revoke_admin_session(session, reason, now) for session in sessions)
+
+
+def _create_or_reuse_admin_session(
+    db: Session,
+    admin: Admin,
+    token: str,
+    request: Request,
+) -> tuple[AdminSession, str]:
+    locked_admin = db.query(Admin).filter(Admin.id == admin.id).with_for_update().first()
+    if not locked_admin or str(locked_admin.status or "").strip().lower() != "active":
+        raise HTTPException(status_code=403, detail="This administrator account is inactive.")
+
+    ip_address = request.client.host if request.client else None
+    device_browser = (request.headers.get("user-agent") or "")[:255] or None
+    now = _utc_now()
+    now_naive = now.replace(tzinfo=None)
+    duplicate_query = db.query(AdminSession).filter(
+        AdminSession.admin_id == admin.id,
+        AdminSession.is_active.is_(True),
+        AdminSession.ip_address == ip_address,
+        AdminSession.device_browser == device_browser,
+        AdminSession.created_at >= now_naive - timedelta(seconds=5),
+        AdminSession.created_at <= now_naive,
+    ).order_by(AdminSession.created_at.desc(), AdminSession.id.desc())
+    duplicate = duplicate_query.with_for_update().first()
+
+    if _admin_single_session_enabled():
+        _revoke_admin_sessions(
+            db,
+            admin.id,
+            "new_login_single_session",
+            except_session_id=duplicate.id if duplicate else None,
+        )
+
+    if duplicate:
+        duplicate.last_active = now_naive
+        return duplicate, duplicate.session_token
+
+    session = _create_admin_session(db, admin, token, request)
+    return session, token
 
 
 def _validate_admin_password(password: str, minimum_length: int = 8) -> None:
@@ -3481,6 +3620,7 @@ def ensure_database_compatibility(db: Session) -> None:
                 id INT PRIMARY KEY AUTO_INCREMENT, admin_id INT NOT NULL, session_token VARCHAR(500) NOT NULL UNIQUE,
                 ip_address VARCHAR(50) NULL, device_browser VARCHAR(255) NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 last_active DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                revoked_at DATETIME NULL, revoke_reason VARCHAR(60) NULL,
                 INDEX (admin_id), FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
             )""",
             "admin_login_history": """CREATE TABLE IF NOT EXISTS admin_login_history (
@@ -3697,6 +3837,7 @@ def ensure_database_compatibility(db: Session) -> None:
 @app.on_event("startup")
 async def on_startup():
     global payment_scheduler
+    _admin_session_inactivity_minutes()
     startup_logger = logging.getLogger("app.startup")
     logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogRedactionFilter())
     _check_production_configuration()
@@ -3868,6 +4009,15 @@ async def on_startup():
         coalesce=True,
     )
     payment_scheduler.add_job(
+        _cleanup_inactive_admin_sessions,
+        "interval",
+        minutes=5,
+        id="cleanup-admin-sessions",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    payment_scheduler.add_job(
         _process_support_ticket_automation,
         "interval",
         hours=1,
@@ -4030,6 +4180,8 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         )
 
     if admin and verify_password(data.password, admin.password_hash):
+        if str(admin.status or "").strip().lower() != "active":
+            raise HTTPException(status_code=403, detail="This administrator account is inactive.")
         admin.failed_login_attempts = 0
         admin.locked_until = None
         _reset_login_attempts(db, attempt_identifier)
@@ -4068,7 +4220,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             _get_session_secret(),
         )
 
-        admin_session = _create_admin_session(db, admin, token, request)
+        admin_session, token = _create_or_reuse_admin_session(db, admin, token, request)
 
         _record_admin_login_event(
             db,
@@ -5243,7 +5395,7 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         )
         if valid_totp or _consume_admin_backup_code(db, admin, second_factor_code):
             token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
-            admin_session = _create_admin_session(db, admin, token, http_request)
+            admin_session, token = _create_or_reuse_admin_session(db, admin, token, http_request)
             _record_admin_login_event(
                 db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
             )
@@ -5267,7 +5419,7 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         raise HTTPException(status_code=400, detail="Invalid or expired administrator verification code.")
     otp_record.is_used = True
     token = _create_session_token(admin.username, "admin", SESSION_TOKEN_TIMEOUT_MINUTES, _get_session_secret())
-    admin_session = _create_admin_session(db, admin, token, http_request)
+    admin_session, token = _create_or_reuse_admin_session(db, admin, token, http_request)
     _record_admin_login_event(
         db, admin.id, "login_success_2fa", http_request, admin_session_id=admin_session.id
     )
@@ -5532,6 +5684,8 @@ def update_sub_admin_status(
         if _active_admin_count(db) >= MAX_TOTAL_ADMINS:
             raise HTTPException(status_code=400, detail=f"Maximum number of admins ({MAX_TOTAL_ADMINS}) reached")
     sub_admin.status = payload.status.strip() or "Inactive"
+    if sub_admin.status.lower() != "active":
+        _revoke_admin_sessions(db, sub_admin.id, "admin_deactivated")
     db.commit()
     return {"success": True, "status": sub_admin.status}
 
@@ -5695,11 +5849,12 @@ def update_current_admin_profile(
     admin.full_name = full_name
     admin.phone = phone or None
     if payload.new_password or payload.logout_all_sessions:
-        db.query(AdminSession).filter(
-            AdminSession.admin_id == admin.id,
-            AdminSession.is_active.is_(True),
-            AdminSession.session_token != current_token,
-        ).update({"is_active": False, "last_active": datetime.now(timezone.utc)}, synchronize_session=False)
+        _revoke_admin_sessions(
+            db,
+            admin.id,
+            "password_changed" if payload.new_password else "admin_forced",
+            except_token=current_token,
+        )
 
     db.commit()
     db.refresh(admin)
@@ -5763,11 +5918,12 @@ def update_admin_profile(payload: AdminProfileUpdate, request: Request, db: Sess
 
     current_token = payload.current_session_token
     if new_password or payload.logout_all_sessions:
-        db.query(AdminSession).filter(
-            AdminSession.admin_id == admin.id,
-            AdminSession.is_active.is_(True),
-            AdminSession.session_token != current_token,
-        ).update({"is_active": False, "last_active": datetime.now(timezone.utc)}, synchronize_session=False)
+        _revoke_admin_sessions(
+            db,
+            admin.id,
+            "password_changed" if new_password else "admin_forced",
+            except_token=current_token,
+        )
     db.commit()
     db.refresh(admin)
 
@@ -5838,7 +5994,13 @@ def _decode_admin_jwt(session_token: str) -> dict:
         raise HTTPException(status_code=401, detail="JWT does not identify an administrator.")
     if not isinstance(payload.get("exp"), (int, float)) or payload["exp"] <= datetime.now(timezone.utc).timestamp():
         logging.getLogger("app.auth").warning("Admin auth rejected: jwt_expired_or_exp_missing.")
-        raise HTTPException(status_code=401, detail="JWT token has expired.")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "session_inactive",
+                "message": "Admin session has expired. Please sign in again.",
+            },
+        )
     return payload
 
 
@@ -6077,6 +6239,39 @@ def _cleanup_inactive_user_sessions() -> int:
         db.close()
 
 
+def _cleanup_inactive_admin_sessions() -> int:
+    db = SessionLocal()
+    try:
+        now = _utc_now()
+        timeout = timedelta(minutes=_admin_session_inactivity_minutes())
+        cutoff = (now - timeout).replace(tzinfo=None)
+        candidates = db.query(AdminSession).filter(
+            AdminSession.is_active.is_(True),
+            AdminSession.last_active < cutoff,
+            AdminSession.created_at < cutoff,
+        ).with_for_update().all()
+        revoked = 0
+        for session in candidates:
+            if _admin_session_is_inactive(session, now, timeout):
+                revoked += _revoke_admin_session(
+                    session,
+                    "inactivity_cleanup",
+                    now,
+                )
+        db.commit()
+        logging.getLogger("app.auth").info(
+            "Admin session inactivity cleanup revoked %s sessions.",
+            revoked,
+        )
+        return revoked
+    except SQLAlchemyError:
+        db.rollback()
+        logging.getLogger("app.auth").exception("Admin session cleanup failed.")
+        raise
+    finally:
+        db.close()
+
+
 def _student_session_from_authorization(
     authorization: Optional[str],
     db: Session,
@@ -6119,14 +6314,17 @@ def _student_session_from_authorization(
 
 
 def _serialize_user_session(user_session: UserSession, current_session_id: str) -> Dict[str, Any]:
+    signed_in_at = _as_utc_datetime(user_session.created_at)
+    last_active_at = _as_utc_datetime(user_session.last_active_at)
     return {
         "id": user_session.id,
         "is_current": user_session.id == current_session_id,
         "ip_address": user_session.ip_address,
         "device_name": user_session.device_name,
         "location": user_session.location,
-        "created_at": user_session.created_at.isoformat() if user_session.created_at else None,
-        "last_active_at": user_session.last_active_at.isoformat() if user_session.last_active_at else None,
+        "created_at": signed_in_at.isoformat() if signed_in_at else None,
+        "signed_in_at": signed_in_at.isoformat() if signed_in_at else None,
+        "last_active_at": last_active_at.isoformat() if last_active_at else None,
     }
 
 
@@ -6203,26 +6401,81 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
     session = db.query(AdminSession).filter(AdminSession.session_token == session_token).first()
     if not session:
         logging.getLogger("app.auth").warning("Admin auth rejected: admin_session_not_found.")
-        raise HTTPException(status_code=401, detail="Invalid admin session.")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "session_revoked",
+                "message": "Admin session is no longer available. Please sign in again.",
+            },
+        )
     if not session.is_active:
-        logging.getLogger("app.auth").warning("Admin auth rejected: admin_session_revoked.")
-        raise HTTPException(status_code=401, detail="Admin session is inactive.")
+        if session.revoke_reason == "new_login_single_session":
+            code = "session_replaced"
+            message = "This admin session was replaced by a newer login."
+        elif session.revoke_reason == "inactivity_cleanup":
+            code = "session_inactive"
+            message = "Admin session expired due to inactivity. Please sign in again."
+        else:
+            code = "session_revoked"
+            message = "Admin session was revoked. Please sign in again."
+        logging.getLogger("app.auth").warning(
+            "Admin auth rejected: code=%s session_id=%s reason=%s.",
+            code,
+            session.id,
+            session.revoke_reason or "other",
+        )
+        raise HTTPException(status_code=401, detail={"code": code, "message": message})
     admin = db.query(Admin).filter(Admin.id == session.admin_id).first()
     if not admin:
         logging.getLogger("app.auth").warning("Admin auth rejected: session_admin_record_missing.")
         raise HTTPException(status_code=404, detail="Admin profile not found.")
+    if str(admin.status or "").strip().lower() != "active":
+        _revoke_admin_sessions(db, admin.id, "admin_deactivated")
+        db.commit()
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "session_revoked",
+                "message": "This administrator account is inactive. Please contact an administrator.",
+            },
+        )
     if admin.username != claims["sub"]:
         logging.getLogger("app.auth").warning("Admin auth rejected: jwt_subject_session_mismatch.")
         raise HTTPException(status_code=401, detail="JWT subject does not match the admin session.")
-    now = datetime.now(timezone.utc)
-    last_active = _as_utc_datetime(session.last_active)
-    if last_active is None or now - last_active >= timedelta(minutes=get_security_settings(db).session_timeout):
-        session.is_active = False
+    now = _utc_now()
+    timeout = timedelta(minutes=_admin_session_inactivity_minutes())
+    if _admin_session_is_inactive(session, now, timeout):
+        _revoke_admin_session(session, "inactivity_cleanup", now)
         db.commit()
-        raise HTTPException(status_code=401, detail="Admin session expired due to inactivity. Please sign in again.")
-    session.last_active = now
-    db.commit()
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "session_inactive",
+                "message": "Admin session expired due to inactivity. Please sign in again.",
+            },
+        )
+    last_active = _as_utc_datetime(session.last_active)
+    if last_active is None or now - last_active >= timedelta(seconds=60):
+        session.last_active = now.replace(tzinfo=None)
+        db.commit()
     return admin, session
+
+
+@app.post("/api/admin/logout")
+def logout_admin_session(
+    payload: Optional[AdminSessionRequest] = None,
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    current_token = _extract_admin_token(
+        authorization,
+        payload.session_token if payload else session_token,
+    )
+    _, current_session = _admin_for_session(db, current_token)
+    _revoke_admin_session(current_session, "logout")
+    db.commit()
+    return {"success": True}
 
 
 @app.get("/api/admin/sessions")
@@ -6248,11 +6501,12 @@ def get_admin_sessions(
 @app.post("/api/admin/sessions/logout-others")
 def logout_other_admin_sessions(payload: AdminSessionRequest, request: Request, db: Session = Depends(get_db)):
     admin, current_session = _admin_for_session(db, payload.session_token)
-    invalidated = db.query(AdminSession).filter(
-        AdminSession.admin_id == admin.id,
-        AdminSession.is_active.is_(True),
-        AdminSession.id != current_session.id,
-    ).update({"is_active": False, "last_active": datetime.now(timezone.utc)}, synchronize_session=False)
+    invalidated = _revoke_admin_sessions(
+        db,
+        admin.id,
+        "admin_forced",
+        except_session_id=current_session.id,
+    )
     _record_admin_login_event(db, admin.id, "sessions_terminated", request)
     db.add(AuditLog(admin_id=admin.id, action="Admin Sessions Terminated", entity_type="Admin", entity_id=admin.id, description=f"Terminated {invalidated} other active admin sessions.", status="SUCCESS", ip_address=request.client.host if request.client else None))
     db.commit()

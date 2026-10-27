@@ -68,7 +68,15 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
       try {
         const savedSession = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
         const sessionUser = savedSession?.user || savedSession || {};
-        const token = user?.access_token || user?.accessToken || sessionUser?.access_token || sessionUser?.accessToken || savedSession?.access_token || savedSession?.accessToken;
+        const storedRole = String(savedSession?.userRole || sessionUser?.role || '')
+          .toLowerCase()
+          .replace(/[\s-]+/g, '_');
+        if (!savedSession?.user || !['admin', 'sub_admin', 'super_admin'].includes(storedRole)) return;
+        const token = savedSession?.access_token
+          || savedSession?.accessToken
+          || sessionUser?.access_token
+          || sessionUser?.accessToken
+          || sessionUser?.token;
         if (!token) return;
 
         const response = await fetch(`${API_BASE_URL}/api/admin/me`, {
