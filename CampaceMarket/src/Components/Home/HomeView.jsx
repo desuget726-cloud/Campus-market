@@ -646,7 +646,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                               {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
                             </div>
                             <h4 className="mt-1 line-clamp-2 text-[10px] leading-tight text-slate-950 sm:line-clamp-1 sm:text-sm sm:leading-normal sm:font-black">{product.title || 'Recommended product'}</h4>
-                            <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
+                            <p className="mt-1 hidden min-h-[3.75rem] overflow-hidden text-ellipsis text-sm text-slate-600 line-clamp-3 sm:block">{product.description}</p>
                             <div className="mt-auto flex min-w-0 flex-col gap-2 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                               <CompactEtbPrice value={product.price} className="min-w-0 text-[10px] font-bold text-slate-700 sm:text-base" />
                               <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-bold transition-colors sm:inline-flex sm:w-auto">View Details</button>
@@ -703,7 +703,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                                 {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
                               </div>
                               <h4 className="mt-1 line-clamp-2 break-words text-sm leading-tight text-slate-900 sm:line-clamp-1 sm:leading-normal sm:font-semibold">{product.title}</h4>
-                              <p className="mt-1 hidden line-clamp-1 text-xs text-slate-500 sm:block">{product.description}</p>
+                              <p className="mt-1 hidden min-h-[3.75rem] overflow-hidden text-ellipsis text-sm text-slate-600 line-clamp-3 sm:block">{product.description}</p>
                             </div>
                           </div>
                           <div className="mt-auto min-w-0 p-2 pt-0 sm:p-4 sm:pt-0">
