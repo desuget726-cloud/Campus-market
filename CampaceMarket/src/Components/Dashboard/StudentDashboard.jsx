@@ -438,6 +438,8 @@ function StudentDashboard({
   const activePeerIdRef = useRef('');
   const sellerChatParticipantsRef = useRef({});
   const paymentVerificationStartedRef = useRef(false);
+  const testDepositAutoChecksRef = useRef(new Set());
+  const depositStatusCheckHandlerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const walletBalanceRef = useRef(walletBalance);
@@ -1366,15 +1368,23 @@ function StudentDashboard({
 
     const callbackUrl = new URL(window.location.href);
     const transactionReference = callbackUrl.searchParams.get('trx_ref') || callbackUrl.searchParams.get('tx_ref');
-    if (!transactionReference) return;
+    if (!transactionReference || !user?.studentId) return;
+    const token = getStudentSessionToken();
+    if (!token) return;
 
     paymentVerificationStartedRef.current = true;
+    testDepositAutoChecksRef.current.add(transactionReference);
+    setActiveTab('buyer');
+    setBuyerTab('payments');
     let isMounted = true;
     let verificationTimeoutId;
 
     const refreshWalletLedger = async () => {
       if (!user?.studentId) return;
-      const response = await fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`, { cache: 'no-store' });
+      const response = await fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (!response.ok) return;
       const data = await response.json().catch(() => ({}));
       const nextBalance = Number(data?.balance ?? data?.walletBalance ?? data?.wallet_balance ?? 0);
@@ -1400,7 +1410,10 @@ function StudentDashboard({
       setPaymentVerificationState('confirming');
       while (isMounted && Date.now() - startedAt <= 60000 && status === 'Pending') {
         try {
-          const response = await fetch(`${API_BASE_URL}/api/payment/verify/` + transactionReference);
+          const response = await fetch(
+            `${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transactionReference)}`,
+            { headers: { Authorization: `Bearer ${token}` } },
+          );
           const data = await response.json().catch(() => ({}));
           status = String(data?.status || '').trim().toLowerCase() === 'successful'
             ? 'Successful'
@@ -1484,7 +1497,7 @@ function StudentDashboard({
     };
     // The dashboard refresh function is intentionally excluded because it is recreated on render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [getStudentSessionToken, user?.studentId]);
 
   const buyerSubTabs = [
     { id: 'search', label: 'Search / Browse', badge: 0 },
@@ -2975,6 +2988,28 @@ function StudentDashboard({
       setPayoutStatusCheckId(null);
     }
   };
+
+  depositStatusCheckHandlerRef.current = handleDepositStatusCheck;
+
+  useEffect(() => {
+    if (buyerTab !== 'payments') return;
+
+    const transactions = Array.isArray(paymentInfo?.transactions) ? paymentInfo.transactions : [];
+    const pendingTestDeposit = transactions.find((transaction) => {
+      const transactionId = String(transaction?.hash || transaction?.id || '');
+      const transactionDescription = `${transaction?.type || ''} ${transaction?.label || ''}`.toLowerCase();
+      return transaction?.test_mode
+        && transactionDescription.includes('deposit')
+        && ['pending', 'processing'].includes(String(transaction?.status || '').trim().toLowerCase())
+        && transactionId
+        && !testDepositAutoChecksRef.current.has(transactionId);
+    });
+    if (!pendingTestDeposit) return;
+
+    const transactionId = String(pendingTestDeposit.hash || pendingTestDeposit.id);
+    testDepositAutoChecksRef.current.add(transactionId);
+    void depositStatusCheckHandlerRef.current?.(pendingTestDeposit);
+  }, [buyerTab, paymentInfo?.transactions]);
 
   const refreshPayoutAccount = async () => {
     const token = getStudentSessionToken();
@@ -5578,6 +5613,7 @@ function StudentDashboard({
               <SellerModerationNotices
                 section={dashboardLink.section}
                 itemId={dashboardLink.itemId}
+                accessToken={getStudentSessionToken()}
                 onInvalidLink={onDashboardLinkInvalid}
               />
             )}

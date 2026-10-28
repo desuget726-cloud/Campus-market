@@ -166,11 +166,13 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
     assert body["amount"] == "200.00"
     assert body["seller_name"] == "Seller"
     assert body["completed_at"]
+    assert body["completed_at"].endswith("+00:00")
 
     with session_factory() as db:
         order = db.query(Order).one()
         assert order.status == "Completed"
         assert order.payment_status == "Successful"
+        assert order.created_at == order.paid_at == order.completed_at
         assert order.paid_at == order.completed_at
         assert order.quantity == 2
         assert db.query(Wallet).filter_by(student_id="buyer-1").one().balance == Decimal("300.00")

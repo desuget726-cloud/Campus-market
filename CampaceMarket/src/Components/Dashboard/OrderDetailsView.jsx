@@ -4,8 +4,9 @@ import { IMAGE_PLACEHOLDER, resolveImageUrl, SHOW_REPORT_PROBLEM } from '../../c
 import { isOrderRefunded, shouldShowReceiptActions } from '../../utils/orderReceiptState';
 
 const TIMELINE = [
-  { key: 'order', label: 'Order history' },
-  { key: 'completed', label: 'Completed' },
+  { key: 'created', label: 'Order created' },
+  { key: 'payment', label: 'Payment completed' },
+  { key: 'completed', label: 'Order completed' },
 ];
 
 const formatPrice = (value) => `${Number(value || 0).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`;
@@ -237,8 +238,8 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
   const paymentSuccessful = normalizedPaymentStatus === 'successful';
   const paymentRefunded = normalizedPaymentStatus === 'refunded';
   const timeline = TIMELINE;
-  let currentIndex = 0;
-  if (status === 'Completed') currentIndex = 1;
+  let currentIndex = paymentSuccessful ? 1 : 0;
+  if (status === 'Completed') currentIndex = 2;
   const quantity = Number(order.quantity || 1);
   const itemTotal = Number(order.item_total ?? Number(order.price || 0) * quantity);
   const totalPaid = Number(paymentReceipt?.total_paid ?? itemTotal + Number(order.fees || 0));
@@ -309,7 +310,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
 
       <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
         <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Tracking</p><h2 className="mt-1 text-xl font-black text-slate-950">Order progress</h2></div><button type="button" onClick={onRefresh} className="inline-flex items-center gap-2 rounded-full border border-[var(--brand-primary)] px-3 py-2 text-sm font-bold text-[var(--brand-primary)] hover:bg-sky-50 hover:text-[var(--brand-primary-hover)]"><span aria-hidden="true" className="text-base">↻</span>Refresh</button></div>
-        <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-7">
+        <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {timeline.map((step, index) => {
             const complete = status === 'Disputed' ? index < currentIndex : index <= currentIndex;
             const current = index === currentIndex;

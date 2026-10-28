@@ -29,7 +29,7 @@ describe('SellerModerationNotices', () => {
       }],
     });
 
-    render(<SellerModerationNotices section="warnings" itemId={16} />);
+    render(<SellerModerationNotices section="warnings" itemId={16} accessToken="student-token" />);
 
     expect(await screen.findByText('Marketplace warning')).toBeTruthy();
     expect(screen.getByText('Please provide accurate listing details.')).toBeTruthy();
@@ -37,7 +37,9 @@ describe('SellerModerationNotices', () => {
     expect(screen.getByText('Product status: Active')).toBeTruthy();
     expect(screen.getByText('Warnings on your account: 1')).toBeTruthy();
     expect(screen.queryByText(/reporter|internal admin/i)).toBeNull();
-    expect(apiGet).toHaveBeenCalledWith('/api/student/moderation/notices');
+    expect(apiGet).toHaveBeenCalledWith('/api/student/moderation/notices', {
+      headers: { Authorization: '******' },
+    });
   });
 
   it('returns to the safe dashboard when the requested notice is not in the owner list', async () => {

@@ -13,7 +13,7 @@ function formatNoticeDate(value) {
   return Number.isNaN(date.getTime()) ? 'Date unavailable' : date.toLocaleString();
 }
 
-function SellerModerationNotices({ section, itemId = null, onInvalidLink }) {
+function SellerModerationNotices({ section, itemId = null, accessToken = '', onInvalidLink }) {
   const [notices, setNotices] = useState([]);
   const [selectedNotice, setSelectedNotice] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -27,7 +27,9 @@ function SellerModerationNotices({ section, itemId = null, onInvalidLink }) {
       setError('');
       setNoticeNotFound(false);
       try {
-        const result = await apiGet('/api/student/moderation/notices');
+        const result = await apiGet('/api/student/moderation/notices', {
+          headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+        });
         if (cancelled) return;
         const items = Array.isArray(result?.items) ? result.items : [];
         setNotices(items);
@@ -55,7 +57,7 @@ function SellerModerationNotices({ section, itemId = null, onInvalidLink }) {
     return () => {
       cancelled = true;
     };
-  }, [itemId, onInvalidLink, section]);
+  }, [accessToken, itemId, onInvalidLink, section]);
 
   const visibleNotices = useMemo(
     () => notices.filter((notice) => noticeSections[section]?.has(notice.action)),

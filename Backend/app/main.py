@@ -2327,7 +2327,6 @@ class SellerOrderBuyer(BaseModel):
 
 class SellerOrderTimeline(BaseModel):
     order_created_at: Optional[datetime]
-    handover_at: Optional[datetime]
     payment_completed_at: Optional[datetime]
     order_completed_at: Optional[datetime]
 
@@ -13401,6 +13400,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         Transaction.tx_id == order.refund_reference,
     ).first() if order.refund_reference else None
 
+    dispute_window_started_at = _as_utc_datetime(order.completed_at or order.paid_at)
     payload = {
         "id": order.id,
         "order_id": order.id,
@@ -13433,8 +13433,8 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "total_paid": float(total_paid),
         "total": float(total_paid),
         "pickup_location": pickup_location,
-        "paid_at": order.paid_at.isoformat() if order.paid_at else None,
-        "completed_at": order.completed_at.isoformat() if order.completed_at else None,
+        "paid_at": _as_utc_datetime(order.paid_at).isoformat() if order.paid_at else None,
+        "completed_at": _as_utc_datetime(order.completed_at).isoformat() if order.completed_at else None,
         "refund_status": order.refund_status,
         "refund_reference": order.refund_reference,
         "refund_amount": float(refund_transaction.amount) if refund_transaction else None,
@@ -13444,7 +13444,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "hidden_by_buyer": bool(getattr(order, "hidden_by_buyer", False)),
         "payout_status": "Paid" if _normalize_payment_status(order.payment_status) == "Successful" else "Payment unavailable",
         "reviewed": bool(getattr(order, "reviewed", False)),
-        "created_at": order.created_at,
+        "created_at": _as_utc_datetime(order.created_at),
         "dispute": _serialize_dispute(dispute) if dispute else None,
         "dispute_status": dispute.status if dispute else None,
         "dispute_reason": dispute.reason if dispute else None,
@@ -13453,8 +13453,8 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "can_report_problem": bool(
             status == "Completed"
             and _normalize_payment_status(order.payment_status) == "Successful"
-            and (order.completed_at or order.paid_at)
-            and datetime.now() <= (order.completed_at or order.paid_at).replace(tzinfo=None) + timedelta(hours=get_dispute_window_hours())
+            and dispute_window_started_at
+            and datetime.now(timezone.utc) <= dispute_window_started_at + timedelta(hours=get_dispute_window_hours())
             and not post_payment_dispute_exists
         ),
     }
@@ -13580,7 +13580,7 @@ def _seller_order_detail(db: Session, order: Order) -> dict:
             "fees": seller_fees,
             "total_received": total_received,
             "payment_status": _normalize_payment_status(order.payment_status or "Pending"),
-            "paid_at": payment_time,
+            "paid_at": _as_utc_datetime(payment_time),
         },
         "buyer": {
             "name": (
@@ -13592,10 +13592,9 @@ def _seller_order_detail(db: Session, order: Order) -> dict:
             "verified_student": bool(buyer and buyer.is_verified),
         },
         "timeline": {
-            "order_created_at": order.created_at,
-            "handover_at": payment_time,
-            "payment_completed_at": payment_time,
-            "order_completed_at": order.completed_at,
+            "order_created_at": _as_utc_datetime(order.created_at),
+            "payment_completed_at": _as_utc_datetime(payment_time),
+            "order_completed_at": _as_utc_datetime(order.completed_at),
         },
         "chat_thread_id": f"conv-{order.student_id}",
         "dispute": dispute_payload,
@@ -14025,7 +14024,9 @@ def _payment_result(order: Order, *, already_paid: bool) -> dict:
         "status": "Completed",
         "amount": str(item_total),
         "seller_name": order.seller_name,
-        "completed_at": (order.completed_at or order.paid_at or order.created_at).isoformat(),
+        "completed_at": _as_utc_datetime(
+            order.completed_at or order.paid_at or order.created_at
+        ).isoformat(),
         "already_paid": already_paid,
     }
 
@@ -14388,6 +14389,7 @@ def pay_for_product(
             quantity=quantity,
             status="Completed",
             payment_status="Successful",
+            created_at=completed_at,
             paid_at=completed_at,
             completed_at=completed_at,
             is_funds_released=True,
@@ -15138,7 +15140,8 @@ async def raise_order_dispute(
     completed_at = order.completed_at or order.paid_at
     if normalized_order_status != "completed" or _normalize_payment_status(order.payment_status) != "Successful" or not completed_at:
         raise HTTPException(status_code=409, detail="Only completed, successfully paid orders can be reported.")
-    if datetime.now() > completed_at.replace(tzinfo=None) + timedelta(hours=get_dispute_window_hours()):
+    completed_at_utc = _as_utc_datetime(completed_at)
+    if datetime.now(timezone.utc) > completed_at_utc + timedelta(hours=get_dispute_window_hours()):
         raise HTTPException(
             status_code=409,
             detail=f"Problems must be reported within {get_dispute_window_hours()} hours of payment.",
@@ -17208,12 +17211,14 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
         PayoutTransaction.internal_reference,
         PayoutTransaction.is_test_mode,
     ).filter(PayoutTransaction.internal_reference.in_(withdrawal_references)).all()) if withdrawal_references else {}
+    chapa_test_mode = os.getenv("CHAPA_MODE", "").strip().lower() == "test"
 
     ledger = []
     for tx in transactions[:20]:
         amount = abs(Decimal(str(tx.amount or 0)).quantize(Decimal("0.01")))
         direction = _transaction_direction(tx.type)
         signed_amount = amount if direction == "credit" else -amount
+        is_wallet_deposit = _normalize_payment_type(tx.type) == "Wallet Deposit"
         ledger.append({
             "id": tx.id,
             "type": tx.type,
@@ -17224,7 +17229,8 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
             "status": tx.status,
             "date": tx.created_at.strftime("%Y-%m-%d") if tx.created_at else None,
             "hash": tx.tx_id,
-            "test_mode": bool(test_mode_by_reference.get(tx.tx_id, False)),
+            "test_mode": bool(test_mode_by_reference.get(tx.tx_id, False))
+            or (is_wallet_deposit and chapa_test_mode),
         })
 
     return {
@@ -20091,10 +20097,19 @@ def verify_payment_with_chapa(
     if transaction.student_id != student.student_id:
         raise HTTPException(status_code=403, detail="You can only verify your own wallet deposits.")
 
-    verification = _request_chapa_verification(tx_ref)
     expected_amount = Decimal(str(transaction.amount)).quantize(Decimal("0.01"))
-    if verification["amount"] != expected_amount:
-        raise HTTPException(status_code=400, detail="Chapa transaction amount does not match the pending payment.")
+    if os.getenv("CHAPA_MODE", "").strip().lower() == "test":
+        current_status = _normalize_payment_status(transaction.status)
+        verification = {
+            "tx_ref": tx_ref,
+            "amount": expected_amount,
+            "currency": "ETB",
+            "status": "Successful" if current_status == "Pending" else current_status,
+        }
+    else:
+        verification = _request_chapa_verification(tx_ref)
+        if verification["amount"] != expected_amount:
+            raise HTTPException(status_code=400, detail="Chapa transaction amount does not match the pending payment.")
     gateway_status = verification["status"]
 
     settlement = None
@@ -20119,6 +20134,7 @@ def verify_payment_with_chapa(
             "success": True,
             "transaction_id": transaction.tx_id,
             "status": gateway_status,
+            "amount": float(expected_amount),
             "chapa_reference": verification["tx_ref"],
             "wallet_balance": float(wallet_balance or 0),
         }

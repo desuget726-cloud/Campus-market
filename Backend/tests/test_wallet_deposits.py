@@ -377,6 +377,34 @@ class WalletDepositTests(unittest.TestCase):
         self.assertEqual(transaction.status, "Successful")
         self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").count(), 1)
 
+    def test_test_mode_verification_settles_pending_deposit_without_gateway_request(self):
+        self._create_pending_deposit()
+        with patch.dict(os.environ, {"CHAPA_MODE": "test"}), \
+                patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "_request_chapa_verification") as chapa_verify:
+            result = main_module.verify_payment_with_chapa(
+                "TX-DEPOSIT-1", authorization="student-token", db=self.db
+            )
+
+        chapa_verify.assert_not_called()
+        self.db.refresh(self.wallet)
+        self.db.refresh(self.student)
+        transaction = self.db.query(Transaction).filter_by(tx_id="TX-DEPOSIT-1").one()
+        self.assertEqual(result["status"], "Successful")
+        self.assertEqual(result["wallet_balance"], 75.0)
+        self.assertEqual(result["amount"], 75.0)
+        self.assertEqual(self.wallet.balance, Decimal("75.00"))
+        self.assertEqual(self.student.wallet_balance, Decimal("75.00"))
+        self.assertEqual(transaction.status, "Successful")
+
+    def test_pending_wallet_deposits_are_marked_test_mode_in_test_environment(self):
+        self._create_pending_deposit()
+        with patch.dict(os.environ, {"CHAPA_MODE": "test"}):
+            result = main_module.get_student_payments(self.student.student_id, db=self.db)
+
+        deposit = next(item for item in result["transactions"] if item["hash"] == "TX-DEPOSIT-1")
+        self.assertTrue(deposit["test_mode"])
+
     def test_verify_rejects_amount_mismatch_without_crediting(self):
         self._create_pending_deposit()
         with patch.object(main_module, "_student_from_authorization", return_value=self.student), \

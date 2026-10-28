@@ -130,6 +130,15 @@ class SellerOrderEndpointTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["id"], self.order.id)
         self.assertEqual(payload["buyer"]["name"], self.buyer.name)
+        self.assertEqual(
+            set(payload["timeline"]),
+            {"order_created_at", "payment_completed_at", "order_completed_at"},
+        )
+        self.assertTrue(all(
+            timestamp.endswith(("+00:00", "Z"))
+            for timestamp in payload["timeline"].values()
+            if timestamp is not None
+        ))
         self.assertNotIn("wallet_balance", response.text)
         self.assertNotIn("phone", payload["buyer"])
         self.assertNotIn("email", payload["buyer"])

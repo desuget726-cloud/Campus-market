@@ -30,6 +30,7 @@ import { parseOrderDashboardLink } from './utils/orderDashboardLink';
 import { parseStudentDashboardLink } from './utils/studentDashboardLink';
 import { getAdminSectionFromSearch, normalizeAdminSection, setAdminSectionUrl } from './utils/adminDashboardSection';
 import { isSessionExpiryResponse } from './utils/sessionExpiry';
+import { notifySuccess } from './utils/notify';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
@@ -563,7 +564,8 @@ function AppContent() {
     setIsStudentSessionVerified(false);
     setUnreadCount(0);
     setCurrentView('login');
-    setLoginMessage('Registration complete. Please sign in to continue.');
+    setLoginMessage('');
+    notifySuccess('Registration complete! Please sign in to continue.');
     try {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
       window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);

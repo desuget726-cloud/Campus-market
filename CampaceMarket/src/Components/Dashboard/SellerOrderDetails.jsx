@@ -112,7 +112,6 @@ function SellerOrderDetails({
 
   const timelineEvents = [
     ['orderCreated', timeline.order_created_at],
-    ['handover', timeline.handover_at],
     ['paymentCompleted', timeline.payment_completed_at],
     ['orderCompleted', timeline.order_completed_at],
   ];
@@ -242,7 +241,7 @@ function SellerOrderDetails({
 
       <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
         <h2 className="text-xl font-black text-slate-950">{t('sellerOrders.timeline')}</h2>
-        <ol className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <ol className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {timelineEvents.map(([label, value]) => (
             <li key={label} className="rounded-2xl bg-slate-50 p-4">
               <p className="text-sm font-bold text-slate-900">{t(`sellerOrders.${label}`)}</p>
