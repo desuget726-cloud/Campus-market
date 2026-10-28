@@ -9,7 +9,7 @@ os.environ["SESSION_SECRET"] = "product-ownership-test-secret"
 from fastapi import HTTPException, Request, Response
 from fastapi.testclient import TestClient
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import Text, create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -87,6 +87,16 @@ class ProductOwnershipTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
+
+    def test_product_description_persists_long_text(self):
+        long_description = "Detailed product information. " * 100
+        product = self.add_product(self.seller.student_id, "Detailed listing")
+        product.description = long_description
+        self.db.commit()
+
+        persisted_product = self.db.query(Product).filter_by(id=product.id).one()
+        self.assertIsInstance(Product.__table__.c.description.type, Text)
+        self.assertEqual(persisted_product.description, long_description)
 
     def add_product(
         self,

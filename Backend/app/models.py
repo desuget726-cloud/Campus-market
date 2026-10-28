@@ -255,7 +255,7 @@ class Product(Base):
     stock = Column(Integer, default=1, nullable=False)
     condition = Column(String(50), nullable=True)
     image = Column(Text, nullable=True)
-    description = Column(String(500), nullable=True)
+    description = Column(Text, nullable=True)
     seller = Column(String(100), nullable=True)
     seller_id = Column(String(50), ForeignKey("students.student_id", ondelete="SET NULL", onupdate="CASCADE"), nullable=True, index=True)
     negotiable = Column(Boolean, default=False, nullable=False)

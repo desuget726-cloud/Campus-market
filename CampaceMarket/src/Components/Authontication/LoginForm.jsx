@@ -5,6 +5,7 @@ import AuthInfoModal from './AuthInfoModal';
 import { useLanguage } from '../../context/LanguageContext';
 import { apiUrl } from '../../api/config';
 import { API_BASE_URL } from '../../config';
+import { notifyInfo } from '../../utils/notify';
 import logs from '../../assets/logs.png';
 import './LoginForm.css';
 
@@ -38,6 +39,12 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
   const [showTerms, setShowTerms] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+
+  useEffect(() => {
+    if (sessionExpiredMessage) {
+      notifyInfo(sessionExpiredMessage, 'login-redirect-message');
+    }
+  }, [sessionExpiredMessage]);
 
   useEffect(() => {
     if (emailCodeCountdown <= 0) return undefined;
@@ -505,9 +512,9 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
               <p>Sign in to your Campus Marketplace account.</p>
             </header>
 
-            {(sessionExpiredMessage || error) && (
+            {error && (
               <div className="login-status login-status-error">
-                {sessionExpiredMessage || error}
+                {error}
               </div>
             )}
 
@@ -545,9 +552,9 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
                     >✕</button>
                   </div>
 
-                  {(sessionExpiredMessage || error) && (
+                  {error && (
                     <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700" role="alert">
-                      {sessionExpiredMessage || error}
+                      {error}
                     </div>
                   )}
 

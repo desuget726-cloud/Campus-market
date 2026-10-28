@@ -4,7 +4,7 @@ import ssl
 from pathlib import Path
 from typing import Generator, Iterable, Optional
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import Text, create_engine, inspect, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.pool import StaticPool
@@ -220,6 +220,26 @@ def init_db() -> None:
                 table.dialect_options["mysql"]["collate"] = student_id_collation
     Base.metadata.create_all(bind=engine, tables=tables)
     inspector = inspect(engine)
+    if engine.dialect.name == "mysql" and "products" in inspector.get_table_names():
+        product_columns = {
+            column["name"]: column["type"]
+            for column in inspector.get_columns("products")
+        }
+        description_type = product_columns.get("description")
+        if description_type is not None and not isinstance(description_type, Text):
+            try:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        "ALTER TABLE products MODIFY COLUMN description TEXT NULL"
+                    ))
+                logging.getLogger("app.startup").info(
+                    "Successfully migrated products.description column to TEXT."
+                )
+            except SQLAlchemyError as error:
+                logging.getLogger("app.startup").warning(
+                    "Could not migrate products.description column to TEXT: %s",
+                    error,
+                )
     if "admin_sessions" in inspector.get_table_names():
         _add_column_if_missing("admin_sessions", "revoked_at", "DATETIME NULL")
         _add_column_if_missing("admin_sessions", "revoke_reason", "VARCHAR(60) NULL")
