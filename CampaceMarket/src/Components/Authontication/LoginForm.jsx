@@ -274,6 +274,12 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
         return;
       }
 
+      if (data.role === 'admin' && data.access_token && !data.challenge_token) {
+        onLoginSuccess?.({ ...data.user, access_token: data.access_token }, data.role);
+        setError('');
+        return;
+      }
+
       if (data.status === 'otp_required' || data.requires_2fa) {
         const nextRole = data.role || (data.status === 'otp_required' ? 'student' : 'admin');
         const nextEmail = data.email || data.otp_email || formData.studentId.trim();

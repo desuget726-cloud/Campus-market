@@ -4480,9 +4480,6 @@ function StudentDashboard({
                       </span>
                     )}
                   </span>
-                  <svg className={`h-4 w-4 ${isSidebarCollapsed || !areSidebarLabelsVisible ? 'lg:hidden' : ''} ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-white'}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
                   {isSidebarCollapsed && (
                     <span className={`fixed z-50 hidden whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-xl group-hover:block group-focus-visible:block [position-area:right] [margin-left:0.5rem] ${STUDENT_SIDEBAR_TOOLTIP_POSITIONS[item.key]}`}>
                       {item.label}

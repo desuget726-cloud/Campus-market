@@ -64,7 +64,11 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         self.client = TestClient(self.app)
         self.env_patch = patch.dict(
             os.environ,
-            {"SESSION_SECRET": "test-admin-login-2fa-secret", "ADMIN_2FA_BYPASS": "false"},
+            {
+                "SESSION_SECRET": "test-admin-login-2fa-secret",
+                "ADMIN_2FA_BYPASS": "false",
+                "DISABLE_ADMIN_2FA": "false",
+            },
         )
         self.env_patch.start()
         self.password_patch = patch.object(main_module, "verify_password", return_value=True)
@@ -90,7 +94,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         return secret
 
     def test_required_policy_returns_short_lived_challenge_without_session_or_login_history(self):
-        with patch.object(main_module, "DISABLE_ADMIN_2FA", False):
+        with patch.dict(os.environ, {"DISABLE_ADMIN_2FA": "false"}):
             response = self.login()
 
         self.assertEqual(response.status_code, 200, response.text)
@@ -110,17 +114,36 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
             300,
         )
 
-    def test_global_two_factor_policy_cannot_be_disabled_by_environment_flags(self):
-        with patch.object(main_module, "DISABLE_ADMIN_2FA", True), patch.dict(
-            os.environ,
-            {"ADMIN_2FA_BYPASS": "true"},
-        ):
+    def test_disable_admin_2fa_environment_values_bypass_required_policy(self):
+        for flag in ("true", "1", "yes"):
+            with self.subTest(flag=flag):
+                self.db.query(AdminSession).delete()
+                self.db.query(AdminLoginChallenge).delete()
+                self.db.query(AdminLoginHistory).delete()
+                self.db.commit()
+
+                with patch.dict(os.environ, {"DISABLE_ADMIN_2FA": flag}):
+                    response = self.login()
+
+                self.assertEqual(response.status_code, 200, response.text)
+                payload = response.json()
+                self.assertEqual(payload["role"], "admin")
+                self.assertTrue(payload["access_token"])
+                self.assertNotIn("challenge_token", payload)
+                self.assertEqual(self.db.query(AdminLoginChallenge).count(), 0)
+                self.assertEqual(self.db.query(AdminSession).count(), 1)
+
+    def test_disable_admin_2fa_bypasses_configured_authenticator(self):
+        self.configure_authenticator()
+
+        with patch.dict(os.environ, {"DISABLE_ADMIN_2FA": "yes"}):
             response = self.login()
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertTrue(response.json()["requires_2fa_setup"])
-        self.assertNotIn("access_token", response.json())
-        self.assertEqual(self.db.query(AdminSession).count(), 0)
+        self.assertTrue(response.json()["access_token"])
+        self.assertNotIn("challenge_token", response.json())
+        self.assertEqual(self.db.query(AdminLoginChallenge).count(), 0)
+        self.assertEqual(self.db.query(AdminSession).count(), 1)
 
     def test_configured_login_attempt_limit_locks_account_across_identifiers(self):
         self.db.query(SystemSetting).filter_by(key="security").update({
@@ -188,7 +211,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         })
         self.db.commit()
 
-        with patch.object(main_module, "DISABLE_ADMIN_2FA", False):
+        with patch.dict(os.environ, {"DISABLE_ADMIN_2FA": "false"}):
             response = self.login()
 
         self.assertEqual(response.status_code, 200, response.text)

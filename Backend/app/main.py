@@ -15,7 +15,6 @@ BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_FILE_PATH = os.path.join(BACKEND_DIR, ".env")
 ENV_FILE_EXISTS = os.path.isfile(ENV_FILE_PATH)
 ENV_FILE_LOADED = load_dotenv(ENV_FILE_PATH)
-DISABLE_ADMIN_2FA = os.getenv("DISABLE_ADMIN_2FA", "false").strip().lower() == "true"
 ADMIN_SUB_ADMINS_ENABLED = os.getenv("ADMIN_SUB_ADMINS_ENABLED", "false").strip().lower() == "true"
 try:
     MAX_TOTAL_ADMINS = max(1, int(os.getenv("MAX_TOTAL_ADMINS", "3").strip()))
@@ -114,6 +113,11 @@ from .commission_service import DEFAULT_COMMISSION_SETTINGS, as_decimal, commiss
 from .storage import save_attachment, save_upload
 
 logger = logging.getLogger(__name__)
+
+
+def _admin_2fa_disabled() -> bool:
+    return os.getenv("DISABLE_ADMIN_2FA", "").strip().lower() in {"true", "1", "yes"}
+
 
 app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
 PRIVATE_SUPPORT_UPLOAD_DIR = os.path.join(BACKEND_DIR, "private_uploads", "support")
@@ -3927,7 +3931,7 @@ async def on_startup():
         "Google OAuth redirect URI: %s",
         _redact_oauth_log_value(google_redirect_uri, {}),
     )
-    if DISABLE_ADMIN_2FA:
+    if _admin_2fa_disabled():
         startup_logger.warning("WARNING: Admin 2FA is DISABLED (development only)")
     ai_provider = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
     if ai_provider == "ollama":
@@ -4324,7 +4328,7 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             and _decrypt_totp_secret(admin.two_factor_secret)
         )
 
-        if require_admin_2fa or (admin_2fa_configured and not DISABLE_ADMIN_2FA):
+        if not _admin_2fa_disabled() and (require_admin_2fa or admin_2fa_configured):
             challenge_token = _create_admin_login_challenge(db, admin)
             db.commit()
 
