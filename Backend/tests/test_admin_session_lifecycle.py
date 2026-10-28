@@ -262,6 +262,43 @@ class AdminSessionLifecycleTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "at least 5"):
                 asyncio.run(main_module.on_startup())
 
+    def test_startup_seeds_admin_when_missing(self):
+        self.db.query(Admin).delete()
+        self.db.commit()
+        previous_scheduler = main_module.payment_scheduler
+
+        class FakeScheduler:
+            def add_job(self, *args, **kwargs):
+                return None
+
+            def start(self):
+                return None
+
+        try:
+            with patch.dict(os.environ, {"AI_PROVIDER": "test"}), \
+                 patch.object(main_module, "_check_production_configuration"), \
+                 patch.object(main_module, "init_db"), \
+                 patch.object(main_module, "SessionLocal", return_value=self.db), \
+                 patch.object(main_module, "ensure_database_compatibility"), \
+                 patch.object(main_module, "_seed_default_system_settings"), \
+                 patch.object(main_module, "backfill_report_targets"), \
+                 patch.object(main_module, "purge_legacy_soft_deleted_login_history"), \
+                 patch.object(main_module, "create_admin_if_missing") as seed_admin, \
+                 patch.object(main_module, "AsyncIOScheduler", return_value=FakeScheduler()), \
+                 self.assertLogs("app.startup", level="INFO") as startup_logs:
+                asyncio.run(main_module.on_startup())
+
+            seed_admin.assert_called_once_with()
+            self.assertTrue(
+                any(
+                    record.endswith("Default admin user seeded successfully.")
+                    for record in startup_logs.output
+                )
+            )
+        finally:
+            main_module.payment_scheduler = previous_scheduler
+            self.db = self.session_factory()
+
     def test_startup_does_not_revoke_a_valid_admin_session(self):
         session = AdminSession(
             admin_id=self.admin.id,

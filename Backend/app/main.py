@@ -95,6 +95,7 @@ from .models import (
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
     AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
 )
+from .admin_bootstrap import create_admin_if_missing
 from .database import get_db, init_db, SessionLocal, Base, engine, DATABASE_URL
 from .config import get_dispute_window_hours, get_pay_lock_minutes, get_pay_max_failed_attempts
 from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_secret_key, get_chapa_webhook_secret, get_payout_adapter
@@ -4043,6 +4044,11 @@ async def on_startup():
         init_db()
         db = SessionLocal()
         try:
+            admin = db.query(Admin).filter(func.lower(Admin.role) == "admin").first()
+            if not admin:
+                startup_logger.info("No admin user found. Running admin seed...")
+                create_admin_if_missing()
+                startup_logger.info("Default admin user seeded successfully.")
             ensure_database_compatibility(db)
             _seed_default_system_settings(db)
             backfill_report_targets(db)
