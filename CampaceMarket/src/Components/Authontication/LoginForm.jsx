@@ -509,7 +509,7 @@ function LoginForm({ onLoginSuccess, onToggleRegister, onCancel, sessionExpiredM
             </button>
             <header className="login-header">
               <h1>Welcome Back,</h1>
-              <p>Sign in to your Campus Marketplace account.</p>
+              <p>Sign in to your UniXchange account.</p>
             </header>
 
             {error && (
