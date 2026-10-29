@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import toast from 'react-hot-toast';
 import ProductDetails from './ProductDetails';
 import { IMAGE_PLACEHOLDER } from '../../config';
 import { clearPendingProductAction, getPendingProductAction } from '../../utils/productActionState';
@@ -86,6 +87,8 @@ describe('ProductDetails guest actions', () => {
     clearPendingProductAction();
     mockSetCartItems.mockClear();
     mockCartItems.length = 0;
+    localStorage.removeItem('token');
+    localStorage.removeItem('campaceSession');
     localStorage.removeItem('viewed_products');
     vi.stubGlobal('fetch', vi.fn((input, options = {}) => {
       const url = String(input);
@@ -106,6 +109,8 @@ describe('ProductDetails guest actions', () => {
   afterEach(() => {
     cleanup();
     clearPendingProductAction();
+    localStorage.removeItem('token');
+    localStorage.removeItem('campaceSession');
     localStorage.removeItem('viewed_products');
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -151,6 +156,119 @@ describe('ProductDetails guest actions', () => {
 
     await waitFor(() => expect(screen.getByText('Seller')).toBeTruthy());
     expect(screen.queryByText('productDetails.buyer.responseTime')).toBeNull();
+  });
+
+  it('sends an authenticated message to the seller with the bearer token', async () => {
+    const currentUser = {
+      studentId: 'buyer-1',
+      is_verified: true,
+      access_token: 'student-token',
+    };
+    const fetchMock = globalThis.fetch;
+    render(<ProductDetails product={product} currentUser={currentUser} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Send Message & Start Chat/ }));
+
+    await waitFor(() => {
+      const request = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/student/messages/send'));
+      expect(request).toBeTruthy();
+      expect(request[1].headers.Authorization).toBe('Bearer student-token');
+    });
+  });
+
+  it('lets admins reveal, call, copy, and text the seller phone without student verification', async () => {
+    const writeText = vi.fn().mockResolvedValue();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    const adminDetail = { ...detail, seller_phone: '0912345678' };
+    const fetchMock = vi.fn((input) => {
+      const url = String(input);
+      if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
+      if (url.endsWith('/api/products/42')) return Promise.resolve(jsonResponse(adminDetail));
+      if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+      if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+      if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <ProductDetails
+        product={product}
+        currentUser={{ role: 'admin', access_token: 'admin-token' }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Show Contact/ }));
+
+    const phoneLink = await screen.findByRole('link', { name: /0912345678/ });
+    expect(phoneLink.getAttribute('href')).toBe('tel:0912345678');
+    expect(screen.getByRole('link', { name: 'Message' }).getAttribute('href')).toBe('sms:0912345678');
+    const productRequest = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/products/42'));
+    expect(productRequest[1].headers.Authorization).toBe('Bearer admin-token');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('0912345678'));
+    expect(screen.queryByRole('button', { name: /Send Message & Start Chat/ })).toBeNull();
+  });
+
+  it('does not send a chat request without a token and prompts the user to sign in', async () => {
+    const onNavigate = vi.fn();
+    const toastError = vi.spyOn(toast, 'error');
+    const fetchMock = globalThis.fetch;
+    render(
+      <ProductDetails
+        product={product}
+        currentUser={{ studentId: 'buyer-1', is_verified: true }}
+        onNavigate={onNavigate}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Send Message & Start Chat/ }));
+
+    expect(toastError).toHaveBeenCalledWith('Please sign in to message the seller.');
+    expect(onNavigate).toHaveBeenCalledWith('login', expect.objectContaining({
+      returnTo: '/?productId=42',
+    }));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/student/messages/send'))).toBe(false);
+  });
+
+  it('handles a 401 chat response with sign-in feedback even when the response is not JSON', async () => {
+    const onNavigate = vi.fn();
+    const toastError = vi.spyOn(toast, 'error');
+    const fetchMock = globalThis.fetch;
+    const defaultFetch = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation((input, options = {}) => {
+      if (String(input).includes('/api/student/messages/send')) {
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: async () => {
+            throw new Error('Invalid JSON response');
+          },
+        });
+      }
+      return defaultFetch(input, options);
+    });
+
+    render(
+      <ProductDetails
+        product={product}
+        currentUser={{ studentId: 'buyer-1', is_verified: true, access_token: 'student-token' }}
+        onNavigate={onNavigate}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Send Message & Start Chat/ }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith('Please sign in to message the seller.');
+      expect(onNavigate).toHaveBeenCalledWith('login', expect.objectContaining({
+        returnTo: '/?productId=42',
+      }));
+    });
   });
 
   it('shows the saved pickup location instead of a default handover location', async () => {

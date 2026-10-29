@@ -3,11 +3,16 @@ export const getStudentAccessToken = (user) => {
   if (userToken) return userToken;
 
   try {
+    const storedToken = window.localStorage.getItem('token');
+    if (storedToken) return storedToken;
+
     const session = JSON.parse(window.localStorage.getItem('campaceSession') || '{}');
     return session?.user?.access_token
       || session?.user?.accessToken
+      || session?.user?.token
       || session?.access_token
       || session?.accessToken
+      || session?.token
       || '';
   } catch {
     return '';

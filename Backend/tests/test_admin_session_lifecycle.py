@@ -121,6 +121,20 @@ class AdminSessionLifecycleTests(unittest.TestCase):
         self.assertTrue(all(session.is_active for session in sessions))
         self.assertTrue(all(session.revoke_reason is None for session in sessions))
 
+    def test_admin_session_response_includes_saved_location(self):
+        response = self.login()
+        token = response.json()["access_token"]
+
+        sessions_response = self.client.get(
+            "/api/admin/sessions",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(sessions_response.status_code, 200, sessions_response.text)
+        self.assertEqual(sessions_response.json()[0]["location"], "Local network")
+        session = self.db.query(AdminSession).one()
+        self.assertEqual(session.location, "Local network")
+
     def test_authenticated_requests_refresh_last_active_at_most_once_per_minute(self):
         fixed_now = datetime.now(timezone.utc)
         token = main_module._create_session_token(
@@ -266,9 +280,11 @@ class AdminSessionLifecycleTests(unittest.TestCase):
         self.db.query(Admin).delete()
         self.db.commit()
         previous_scheduler = main_module.payment_scheduler
+        scheduled_jobs = []
 
         class FakeScheduler:
             def add_job(self, *args, **kwargs):
+                scheduled_jobs.append((args, kwargs))
                 return None
 
             def start(self):
@@ -289,6 +305,13 @@ class AdminSessionLifecycleTests(unittest.TestCase):
                 asyncio.run(main_module.on_startup())
 
             seed_admin.assert_called_once_with()
+            audit_cleanup_job = next(
+                job for job in scheduled_jobs
+                if job[1].get("id") == "cleanup-old-audit-logs"
+            )
+            self.assertIs(audit_cleanup_job[0][0], main_module._cleanup_old_audit_logs)
+            self.assertEqual(audit_cleanup_job[0][1], "interval")
+            self.assertEqual(audit_cleanup_job[1]["days"], 1)
             self.assertTrue(
                 any(
                     record.endswith("Default admin user seeded successfully.")
@@ -382,6 +405,7 @@ class AdminSessionLifecycleTests(unittest.TestCase):
             columns = {column["name"] for column in inspect(engine).get_columns("admin_sessions")}
             self.assertIn("revoked_at", columns)
             self.assertIn("revoke_reason", columns)
+            self.assertIn("location", columns)
             with engine.connect() as connection:
                 row = connection.execute(text(
                     "SELECT is_active, revoked_at, revoke_reason "

@@ -243,6 +243,7 @@ def init_db() -> None:
     if "admin_sessions" in inspector.get_table_names():
         _add_column_if_missing("admin_sessions", "revoked_at", "DATETIME NULL")
         _add_column_if_missing("admin_sessions", "revoke_reason", "VARCHAR(60) NULL")
+        _add_column_if_missing("admin_sessions", "location", "VARCHAR(255) NULL")
     if "audit_logs" in inspector.get_table_names():
         audit_log_additions = {
             "user_agent": "VARCHAR(255) NULL",
@@ -564,6 +565,8 @@ def init_db() -> None:
             "dispute_reason": "TEXT NULL",
             "platform_fee": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
             "seller_commission": "DECIMAL(10,2) NOT NULL DEFAULT 0.00",
+            "commission_rate": "DECIMAL(10,4) NOT NULL DEFAULT 0.0000",
+            "commission_type": "VARCHAR(20) NOT NULL DEFAULT 'percentage'",
             "paid_at": "DATETIME NULL",
             "completed_at": "DATETIME NULL",
             "expired_at": "DATETIME NULL",

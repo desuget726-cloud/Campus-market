@@ -95,7 +95,7 @@ const parseProductImages = (image) => {
 function ProductDetails({ product, currentUser, pendingAction, onPendingActionHandled, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const { t, language } = useLanguage();
   const { items: cartItems, setItems: setCartItems, loadedStudentId: cartStudentId, loading: cartLoading, error: cartError } = useCart();
-  const [showPhone, setShowPhone] = useState(false);
+  const [phoneProductId, setPhoneProductId] = useState(null);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [previewAsBuyer, setPreviewAsBuyer] = useState(false);
   const initialStatus = String(product?.status || '').trim().toLowerCase();
@@ -150,9 +150,17 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const cartAddInFlightRef = useRef(false);
   const payAttemptKeyRef = useRef(null);
   const messageInputRef = useRef(null);
+  const isAdmin = String(currentUser?.role || '').toLowerCase() === 'admin';
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
   const hasDetailsForCurrentProduct = String(detailedProduct?.id) === String(product?.id);
   const item = hasDetailsForCurrentProduct ? detailedProduct : product;
+  const sellerPhone = item?.seller?.phone
+    || item?.seller?.phone_number
+    || item?.seller_phone
+    || product?.seller?.phone
+    || product?.seller?.phone_number
+    || product?.seller_phone
+    || '';
   const availableStock = Math.max(0, Number(item?.stock ?? 1));
   const isOwnerStatusLoaded = hasDetailsForCurrentProduct && typeof detailedProduct?.is_owner === 'boolean';
   const isOwner = isOwnerStatusLoaded && detailedProduct.is_owner === true;
@@ -161,6 +169,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const isReadOnlyPreview = isOwner && previewAsBuyer;
   const buyerStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim();
   const currentUserAccessToken = getStudentAccessToken(currentUser);
+  const showPhone = phoneProductId === String(product?.id || '');
   const cartLoaded = Boolean(buyerStudentId && cartStudentId === buyerStudentId && !cartLoading && !cartError);
   const cartItem = cartLoaded
     ? cartItems.find((cartEntry) => String(cartEntry.product_id) === String(product?.id))
@@ -219,10 +228,13 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       });
     });
   };
+  const promptLoginToMessage = () => {
+    toast.error('Please sign in to message the seller.');
+    requireLogin('sendMessage');
+  };
 
   useEffect(() => {
     if (!product?.id) return;
-
     const fetchProductDetails = async () => {
       try {
         const viewerKey = String(
@@ -255,6 +267,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     product?.id,
     currentUser?.studentId,
     currentUser?.student_id,
+    currentUser?.role,
     currentUserAccessToken,
   ]);
 
@@ -347,8 +360,8 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   }, []);
 
   const handleStartChat = async () => {
-    if (!buyerStudentId) {
-      requireLogin('sendMessage');
+    if (!buyerStudentId || !currentUserAccessToken) {
+      promptLoginToMessage();
       return;
     }
     if (!isChatEnabled) {
@@ -375,7 +388,10 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     try {
       const response = await fetch(`${API_BASE_URL}/api/student/messages/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${currentUserAccessToken}`,
+        },
         body: JSON.stringify({
           sender_id: buyerId,
           receiver_id: sellerId,
@@ -384,9 +400,18 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.detail || 'Unable to send chat request.');
+        if (response.status === 401) {
+          promptLoginToMessage();
+          return;
+        }
+        const detail = data?.detail;
+        throw new Error(
+          typeof detail === 'string'
+            ? detail
+            : detail?.message || 'Unable to send chat request.',
+        );
       }
 
       setMessageText('');
@@ -400,8 +425,9 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         onNavigate('student-dashboard');
       }
     } catch (error) {
-      setChatStatus(error.message || 'Unable to send chat request.');
-      console.error(error);
+      const message = error.message || 'Unable to send chat request.';
+      setChatStatus(message);
+      toast.error(message);
     } finally {
       setChatLoading(false);
     }
@@ -745,16 +771,29 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
 
   const handleShowContact = () => {
     const studentId = currentUser?.studentId || currentUser?.student_id;
-    if (!studentId) {
+    if (!isAdmin && !studentId) {
       requireLogin('showContact');
       return;
     }
-    setShowPhone((previous) => !previous);
+    setPhoneProductId((previous) => (
+      previous === String(product?.id || '') ? null : String(product?.id || '')
+    ));
+  };
+
+  const handleCopySellerPhone = async () => {
+    if (!sellerPhone) return;
+    try {
+      await navigator.clipboard.writeText(sellerPhone);
+      toast.success('Phone number copied.');
+    } catch (error) {
+      console.error('Unable to copy the seller phone number:', error);
+      toast.error('Unable to copy the phone number.');
+    }
   };
 
   const runPendingAction = useEffectEvent((action) => restorePendingProductAction(action, {
     addToCart: ({ quantity }) => handleAddToCart(quantity),
-    showContact: () => setShowPhone(true),
+    showContact: () => setPhoneProductId(String(product?.id || '')),
     wishlist: async () => {
       if (!isWishlisted) await handleToggleWishlist();
     },
@@ -1348,17 +1387,45 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             )}
 
             {showBuyerView && <div className="mt-6 space-y-3">
-              {/* ስልክ ቁጥር ማሳያ ቁልፍ (Show Contact Button) */}
-              <button
-                onClick={handleShowContact}
-                disabled={isReadOnlyPreview}
-                className="w-full rounded-full bg-white border border-slate-800 py-3.5 text-sm font-semibold text-slate-900 hover:bg-slate-50 transition flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <span>📞</span>
-                <span>{showPhone ? (item.seller_phone || 'Phone unavailable') : 'Show Contact'}</span>
-              </button>
+              {showPhone ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 p-2.5 font-medium text-blue-900">
+                  <a
+                    href={sellerPhone ? `tel:${sellerPhone}` : undefined}
+                    className="flex min-w-0 items-center gap-2 break-all hover:underline"
+                  >
+                    <span aria-hidden="true">📞</span>
+                    <span>{sellerPhone || 'No phone provided'}</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={handleCopySellerPhone}
+                    disabled={!sellerPhone}
+                    className="shrink-0 rounded border bg-white px-2 py-1 text-xs shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Copy
+                  </button>
+                  {isAdmin && sellerPhone && (
+                    <a
+                      href={`sms:${sellerPhone}`}
+                      className="shrink-0 rounded border bg-white px-2 py-1 text-xs shadow-sm hover:underline"
+                    >
+                      Message
+                    </a>
+                  )}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleShowContact}
+                  disabled={isReadOnlyPreview}
+                  className="w-full rounded-full border border-slate-800 bg-white py-3.5 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span aria-hidden="true">📞</span>
+                  <span>Show Contact</span>
+                </button>
+              )}
 
-              {currentUser ? (
+              {currentUser && !isAdmin ? (
                 <>
                   <div className="flex items-center justify-between gap-3 text-left">
                     <label htmlFor="seller-message" className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">Message to seller</label>
@@ -1391,7 +1458,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   {isNegotiable && <div className="flex items-center gap-2"><input type="number" min="1" value={offerAmount} onChange={(event) => setOfferAmount(event.target.value)} placeholder="Offer amount" disabled={isReadOnlyPreview} className="min-w-0 flex-1 rounded-full border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-slate-800 outline-none focus:border-amber-400 disabled:opacity-50" /><button type="button" onClick={handleMakeOffer} disabled={isReadOnlyPreview} className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50">Make an Offer</button></div>}
                 </>
               ) : (
-                <button type="button" onClick={() => requireLogin('sendMessage')} className="w-full rounded-full border border-emerald-700 py-3.5 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50">
+                <button type="button" onClick={promptLoginToMessage} className="w-full rounded-full border border-emerald-700 py-3.5 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50">
                   {t('productDetails.buyer.sendMessage')}
                 </button>
               )}

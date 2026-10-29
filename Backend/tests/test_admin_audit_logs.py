@@ -87,6 +87,51 @@ class AdminAuditLogsEndpointTests(unittest.TestCase):
         self.client.close()
         self.db.close()
 
+    def test_cleanup_old_audit_logs_removes_only_logs_older_than_30_days(self):
+        fixed_now = datetime(2026, 8, 12, 22, 0, 0)
+        cutoff_date = fixed_now - timedelta(days=30)
+        old_log = AuditLog(
+            admin_id=self.admin.id,
+            action="Old audit log",
+            entity_type="System",
+            created_at=cutoff_date - timedelta(seconds=1),
+        )
+        boundary_log = AuditLog(
+            admin_id=self.admin.id,
+            action="Boundary audit log",
+            entity_type="System",
+            created_at=cutoff_date,
+        )
+        recent_log = AuditLog(
+            admin_id=self.admin.id,
+            action="Recent audit log",
+            entity_type="System",
+            created_at=cutoff_date + timedelta(seconds=1),
+        )
+        self.db.add_all([old_log, boundary_log, recent_log])
+        self.db.commit()
+        old_log_id = old_log.id
+        boundary_log_id = boundary_log.id
+        recent_log_id = recent_log.id
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def utcnow(cls):
+                return fixed_now
+
+        with patch.object(main_module, "datetime", FixedDateTime), \
+             patch.object(main_module, "SessionLocal", side_effect=self.session_factory):
+            deleted_count = main_module._cleanup_old_audit_logs()
+
+        self.assertEqual(deleted_count, 1)
+        remaining_ids = {
+            log.id
+            for log in self.db.query(AuditLog).filter(
+                AuditLog.id.in_([old_log_id, boundary_log_id, recent_log_id])
+            ).all()
+        }
+        self.assertEqual(remaining_ids, {boundary_log_id, recent_log_id})
+
     def get_logs(self, **params):
         return self.client.get(
             "/api/admin/audit-logs",

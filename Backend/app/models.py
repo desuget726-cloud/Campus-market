@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime, timezone
 import uuid
 from sqlalchemy import CheckConstraint, Column, Integer, String, ForeignKey, Boolean, Date, DateTime, Numeric, Text, JSON, UniqueConstraint, Index, text
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from sqlalchemy.sql import func
 from .database import Base
 
@@ -336,6 +336,9 @@ class Order(Base):
     price = Column(String(50), nullable=False)
     platform_fee = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
     seller_commission = Column(Numeric(10, 2), default=Decimal("0.00"), nullable=False)
+    commission_amount = synonym("seller_commission")
+    commission_rate = Column(Numeric(10, 4), default=Decimal("0.0000"), nullable=False)
+    commission_type = Column(String(20), default="percentage", nullable=False)
     product_category = Column(String(100), nullable=True)
     product_subcategory = Column(String(100), nullable=True)
     product_description = Column(String(500), nullable=True)
@@ -557,6 +560,7 @@ class AdminSession(Base):
     admin_id = Column(Integer, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True)
     session_token = Column(String(500), unique=True, nullable=False, index=True)
     ip_address = Column(String(50), nullable=True)
+    location = Column(String(255), nullable=True)
     device_browser = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     last_active = Column(DateTime, server_default=func.now(), nullable=False)

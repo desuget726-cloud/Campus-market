@@ -175,6 +175,9 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
         assert order.created_at == order.paid_at == order.completed_at
         assert order.paid_at == order.completed_at
         assert order.quantity == 2
+        assert order.commission_amount == Decimal("20.00")
+        assert order.commission_rate == Decimal("10.0000")
+        assert order.commission_type == "percentage"
         assert db.query(Wallet).filter_by(student_id="buyer-1").one().balance == Decimal("300.00")
         assert db.query(Wallet).filter_by(student_id="seller-1").one().balance == Decimal("180.00")
         assert db.query(Product).one().stock == 1
@@ -201,6 +204,16 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
                 "order_id": body["order_id"],
             }
 
+    receipt = client.get(
+        f"/api/student/orders/{body['order_id']}/receipt",
+        headers=_headers(),
+    )
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["fees"] == 20.0
+    assert receipt.json()["platform_commission_label"] == (
+        "Platform commission (10%, deducted from seller payout)"
+    )
+
     notification_response = client.get(
         "/api/student/notifications?student_id=buyer-1",
         headers=_headers(),
@@ -210,6 +223,48 @@ def test_pay_summary_and_happy_path_create_completed_order_and_credit_seller(mar
     assert buyer_notification["reference_id"] == str(body["order_id"])
     assert buyer_notification["action_url"] == (
         f"/dashboard?tab=buyer&section=orders&order={body['order_id']}"
+    )
+
+
+def test_one_percent_commission_is_saved_and_shown_on_receipt(market):
+    client, session_factory, product_id = market
+    with session_factory() as db:
+        buyer = db.query(Student).filter_by(student_id="buyer-1").one()
+        buyer.wallet_balance = Decimal("1000.00")
+        db.query(Wallet).filter_by(student_id="buyer-1").one().balance = Decimal("1000.00")
+        db.query(Product).filter_by(id=product_id).one().price = "1000.00"
+        db.query(CartItem).filter_by(
+            student_id="buyer-1",
+            product_id=product_id,
+        ).one().quantity = 1
+        payment_setting = db.query(SystemSetting).filter_by(key="payment").one()
+        payment = json.loads(payment_setting.value)
+        payment["commission"]["commission_rate"] = "1"
+        payment_setting.value = json.dumps(payment)
+        db.commit()
+
+    response = _pay(client, product_id, quantity=1, key="one-percent-payment")
+    assert response.status_code == 200, response.text
+
+    with session_factory() as db:
+        order = db.query(Order).one()
+        assert order.commission_amount == Decimal("10.00")
+        assert order.commission_rate == Decimal("1.0000")
+        assert db.query(Wallet).filter_by(student_id="seller-1").one().balance == Decimal("990.00")
+        payment_setting = db.query(SystemSetting).filter_by(key="payment").one()
+        payment = json.loads(payment_setting.value)
+        payment["commission"]["commission_rate"] = "5"
+        payment_setting.value = json.dumps(payment)
+        db.commit()
+
+    receipt = client.get(
+        f"/api/student/orders/{response.json()['order_id']}/receipt",
+        headers=_headers(),
+    )
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["fees"] == 10.0
+    assert receipt.json()["platform_commission_label"] == (
+        "Platform commission (1%, deducted from seller payout)"
     )
 
 

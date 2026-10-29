@@ -260,6 +260,26 @@ describe('admin dashboard default section', () => {
     expect(adminSessionRequests).toHaveLength(0);
   });
 
+  it('adds the stored bearer token to API requests without an authorization header', async () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(buildAdminSession()));
+    const fetchMock = vi.spyOn(window, 'fetch').mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    }));
+
+    render(<App />);
+    await waitFor(() => expect(window.fetch).not.toBe(fetchMock));
+    await window.fetch(`${API_BASE_URL}/api/test-auth-default`);
+
+    const request = fetchMock.mock.calls.find(([url]) => url === `${API_BASE_URL}/api/test-auth-default`);
+    expect(request[1].headers.get('Authorization')).toBe('Bearer token-123');
+
+    await window.fetch('https://external.example/api/resource');
+    const externalRequest = fetchMock.mock.calls.find(([url]) => url === 'https://external.example/api/resource');
+    expect(externalRequest[1]).toBeUndefined();
+  });
+
   it('clears and redirects once when an authenticated admin request returns a session code', async () => {
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(buildAdminSession()));
     const fetchMock = vi.spyOn(window, 'fetch').mockImplementation(async (request) => {

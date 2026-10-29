@@ -45,6 +45,17 @@ const getAccessToken = (session, sessionUser) => (
   || session?.token
   || ''
 );
+const getStoredAccessToken = () => {
+  try {
+    const directToken = window.localStorage.getItem('token');
+    if (directToken) return directToken;
+    const storedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
+    return getAccessToken(storedSession, storedSession?.user);
+  } catch (error) {
+    console.error('Failed to read the stored access token:', error);
+    return '';
+  }
+};
 const getStudentDashboardLink = () => {
   if (typeof window === 'undefined') {
     return { tab: 'home', section: null, itemId: null };
@@ -282,6 +293,34 @@ function AppContent() {
   useEffect(() => {
     const originalFetch = window.fetch;
     const wrappedFetch = async (...args) => {
+      const request = args[0] instanceof Request ? args[0] : null;
+      const requestUrl = typeof args[0] === 'string' ? args[0] : args[0]?.url || args[0]?.href;
+      const requestHeaders = new Headers(request?.headers);
+      new Headers(args[1]?.headers).forEach((value, name) => requestHeaders.set(name, value));
+      const token = getStoredAccessToken();
+      if (token && !requestHeaders.has('Authorization')) {
+        try {
+          const apiOrigin = new URL(API_BASE_URL || window.location.origin, window.location.origin).origin;
+          const requestedUrl = new URL(requestUrl, window.location.origin);
+          const isRelativeApiRequest = typeof requestUrl === 'string'
+            && !/^(?:[a-z][a-z\d+.-]*:|\/\/|\\\\)/i.test(requestUrl)
+            && requestedUrl.origin === window.location.origin
+            && requestedUrl.pathname.startsWith('/api/');
+          if (
+            requestedUrl.pathname.startsWith('/api/')
+            && (requestedUrl.origin === apiOrigin || isRelativeApiRequest)
+          ) {
+            requestHeaders.set('Authorization', /^Bearer\s/i.test(token) ? token : `Bearer ${token}`);
+            args = [
+              args[0],
+              { ...args[1], headers: requestHeaders },
+            ];
+          }
+        } catch (error) {
+          console.error('Failed to attach authorization to an API request:', error);
+        }
+      }
+
       const response = await originalFetch.apply(window, args);
       if (response.status === 401) {
         const request = args[0] instanceof Request ? args[0] : null;
@@ -292,15 +331,11 @@ function AppContent() {
         try {
           const storedSession = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) || 'null');
           storedSessionExists = Boolean(
-            storedSession?.user
-            && (storedSession?.userRole || storedSession.user.role)
-            && (
-              storedSession.access_token
-              || storedSession.accessToken
-              || storedSession.token
-              || storedSession.user.access_token
-              || storedSession.user.accessToken
-              || storedSession.user.token
+            window.localStorage.getItem('token')
+            || (
+              storedSession?.user
+              && (storedSession?.userRole || storedSession.user.role)
+              && getAccessToken(storedSession, storedSession.user)
             ),
           );
         } catch (error) {
@@ -980,7 +1015,7 @@ function AppContent() {
 
           {currentView === 'home' && (
             <HomeView
-              user={user}
+              user={user ? { ...user, role: user.role || userRole } : user}
               initialProductId={pendingProductId}
               pendingProductAction={pendingProductAction}
               onBackToSellerHub={returnToSellerHubOnProductBack ? () => {

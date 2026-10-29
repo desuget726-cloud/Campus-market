@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { IMAGE_PLACEHOLDER, resolveImageUrl, SHOW_REPORT_PROBLEM } from '../../config';
+import { IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { isOrderRefunded, shouldShowReceiptActions } from '../../utils/orderReceiptState';
 
 const TIMELINE = [
@@ -10,6 +10,7 @@ const TIMELINE = [
 ];
 
 const formatPrice = (value) => `${Number(value || 0).toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB`;
+const formatReceiptPrice = (value) => `${Number(value || 0).toLocaleString('en-ET', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ETB`;
 const formatDate = (value) => {
   if (!value) return 'Date unavailable';
   const date = new Date(value);
@@ -24,7 +25,7 @@ const formatDateTime = (value) => {
 function PrintableReceipt({ receipt, includeBuyerEmail = false, supportEmail = 'support@campus.edu.et' }) {
   if (!receipt) return null;
 
-  const money = (value) => formatPrice(value);
+  const money = formatReceiptPrice;
   const date = formatDateTime(receipt.payment_date || receipt.order_date) || 'Date unavailable';
   const field = (label, value, emphasis = false) => (
     <div className="printable-receipt__field">
@@ -367,7 +368,7 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
                 <p className="sm:col-span-2">Paid on: <strong className="text-slate-900">{new Date(paymentReceipt.payment_date || paymentReceipt.order_date).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong></p>
                 <p>Product: <strong className="text-slate-900">{paymentReceipt.product_name}</strong></p><p>Quantity: <strong className="text-slate-900">{paymentReceipt.quantity}</strong></p>
                 <p>Unit price: <strong className="text-slate-900">{formatPrice(paymentReceipt.unit_price)}</strong></p><p>Item total: <strong className="text-slate-900">{formatPrice(paymentReceipt.item_total)}</strong></p>
-                <p>Fees: <strong className="text-slate-900">{formatPrice(paymentReceipt.fees)}</strong></p><p>Total paid: <strong className="text-slate-900">{formatPrice(paymentReceipt.total_paid)}</strong></p>
+                <p className="sm:col-span-2">{paymentReceipt.platform_commission_label || 'Platform commission'}: <strong className="text-slate-900">{formatReceiptPrice(paymentReceipt.fees)}</strong></p><p>Total paid: <strong className="text-slate-900">{formatReceiptPrice(paymentReceipt.total_paid)}</strong></p>
                 <p>Payment method: <strong className="text-slate-900">{paymentReceipt.payment_method}</strong></p>
                 <p className="flex items-center gap-2">Reference: <strong className="break-all text-slate-900">{paymentReceipt.transaction_reference}</strong><button type="button" onClick={copyPaymentReference} className="shrink-0 rounded border border-slate-300 px-2 py-1 text-[10px] font-bold text-slate-700">{referenceCopied ? 'Copied' : 'Copy'}</button></p>
                 <p>Buyer: <strong className="text-slate-900">{paymentReceipt.buyer_name}</strong></p>
@@ -383,14 +384,6 @@ function OrderDetailsView({ order, role = 'buyer', loading = false, error = '', 
         </section>
         <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7"><p className="text-xs font-bold uppercase tracking-[0.2em] text-violet-600">Payment</p><h2 className="mt-2 text-xl font-black text-slate-950">{paymentHeading}</h2><p className="mt-3 text-sm leading-6 text-slate-600">{paymentMessage}</p></section>
       </div>
-
-      <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-        <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">Meeting</p>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
-          <div><p className="text-sm text-slate-500">Handover</p><p className="mt-1 text-sm font-semibold text-slate-700">Inspect the item together before the buyer pays.</p></div>
-        </div>
-        {SHOW_REPORT_PROBLEM && isBuyer && canDispute && <button type="button" onClick={() => onRaiseDispute?.(order)} className="mt-5 rounded-full border border-rose-200 bg-rose-50 px-5 py-3 text-sm font-black text-rose-700 hover:bg-rose-100">Report a problem (within 24 hours)</button>}
-      </section>
 
       <section className="overflow-visible rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
         <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Order status</p>

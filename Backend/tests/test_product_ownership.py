@@ -361,6 +361,39 @@ class ProductOwnershipTests(unittest.TestCase):
             "cart_count": 2,
         })
 
+    def test_admin_product_details_include_seller_phone(self):
+        self.buyer.phone = "0912345678"
+        self.db.commit()
+        request = Request({
+            "type": "http",
+            "method": "GET",
+            "path": f"/api/products/{self.buyers_product.id}",
+            "headers": [],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "scheme": "http",
+        })
+
+        with patch.object(
+            main_module,
+            "_student_from_authorization",
+            side_effect=HTTPException(status_code=401),
+        ), patch.object(
+            main_module,
+            "_require_admin_dashboard_access",
+            return_value=object(),
+        ):
+            admin_detail = main_module.get_product_detail(
+                self.buyers_product.id,
+                request,
+                Response(),
+                authorization="Bearer admin-token",
+                db=self.db,
+            )
+
+        self.assertEqual(admin_detail["seller_phone"], "0912345678")
+
     def test_anonymous_product_details_do_not_include_seller_phone(self):
         self.buyer.phone = "0912345678"
         self.db.commit()

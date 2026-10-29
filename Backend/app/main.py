@@ -73,9 +73,6 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 import qrcode
 from user_agents import parse as parse_user_agent
-from geoip2.database import Reader as GeoIP2Reader
-from geoip2.errors import GeoIP2Error
-from maxminddb.errors import InvalidDatabaseError
 from PIL import Image, ImageOps, UnidentifiedImageError
 from cryptography.fernet import Fernet, InvalidToken
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -3168,10 +3165,12 @@ def _record_admin_login_event(
 
 def _create_admin_session(db: Session, admin: Admin, token: str, request: Request) -> AdminSession:
     now = _utc_now().replace(tzinfo=None)
+    ip_address = get_real_client_ip(request)
     session = AdminSession(
         admin_id=admin.id,
         session_token=token,
-        ip_address=request.client.host if request.client else None,
+        ip_address=ip_address,
+        location=_resolve_ip_location_sync(ip_address),
         device_browser=request.headers.get("user-agent"),
         is_active=True,
         last_active=now,
@@ -3272,7 +3271,7 @@ def _create_or_reuse_admin_session(
     if not locked_admin or str(locked_admin.status or "").strip().lower() != "active":
         raise HTTPException(status_code=403, detail="This administrator account is inactive.")
 
-    ip_address = request.client.host if request.client else None
+    ip_address = get_real_client_ip(request)
     device_browser = (request.headers.get("user-agent") or "")[:255] or None
     now = _utc_now()
     now_naive = now.replace(tzinfo=None)
@@ -3296,6 +3295,8 @@ def _create_or_reuse_admin_session(
 
     if duplicate:
         duplicate.last_active = now_naive
+        if not duplicate.location:
+            duplicate.location = _resolve_ip_location_sync(ip_address)
         return duplicate, duplicate.session_token
 
     session = _create_admin_session(db, admin, token, request)
@@ -3574,6 +3575,30 @@ def _get_platform_commission_percent(db: Optional[Session] = None) -> Decimal:
     if settings["commission_type"] != "percentage":
         return Decimal("0")
     return as_decimal(settings["commission_rate"], field_name="commission_rate")
+
+
+def _order_commission_details(order: Order, item_total: Decimal) -> tuple[Decimal, Decimal, str]:
+    commission_amount = Decimal(
+        str(getattr(order, "commission_amount", None) or 0)
+    ).quantize(Decimal("0.01"))
+    commission_rate = Decimal(
+        str(getattr(order, "commission_rate", None) or 0)
+    )
+    commission_type = str(
+        getattr(order, "commission_type", None) or "percentage"
+    ).strip().lower()
+    if commission_type == "fixed":
+        commission_type = "flat"
+    if commission_type == "percentage" and commission_rate == 0 and commission_amount and item_total:
+        commission_rate = (commission_amount * Decimal("100") / item_total).normalize()
+    return commission_amount, commission_rate, commission_type
+
+
+def _order_commission_label(commission_rate: Decimal, commission_type: str) -> str:
+    if commission_type == "percentage":
+        rate_label = format(commission_rate.normalize(), "f")
+        return f"Platform commission ({rate_label}%, deducted from seller payout)"
+    return "Platform commission (flat fee, deducted from seller payout)"
 
 
 def _seed_default_system_settings(db: Session) -> None:
@@ -4093,6 +4118,15 @@ async def on_startup():
         "interval",
         days=1,
         id="cleanup-user-sessions",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    payment_scheduler.add_job(
+        _cleanup_old_audit_logs,
+        "interval",
+        days=1,
+        id="cleanup-old-audit-logs",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
@@ -5119,8 +5153,15 @@ def _oauth_cookie_secure() -> bool:
     return urlsplit(_oauth_frontend_url()).scheme.lower() == "https"
 
 
-def _create_secure_session_for_student(student: Student, response: Response, db: Session, request: Optional[Request] = None) -> dict:
-    user_session = _create_user_session(db, student, request)
+def _create_secure_session_for_student(
+    student: Student,
+    response: Response,
+    db: Session,
+    request: Optional[Request] = None,
+    *,
+    location: str,
+) -> dict:
+    user_session = _create_user_session(db, student, request, location=location)
     token = _create_session_token(
         student.student_id,
         "student",
@@ -5350,7 +5391,12 @@ async def google_callback(
         return _google_oauth_frontend_redirect("account_unavailable")
 
     response = _google_oauth_frontend_redirect()
-    _create_secure_session_for_student(student, response, db, request)
+    location = await resolve_ip_location(
+        get_real_client_ip(request) if request else "127.0.0.1"
+    )
+    _create_secure_session_for_student(
+        student, response, db, request, location=location
+    )
     return response
 
 
@@ -5459,7 +5505,10 @@ async def google_oauth_callback(data: OAuthCallbackRequest, response: Response, 
         raise HTTPException(status_code=400, detail="Google did not return a verified email address.")
 
     student = _get_or_create_oauth_student(profile["email"], profile.get("name"), db)
-    return _create_secure_session_for_student(student, response, db, request)
+    location = await resolve_ip_location(get_real_client_ip(request))
+    return _create_secure_session_for_student(
+        student, response, db, request, location=location
+    )
 
 
 @app.post("/api/auth/microsoft-callback")
@@ -5504,7 +5553,10 @@ async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Respons
         raise HTTPException(status_code=400, detail="Microsoft did not return an email address.")
 
     student = _get_or_create_oauth_student(email, profile.get("displayName"), db)
-    return _create_secure_session_for_student(student, response, db, request)
+    location = await resolve_ip_location(get_real_client_ip(request))
+    return _create_secure_session_for_student(
+        student, response, db, request, location=location
+    )
 
 
 @app.post("/api/auth/verify-login-otp")
@@ -6409,6 +6461,59 @@ def _request_client_ip(request: Optional[Request]) -> Optional[str]:
     return str(remote_ip)
 
 
+def get_real_client_ip(request: Request) -> str:
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        return x_forwarded_for.split(",")[0].strip()
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
+async def resolve_ip_location(ip: str) -> str:
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.is_private or ip_obj.is_loopback:
+            return "Local network"
+    except ValueError:
+        return "Local network"
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(
+                f"http://ip-api.com/json/{ip_obj}?fields=status,city,country"
+            )
+        if response.status_code != 200:
+            logging.getLogger("app.auth").warning(
+                "IP geolocation service returned HTTP %s.", response.status_code
+            )
+            return "Unknown location"
+        data = response.json()
+    except (httpx.RequestError, ValueError) as error:
+        logging.getLogger("app.auth").warning(
+            "IP geolocation lookup failed (%s).", type(error).__name__
+        )
+        return "Unknown location"
+
+    if not isinstance(data, dict) or data.get("status") != "success":
+        logging.getLogger("app.auth").warning(
+            "IP geolocation service did not return a successful location."
+        )
+        return "Unknown location"
+    city = data.get("city")
+    country = data.get("country")
+    city = city.strip() if isinstance(city, str) else ""
+    country = country.strip() if isinstance(country, str) else ""
+    if city and country:
+        return f"{city}, {country}"
+    return city or country or "Unknown location"
+
+
+def _resolve_ip_location_sync(ip: str) -> str:
+    return asyncio.run(resolve_ip_location(ip))
+
+
 def _session_device_name(user_agent: Optional[str]) -> str:
     parsed_agent = parse_user_agent(user_agent or "")
     operating_system = parsed_agent.os.family
@@ -6417,34 +6522,14 @@ def _session_device_name(user_agent: Optional[str]) -> str:
     return " / ".join(parts) if parts else "Unknown device"
 
 
-def _session_location(ip_address: Optional[str]) -> Optional[str]:
-    if not ip_address:
-        return None
-    try:
-        parsed_ip = ipaddress.ip_address(ip_address)
-    except ValueError:
-        return None
-    if parsed_ip.is_private or parsed_ip.is_loopback:
-        return "Local network"
-
-    database_path = os.getenv("GEOIP_DATABASE_PATH", "").strip()
-    if not database_path:
-        return None
-    try:
-        with GeoIP2Reader(database_path) as reader:
-            result = reader.city(str(parsed_ip))
-    except (OSError, ValueError, GeoIP2Error, InvalidDatabaseError) as error:
-        logging.getLogger("app.auth").warning("Local GeoIP lookup failed: %s", error)
-        return None
-    city = result.city.name
-    country = result.country.name
-    location_parts = [part for part in (city, country) if part]
-    return ", ".join(location_parts) or None
-
-
-def _create_user_session(db: Session, student: Student, request: Optional[Request]) -> UserSession:
+def _create_user_session(
+    db: Session,
+    student: Student,
+    request: Optional[Request],
+    location: Optional[str] = None,
+) -> UserSession:
     user_agent = request.headers.get("user-agent") if request else None
-    ip_address = _request_client_ip(request)
+    ip_address = get_real_client_ip(request) if request else "127.0.0.1"
     device_name = _session_device_name(user_agent)
     known_combination = db.query(UserSession.id).filter(
         UserSession.user_id == student.student_id,
@@ -6457,7 +6542,7 @@ def _create_user_session(db: Session, student: Student, request: Optional[Reques
         ip_address=ip_address,
         user_agent=user_agent,
         device_name=device_name,
-        location=_session_location(ip_address),
+        location=location if location is not None else _resolve_ip_location_sync(ip_address),
         created_at=now,
         last_active_at=now,
     )
@@ -6508,6 +6593,24 @@ def _cleanup_inactive_user_sessions() -> int:
     except SQLAlchemyError:
         db.rollback()
         logging.getLogger("app.auth").exception("User session cleanup failed.")
+        raise
+    finally:
+        db.close()
+
+
+def _cleanup_old_audit_logs() -> int:
+    cutoff_date = datetime.utcnow() - timedelta(days=30)
+    db = SessionLocal()
+    try:
+        deleted_count = db.query(AuditLog).filter(
+            AuditLog.created_at < cutoff_date
+        ).delete(synchronize_session=False)
+        db.commit()
+        logger.info(f"Audit log 30-day retention job purged {deleted_count} logs.")
+        return deleted_count
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Audit log retention cleanup failed.")
         raise
     finally:
         db.close()
@@ -6766,6 +6869,7 @@ def get_admin_sessions(
         "id": item.id,
         "is_current": item.id == current_session.id,
         "ip_address": item.ip_address,
+        "location": item.location,
         "device_browser": item.device_browser,
         "last_active": item.last_active.isoformat() if item.last_active else None,
         "created_at": item.created_at.isoformat() if item.created_at else None,
@@ -10047,7 +10151,7 @@ def get_product_detail(
         "seller_response_time_hours": round(sum(response_hours) / len(response_hours), 1) if response_hours else None,
         "seller_typical_response_bucket": typical_response_bucket,
     }
-    if authenticated_student:
+    if authenticated_student or authenticated_admin:
         result["seller_phone"] = seller.phone if seller else None
     result["is_owner"] = is_owner
     if is_owner:
@@ -13388,9 +13492,7 @@ def _serialize_order(db: Session, order: Order) -> dict:
     item_total = (Decimal(str(_parse_price_to_etb(order.price))) * int(getattr(order, "quantity", 1) or 1)).quantize(Decimal("0.01"))
     order_platform_fee = Decimal(str(getattr(order, "platform_fee", 0) or 0)).quantize(Decimal("0.01"))
     total_paid = item_total + order_platform_fee
-    commission_settings = _get_commission_settings(db)
-    platform_commission = _calculate_platform_commission(db, item_total)
-    commission_percent = _get_platform_commission_percent(db)
+    platform_commission, commission_percent, commission_type = _order_commission_details(order, item_total)
     released_payout = db.query(Transaction).filter(
         Transaction.tx_id == f"RELEASE-{order.id}",
         Transaction.type == "Escrow Release",
@@ -13427,9 +13529,9 @@ def _serialize_order(db: Session, order: Order) -> dict:
         "payment_status": _normalize_payment_status(getattr(order, "payment_status", None) or "Successful"),
         "item_total": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
         "subtotal": _parse_price_to_etb(order.price) * int(getattr(order, "quantity", 1) or 1),
-        "fees": float(order_platform_fee),
+        "fees": float(platform_commission),
         "platform_commission_percent": commission_percent,
-        "platform_commission_label": f"Platform commission ({commission_percent:g}%, deducted from seller payout)",
+        "platform_commission_label": _order_commission_label(commission_percent, commission_type),
         "total_paid": float(total_paid),
         "total": float(total_paid),
         "pickup_location": pickup_location,
@@ -14326,7 +14428,13 @@ def pay_for_product(
             raise HTTPException(status_code=409, detail={"code": "OUT_OF_STOCK", "message": "Not enough stock is available.", "stock": stock})
         unit_price = _validated_payment_unit_price(product.price)
         amount = (unit_price * Decimal(quantity)).quantize(Decimal("0.01"))
-        commission = _calculate_platform_commission(db, amount).quantize(Decimal("0.01"))
+        commission_settings = _get_commission_settings(db)
+        commission = commission_fee_from_settings(amount, commission_settings).quantize(Decimal("0.01"))
+        commission_rate = (
+            as_decimal(commission_settings["commission_rate"], field_name="commission_rate")
+            if commission_settings["commission_enabled"]
+            else Decimal("0")
+        )
         seller_credit = (amount - commission).quantize(Decimal("0.01"))
         if amount <= 0 or seller_credit < 0:
             raise HTTPException(status_code=409, detail="This listing has an invalid payment amount.")
@@ -14375,7 +14483,9 @@ def pay_for_product(
             title=product.title,
             price=str(unit_price),
             platform_fee=Decimal("0.00"),
-            seller_commission=commission,
+            commission_amount=commission,
+            commission_rate=commission_rate,
+            commission_type=commission_settings["commission_type"],
             product_category=product.category,
             product_subcategory=product.subcategory,
             product_description=product.description,
@@ -14758,12 +14868,7 @@ def get_student_order_receipt(
     quantity = int(getattr(order, "quantity", 1) or 1)
     unit_price = Decimal(str(_parse_price_to_etb(order.price))).quantize(Decimal("0.01"))
     item_total = (unit_price * quantity).quantize(Decimal("0.01"))
-    platform_commission = Decimal(str(getattr(order, "platform_fee", 0) or 0)).quantize(Decimal("0.01"))
-    commission_percent = (
-        (platform_commission * Decimal("100") / item_total).normalize()
-        if item_total
-        else Decimal("0")
-    )
+    platform_commission, commission_percent, commission_type = _order_commission_details(order, item_total)
 
     # The order-specific description identifies the successful buyer debit,
     # even when legacy order amounts or timestamps no longer match its fields.
@@ -14822,7 +14927,7 @@ def get_student_order_receipt(
         "item_total": float(item_total),
         "fees": float(platform_commission),
         "platform_commission_percent": float(commission_percent),
-        "platform_commission_label": f"Platform commission ({commission_percent:g}%, deducted from seller payout)",
+        "platform_commission_label": _order_commission_label(commission_percent, commission_type),
         "total_paid": float(payment_transaction.amount),
         "payment_method": _normalize_payment_type(payment_transaction.type),
         "transaction_reference": payment_transaction.tx_id,

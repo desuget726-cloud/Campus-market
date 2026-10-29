@@ -50,8 +50,19 @@ class StudentSessionTests(unittest.TestCase):
         )
         self.db.add(self.student)
         self.db.commit()
+        self.resolved_ips = []
+
+        async def resolve_location(ip_address):
+            self.resolved_ips.append(ip_address)
+            return "Addis Ababa, Ethiopia"
+
+        self.location_patch = patch.object(
+            main_module, "resolve_ip_location", new=resolve_location
+        )
+        self.location_patch.start()
 
     def tearDown(self):
+        self.location_patch.stop()
         self.db.close()
 
     def test_cors_allows_local_vite_credentials_methods_and_headers(self):
@@ -120,6 +131,35 @@ class StudentSessionTests(unittest.TestCase):
         notifications = self.db.query(Notification).filter_by(student_id=self.student.student_id).all()
         self.assertEqual(len(notifications), 2)
         self.assertTrue(all(notification.message.startswith("New login from ") for notification in notifications))
+
+    def test_login_persists_forwarded_client_ip_and_resolved_location(self):
+        request = self._request(
+            "10.0.0.5",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0",
+            forwarded_for="197.156.0.25, 10.0.0.1",
+        )
+
+        result = main_module.login_user(
+            main_module.LoginRequest(
+                id_or_email=self.student.student_id,
+                password="SessionPass123!",
+            ),
+            request,
+            self.db,
+        )
+
+        session = self.db.query(UserSession).filter_by(
+            id=self._session_id(result["access_token"])
+        ).one()
+        self.assertEqual(session.ip_address, "197.156.0.25")
+        self.assertEqual(session.location, "Addis Ababa, Ethiopia")
+        self.assertEqual(self.resolved_ips[-1], "197.156.0.25")
+        serialized = main_module.get_student_sessions(
+            authorization=f"Bearer {result['access_token']}",
+            db=self.db,
+        )
+        current_session = next(item for item in serialized if item["is_current"])
+        self.assertEqual(current_session["location"], "Addis Ababa, Ethiopia")
 
     def test_successful_login_records_auth_audit_event(self):
         self._login()
