@@ -19835,7 +19835,7 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     user_growth = []
     product_uploads = []
     revenue_trend = []
-    current_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    current_month = _analytics_local_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     history_months_limit = 6
     month_windows = []
     for month_offset in range(history_months_limit - 1, -1, -1):
@@ -19845,6 +19845,36 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         target_date = datetime(year, month, 1)
         next_month = datetime(year + (month == 12), 1 if month == 12 else month + 1, 1)
         month_windows.append((target_date, next_month))
+
+    student_year = extract("year", Student.created_at)
+    student_month = extract("month", Student.created_at)
+    student_rows = db.query(
+        student_year,
+        student_month,
+        func.count(Student.id),
+    ).filter(
+        Student.created_at >= month_windows[0][0],
+        Student.created_at < month_windows[-1][1],
+    ).group_by(student_year, student_month).all()
+    student_counts_by_month = {
+        (int(year), int(month)): int(count)
+        for year, month, count in student_rows
+    }
+
+    product_year = extract("year", Product.created_at)
+    product_month = extract("month", Product.created_at)
+    product_rows = db.query(
+        product_year,
+        product_month,
+        func.count(Product.id),
+    ).filter(
+        Product.created_at >= month_windows[0][0],
+        Product.created_at < month_windows[-1][1],
+    ).group_by(product_year, product_month).all()
+    product_counts_by_month = {
+        (int(year), int(month)): int(count)
+        for year, month, count in product_rows
+    }
 
     revenue_rows = db.query(Transaction.created_at, Transaction.amount).filter(
         Transaction.created_at >= month_windows[0][0],
@@ -19860,14 +19890,8 @@ def get_admin_analytics(db: Session = Depends(get_db)):
     for target_date, next_month in month_windows:
         month_key = (target_date.year, target_date.month)
         trend_months.append(target_date.strftime("%b %y"))
-        user_growth.append(db.query(Student).filter(
-            Student.created_at >= target_date,
-            Student.created_at < next_month,
-        ).count())
-        product_uploads.append(db.query(Product).filter(
-            Product.created_at >= target_date,
-            Product.created_at < next_month,
-        ).count())
+        user_growth.append(student_counts_by_month.get(month_key, 0))
+        product_uploads.append(product_counts_by_month.get(month_key, 0))
         revenue_trend.append(revenue_by_month.get(month_key, 0.0))
 
     return {
@@ -19898,6 +19922,10 @@ def get_admin_analytics(db: Session = Depends(get_db)):
             "product_uploads": product_uploads,
             "revenue": revenue_trend,
         },
+        "userGrowth": [
+            {"month": month, "users": users, "products": products}
+            for month, users, products in zip(trend_months, user_growth, product_uploads)
+        ],
         "salesTrend": product_uploads,
         "revenueTrend": revenue_trend,
         "registrations": registrations,

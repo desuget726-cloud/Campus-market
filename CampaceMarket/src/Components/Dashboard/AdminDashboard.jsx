@@ -2156,6 +2156,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       const totalRevenue = data?.revenue ?? `${Number(data?.total_revenue ?? 0).toLocaleString()} ETB`;
       const pendingReports = Number(data?.pending_reports ?? data?.pendingReports ?? 0);
       const trends = data?.trends ?? {};
+      const monthlyGrowth = Array.isArray(data?.userGrowth) ? data.userGrowth : [];
+      const monthlyGrowthMonths = monthlyGrowth.map((row) => row.month);
+      const monthlyUserGrowth = monthlyGrowth.map((row) => Number(row.users) || 0);
+      const monthlyProductUploads = monthlyGrowth.map((row) => Number(row.products) || 0);
       const orderStatusBreakdown = data?.order_status_breakdown ?? data?.orderStatus ?? [];
       const popularCategories = data?.popular_categories ?? data?.categories ?? [];
       const hasDatabaseActivity = totalStudents > 0 || totalProducts > 0 || totalOrders > 0 || Number(data?.total_revenue ?? 0) > 0;
@@ -2185,13 +2189,19 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           lastSuccessfulTransaction: null,
         },
         trends: {
-          months: Array.isArray(trends.months)
-            ? trends.months
-            : Array.isArray(data?.monthsLabels)
-              ? data.monthsLabels
-              : data?.months ?? getDynamicMonths(),
-          user_growth: hasDatabaseActivity ? (data?.registrations ?? data?.userGrowth ?? trends.user_growth ?? emptyTrends) : emptyTrends,
-          product_uploads: hasDatabaseActivity ? (data?.productUploadsTrend ?? data?.productUploads ?? trends.product_uploads ?? data?.salesTrend ?? emptyTrends) : emptyTrends,
+          months: monthlyGrowth.length
+            ? monthlyGrowthMonths
+            : Array.isArray(trends.months)
+              ? trends.months
+              : Array.isArray(data?.monthsLabels)
+                ? data.monthsLabels
+                : data?.months ?? getDynamicMonths(),
+          user_growth: hasDatabaseActivity
+            ? (monthlyGrowth.length ? monthlyUserGrowth : trends.user_growth ?? data?.registrations ?? emptyTrends)
+            : emptyTrends,
+          product_uploads: hasDatabaseActivity
+            ? (monthlyGrowth.length ? monthlyProductUploads : trends.product_uploads ?? data?.productUploadsTrend ?? data?.productUploads ?? data?.salesTrend ?? emptyTrends)
+            : emptyTrends,
           revenue: hasDatabaseActivity ? revenueTrendData : emptyTrends,
         },
         registrationLabels: Array.isArray(data?.registrationLabels) ? data.registrationLabels : [],
@@ -2270,8 +2280,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     return () => window.clearInterval(gatewayInterval);
   }, []);
 
-  const userGrowthTrend = Array.isArray(metrics.trends?.user_growth) ? metrics.trends.user_growth : [];
-  const productUploadsTrend = Array.isArray(metrics.trends?.product_uploads) ? metrics.trends.product_uploads : [];
+  const userGrowthTrend = Array.isArray(metrics.trends?.user_growth) ? metrics.trends.user_growth.slice(-6) : [];
+  const productUploadsTrend = Array.isArray(metrics.trends?.product_uploads) ? metrics.trends.product_uploads.slice(-6) : [];
   const revenueTrend = (Array.isArray(metrics.trends?.revenue) ? metrics.trends.revenue : [])
     .slice(-6)
     .map((value) => Number(value) || 0);
@@ -2280,9 +2290,14 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     ...productUploadsTrend.map((value) => Number(value) || 0),
     1,
   );
-  const userGrowthSvgPath = generateSvgPath(userGrowthTrend, lineMaxValue, userGrowthChartWidth);
-  const productUploadsSvgPath = generateSvgPath(productUploadsTrend, lineMaxValue, userGrowthChartWidth);
-  const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, lineMaxValue, userGrowthChartWidth);
+  const userGrowthAxisMax = Math.max(1, Math.ceil(lineMaxValue));
+  const userGrowthAxisTickCount = Math.min(4, userGrowthAxisMax);
+  const userGrowthPlotStart = 38;
+  const userGrowthPlotEnd = Math.max(userGrowthPlotStart + 1, userGrowthChartWidth - 8);
+  const userGrowthPlotWidth = userGrowthPlotEnd - userGrowthPlotStart;
+  const userGrowthSvgPath = generateSvgPath(userGrowthTrend, userGrowthAxisMax, userGrowthPlotWidth);
+  const productUploadsSvgPath = generateSvgPath(productUploadsTrend, userGrowthAxisMax, userGrowthPlotWidth);
+  const userGrowthAreaSvgPath = generateSvgAreaPath(userGrowthTrend, userGrowthAxisMax, userGrowthPlotWidth);
   const salesChartViewWidth = Math.max(salesTrendChartWidth, 320);
   const salesChartPlotWidth = salesChartViewWidth - 106;
   const salesChartPlotStart = 58;
@@ -2318,6 +2333,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const overviewCategories = metrics.popular_categories ?? [];
   const collegeActivity = metrics.college_activity ?? [];
   const trendMonths = (Array.isArray(metrics.trends?.months) ? metrics.trends.months : getDynamicMonths()).slice(-6);
+  const userGrowthMonthCount = Math.max(userGrowthTrend.length, productUploadsTrend.length);
+  const userGrowthMonthLabels = trendMonths.slice(-userGrowthMonthCount);
   const dashboardHasData = Boolean(
     Number(metrics.totalStudents || 0)
     || Number(metrics.totalProducts || 0)
@@ -4253,19 +4270,73 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               <div ref={userGrowthChartRef} className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm flex flex-col justify-between">
                 <h3 className="text-md font-bold text-slate-900 border-b pb-2 mb-4">User Growth & Product Uploads</h3>
                 <div className="relative h-44 w-full mt-2">
-                  <svg className="h-full w-full" viewBox={`0 0 ${userGrowthChartWidth} 100`} preserveAspectRatio="none">
+                  <svg
+                    className="h-full w-full overflow-visible"
+                    viewBox={`0 0 ${userGrowthChartWidth} 130`}
+                    preserveAspectRatio="none"
+                    role="img"
+                    aria-label="User growth and product uploads by month"
+                  >
                     <defs>
                       <linearGradient id="growthGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.3" />
                         <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.0" />
                       </linearGradient>
                     </defs>
+                    {Array.from({ length: userGrowthAxisTickCount + 1 }, (_, tick) => {
+                      const ratio = tick / userGrowthAxisTickCount;
+                      const y = 8 + ratio * 84;
+                      const count = Math.round(userGrowthAxisMax * (1 - ratio));
+                      return (
+                        <g key={`growth-tick-${tick}`}>
+                          <line x1={userGrowthPlotStart} y1={y} x2={userGrowthPlotEnd} y2={y} stroke="#e2e8f0" strokeDasharray="3 3" />
+                          <text x={userGrowthPlotStart - 6} y={y + 3} textAnchor="end" fill="#94a3b8" fontSize="9">{count}</text>
+                        </g>
+                      );
+                    })}
+                    <line x1={userGrowthPlotStart} y1="8" x2={userGrowthPlotStart} y2="92" stroke="#94a3b8" />
+                    <line x1={userGrowthPlotStart} y1="92" x2={userGrowthPlotEnd} y2="92" stroke="#94a3b8" />
                     <path
                       d={userGrowthAreaSvgPath}
                       fill="url(#growthGrad)"
+                      transform={`translate(${userGrowthPlotStart} 0)`}
                     />
-                    <path d={userGrowthSvgPath} fill="none" stroke="#3b82f6" strokeWidth="2.5" />
-                    <path d={productUploadsSvgPath} fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="3,3" />
+                    <path d={userGrowthSvgPath} fill="none" stroke="#3b82f6" strokeWidth="2.5" transform={`translate(${userGrowthPlotStart} 0)`} />
+                    <path d={productUploadsSvgPath} fill="none" stroke="#10b981" strokeWidth="2" strokeDasharray="3,3" transform={`translate(${userGrowthPlotStart} 0)`} />
+                    {userGrowthMonthLabels.map((month, index) => {
+                      const pointCount = userGrowthMonthLabels.length;
+                      const x = userGrowthPlotStart + (pointCount > 1 ? index * userGrowthPlotWidth / (pointCount - 1) : userGrowthPlotWidth / 2);
+                      return (
+                        <text key={`growth-month-${month}-${index}`} x={x} y="116" textAnchor="middle" fill="#94a3b8" fontSize="9">
+                          {month}
+                        </text>
+                      );
+                    })}
+                    {[userGrowthTrend, productUploadsTrend].map((series, seriesIndex) => series.map((value, index) => {
+                      const pointCount = series.length;
+                      const x = userGrowthPlotStart + (pointCount > 1 ? index * userGrowthPlotWidth / (pointCount - 1) : userGrowthPlotWidth / 2);
+                      const count = Number(value) || 0;
+                      const y = 92 - (count / userGrowthAxisMax) * 84;
+                      const monthIndex = Math.max(0, userGrowthMonthLabels.length - series.length + index);
+                      const month = userGrowthMonthLabels[monthIndex] ?? '';
+                      const userGrowthIndex = monthIndex - (userGrowthMonthLabels.length - userGrowthTrend.length);
+                      const productUploadsIndex = monthIndex - (userGrowthMonthLabels.length - productUploadsTrend.length);
+                      const userGrowthCount = Number(userGrowthTrend[userGrowthIndex]) || 0;
+                      const productUploadsCount = Number(productUploadsTrend[productUploadsIndex]) || 0;
+                      return (
+                        <circle
+                          key={`growth-point-${seriesIndex}-${index}`}
+                          cx={x}
+                          cy={y}
+                          r="3"
+                          fill={seriesIndex === 0 ? '#3b82f6' : '#10b981'}
+                          stroke="white"
+                          strokeWidth="1.5"
+                        >
+                          <title>{`${month}: User Growth ${userGrowthCount}; Product Uploads ${productUploadsCount}`}</title>
+                        </circle>
+                      );
+                    }))}
                   </svg>
                 </div>
                 <div className="mt-4 flex items-center justify-between text-xs text-slate-500 font-semibold px-1">

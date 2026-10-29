@@ -54,16 +54,16 @@ describe('AdminProfileMenu', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  it('confirms logout and invokes the handler once', async () => {
+  it('logs out immediately without a confirmation dialog', async () => {
     const user = userEvent.setup();
     const onLogout = vi.fn();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirm = vi.spyOn(window, 'confirm');
     render(<AdminProfileMenu user={profile} onLogout={onLogout} />);
 
     await user.click(screen.getByRole('button', { name: 'Open admin profile menu for mau9999' }));
     await user.click(screen.getByRole('menuitem', { name: 'Logout' }));
 
-    expect(window.confirm).toHaveBeenCalledOnce();
+    expect(confirm).not.toHaveBeenCalled();
     expect(onLogout).toHaveBeenCalledOnce();
   });
 

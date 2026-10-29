@@ -154,10 +154,7 @@ function AdminProfileMenu({
           <button
             type="button"
             role="menuitem"
-            onClick={() => {
-              if (!window.confirm('Are you sure you want to log out?')) return;
-              handleMenuAction(onLogout);
-            }}
+            onClick={() => handleMenuAction(onLogout)}
             className="block w-full px-4 py-2.5 text-left font-semibold text-rose-300 transition hover:bg-rose-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400"
           >
             Logout
