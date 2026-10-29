@@ -771,7 +771,9 @@ function AppContent() {
         return;
       }
       if (view === 'admin-dashboard') {
-        const nextTab = getAdminSectionFromSearch(window.location.search, 'dashboard');
+        const nextTab = params.tab
+          ? normalizeAdminSection(params.tab, 'dashboard')
+          : getAdminSectionFromSearch(window.location.search, 'dashboard');
         setAdminTab(normalizeAdminSection(nextTab, 'dashboard'));
         setCurrentView('admin-dashboard');
         return;

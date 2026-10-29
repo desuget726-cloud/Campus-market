@@ -19,6 +19,7 @@ from app import main as main_module
 from app.database import Base
 from app.models import Notification, PayoutProvider, PayoutTransaction, SellerPaymentAccount, Student, Transaction, Wallet
 from app.payout_service import PayoutProviderError, PayoutResult, _chapa_secret_key
+from app.password_security import hash_password
 
 
 class StubPayoutAdapter:
@@ -76,6 +77,7 @@ class WalletWithdrawalTests(unittest.TestCase):
             college="Test College",
             department="Testing",
             wallet_balance=balance,
+            wallet_pin_hash=hash_password("1234"),
             is_verified=True,
             notif_pay_inapp=True,
             notif_pay_email=True,
@@ -117,9 +119,22 @@ class WalletWithdrawalTests(unittest.TestCase):
         settings.update(overrides)
         return patch.dict(os.environ, settings, clear=False)
 
-    def _withdraw(self, db=None, amount="150.00", key="withdraw-key-1"):
+    def _withdraw(self, db=None, amount="150.00", key="withdraw-key-1", pin="1234"):
         return asyncio.run(main_module.withdraw_student_wallet(
-            main_module.WalletWithdrawalRequest(amount=Decimal(amount), payout_account_id=self.account.id),
+            main_module.WalletWithdrawalRequest(
+                amount=Decimal(amount),
+                payout_account_id=self.account.id,
+                pin=pin,
+            ),
+            http_request=Request({
+                "type": "http",
+                "method": "POST",
+                "path": "/api/student/wallet/withdraw",
+                "headers": [],
+                "client": ("127.0.0.1", 1234),
+                "server": ("testserver", 80),
+                "scheme": "http",
+            }),
             authorization="Bearer test-session",
             idempotency_key=key,
             db=db or self.db,
@@ -233,12 +248,44 @@ class WalletWithdrawalTests(unittest.TestCase):
 
         with self.assertRaises(HTTPException) as unauthenticated_error:
             asyncio.run(main_module.withdraw_student_wallet(
-                main_module.WalletWithdrawalRequest(amount=Decimal("150.00")),
+                main_module.WalletWithdrawalRequest(amount=Decimal("150.00"), pin="1234"),
+                http_request=Request({
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/api/student/wallet/withdraw",
+                    "headers": [],
+                }),
                 authorization=None,
                 idempotency_key="unauthenticated-withdrawal",
                 db=self.db,
             ))
         self.assertEqual(unauthenticated_error.exception.status_code, 401)
+
+    def test_withdrawal_requires_pin_and_locks_after_five_incorrect_attempts(self):
+        self.student.wallet_pin_hash = None
+        self.db.commit()
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            with self.assertRaises(main_module.HTTPException) as missing_pin:
+                self._withdraw()
+        self.assertEqual(missing_pin.exception.status_code, 409)
+        self.assertEqual(missing_pin.exception.detail["code"], "PIN_NOT_SET")
+        self.assertEqual(self.wallet.balance, Decimal("1000.00"))
+
+        self.student.wallet_pin_hash = hash_password("1234")
+        self.db.commit()
+        responses = []
+        auth, _get_adapter, email = self._patch_withdraw_dependencies(StubPayoutAdapter())
+        with auth, email:
+            for attempt in range(5):
+                try:
+                    self._withdraw(key=f"wrong-withdraw-pin-{attempt}", pin="0000")
+                except main_module.HTTPException as error:
+                    responses.append(error)
+
+        self.assertEqual([error.status_code for error in responses], [401, 401, 401, 401, 423])
+        self.assertEqual([error.detail.get("attempts_left") for error in responses[:4]], [4, 3, 2, 1])
+        self.assertEqual(self.wallet.balance, Decimal("1000.00"))
+        self.assertEqual(self.db.query(PayoutTransaction).count(), 0)
 
     def test_successful_verify_endpoint_releases_hold(self):
         adapter = StubPayoutAdapter(

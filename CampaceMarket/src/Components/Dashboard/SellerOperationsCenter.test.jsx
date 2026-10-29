@@ -366,6 +366,39 @@ describe('SellerOperationsCenter overview metrics', () => {
     }
   });
 
+  it('ranks products by revenue by default and updates when another metric is selected', async () => {
+    const user = userEvent.setup();
+    renderProductManagement({
+      sellerDashboardData: {
+        stats: {},
+        alerts: {},
+        performance: {},
+        my_listings: [
+          { id: 1, title: 'Revenue leader', status: 'Approved', views: 10, order_count: 2, revenue: 500 },
+          { id: 2, title: 'Views leader', status: 'Approved', views: 300, order_count: 1, revenue: 100 },
+          { id: 3, title: 'Orders leader', status: 'Approved', views: 20, order_count: 8, revenue: 300 },
+        ],
+        received_orders: [],
+      },
+    });
+
+    const leaderboard = screen.getByRole('heading', { name: 'Top Performing Products' }).closest('section');
+    const getRankedTitles = () => within(leaderboard).getAllByRole('heading', { level: 4 }).map((heading) => heading.textContent);
+    expect(getRankedTitles()).toEqual(['Revenue leader', 'Orders leader', 'Views leader']);
+
+    const sortControls = within(leaderboard).getByRole('group', { name: 'Sort top performing products' });
+    const revenueButton = within(sortControls).getByRole('button', { name: 'Revenue' });
+    expect(revenueButton.getAttribute('aria-pressed')).toBe('true');
+    expect(revenueButton.className).toContain('bg-white');
+    expect(within(leaderboard).getByText('#1')).toBeTruthy();
+    expect(within(leaderboard).getByText('500 ETB', { exact: false })).toBeTruthy();
+    expect(within(leaderboard).getByText('10 views · 2 orders')).toBeTruthy();
+
+    await user.click(within(sortControls).getByRole('button', { name: 'Orders' }));
+    expect(within(sortControls).getByRole('button', { name: 'Orders' }).getAttribute('aria-pressed')).toBe('true');
+    expect(getRankedTitles()).toEqual(['Orders leader', 'Revenue leader', 'Views leader']);
+  });
+
   it('opens inventory and smoothly scrolls to My Products', async () => {
     const user = userEvent.setup();
     renderProductManagement();

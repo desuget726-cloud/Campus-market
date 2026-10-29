@@ -151,6 +151,57 @@ describe('ProductDetails guest actions', () => {
     expect(mockSetCartItems).toHaveBeenCalled();
   });
 
+  it('shows admin listing controls without buyer or report actions', async () => {
+    const onNavigate = vi.fn();
+    render(
+      <ProductDetails
+        product={product}
+        currentUser={{ isAdmin: true, access_token: 'admin-token' }}
+        onNavigate={onNavigate}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Go to Moderation' }));
+    expect(onNavigate).toHaveBeenCalledWith('admin-dashboard', { tab: 'product-management' });
+    expect(screen.getByRole('button', { name: 'Unpublish / Delist' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete Listing' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add to Cart' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Increase quantity' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Decrease quantity' })).toBeNull();
+    expect(screen.queryByText('🚩 Report/Flag Product')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unpublish / Delist' }));
+    await waitFor(() => {
+      const request = globalThis.fetch.mock.calls.find(([url, options]) => (
+        String(url).includes('/api/admin/products/42') && options?.method === 'PUT'
+      ));
+      expect(request).toBeTruthy();
+      expect(JSON.parse(request[1].body)).toEqual({ status: 'Pending' });
+    });
+  });
+
+  it('shows owner listing actions without buyer purchase or report controls', async () => {
+    vi.stubGlobal('fetch', vi.fn((input) => {
+      const url = String(input);
+      if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
+      if (url.includes('/api/products/42')) {
+        return Promise.resolve(jsonResponse({ ...detail, seller_id: 'seller-owner', is_owner: false }));
+      }
+      if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+      if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+      if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    }));
+
+    render(<ProductDetails product={product} currentUser={{ student_id: 'seller-owner' }} />);
+
+    expect(await screen.findByRole('button', { name: 'productDetails.owner.editListing' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'productDetails.owner.markSoldUnlist' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add to Cart' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Increase quantity' })).toBeNull();
+    expect(screen.queryByText('🚩 Report/Flag Product')).toBeNull();
+  });
+
   it('hides the seller response-time stat when the backend returns null', async () => {
     render(<ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />);
 
@@ -326,6 +377,106 @@ describe('ProductDetails guest actions', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('This item is out of stock.');
     await waitFor(() => expect(screen.getAllByText('Sold out').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: 'Pay with wallet' })).toBeNull();
+  });
+
+  it('sets a Wallet PIN before checkout when the account does not have one', async () => {
+    mockCartItems.push({ id: 8, product_id: 42, student_id: 'buyer-1', quantity: 1 });
+    let hasWalletPin = false;
+    const fetchMock = vi.fn((input) => {
+      const url = String(input);
+      if (url.includes('/api/products/42/pay-summary')) {
+        return Promise.resolve(jsonResponse({
+          title: 'Test phone',
+          unit_price: '1000.00',
+          total: '1000.00',
+          quantity_limit: 1,
+          seller_name: 'Seller',
+          wallet_balance: '2000.00',
+          has_wallet_pin: hasWalletPin,
+        }));
+      }
+      if (url.endsWith('/api/wallet/set-pin')) {
+        hasWalletPin = true;
+        return Promise.resolve(jsonResponse({ has_wallet_pin: true }));
+      }
+      if (url.endsWith('/api/products/42/pay')) {
+        return Promise.resolve(jsonResponse({ order_id: 123, status: 'Completed' }));
+      }
+      if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
+      if (/\/api\/products\/42(?:\?track_view=false)?$/.test(url)) return Promise.resolve(jsonResponse(detail));
+      if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+      if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+      if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ProductDetails
+      product={product}
+      currentUser={{ studentId: 'buyer-1', is_verified: true, access_token: 'student-token' }}
+    />);
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Pay with wallet' }))[0]);
+    expect(await screen.findByRole('heading', { name: 'Set Wallet PIN' })).toBeTruthy();
+    fireEvent.change(await screen.findByLabelText('Choose a 4-digit PIN'), { target: { value: '2468' } });
+    fireEvent.change(screen.getByLabelText('Confirm your Wallet PIN'), { target: { value: '2468' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set Wallet PIN' }));
+
+    const pinInput = await screen.findByLabelText('Enter your 4-digit Wallet PIN');
+    fireEvent.change(pinInput, { target: { value: '2468' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Pay 1000.00 ETB' }));
+
+    expect(await screen.findByText(/Payment completed\. Order #123/)).toBeTruthy();
+    const paymentRequest = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/products/42/pay'));
+    expect(JSON.parse(paymentRequest[1].body)).toEqual({ pin: '2468', quantity: 1 });
+  });
+
+  it('resets a forgotten Wallet PIN using email OTP without leaving checkout', async () => {
+    mockCartItems.push({ id: 8, product_id: 42, student_id: 'buyer-1', quantity: 1 });
+    const fetchMock = vi.fn((input) => {
+      const url = String(input);
+      if (url.includes('/api/products/42/pay-summary')) {
+        return Promise.resolve(jsonResponse({
+          title: 'Test phone',
+          unit_price: '1000.00',
+          total: '1000.00',
+          quantity_limit: 1,
+          seller_name: 'Seller',
+          wallet_balance: '2000.00',
+          has_wallet_pin: true,
+        }));
+      }
+      if (url.endsWith('/api/wallet/pin-reset/request')) {
+        return Promise.resolve(jsonResponse({ message: 'A code was sent.', retry_after_seconds: 60 }));
+      }
+      if (url.endsWith('/api/wallet/pin-reset/confirm')) {
+        return Promise.resolve(jsonResponse({ has_wallet_pin: true }));
+      }
+      if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
+      if (/\/api\/products\/42(?:\?track_view=false)?$/.test(url)) return Promise.resolve(jsonResponse(detail));
+      if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+      if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+      if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ProductDetails
+      product={product}
+      currentUser={{ studentId: 'buyer-1', is_verified: true, access_token: 'student-token' }}
+    />);
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Pay with wallet' }))[0]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Forgot Wallet PIN?' }));
+    expect(await screen.findByRole('heading', { name: 'Reset Wallet PIN' })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Email verification code'), { target: { value: '123456' } });
+    fireEvent.change(screen.getByLabelText('New 4-digit Wallet PIN'), { target: { value: '2468' } });
+    fireEvent.change(screen.getByLabelText('Confirm new Wallet PIN'), { target: { value: '2468' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Wallet PIN' }));
+
+    expect(await screen.findByLabelText('Enter your 4-digit Wallet PIN')).toBeTruthy();
+    const request = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/wallet/pin-reset/request'));
+    const confirmation = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/wallet/pin-reset/confirm'));
+    expect(request[1].headers.Authorization).toBe('Bearer student-token');
+    expect(JSON.parse(confirmation[1].body)).toEqual({ otp_code: '123456', pin: '2468' });
   });
 
   it.each([

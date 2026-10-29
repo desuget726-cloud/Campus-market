@@ -138,6 +138,14 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const [setupPin, setSetupPin] = useState('');
   const [confirmSetupPin, setConfirmSetupPin] = useState('');
   const [pinSetupSaving, setPinSetupSaving] = useState(false);
+  const [showPinResetForm, setShowPinResetForm] = useState(false);
+  const [pinResetOtp, setPinResetOtp] = useState('');
+  const [pinResetPin, setPinResetPin] = useState('');
+  const [pinResetConfirmPin, setPinResetConfirmPin] = useState('');
+  const [pinResetLoading, setPinResetLoading] = useState(false);
+  const [pinResetCooldown, setPinResetCooldown] = useState(0);
+  const [pinResetMessage, setPinResetMessage] = useState('');
+  const [payStatusMessage, setPayStatusMessage] = useState('');
   const [payError, setPayError] = useState('');
   const [payMissingAmount, setPayMissingAmount] = useState('');
   const [payAttemptsLeft, setPayAttemptsLeft] = useState(null);
@@ -150,7 +158,15 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const cartAddInFlightRef = useRef(false);
   const payAttemptKeyRef = useRef(null);
   const messageInputRef = useRef(null);
-  const isAdmin = String(currentUser?.role || '').toLowerCase() === 'admin';
+  useEffect(() => {
+    if (pinResetCooldown <= 0) return undefined;
+    const timer = setTimeout(() => {
+      setPinResetCooldown((remaining) => Math.max(0, remaining - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [pinResetCooldown]);
+  const isAdmin = Boolean(currentUser?.isAdmin)
+    || String(currentUser?.role || '').trim().toLowerCase() === 'admin';
   const verifiedCurrentUser = isVerifiedStudent(currentUser);
   const hasDetailsForCurrentProduct = String(detailedProduct?.id) === String(product?.id);
   const item = hasDetailsForCurrentProduct ? detailedProduct : product;
@@ -162,10 +178,15 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     || product?.seller_phone
     || '';
   const availableStock = Math.max(0, Number(item?.stock ?? 1));
+  const currentUserStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim();
+  const productSellerId = String(item?.seller_id || product?.seller_id || '').trim();
   const isOwnerStatusLoaded = hasDetailsForCurrentProduct && typeof detailedProduct?.is_owner === 'boolean';
-  const isOwner = isOwnerStatusLoaded && detailedProduct.is_owner === true;
+  const isOwner = !isAdmin && Boolean(currentUser) && (
+    (currentUserStudentId && productSellerId && currentUserStudentId === productSellerId)
+    || (isOwnerStatusLoaded && detailedProduct.is_owner === true)
+  );
   const showOwnerView = isOwner && !previewAsBuyer;
-  const showBuyerView = isOwnerStatusLoaded && (!isOwner || previewAsBuyer);
+  const showBuyerView = !isAdmin && isOwnerStatusLoaded && (!isOwner || previewAsBuyer);
   const isReadOnlyPreview = isOwner && previewAsBuyer;
   const buyerStudentId = String(currentUser?.studentId || currentUser?.student_id || '').trim();
   const currentUserAccessToken = getStudentAccessToken(currentUser);
@@ -574,6 +595,12 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     setSetupPin('');
     setConfirmSetupPin('');
     setPayError('');
+    setPayStatusMessage('');
+    setShowPinResetForm(false);
+    setPinResetOtp('');
+    setPinResetPin('');
+    setPinResetConfirmPin('');
+    setPinResetMessage('');
     setPayMissingAmount('');
     setShowPayModal(true);
     try {
@@ -668,12 +695,79 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to set up your Wallet PIN.');
       }
       setPaySummary((current) => ({ ...current, has_wallet_pin: true }));
+      setPayPin('');
+      setPayStatusMessage('Wallet PIN set. Enter it to authorize this payment.');
       setSetupPin('');
       setConfirmSetupPin('');
     } catch (error) {
       setPayError(error.message || 'Unable to set up your Wallet PIN.');
     } finally {
       setPinSetupSaving(false);
+    }
+  };
+
+  const requestWalletPinReset = async () => {
+    if (pinResetLoading || pinResetCooldown > 0) return;
+    setPinResetLoading(true);
+    setPinResetMessage('');
+    setPayError('');
+    try {
+      const token = getStudentAccessToken(currentUser);
+      const response = await fetch(`${API_BASE_URL}/api/wallet/pin-reset/request`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to request a Wallet PIN reset.');
+      }
+      setPinResetCooldown(Number(data.retry_after_seconds) || 60);
+      setPinResetMessage(data.message || 'If eligible, a verification code will be sent to your registered email address.');
+      setShowPinResetForm(true);
+    } catch (error) {
+      setPayError(error.message || 'Unable to request a Wallet PIN reset.');
+    } finally {
+      setPinResetLoading(false);
+    }
+  };
+
+  const confirmWalletPinReset = async (event) => {
+    event.preventDefault();
+    if (!/^\d{6}$/.test(pinResetOtp)
+      || !/^\d{4}$/.test(pinResetPin)
+      || pinResetPin !== pinResetConfirmPin
+      || pinResetLoading) return;
+
+    setPinResetLoading(true);
+    setPayError('');
+    setPinResetMessage('');
+    try {
+      const token = getStudentAccessToken(currentUser);
+      const response = await fetch(`${API_BASE_URL}/api/wallet/pin-reset/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ otp_code: pinResetOtp, pin: pinResetPin }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = data.detail;
+        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Unable to reset your Wallet PIN.');
+      }
+      setPaySummary((current) => ({ ...current, has_wallet_pin: true }));
+      setPayPin('');
+      setPinResetOtp('');
+      setPinResetPin('');
+      setPinResetConfirmPin('');
+      setShowPinResetForm(false);
+      setPayStatusMessage('Wallet PIN reset. Enter your new PIN to authorize this payment.');
+    } catch (error) {
+      setPayError(error.message || 'Unable to reset your Wallet PIN.');
+    } finally {
+      setPinResetLoading(false);
     }
   };
 
@@ -962,12 +1056,41 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
     }
   };
 
+  const delistAdminProduct = async () => {
+    const token = getStudentAccessToken(currentUser);
+    setOwnerActionLoading(true);
+    setOwnerActionStatus('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/products/${item.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ status: 'Pending' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || 'Unable to delist this product.');
+      }
+      setDetailedProduct((previous) => ({ ...previous, status: data.status || 'Pending' }));
+      setOwnerActionStatus('Listing delisted and moved to moderation.');
+    } catch (error) {
+      setOwnerActionStatus(error.message || 'Unable to delist this product.');
+    } finally {
+      setOwnerActionLoading(false);
+    }
+  };
+
   const deleteOwnerListing = async () => {
     const token = getStudentAccessToken(currentUser);
     setOwnerActionLoading(true);
     setOwnerActionStatus('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/student/products/${item.id}`, {
+      const endpoint = isAdmin
+        ? `${API_BASE_URL}/api/admin/products/${item.id}`
+        : `${API_BASE_URL}/api/student/products/${item.id}`;
+      const response = await fetch(endpoint, {
         method: 'DELETE',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
@@ -1261,15 +1384,15 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <p className="mt-3 text-4xl font-extrabold text-slate-900">{formattedPrice}</p>
             {showBuyerView && <p className="mt-3 rounded-xl bg-emerald-50 px-3 py-2 text-xs font-semibold leading-5 text-emerald-800">{t('productDetails.buyer.protectionNote')}</p>}
             {isNegotiable && <div className="mt-4 inline-flex items-center justify-center rounded-full bg-emerald-50 px-4 py-2 text-xs font-bold text-emerald-700 border border-emerald-100">Negotiable</div>}
-            {showBuyerView && <div className="mt-5 flex items-center justify-center gap-4">
+            {showBuyerView && !isOwner && <div className="mt-5 flex items-center justify-center gap-4">
               <button type="button" onClick={() => handleQuantityChange((value) => Math.max(1, value - 1))} disabled={selectedQuantity <= 1 || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Decrease quantity">-</button>
               <span className="min-w-8 text-center text-lg font-black text-slate-900">{selectedQuantity}</span>
               <button type="button" onClick={() => handleQuantityChange((value) => Math.min(availableStock, value + 1))} disabled={selectedQuantity >= availableStock || cartQuantityUpdating} className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-lg font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Increase quantity">+</button>
             </div>}
-            {showBuyerView && <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>}
-            {showBuyerView && itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
-            {showBuyerView && availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
-            {showBuyerView && (
+            {showBuyerView && !isOwner && <p className="mt-2 text-xs font-semibold text-slate-500">{availableStock > 0 ? `${availableStock} available` : 'Not enough stock'}</p>}
+            {showBuyerView && !isOwner && itemTotal !== null && <p className="mt-3 text-base font-black text-slate-900">Item Total: {itemTotal.toLocaleString('en-ET', { maximumFractionDigits: 2 })} ETB</p>}
+            {showBuyerView && !isOwner && availableStock === 0 && <p className="mt-2 text-sm font-bold text-rose-600">Not enough stock available.</p>}
+            {showBuyerView && !isOwner && (
               <ProductPurchaseActions
                 isOwner={isOwner}
                 isSoldOut={availableStock === 0}
@@ -1288,6 +1411,37 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
               />
             )}
             {showBuyerView && cartStatus && <p className="mt-3 text-sm text-blue-700">{cartStatus}</p>}
+            {isAdmin && (
+              <div className="mt-5 rounded-2xl border border-violet-200 bg-violet-50 p-4 text-left" aria-label="Admin Management Bar">
+                <h3 className="text-sm font-black uppercase tracking-wide text-violet-950">Admin Management</h3>
+                <div className="mt-3 grid gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate?.('admin-dashboard', { tab: 'product-management' })}
+                    className="w-full rounded-full bg-violet-700 px-4 py-3 text-sm font-bold text-white hover:bg-violet-800"
+                  >
+                    Go to Moderation
+                  </button>
+                  <button
+                    type="button"
+                    onClick={delistAdminProduct}
+                    disabled={ownerActionLoading}
+                    className="w-full rounded-full border border-violet-300 bg-white px-4 py-3 text-sm font-bold text-violet-900 hover:bg-violet-100 disabled:opacity-50"
+                  >
+                    Unpublish / Delist
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDeleteConfirmation(true)}
+                    disabled={ownerActionLoading}
+                    className="w-full rounded-full border border-rose-300 bg-white px-4 py-3 text-sm font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                  >
+                    Delete Listing
+                  </button>
+                </div>
+                {ownerActionStatus && <p role="status" className="mt-3 rounded-xl border border-violet-200 bg-white px-3 py-2 text-sm font-semibold text-violet-900">{ownerActionStatus}</p>}
+              </div>
+            )}
           </section>
 
           {showBuyerView && (
@@ -1485,7 +1639,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             </section>
           )}
 
-          {showBuyerView && !isReadOnlyPreview && allowStudentReports && (
+          {showBuyerView && !isOwner && !isAdmin && !isReadOnlyPreview && allowStudentReports && (
             <section className="order-5 min-w-0 lg:order-none">
               {!currentUser ? (
                 <button type="button" onClick={() => requireLogin('report')} className="text-sm font-semibold text-rose-700 underline underline-offset-2 hover:text-rose-800">🚩 Report/Flag Product</button>
@@ -1540,7 +1694,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <p className="text-xs font-semibold text-slate-500">Price</p>
             <p className="truncate text-lg font-extrabold text-slate-900">{formattedPrice}</p>
           </div>
-          {showBuyerView && (
+          {showBuyerView && !isOwner && (
             <ProductPurchaseActions
               isOwner={isOwner}
               isSoldOut={availableStock === 0}
@@ -1564,11 +1718,11 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       {showDeleteConfirmation && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 p-4">
           <section role="dialog" aria-modal="true" aria-labelledby="delete-listing-title" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
-            <h2 id="delete-listing-title" className="text-xl font-black text-slate-950">{t('productDetails.owner.confirmDeleteTitle')}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-600">{t('productDetails.owner.confirmDelete')}</p>
+            <h2 id="delete-listing-title" className="text-xl font-black text-slate-950">{isAdmin ? 'Delete listing?' : t('productDetails.owner.confirmDeleteTitle')}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{isAdmin ? 'This permanently deletes the listing and cannot be undone.' : t('productDetails.owner.confirmDelete')}</p>
             <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button type="button" onClick={() => setShowDeleteConfirmation(false)} disabled={ownerActionLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700">{t('productDetails.owner.cancel')}</button>
-              <button type="button" onClick={deleteOwnerListing} disabled={ownerActionLoading} className="rounded-full bg-rose-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{ownerActionLoading ? t('productDetails.owner.deleting') : t('productDetails.owner.confirmDeleteAction')}</button>
+              <button type="button" onClick={() => setShowDeleteConfirmation(false)} disabled={ownerActionLoading} className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700">{isAdmin ? 'Cancel' : t('productDetails.owner.cancel')}</button>
+              <button type="button" onClick={deleteOwnerListing} disabled={ownerActionLoading} className="rounded-full bg-rose-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{ownerActionLoading ? t('productDetails.owner.deleting') : isAdmin ? 'Delete Listing' : t('productDetails.owner.confirmDeleteAction')}</button>
             </div>
           </section>
         </div>
@@ -1579,7 +1733,9 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-700">At the handover</p>
-                <h2 id="wallet-pay-title" className="mt-2 text-2xl font-black text-slate-950">Pay with wallet</h2>
+                <h2 id="wallet-pay-title" className="mt-2 text-2xl font-black text-slate-950">
+                  {paySummary && !paySummary.has_wallet_pin ? 'Set Wallet PIN' : 'Pay with wallet'}
+                </h2>
               </div>
               <button type="button" onClick={() => setShowPayModal(false)} disabled={payLoading} className="rounded-full border border-slate-200 px-3 py-1 text-xl font-bold text-slate-500 hover:bg-slate-50 disabled:opacity-50" aria-label="Close payment dialog">×</button>
             </div>
@@ -1593,7 +1749,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
               </div>
             ) : (
               <>
-                {paySummary && (
+                {paySummary?.has_wallet_pin && (
                   <dl className="mt-6 space-y-3 rounded-2xl bg-slate-50 p-4 text-sm">
                     <div className="flex justify-between gap-4"><dt className="text-slate-500">Item</dt><dd className="text-right font-bold text-slate-900">{paySummary.title}</dd></div>
                     <div className="flex justify-between gap-4"><dt className="text-slate-500">Unit price</dt><dd className="font-bold text-slate-900">{paySummary.unit_price} ETB</dd></div>
@@ -1604,6 +1760,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   </dl>
                 )}
                 {payError && <p role="alert" className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{payError}</p>}
+                {payStatusMessage && <p role="status" className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800">{payStatusMessage}</p>}
                 {payAttemptsLeft !== null && <p className="mt-2 text-sm font-bold text-rose-700">{payAttemptsLeft} PIN attempt{payAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
                 {payRetryAfterSeconds !== null && <p className="mt-2 text-sm font-bold text-rose-700">Try again in {Math.ceil(payRetryAfterSeconds / 60)} minute{Math.ceil(payRetryAfterSeconds / 60) === 1 ? '' : 's'}.</p>}
                 {payMissingAmount && (
@@ -1615,8 +1772,8 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                 )}
                 {!paySummary && <p className="mt-5 text-sm text-slate-500">Loading payment summary…</p>}
                 {paySummary && !paySummary.has_wallet_pin && (
-                  <form onSubmit={submitWalletPinSetup} className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                    <h3 className="font-bold text-amber-950">Set up a 4-digit Wallet PIN to secure your wallet transactions</h3>
+                  <form onSubmit={submitWalletPinSetup} className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+                    <p className="text-sm leading-6 text-amber-950">Create a 4-digit Wallet PIN before paying. You will use it to authorize wallet transactions.</p>
                     <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-setup">Choose a 4-digit PIN</label>
                     <input id="wallet-pin-setup" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={setupPin} onChange={(event) => setSetupPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={pinSetupSaving} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
                     <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-confirm">Confirm your Wallet PIN</label>
@@ -1625,12 +1782,33 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                     <button type="submit" disabled={pinSetupSaving || setupPin.length !== 4 || setupPin !== confirmSetupPin} className="w-full rounded-full bg-amber-700 py-3.5 text-sm font-black text-white hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50">{pinSetupSaving ? 'Saving PIN…' : 'Set Wallet PIN'}</button>
                   </form>
                 )}
+                {paySummary?.has_wallet_pin && showPinResetForm && (
+                  <form onSubmit={confirmWalletPinReset} className="mt-5 space-y-4 rounded-2xl border border-sky-200 bg-sky-50 p-5">
+                    <h3 className="font-bold text-sky-950">Reset Wallet PIN</h3>
+                    <p className="text-sm leading-6 text-sky-900">{pinResetMessage || 'Enter the 6-digit code sent to your registered email address.'}</p>
+                    <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-reset-otp">Email verification code</label>
+                    <input id="wallet-pin-reset-otp" type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={pinResetOtp} onChange={(event) => setPinResetOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} required disabled={pinResetLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-center text-lg font-bold tracking-[0.4em] outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-100" />
+                    <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-reset-new">New 4-digit Wallet PIN</label>
+                    <input id="wallet-pin-reset-new" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={pinResetPin} onChange={(event) => setPinResetPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={pinResetLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-100" />
+                    <label className="block text-sm font-semibold text-slate-700" htmlFor="wallet-pin-reset-confirm">Confirm new Wallet PIN</label>
+                    <input id="wallet-pin-reset-confirm" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={pinResetConfirmPin} onChange={(event) => setPinResetConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={pinResetLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-100" />
+                    {pinResetPin && pinResetConfirmPin && pinResetPin !== pinResetConfirmPin && <p role="alert" className="text-sm font-semibold text-rose-700">PINs do not match.</p>}
+                    <button type="submit" disabled={pinResetLoading || pinResetOtp.length !== 6 || pinResetPin.length !== 4 || pinResetPin !== pinResetConfirmPin} className="w-full rounded-full bg-sky-700 py-3.5 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{pinResetLoading ? 'Resetting PIN…' : 'Reset Wallet PIN'}</button>
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <button type="button" onClick={requestWalletPinReset} disabled={pinResetLoading || pinResetCooldown > 0} className="font-bold text-sky-800 underline disabled:cursor-not-allowed disabled:opacity-50">{pinResetCooldown > 0 ? `Resend code in ${pinResetCooldown}s` : 'Resend code'}</button>
+                      <button type="button" onClick={() => { setShowPinResetForm(false); setPayError(''); }} disabled={pinResetLoading} className="font-semibold text-slate-600 underline">Back to payment</button>
+                    </div>
+                  </form>
+                )}
                 {paySummary?.has_wallet_pin && (
+                  !showPinResetForm && (
                   <form onSubmit={submitProductPayment} className="mt-5 space-y-4">
                     <label className="block text-sm font-bold text-slate-700" htmlFor="wallet-payment-pin">Enter your 4-digit Wallet PIN</label>
                     <input id="wallet-payment-pin" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={payPin} onChange={(event) => setPayPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={payLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
                     <button type="submit" disabled={payLoading || payPin.length !== 4} className="w-full rounded-full bg-emerald-600 py-3.5 text-sm font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{payLoading ? 'Processing payment…' : `Pay ${paySummary.total} ETB`}</button>
+                    <button type="button" onClick={requestWalletPinReset} disabled={pinResetLoading || pinResetCooldown > 0} className="w-full text-center text-sm font-bold text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-50">{pinResetLoading ? 'Requesting code…' : 'Forgot Wallet PIN?'}</button>
                   </form>
+                  )
                 )}
               </>
             )}

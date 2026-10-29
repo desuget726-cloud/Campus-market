@@ -841,6 +841,28 @@ class PasswordReset(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(100), nullable=False)
-    otp_code = Column(String(6), nullable=False)
+    otp_hash = Column("otp_code", String(64), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     is_used = Column(Boolean, default=False)
+    delivery_status = Column(String(20), nullable=False, default="queued")
+    purpose = Column(String(30), nullable=False, default="password_reset")
+    verification_attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+
+
+class PasswordResetRequest(Base):
+    __tablename__ = "password_reset_requests"
+    __table_args__ = (
+        Index("ix_password_reset_requests_account_requested", "account_key", "requested_at"),
+        Index("ix_password_reset_requests_ip_requested", "request_ip", "requested_at"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_key = Column(String(150), nullable=False)
+    request_ip = Column(String(45), nullable=False)
+    requested_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    delivery_status = Column(String(20), nullable=False, default="queued")

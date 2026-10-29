@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { API_BASE_URL } from '../../config';
 
 const API_URL = API_BASE_URL;
@@ -12,6 +12,16 @@ function ForgotPasswordModal({ onClose }) {
     const [confirmPassword, setConfirmPassword] = useState('');
     const [message, setMessage] = useState({ type: '', text: '' });
     const [loading, setLoading] = useState(false);
+    const [resendCooldown, setResendCooldown] = useState(0);
+    const submissionInProgress = useRef(false);
+
+    useEffect(() => {
+        if (resendCooldown <= 0) return undefined;
+        const timer = setTimeout(() => {
+            setResendCooldown((remaining) => Math.max(0, remaining - 1));
+        }, 1000);
+        return () => clearTimeout(timer);
+    }, [resendCooldown]);
 
     const request = async (path, body) => {
         const response = await fetch(`${API_URL}${path}`, {
@@ -26,6 +36,7 @@ function ForgotPasswordModal({ onClose }) {
 
     const handleSendCode = async (event) => {
         event.preventDefault();
+        if (submissionInProgress.current || resendCooldown > 0) return;
         setMessage({ type: '', text: '' });
         const normalizedIdentifier = identifier.trim();
         const looksLikeEmail = normalizedIdentifier.includes('@');
@@ -33,15 +44,35 @@ function ForgotPasswordModal({ onClose }) {
             setMessage({ type: 'error', text: 'Enter a valid student ID or email.' });
             return;
         }
+        submissionInProgress.current = true;
         setLoading(true);
         try {
             const data = await request('/api/auth/forgot-password', { id_or_email: normalizedIdentifier });
-            setEmail(data.email || normalizedIdentifier);
+            setEmail(normalizedIdentifier);
+            setResendCooldown(Number(data.retry_after_seconds) || 60);
             setStep(2);
-            setMessage({ type: 'success', text: 'A 6-digit code was sent to your email.' });
+            setMessage({ type: 'success', text: data.message || 'If the account exists, a verification code will be sent to its registered email address.' });
         } catch (error) {
             setMessage({ type: 'error', text: error.message });
         } finally {
+            submissionInProgress.current = false;
+            setLoading(false);
+        }
+    };
+
+    const handleResendCode = async () => {
+        if (submissionInProgress.current || loading || resendCooldown > 0) return;
+        setMessage({ type: '', text: '' });
+        submissionInProgress.current = true;
+        setLoading(true);
+        try {
+            const data = await request('/api/auth/forgot-password', { id_or_email: identifier.trim() });
+            setResendCooldown(Number(data.retry_after_seconds) || 60);
+            setMessage({ type: 'success', text: data.message || 'If the account exists, a verification code will be sent to its registered email address.' });
+        } catch (error) {
+            setMessage({ type: 'error', text: error.message });
+        } finally {
+            submissionInProgress.current = false;
             setLoading(false);
         }
     };
@@ -95,9 +126,9 @@ function ForgotPasswordModal({ onClose }) {
                 {step < 4 && <div className="mb-6 flex items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Account recovery</p><h3 className="mt-2 text-2xl font-black text-slate-950">Reset your password</h3></div><span className="text-sm font-bold text-slate-400">{step}/3</span></div>}
                 {message.text && <div className={`mb-5 rounded-2xl border px-4 py-3 text-sm ${message.type === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`}>{message.text}</div>}
 
-                {step === 1 && <form onSubmit={handleSendCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">Enter your registered student ID or email and we will send a code that expires in 15 minutes.</p><label className="block text-sm font-semibold text-slate-700">Student ID or Email<input type="text" required value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="Student ID or you@university.edu" className={inputClass} /></label><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Sending...' : 'Send Code'}</button><button type="button" onClick={onClose} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Cancel</button></div></form>}
+                {step === 1 && <form onSubmit={handleSendCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">Enter your registered student ID or email and we will send a code that expires in 10 minutes.</p><label className="block text-sm font-semibold text-slate-700">Student ID or Email<input type="text" required value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder="Student ID or you@university.edu" className={inputClass} /></label><div className="flex gap-3"><button type="submit" disabled={loading || resendCooldown > 0} className={buttonClass}>{loading ? 'Sending...' : resendCooldown > 0 ? `Wait ${resendCooldown}s` : 'Send Code'}</button><button type="button" onClick={onClose} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Cancel</button></div></form>}
 
-                {step === 2 && <form onSubmit={handleVerifyCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">Enter the 6-digit code sent to <span className="font-semibold text-slate-700">{email}</span>.</p><label className="block text-sm font-semibold text-slate-700">Verification Code<input type="text" inputMode="numeric" maxLength={6} required value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} placeholder="000000" className={`${inputClass} text-center text-xl font-bold tracking-[0.45em]`} /></label><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Checking...' : 'Verify Code'}</button><button type="button" onClick={() => setStep(1)} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Back</button></div></form>}
+                {step === 2 && <form onSubmit={handleVerifyCode} className="space-y-5"><p className="text-sm leading-6 text-slate-500">If the account exists, a 6-digit code was sent to its registered email address.</p><label className="block text-sm font-semibold text-slate-700">Verification Code<input type="text" inputMode="numeric" maxLength={6} required value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} placeholder="000000" className={`${inputClass} text-center text-xl font-bold tracking-[0.45em]`} /></label><p className="text-center text-sm text-slate-500">Didn't receive the code?{' '}<button type="button" onClick={handleResendCode} disabled={loading || resendCooldown > 0} className="font-semibold text-emerald-700 hover:underline disabled:cursor-not-allowed disabled:text-slate-400">{resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend'}</button></p><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Checking...' : 'Verify Code'}</button><button type="button" onClick={() => setStep(1)} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Back</button></div></form>}
 
                 {step === 3 && <form onSubmit={handleResetPassword} className="space-y-5"><label className="block text-sm font-semibold text-slate-700">New Password<input type="password" autoComplete="new-password" required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} className={inputClass} /></label><div className="rounded-2xl bg-slate-50 p-3 text-xs text-slate-500">Use at least 8 characters, one uppercase letter, and one number.</div><label className="block text-sm font-semibold text-slate-700">Confirm Password<input type="password" autoComplete="new-password" required value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className={inputClass} /></label><div className="flex gap-3"><button type="submit" disabled={loading} className={buttonClass}>{loading ? 'Updating...' : 'Reset Password'}</button><button type="button" onClick={() => setStep(2)} className="w-full rounded-full border border-slate-200 py-3 font-semibold text-slate-600 hover:bg-slate-50">Back</button></div></form>}
 

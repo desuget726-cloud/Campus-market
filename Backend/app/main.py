@@ -89,7 +89,7 @@ from .models import (
     Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, MessageBlock, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PasswordResetRequest, PAYMENT_SETTINGS_SCHEMA
 )
 from .admin_bootstrap import create_admin_if_missing
 from .database import get_db, init_db, SessionLocal, Base, engine, DATABASE_URL
@@ -1427,142 +1427,364 @@ if not email_logger.handlers:
 
 
 
-def send_otp_email(receiver_email: str, otp: str) -> bool:
-    """Send ONLY the raw 6-digit OTP number as a plain-text email body."""
-    environment = os.getenv("ENVIRONMENT", "").strip().lower()
-    app_environment = os.getenv("APP_ENV", "").strip().lower()
-    if environment in {"development", "dev", "local"} or app_environment in {
-        "development",
-        "dev",
-        "local",
-    }:
-        print(
-            f"\n[DEV FALLBACK] OTP for {receiver_email} is: {otp}\n",
-            flush=True,
-        )
-
-    if not _notifications_enabled(None, "emailNotifs"):
-        message = "OTP email skipped: emailNotifs is disabled."
-        email_logger.warning("%s recipient=%s", message, receiver_email)
-        print(f"[EMAIL WARNING] {message}", flush=True)
-        return False
-
-    if not receiver_email:
-        message = "OTP email was not sent: recipient email is empty."
-        email_logger.error(message)
-        print(f"[EMAIL ERROR] {message}", flush=True)
-        return False
-
+def _smtp_credentials() -> tuple[str, str]:
     sender_email = (
         os.getenv("SMTP_USER", "").strip()
         or os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
     )
     sender_password = (
-        os.getenv("SMTP_PASSWORD", "").strip()
-        or os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip()
-    ).replace(" ", "")
-    if not sender_email or not sender_password:
-        missing = []
-        if not sender_email:
-            missing.append("SMTP_USER/SENDER_EMAIL")
-        if not sender_password:
-            missing.append("SMTP_PASSWORD/SENDER_PASSWORD")
-        detail = f"missing configuration: {', '.join(missing)}"
-        email_logger.error(
-            "OTP email not sent recipient=%s error=%s",
-            receiver_email,
-            detail,
-        )
-        print(f"[EMAIL ERROR] {detail}", flush=True)
+        os.getenv("SMTP_PASSWORD", "")
+        or os.getenv("SENDER_PASSWORD", SENDER_PASSWORD)
+    ).strip().strip("\"'").strip().replace(" ", "")
+    return sender_email, sender_password
+
+
+def _smtp_configuration() -> tuple[str, int, str]:
+    host = os.getenv("SMTP_HOST", "").strip() or "smtp.gmail.com"
+    port_value = os.getenv("SMTP_PORT", "").strip()
+    try:
+        port = int(port_value) if port_value else 587
+    except ValueError as error:
+        raise ValueError("SMTP_PORT must be an integer.") from error
+    if not 1 <= port <= 65535:
+        raise ValueError("SMTP_PORT must be between 1 and 65535.")
+
+    security = os.getenv("SMTP_SECURITY", "").strip().lower()
+    if not security:
+        security = "ssl" if port == 465 else "starttls"
+    if security not in {"starttls", "ssl"}:
+        raise ValueError("SMTP_SECURITY must be starttls or ssl.")
+    return host, port, security
+
+
+def _smtp_connection_error(error: Exception) -> bool:
+    if isinstance(error, smtplib.SMTPAuthenticationError):
         return False
+    return isinstance(
+        error,
+        (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected, TimeoutError, OSError),
+    )
 
-    message = MIMEText(str(otp), "plain")
-    message["Subject"] = "Password recovery verification code"
+
+def _smtp_failure_hint(stage: str, error: Exception) -> Optional[str]:
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return "Gmail requires an App Password (2-Step Verification)."
+    if stage in {"connect", "starttls", "login", "send"} and _smtp_connection_error(error):
+        return "Check whether the port is blocked by firewall/antivirus/network."
+    return None
+
+
+def _log_smtp_stage_success(stage: str, mode: str, host: str, port: int) -> None:
+    email_logger.info(
+        "SMTP stage succeeded stage=%s mode=%s host=%s port=%s.",
+        stage,
+        mode,
+        host,
+        port,
+    )
+
+
+def _create_ipv4_smtp_socket(
+    host: str,
+    port: int,
+    timeout: Optional[float],
+    source_address: Optional[Tuple[str, int]] = None,
+) -> socket.socket:
+    addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    last_error = None
+    for family, socket_type, protocol, _, address in addresses:
+        try:
+            return socket.create_connection(address, timeout, source_address)
+        except OSError as error:
+            last_error = error
+    if last_error:
+        raise last_error
+    raise OSError(f"No IPv4 address found for SMTP host {host}.")
+
+
+class _IPv4SMTP(smtplib.SMTP):
+    def _get_socket(self, host, port, timeout):
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        return _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+
+
+class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
+    def _get_socket(self, host, port, timeout):
+        if timeout is not None and not timeout:
+            raise ValueError("Non-blocking socket (timeout=0) is not supported")
+        new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+        return self.context.wrap_socket(new_socket, server_hostname=self._host)
+
+
+def _smtp_attempt(
+    host: str,
+    port: int,
+    mode: str,
+    sender_email: str,
+    sender_password: str,
+    recipient: str,
+    subject: str,
+    body: str,
+) -> None:
+    message = MIMEText(body, "plain", "utf-8")
+    message["Subject"] = subject
     message["From"] = sender_email
-    message["To"] = receiver_email
-
-    smtp_stage = "TLS connection"
+    message["To"] = recipient
+    stage = "connect"
+    print(
+        f"Connecting to {host}:{port} with {mode} SMTP for sender={sender_email} receiver={recipient}.",
+        flush=True,
+    )
+    email_logger.info(
+        "Connecting to SMTP host=%s port=%s mode=%s sender=%s receiver=%s.",
+        host,
+        port,
+        mode,
+        sender_email,
+        recipient,
+    )
     try:
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(
-            "smtp.gmail.com",
-            465,
-            context=context,
-            timeout=15,
-        ) as server:
-            smtp_stage = "authentication"
-            server.login(sender_email, sender_password)
-            smtp_stage = "message delivery"
-            refused_recipients = server.sendmail(
+        if mode == "ssl":
+            with _IPv4SMTP_SSL(
+                host, port, context=context, timeout=15
+            ) as server:
+                server.ehlo()
+                _log_smtp_stage_success("connect", mode, host, port)
+                stage = "login"
+                server.login(sender_email, sender_password)
+                _log_smtp_stage_success("login", mode, host, port)
+                stage = "send"
+                refused = server.sendmail(sender_email, recipient, message.as_string())
+        else:
+            with _IPv4SMTP(host, port, timeout=15) as server:
+                server.ehlo()
+                _log_smtp_stage_success("connect", mode, host, port)
+                stage = "starttls"
+                server.starttls(context=context)
+                server.ehlo()
+                _log_smtp_stage_success("starttls", mode, host, port)
+                stage = "login"
+                server.login(sender_email, sender_password)
+                _log_smtp_stage_success("login", mode, host, port)
+                stage = "send"
+                refused = server.sendmail(sender_email, recipient, message.as_string())
+        if refused:
+            stage = "send"
+            raise smtplib.SMTPRecipientsRefused(refused)
+        _log_smtp_stage_success("send", mode, host, port)
+    except (smtplib.SMTPException, OSError, TimeoutError) as error:
+        raise SMTPDeliveryError(stage, error) from error
+
+
+class SMTPDeliveryError(Exception):
+    def __init__(self, stage: str, original_error: Exception):
+        super().__init__(stage)
+        self.stage = stage
+        self.original_error = original_error
+
+
+def _send_smtp_message(
+    recipient: str,
+    subject: str,
+    body: str,
+) -> dict[str, Any]:
+    sender_email, sender_password = _smtp_credentials()
+    print(
+        f"Preparing SMTP email sender={sender_email or '(not configured)'} "
+        f"receiver={recipient or '(missing)'}.",
+        flush=True,
+    )
+    email_logger.info(
+        "Preparing SMTP email sender=%s receiver=%s.",
+        sender_email or "(not configured)",
+        recipient or "(missing)",
+    )
+    if not sender_email or not sender_password:
+        print("SMTP delivery failed: sender email or app password is not configured.", flush=True)
+        email_logger.error(
+            "SMTP delivery failed at stage=configuration mode=unconfigured: "
+            "SENDER_EMAIL or SENDER_PASSWORD is missing."
+        )
+        return {
+            "success": False,
+            "stage": "configuration",
+            "mode": "unconfigured",
+            "port": None,
+            "hint": "Configure SENDER_EMAIL and SENDER_PASSWORD.",
+            "attempts": [],
+        }
+
+    try:
+        host, port, configured_mode = _smtp_configuration()
+    except ValueError:
+        email_logger.exception("Failed to send OTP email")
+        email_logger.error(
+            "SMTP delivery failed at stage=configuration mode=unconfigured: "
+            "SMTP_PORT or SMTP_SECURITY is invalid."
+        )
+        return {
+            "success": False,
+            "stage": "configuration",
+            "mode": "unconfigured",
+            "port": None,
+            "hint": "Check SMTP_PORT and SMTP_SECURITY configuration.",
+            "attempts": [],
+        }
+
+    modes = [(port, configured_mode)]
+    if configured_mode == "starttls":
+        fallback = (465, "ssl")
+    else:
+        fallback = (587, "starttls")
+    if fallback != modes[0]:
+        modes.append(fallback)
+
+    attempts: list[dict[str, Any]] = []
+    for attempt_index, (attempt_port, mode) in enumerate(modes):
+        stage = "connect"
+        try:
+            _smtp_attempt(
+                host,
+                attempt_port,
+                mode,
                 sender_email,
-                receiver_email,
-                message.as_string(),
+                sender_password,
+                recipient,
+                subject,
+                body,
             )
-        if refused_recipients:
-            detail = refused_recipients.get(receiver_email, refused_recipients)
+        except SMTPDeliveryError as delivery_error:
+            error = delivery_error.original_error
+            stage = delivery_error.stage
+            hint = _smtp_failure_hint(stage, error)
+            attempt = {
+                "success": False,
+                "stage": stage,
+                "mode": mode,
+                "port": attempt_port,
+                "error_type": type(error).__name__,
+            }
+            if hint:
+                attempt["hint"] = hint
+            attempts.append(attempt)
+            email_logger.exception("Failed to send OTP email")
+            print(
+                f"SMTP delivery failed host={host}:{attempt_port} mode={mode} "
+                f"stage={stage} error={type(error).__name__}.",
+                flush=True,
+            )
             email_logger.error(
-                "OTP email recipient was refused recipient=%s error=%s",
-                receiver_email,
-                detail,
+                "SMTP delivery failed at stage=%s mode=%s host=%s port=%s error_type=%s%s",
+                stage,
+                mode,
+                host,
+                attempt_port,
+                type(error).__name__,
+                f"; hint: {hint}" if hint else "",
             )
-            print(f"[EMAIL SMTP ERROR] Recipient refused: {detail}", flush=True)
-            return False
+            can_fallback = (
+                attempt_index == 0
+                and len(modes) > 1
+                and _smtp_connection_error(error)
+            )
+            if can_fallback:
+                email_logger.warning(
+                    "SMTP retrying once with fallback mode=%s port=%s after stage=%s failed.",
+                    fallback[1],
+                    fallback[0],
+                    stage,
+                )
+                continue
+            return {
+                "success": False,
+                "stage": stage,
+                "mode": mode,
+                "port": attempt_port,
+                "hint": hint,
+                "attempts": attempts,
+            }
+        else:
+            print(
+                f"SMTP delivery succeeded sender={sender_email} receiver={recipient} "
+                f"host={host}:{attempt_port}.",
+                flush=True,
+            )
+            email_logger.info(
+                "SMTP delivery succeeded sender=%s receiver=%s host=%s port=%s.",
+                sender_email,
+                recipient,
+                host,
+                attempt_port,
+            )
+            attempts.append({
+                "success": True,
+                "stage": "send",
+                "mode": mode,
+                "port": attempt_port,
+            })
+            return {
+                "success": True,
+                "stage": "send",
+                "mode": mode,
+                "port": attempt_port,
+                "hint": None,
+                "attempts": attempts,
+            }
 
-        email_logger.info("OTP email sent successfully recipient=%s", receiver_email)
-        return True
+    return {
+        "success": False,
+        "stage": "connect",
+        "mode": configured_mode,
+        "port": port,
+        "hint": "Check whether the port is blocked by firewall/antivirus/network.",
+        "attempts": attempts,
+    }
 
-    except smtplib.SMTPAuthenticationError as error:
-        email_logger.error(
-            "OTP email SMTP authentication failed recipient=%s error=%s",
-            receiver_email,
-            error,
-        )
-        print(f"[EMAIL SMTP AUTH ERROR] {error}", flush=True)
-        return False
 
-    except smtplib.SMTPConnectError as error:
-        email_logger.error(
-            "OTP email SMTP connection failed recipient=%s error=%s",
-            receiver_email,
-            error,
-        )
-        print(f"[EMAIL SMTP CONNECT ERROR] {error}", flush=True)
-        return False
+def _log_development_otp(otp: str) -> None:
+    if _is_production_environment():
+        return
+    if not re.fullmatch(r"\d{6}", str(otp)):
+        return
+    environment = os.getenv("ENV", "").strip().lower()
+    log_otp = os.getenv("EMAIL_DEV_LOG_OTP", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if environment == "development" and log_otp:
+        print(f"[DEV ONLY] Account recovery OTP: {otp}", flush=True)
 
-    except smtplib.SMTPResponseException as error:
-        detail = error.smtp_error.decode(errors="replace") if isinstance(
-            error.smtp_error, bytes
-        ) else error.smtp_error
-        email_logger.error(
-            "OTP email SMTP response error recipient=%s code=%s error=%s",
-            receiver_email,
-            error.smtp_code,
-            detail,
-        )
-        print(
-            f"[EMAIL SMTP RESPONSE ERROR] code={error.smtp_code} error={detail}",
-            flush=True,
-        )
-        return False
 
-    except TimeoutError as error:
-        email_logger.error(
-            "OTP email SMTP timed out recipient=%s error=%s",
-            receiver_email,
-            error,
-        )
-        print(f"[EMAIL SMTP TIMEOUT] {error}", flush=True)
-        return False
+def send_otp_email_diagnostic(
+    receiver_email: str,
+    otp: str,
+    purpose: str = "password_reset",
+) -> dict[str, Any]:
+    _log_development_otp(otp)
+    if not receiver_email:
+        print("OTP email delivery failed: receiver email is missing.", flush=True)
+        email_logger.error("OTP email delivery failed at stage=configuration: recipient is missing.")
+        return {
+            "success": False,
+            "stage": "configuration",
+            "mode": "unconfigured",
+            "port": None,
+            "hint": "The recipient email address is missing.",
+            "attempts": [],
+        }
+    if purpose == "wallet_pin_reset":
+        subject = "Wallet PIN reset verification code"
+        body = f"Use this code to reset your Wallet PIN. It expires in 10 minutes.\n\n{otp}"
+    else:
+        subject = "Password recovery verification code"
+        body = str(otp)
+    return _send_smtp_message(receiver_email, subject, body)
 
-    except (smtplib.SMTPException, OSError) as error:
-        email_logger.error(
-            "OTP email SMTP failed during %s recipient=%s error=%s",
-            smtp_stage,
-            receiver_email,
-            error,
-        )
-        print(f"[EMAIL SMTP ERROR] {smtp_stage}: {error}", flush=True)
-        return False
+
+def send_otp_email(receiver_email: str, otp: str) -> bool:
+    """Send an OTP email without logging the OTP or SMTP credentials."""
+    return bool(send_otp_email_diagnostic(receiver_email, otp)["success"])
 
 
 
@@ -1597,7 +1819,7 @@ def send_verification_status_email(receiver_email: str, status: str, reason: Opt
         msg.attach(MIMEText("\n".join(body_lines), "plain"))
 
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(
+        with _IPv4SMTP_SSL(
             "smtp.gmail.com",
             465,
             context=context,
@@ -2231,6 +2453,37 @@ class WalletWithdrawalRequest(BaseModel):
     amount: Decimal
     payout_account_id: Optional[int] = None
     student_id: Optional[str] = None
+    pin: SecretStr
+
+    @field_validator("pin")
+    @classmethod
+    def validate_pin(cls, value: SecretStr) -> SecretStr:
+        pin = value.get_secret_value()
+        if len(pin) != 4 or not pin.isascii() or not pin.isdigit():
+            raise ValueError("Wallet PIN must contain exactly four digits.")
+        return value
+
+
+class WalletPinResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    otp_code: str
+    pin: SecretStr
+
+    @field_validator("otp_code")
+    @classmethod
+    def validate_otp_code(cls, value: str) -> str:
+        if len(value) != 6 or not value.isascii() or not value.isdigit():
+            raise ValueError("Enter a valid 6-digit verification code.")
+        return value
+
+    @field_validator("pin")
+    @classmethod
+    def validate_pin(cls, value: SecretStr) -> SecretStr:
+        pin = value.get_secret_value()
+        if len(pin) != 4 or not pin.isascii() or not pin.isdigit():
+            raise ValueError("Wallet PIN must contain exactly four digits.")
+        return value
 
 
 
@@ -3459,7 +3712,7 @@ def _send_student_notification_email(student: Student, subject: str, message: st
         email_message["To"] = student.email
         email_message.attach(MIMEText(message, "html"))
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(
+        with _IPv4SMTP_SSL(
             "smtp.gmail.com",
             465,
             context=context,
@@ -3796,7 +4049,13 @@ def ensure_database_compatibility(db: Session) -> None:
         if not duplicate_check:
             duplicate_index = db.execute(text("SHOW INDEX FROM seller_payment_accounts WHERE Key_name = 'student_id'"))
             if duplicate_index.fetchone() is None:
-                db.execute(text("CREATE UNIQUE INDEX uq_seller_payment_accounts_student_id ON seller_payment_accounts (student_id)"))
+                try:
+                    db.execute(text("CREATE UNIQUE INDEX uq_seller_payment_accounts_student_id ON seller_payment_accounts (student_id)"))
+                except Exception as error:
+                    database_error = getattr(error, "orig", error)
+                    error_args = getattr(database_error, "args", ())
+                    if not error_args or error_args[0] != 1061:
+                        raise
 
         for table_name, column_name, statement in [
             ("seller_payment_accounts", "chapa_sub_account_id", "ALTER TABLE seller_payment_accounts MODIFY COLUMN chapa_sub_account_id VARCHAR(100) NULL"),
@@ -4072,6 +4331,17 @@ async def on_startup():
         init_db()
         db = SessionLocal()
         try:
+            if (
+                not _is_production_environment()
+                and os.getenv("PASSWORD_RESET_CLEAR_RATE_LIMITS_ON_STARTUP", "").strip().lower()
+                in {"1", "true", "yes", "on"}
+            ):
+                cleared_requests = _clear_password_reset_rate_limit_history(db)
+                startup_logger.warning(
+                    "Cleared %s password-reset rate-limit request rows because "
+                    "PASSWORD_RESET_CLEAR_RATE_LIMITS_ON_STARTUP is enabled.",
+                    cleared_requests,
+                )
             admin = db.query(Admin).filter(func.lower(Admin.role) == "admin").first()
             if not admin:
                 startup_logger.info("No admin user found. Running admin seed...")
@@ -4461,17 +4731,37 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
         if student.two_factor_enabled:
             otp = f"{secrets.randbelow(900000) + 100000:06d}"
 
+            previous_otps = db.query(PasswordReset).filter(
+                func.lower(PasswordReset.email) == student.email.lower(),
+                PasswordReset.purpose == "student_login",
+                PasswordReset.is_used == False,
+            ).all()
+            for previous_otp in previous_otps:
+                previous_otp.is_used = True
+                previous_otp.delivery_status = "invalidated"
+
             db.add(PasswordReset(
                 email=student.email,
-                otp_code=otp,
+                otp_hash=_password_reset_otp_hash(student.email, otp),
+                purpose="student_login",
                 expires_at=(
                     datetime.now(timezone.utc) + timedelta(minutes=10)
                 ),
                 is_used=False,
+                delivery_status="sending",
             ))
             db.commit()
 
             email_sent = send_otp_email(student.email, otp)
+            login_otp = _latest_password_reset(
+                db,
+                student.email,
+                purpose="student_login",
+                lock_for_update=True,
+            )
+            if login_otp and not login_otp.is_used:
+                login_otp.delivery_status = "sent" if email_sent else "failed"
+                db.commit()
 
             if not email_sent:
                 logging.getLogger("app.auth").warning(
@@ -5591,18 +5881,19 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         )
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
-    otp_record = (
-        db.query(PasswordReset)
-        .filter(
-            PasswordReset.email.ilike(student.email),
-            PasswordReset.otp_code == otp,
-            PasswordReset.is_used.is_(False),
-            PasswordReset.expires_at >= datetime.now(timezone.utc),
-        )
-        .order_by(PasswordReset.id.desc())
-        .first()
+    otp_record = _latest_password_reset(
+        db,
+        student.email,
+        purpose="student_login",
+        lock_for_update=True,
     )
-    if not otp_record:
+    if (
+        not otp_record
+        or otp_record.is_used
+        or otp_record.expires_at < datetime.now(timezone.utc).replace(tzinfo=None)
+        or otp_record.delivery_status != "sent"
+        or not _password_reset_code_matches(db, otp_record, otp)
+    ):
         _record_auth_login(
             db,
             http_request,
@@ -5706,18 +5997,22 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
         if admin.two_factor_secret:
             db.rollback()
             raise HTTPException(status_code=400, detail="Invalid authenticator or backup code.")
-    otp_record = (
-        db.query(PasswordReset)
-        .filter(
-            PasswordReset.email.ilike(admin.email),
-            PasswordReset.otp_code == request.otp_code.strip(),
-            PasswordReset.is_used == False,
-            PasswordReset.expires_at >= datetime.now(timezone.utc),
-        )
-        .order_by(PasswordReset.id.desc())
-        .first()
+    otp_record = _latest_password_reset(
+        db,
+        admin.email,
+        purpose="admin_login",
+        lock_for_update=True,
     )
-    if not otp_record:
+    otp = request.otp_code.strip()
+    if (
+        not otp_record
+        or otp_record.is_used
+        or otp_record.expires_at < datetime.now(timezone.utc).replace(tzinfo=None)
+        or otp_record.delivery_status != "sent"
+        or not otp.isdigit()
+        or len(otp) != 6
+        or not _password_reset_code_matches(db, otp_record, otp)
+    ):
         _record_auth_login(
             db,
             http_request,
@@ -5753,66 +6048,471 @@ def verify_admin_login_otp(request: AdminLoginOtpRequest, http_request: Request,
     return {"role": "admin", "access_token": token, "user": {"name": admin.full_name or admin.username, "username": admin.username, "email": admin.email}}
 
 # 2.3 የይለፍ ቃል መርሻ ኮድ መላኪያ (POST /api/auth/forgot-password)
-@app.post("/api/auth/forgot-password")
-def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    identifier = _login_identifier(request.id_or_email)
-    if _is_email_identifier(identifier):
-        student = db.query(Student).filter(func.lower(Student.email) == identifier).first()
+PASSWORD_RESET_SEND_LIMIT = 5
+PASSWORD_RESET_SEND_WINDOW = timedelta(hours=1)
+PASSWORD_RESET_RESEND_COOLDOWN_SECONDS = 60
+
+
+def _is_localhost_request(request: Optional[Request]) -> bool:
+    client = request.client if request else None
+    host = client.host.strip().lower().strip("[]") if client else ""
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _password_reset_student(
+    db: Session,
+    identifier: str,
+    lock_for_update: bool = False,
+) -> Optional[Student]:
+    normalized = _login_identifier(identifier)
+    if _is_email_identifier(normalized):
+        query = db.query(Student).filter(func.lower(Student.email) == normalized)
     else:
-        student = db.query(Student).filter(func.lower(Student.student_id) == identifier).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student ID or email not found.")
+        query = db.query(Student).filter(func.lower(Student.student_id) == normalized)
+    if lock_for_update:
+        query = query.with_for_update()
+    return query.first()
+
+
+def _password_reset_otp_hash(
+    email: str,
+    otp: str,
+    purpose: str = "password_reset",
+) -> str:
+    if purpose == "password_reset":
+        message_value = f"{email.strip().lower()}:{otp}"
+    else:
+        message_value = f"{purpose}:{email.strip().lower()}:{otp}"
+    message = message_value.encode("utf-8")
+    return hmac.new(_get_session_secret().encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _latest_password_reset(
+    db: Session,
+    email: str,
+    purpose: str = "password_reset",
+    lock_for_update: bool = False,
+) -> Optional[PasswordReset]:
+    query = (
+        db.query(PasswordReset)
+        .filter(
+            func.lower(PasswordReset.email) == email.strip().lower(),
+            PasswordReset.purpose == purpose,
+        )
+        .order_by(PasswordReset.id.desc())
+    )
+    if lock_for_update:
+        query = query.with_for_update()
+    return query.first()
+
+
+def _password_reset_code_matches(
+    db: Session,
+    reset_record: PasswordReset,
+    otp: str,
+) -> bool:
+    if reset_record.verification_attempts >= 5:
+        return False
+    expected_hash = _password_reset_otp_hash(
+        reset_record.email,
+        otp,
+        reset_record.purpose,
+    )
+    if hmac.compare_digest(reset_record.otp_hash, expected_hash):
+        return True
+
+    reset_record.verification_attempts += 1
+    if reset_record.verification_attempts >= 5:
+        reset_record.is_used = True
+        reset_record.delivery_status = "invalidated"
+    db.commit()
+    return False
+
+
+def _password_reset_rate_limit(
+    db: Session,
+    account_key: str,
+    request_ip: str,
+    now: datetime,
+    include_ip_limit: bool = True,
+) -> int:
+    window_start = now - PASSWORD_RESET_SEND_WINDOW
+    limit_scope = [PasswordResetRequest.account_key == account_key]
+    if include_ip_limit:
+        limit_scope.append(PasswordResetRequest.request_ip == request_ip)
+    account_or_ip = or_(*limit_scope)
+    latest = (
+        db.query(PasswordResetRequest.requested_at)
+        .filter(account_or_ip)
+        .order_by(PasswordResetRequest.requested_at.desc())
+        .first()
+    )
+    if latest:
+        cooldown_remaining = PASSWORD_RESET_RESEND_COOLDOWN_SECONDS - int(
+            (now - latest[0]).total_seconds()
+        )
+        if cooldown_remaining > 0:
+            return cooldown_remaining
+
+    account_count = db.query(PasswordResetRequest).filter(
+        PasswordResetRequest.account_key == account_key,
+        PasswordResetRequest.requested_at >= window_start,
+    ).count()
+    ip_count = (
+        db.query(PasswordResetRequest)
+        .filter(
+            PasswordResetRequest.request_ip == request_ip,
+            PasswordResetRequest.requested_at >= window_start,
+        )
+        .count()
+        if include_ip_limit
+        else 0
+    )
+    if max(account_count, ip_count) < PASSWORD_RESET_SEND_LIMIT:
+        return 0
+
+    oldest = (
+        db.query(PasswordResetRequest.requested_at)
+        .filter(account_or_ip, PasswordResetRequest.requested_at >= window_start)
+        .order_by(PasswordResetRequest.requested_at.asc())
+        .first()
+    )
+    if not oldest:
+        return 0
+    return max(1, int((oldest[0] + PASSWORD_RESET_SEND_WINDOW - now).total_seconds()))
+
+
+def _clear_password_reset_rate_limit_history(db: Session) -> int:
+    deleted_count = db.query(PasswordResetRequest).delete(synchronize_session=False)
+    db.commit()
+    return deleted_count
+
+
+def _deliver_password_reset_email(
+    reset_id: int,
+    request_id: int,
+    otp: str,
+    purpose: str = "password_reset",
+) -> None:
+    db = SessionLocal()
+    email_logger = logging.getLogger("app.auth.email")
+    eligible_delivery_statuses = {"pending", "queued", "sending"}
+    email_logger.info(
+        "Starting OTP email background delivery purpose=%s reset_id=%s.",
+        purpose,
+        reset_id,
+    )
+    try:
+        reset_record = (
+            db.query(PasswordReset)
+            .filter(PasswordReset.id == reset_id)
+            .with_for_update()
+            .first()
+        )
+        tracking = (
+            db.query(PasswordResetRequest)
+            .filter(PasswordResetRequest.id == request_id)
+            .first()
+        )
+        if (
+            not reset_record
+            or not tracking
+        ):
+            email_logger.warning(
+                "OTP email delivery skipped: reset or tracking row is missing reset_id=%s request_id=%s.",
+                reset_id,
+                request_id,
+            )
+            return
+        if reset_record.is_used or reset_record.delivery_status == "invalidated":
+            email_logger.info("OTP email delivery skipped because reset_id=%s is invalidated.", reset_id)
+            tracking.delivery_status = "invalidated"
+            db.commit()
+            return
+        if (
+            reset_record.purpose != purpose
+            or reset_record.delivery_status not in eligible_delivery_statuses
+        ):
+            email_logger.info(
+                "OTP email delivery skipped because reset_id=%s is no longer queued.",
+                reset_id,
+            )
+            return
+        reset_record.delivery_status = "sending"
+        tracking.delivery_status = "sending"
+        db.commit()
+
+        for attempt in range(1, 4):
+            db.refresh(reset_record)
+            db.refresh(tracking)
+            expires_at = _as_utc_datetime(reset_record.expires_at)
+            if (
+                reset_record.is_used
+                or reset_record.delivery_status not in eligible_delivery_statuses
+                or (
+                    attempt > 1
+                    and (expires_at is None or expires_at <= _utc_now())
+                )
+            ):
+                email_logger.info(
+                    "OTP email retry stopped because reset_id=%s is no longer eligible "
+                    "(is_used=%s reset_status=%s tracking_status=%s expires_at=%s).",
+                    reset_id,
+                    reset_record.is_used,
+                    reset_record.delivery_status,
+                    tracking.delivery_status,
+                    reset_record.expires_at,
+                )
+                return
+
+            if purpose == "password_reset":
+                result = send_otp_email_diagnostic(reset_record.email, otp)
+            else:
+                result = send_otp_email_diagnostic(
+                    reset_record.email,
+                    otp,
+                    purpose=purpose,
+                )
+            if result["success"]:
+                db.refresh(reset_record)
+                db.refresh(tracking)
+                if reset_record.is_used:
+                    reset_record.delivery_status = "invalidated"
+                    tracking.delivery_status = "invalidated"
+                else:
+                    reset_record.delivery_status = "sent"
+                    tracking.delivery_status = "sent"
+                db.commit()
+                email_logger.info(
+                    "OTP email delivery status=%s purpose=%s receiver=%s.",
+                    reset_record.delivery_status,
+                    purpose,
+                    reset_record.email,
+                )
+                return
+            if attempt < 3:
+                email_logger.warning(
+                    "OTP email delivery attempt=%s failed purpose=%s receiver=%s stage=%s mode=%s; retrying.",
+                    attempt,
+                    purpose,
+                    reset_record.email,
+                    result.get("stage"),
+                    result.get("mode"),
+                )
+                time_sleep(min(2 ** (attempt - 1), 4))
+
+        db.refresh(reset_record)
+        db.refresh(tracking)
+        if reset_record.is_used:
+            reset_record.delivery_status = "invalidated"
+            tracking.delivery_status = "invalidated"
+            db.commit()
+            return
+        reset_record.delivery_status = "failed"
+        tracking.delivery_status = "failed"
+        db.commit()
+        print(
+            f"OTP email delivery failed after 3 attempts purpose={purpose} "
+            f"receiver={reset_record.email} stage={result.get('stage')} mode={result.get('mode')}.",
+            flush=True,
+        )
+        email_logger.error(
+            "OTP email delivery failed after 3 attempts purpose=%s receiver=%s stage=%s mode=%s.",
+            purpose,
+            reset_record.email,
+            result.get("stage"),
+            result.get("mode"),
+        )
+    except Exception:
+        db.rollback()
+        email_logger.exception("Failed to send OTP email")
+        raise
+    finally:
+        db.close()
+
+
+def _forgot_password_response(retry_after_seconds: int = 60) -> dict[str, Any]:
+    return {
+        "message": (
+            "If the account exists, a verification code will be sent to its "
+            "registered email address."
+        ),
+        "retry_after_seconds": max(1, retry_after_seconds),
+    }
+
+
+@app.post("/api/admin/email/test")
+def send_admin_test_email(
+    authorization: Optional[str] = Header(None),
+    session_token: Optional[str] = Header(None, alias="X-Admin-Session-Token"),
+    db: Session = Depends(get_db),
+):
+    _require_admin_dashboard_access(authorization, session_token, db)
+    sender_email, _ = _smtp_credentials()
+    result = _send_smtp_message(
+        sender_email,
+        "Campus Market SMTP test",
+        "This is an administrator-triggered SMTP configuration test.",
+    )
+    return {
+        "success": result["success"],
+        "stage": result["stage"],
+        "mode": result["mode"],
+        "port": result["port"],
+        "hint": result["hint"],
+        "attempts": result["attempts"],
+    }
+
+
+@app.post("/api/auth/forgot-password")
+def forgot_password(
+    request: ForgotPasswordRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    identifier = _login_identifier(request.id_or_email)
+    if not identifier:
+        logger.info("Forgot-password request had no usable identifier; returning generic response.")
+        return _forgot_password_response()
+    student = _password_reset_student(db, identifier, lock_for_update=True)
+    account_key = (
+        student.email.strip().lower()
+        if student and student.email
+        else identifier.lower()[:150]
+    )
+    request_ip = _request_client_ip(http_request) or "unknown"
+    now_utc = datetime.now(timezone.utc)
+    now = now_utc.replace(tzinfo=None)
+    if student and student.email:
+        latest_reset = _latest_password_reset(db, student.email, lock_for_update=True)
+        if (
+            latest_reset
+            and not latest_reset.is_used
+            and latest_reset.expires_at >= now
+            and latest_reset.created_at
+            and (now - latest_reset.created_at).total_seconds()
+            < PASSWORD_RESET_RESEND_COOLDOWN_SECONDS
+        ):
+            cooldown_remaining = PASSWORD_RESET_RESEND_COOLDOWN_SECONDS - int(
+                (now - latest_reset.created_at).total_seconds()
+            )
+            logger.info("Forgot-password OTP resend suppressed by cooldown.")
+            return _forgot_password_response(cooldown_remaining)
+
+    retry_after = _password_reset_rate_limit(
+        db,
+        account_key,
+        request_ip,
+        now,
+        include_ip_limit=not (
+            _is_localhost_request(http_request) and not _is_production_environment()
+        ),
+    )
+    if retry_after:
+        logger.info("Forgot-password OTP request rate-limited retry_after_seconds=%s.", retry_after)
+        return _forgot_password_response(retry_after)
+
+    if not student or not student.email:
+        logger.info("Forgot-password request had no eligible account; returning generic response.")
+        db.add(
+            PasswordResetRequest(
+                account_key=account_key,
+                request_ip=request_ip,
+                requested_at=now,
+                delivery_status="failed",
+            )
+        )
+        db.commit()
+        return _forgot_password_response()
 
     email = student.email.strip().lower()
+    previous_resets = db.query(PasswordReset).filter(
+        func.lower(PasswordReset.email) == email,
+        PasswordReset.purpose == "password_reset",
+        PasswordReset.is_used == False,
+    ).all()
+    for previous_reset in previous_resets:
+        previous_reset.is_used = True
+        previous_reset.delivery_status = "invalidated"
 
     otp = _generate_otp_code()
-    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
-
+    now = datetime.utcnow().replace(microsecond=0)
+    expires_at = now + timedelta(minutes=10)
     reset_entry = PasswordReset(
         email=email,
-        otp_code=otp,
-        expires_at=expires,
-        is_used=False
+        otp_hash=_password_reset_otp_hash(email, otp),
+        expires_at=expires_at,
+        is_used=False,
+        delivery_status="queued",
+        verification_attempts=0,
+        created_at=now,
     )
-    db.add(reset_entry)
+    tracking = PasswordResetRequest(
+        account_key=account_key,
+        request_ip=request_ip,
+        requested_at=now,
+        delivery_status="queued",
+    )
+    db.add_all([reset_entry, tracking])
     try:
-        email_sent = send_otp_email(email, otp)
-        if not email_sent:
-            logging.getLogger("app.auth").debug("SMTP Connection failed. Development mode activated.")
+        db.flush()
+        reset_id = reset_entry.id
+        request_id = tracking.id
+        logger.info("[OTP CREATED] now=%s, expires_at=%s", now, reset_entry.expires_at)
         db.commit()
-    except HTTPException:
-        raise
     except SQLAlchemyError:
         db.rollback()
+        logger.exception("Failed to queue forgot-password OTP email.")
         raise HTTPException(status_code=500, detail="Failed to create password reset request.")
-    return {
-            "email": email,
-            "message": "Verification code has been sent to your email." if email_sent else "OTP was generated, but email delivery failed. Please try again later.",
-            "detail": "OTP email delivered successfully." if email_sent else "OTP was generated and saved, but Gmail SMTP could not deliver the email. Check the server email configuration and try again.",
-            "success": email_sent,
-            "dev_mode": not email_sent,
-    }
+    logger.info(
+        "Queued forgot-password OTP email delivery reset_id=%s receiver=%s.",
+        reset_id,
+        email,
+    )
+    background_tasks.add_task(_deliver_password_reset_email, reset_id, request_id, otp)
+    # Keep the response generic to prevent account enumeration; delivery outcome
+    # is reported by the background task's application email logs.
+    return _forgot_password_response()
 
 
 @app.post("/api/auth/verify-reset-code")
 def verify_reset_code(request: VerifyResetCodeRequest, db: Session = Depends(get_db)):
-    email = request.email.strip().lower()
+    student = _password_reset_student(db, request.email)
+    email = student.email.strip().lower() if student and student.email else request.email.strip().lower()
     otp = request.otp_code.strip()
     if not otp.isdigit() or len(otp) != 6:
         raise HTTPException(status_code=400, detail="Invalid OTP format.")
 
-    reset_record = (
-        db.query(PasswordReset)
-        .filter(
-            PasswordReset.email.ilike(email),
-            PasswordReset.otp_code == otp,
-            PasswordReset.is_used == False,
-            PasswordReset.expires_at >= datetime.now(timezone.utc),
-        )
-        .order_by(PasswordReset.id.desc())
-        .first()
-    )
+    reset_record = _latest_password_reset(db, email, lock_for_update=True)
+    now = _utc_now()
+    expires_at = _as_utc_datetime(reset_record.expires_at) if reset_record else None
+    failure_reason = None
+
     if not reset_record:
+        failure_reason = "missing reset record"
+    elif reset_record.is_used:
+        failure_reason = "code already used"
+    elif reset_record.verification_attempts >= 5:
+        failure_reason = "max attempts exceeded"
+    elif reset_record.delivery_status != "sent":
+        failure_reason = f"delivery_status={reset_record.delivery_status}"
+    elif expires_at is None or expires_at <= now:
+        failure_reason = "expired"
+    elif not _password_reset_code_matches(db, reset_record, otp):
+        failure_reason = "invalid code"
+
+    if failure_reason is not None:
+        logging.getLogger("app.auth").warning(
+            "Password reset verification rejected reason=%s email=%s otp_len=%s reset_id=%s status=%s expires_at=%s attempts=%s",
+            failure_reason,
+            email,
+            len(otp),
+            getattr(reset_record, "id", None),
+            getattr(reset_record, "delivery_status", None),
+            getattr(reset_record, "expires_at", None),
+            getattr(reset_record, "verification_attempts", None),
+        )
         raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
 
     return {"message": "Verification code is valid.", "success": True}
@@ -5821,35 +6521,50 @@ def verify_reset_code(request: VerifyResetCodeRequest, db: Session = Depends(get
 # 2.5 አዲስ የይለፍ ቃል መቀየሪያ (POST /api/auth/reset-password)
 @app.post("/api/auth/reset-password")
 def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
-    email = request.email.strip().lower()
+    student = _password_reset_student(db, request.email, lock_for_update=True)
+    email = student.email.strip().lower() if student and student.email else request.email.strip().lower()
     otp = request.otp_code.strip()
     new_password = request.new_password
 
     if not otp.isdigit() or len(otp) != 6:
         raise HTTPException(status_code=400, detail="Invalid OTP format.")
+
     minimum_password_length = _session_password_min_length(db)
     if len(new_password) < minimum_password_length or not re.search(r"[A-Z]", new_password) or not re.search(r"\d", new_password):
         raise HTTPException(status_code=400, detail=f"Password must be at least {minimum_password_length} characters and include an uppercase letter and a number.")
 
-    reset_record = (
-        db.query(PasswordReset)
-        .filter(
-            PasswordReset.email.ilike(email),
-            PasswordReset.otp_code == otp,
-            PasswordReset.is_used == False,
-            PasswordReset.expires_at >= datetime.now(timezone.utc)
-        )
-        .order_by(PasswordReset.id.desc())
-        .first()
-    )
+    reset_record = _latest_password_reset(db, email, lock_for_update=True)
+    now = _utc_now()
+    expires_at = _as_utc_datetime(reset_record.expires_at) if reset_record else None
+    failure_reason = None
 
     if not reset_record:
+        failure_reason = "missing reset record"
+    elif reset_record.is_used:
+        failure_reason = "code already used"
+    elif reset_record.verification_attempts >= 5:
+        failure_reason = "max attempts exceeded"
+    elif reset_record.delivery_status != "sent":
+        failure_reason = f"delivery_status={reset_record.delivery_status}"
+    elif expires_at is None or expires_at <= now:
+        failure_reason = "expired"
+    elif not _password_reset_code_matches(db, reset_record, otp):
+        failure_reason = "invalid code"
+
+    if failure_reason is not None:
+        logging.getLogger("app.auth").warning(
+            "Password reset submission rejected reason=%s email=%s reset_id=%s status=%s expires_at=%s attempts=%s",
+            failure_reason,
+            email,
+            getattr(reset_record, "id", None),
+            getattr(reset_record, "delivery_status", None),
+            getattr(reset_record, "expires_at", None),
+            getattr(reset_record, "verification_attempts", None),
+        )
         raise HTTPException(status_code=400, detail="Invalid or expired verification code.")
 
-    student = db.query(Student).filter(Student.email.ilike(email)).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
-
     try:
         student.password = hash_password(new_password)
         student.has_password = True
@@ -14158,9 +14873,84 @@ def _audit_wallet_pin_failure(
 def _wallet_pin_lock_detail(retry_after_seconds: int) -> dict:
     return {
         "code": "PAYMENTS_LOCKED",
-        "message": "Wallet payments are locked after too many incorrect PIN attempts.",
+        "message": "Wallet transactions are locked after too many incorrect PIN attempts.",
         "retry_after_seconds": retry_after_seconds,
     }
+
+
+def _verify_wallet_pin(
+    db: Session,
+    student: Student,
+    pin: str,
+    request: Request,
+    *,
+    incorrect_message: str = "Incorrect wallet PIN.",
+) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if student.pay_locked_until and student.pay_locked_until > now:
+        retry_after_seconds = max(1, int((student.pay_locked_until - now).total_seconds()))
+        db.rollback()
+        raise HTTPException(
+            status_code=423,
+            detail=_wallet_pin_lock_detail(retry_after_seconds),
+        )
+    if not student.has_wallet_pin:
+        db.rollback()
+        raise HTTPException(status_code=409, detail={
+            "code": "PIN_NOT_SET",
+            "message": "Set up a 4-digit Wallet PIN before continuing.",
+            "action": "set_pin",
+        })
+    if student.pay_locked_until and student.pay_locked_until <= now:
+        student.pay_failed_attempts = 0
+        student.pay_locked_until = None
+
+    if not _wallet_pin_matches(student, pin):
+        student.pay_failed_attempts = int(student.pay_failed_attempts or 0) + 1
+        max_attempts = min(5, max(1, get_pay_max_failed_attempts()))
+        attempts_left = max(0, max_attempts - student.pay_failed_attempts)
+        should_lock = attempts_left == 0
+        if should_lock:
+            student.pay_locked_until = now + timedelta(minutes=get_pay_lock_minutes())
+            _add_student_notification(
+                db,
+                student,
+                "Payments temporarily locked",
+                f"Wallet transactions are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
+                "payment",
+            )
+        _audit_wallet_pin_failure(db, student, request, locked=should_lock)
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            logger.exception("Unable to record a Wallet PIN verification failure.")
+            raise HTTPException(status_code=500, detail="Unable to verify Wallet PIN.")
+        if should_lock:
+            _send_student_notification_email(
+                student,
+                "Payments temporarily locked",
+                f"Wallet transactions are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
+                "payment",
+            )
+            raise HTTPException(
+                status_code=423,
+                detail=_wallet_pin_lock_detail(get_pay_lock_minutes() * 60),
+            )
+        raise HTTPException(status_code=401, detail={
+            "code": "INCORRECT_PIN",
+            "message": incorrect_message,
+            "attempts_left": attempts_left,
+        })
+
+    student.pay_failed_attempts = 0
+    student.pay_locked_until = None
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Unable to complete Wallet PIN verification.")
+        raise HTTPException(status_code=500, detail="Unable to verify Wallet PIN.")
 
 
 @app.get("/api/wallet/pin-status")
@@ -14187,41 +14977,188 @@ def set_wallet_pin(
     if not locked_student:
         raise HTTPException(status_code=401, detail="Authentication required.")
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if locked_student.pay_locked_until and locked_student.pay_locked_until > now:
-        retry_after_seconds = max(1, int((locked_student.pay_locked_until - now).total_seconds()))
-        db.rollback()
-        raise HTTPException(status_code=423, detail=_wallet_pin_lock_detail(retry_after_seconds))
-    if locked_student.pay_locked_until and locked_student.pay_locked_until <= now:
-        locked_student.pay_failed_attempts = 0
-        locked_student.pay_locked_until = None
-
     if locked_student.has_wallet_pin:
         current_pin = payload.current_pin.get_secret_value() if payload.current_pin else ""
-        if not current_pin or not _wallet_pin_matches(locked_student, current_pin):
-            locked_student.pay_failed_attempts = int(locked_student.pay_failed_attempts or 0) + 1
-            attempts_left = max(0, get_pay_max_failed_attempts() - locked_student.pay_failed_attempts)
-            should_lock = attempts_left == 0
-            if should_lock:
-                locked_student.pay_locked_until = now + timedelta(minutes=get_pay_lock_minutes())
-            _audit_wallet_pin_failure(db, locked_student, request, locked=should_lock)
-            db.commit()
-            if should_lock:
-                raise HTTPException(
-                    status_code=423,
-                    detail=_wallet_pin_lock_detail(get_pay_lock_minutes() * 60),
-                )
-            raise HTTPException(status_code=401, detail={
-                "code": "INCORRECT_PIN",
-                "message": "Current wallet PIN is incorrect.",
-                "attempts_left": attempts_left,
-            })
+        _verify_wallet_pin(
+            db,
+            locked_student,
+            current_pin,
+            request,
+            incorrect_message="Current wallet PIN is incorrect.",
+        )
 
     locked_student.wallet_pin_hash = hash_password(payload.pin.get_secret_value())
     locked_student.pay_failed_attempts = 0
     locked_student.pay_locked_until = None
     db.commit()
     return {"has_wallet_pin": True, "message": "Wallet PIN saved successfully."}
+
+
+@app.post("/api/wallet/pin-reset/request")
+def request_wallet_pin_reset(
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    _require_verified_student(student, db, "resetting a wallet PIN")
+    email = str(student.email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=409, detail="A registered email address is required to reset your Wallet PIN.")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    purpose = "wallet_pin_reset"
+    latest_reset = _latest_password_reset(
+        db,
+        email,
+        purpose=purpose,
+        lock_for_update=True,
+    )
+    if (
+        latest_reset
+        and not latest_reset.is_used
+        and latest_reset.expires_at >= now
+        and latest_reset.created_at
+        and (now - latest_reset.created_at).total_seconds()
+        < PASSWORD_RESET_RESEND_COOLDOWN_SECONDS
+    ):
+        cooldown_remaining = PASSWORD_RESET_RESEND_COOLDOWN_SECONDS - int(
+            (now - latest_reset.created_at).total_seconds()
+        )
+        return _forgot_password_response(cooldown_remaining)
+
+    request_ip = _request_client_ip(http_request) or "unknown"
+    retry_after = _password_reset_rate_limit(db, email, request_ip, now)
+    if retry_after:
+        return _forgot_password_response(retry_after)
+
+    previous_resets = db.query(PasswordReset).filter(
+        func.lower(PasswordReset.email) == email,
+        PasswordReset.purpose == purpose,
+        PasswordReset.is_used == False,
+    ).all()
+    for previous_reset in previous_resets:
+        previous_reset.is_used = True
+        previous_reset.delivery_status = "invalidated"
+
+    otp = _generate_otp_code()
+    now = datetime.utcnow().replace(microsecond=0)
+    expires_at = now + timedelta(minutes=10)
+    reset_entry = PasswordReset(
+        email=email,
+        otp_hash=_password_reset_otp_hash(email, otp, purpose),
+        expires_at=expires_at,
+        is_used=False,
+        delivery_status="queued",
+        verification_attempts=0,
+        purpose=purpose,
+        created_at=now,
+    )
+    tracking = PasswordResetRequest(
+        account_key=email,
+        request_ip=request_ip,
+        requested_at=now,
+        delivery_status="queued",
+    )
+    db.add_all([reset_entry, tracking])
+    try:
+        db.flush()
+        reset_id = reset_entry.id
+        request_id = tracking.id
+        logger.info("[OTP CREATED] now=%s, expires_at=%s", now, reset_entry.expires_at)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Unable to create a Wallet PIN reset request.")
+        raise HTTPException(status_code=500, detail="Unable to request a Wallet PIN reset.")
+
+    background_tasks.add_task(
+        _deliver_password_reset_email,
+        reset_id,
+        request_id,
+        otp,
+        purpose,
+    )
+    return _forgot_password_response()
+
+
+@app.post("/api/wallet/pin-reset/confirm")
+def confirm_wallet_pin_reset(
+    payload: WalletPinResetRequest,
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    _require_verified_student(student, db, "resetting a wallet PIN")
+    locked_student = db.query(Student).filter(
+        Student.student_id == student.student_id,
+    ).with_for_update().first()
+    if not locked_student:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    email = str(locked_student.email or "").strip().lower()
+    reset_record = _latest_password_reset(
+        db,
+        email,
+        purpose="wallet_pin_reset",
+        lock_for_update=True,
+    )
+    now = _utc_now()
+    expires_at = _as_utc_datetime(reset_record.expires_at) if reset_record else None
+    failure_reason = None
+
+    if not reset_record:
+        failure_reason = "missing reset record"
+    elif reset_record.is_used:
+        failure_reason = "code already used"
+    elif reset_record.verification_attempts >= 5:
+        failure_reason = "max attempts exceeded"
+    elif reset_record.delivery_status != "sent":
+        failure_reason = f"delivery_status={reset_record.delivery_status}"
+    elif expires_at is None or expires_at <= now:
+        failure_reason = "expired"
+    elif not _password_reset_code_matches(
+        db,
+        reset_record,
+        payload.otp_code,
+    ):
+        failure_reason = "invalid code"
+
+    if failure_reason is not None:
+        logging.getLogger("app.auth").warning(
+            "Wallet PIN reset verification rejected reason=%s email=%s reset_id=%s status=%s expires_at=%s attempts=%s",
+            failure_reason,
+            email,
+            getattr(reset_record, "id", None),
+            getattr(reset_record, "delivery_status", None),
+            getattr(reset_record, "expires_at", None),
+            getattr(reset_record, "verification_attempts", None),
+        )
+        raise HTTPException(status_code=400, detail="Invalid or expired Wallet PIN reset code.")
+
+    locked_student.wallet_pin_hash = hash_password(payload.pin.get_secret_value())
+    locked_student.pay_failed_attempts = 0
+    locked_student.pay_locked_until = None
+    reset_record.is_used = True
+    db.add(AuditLog(
+        admin_id=None,
+        action="wallet_pin_reset",
+        entity_type="Student",
+        entity_id=locked_student.id,
+        description="Student reset their Wallet PIN using email verification.",
+        status="SUCCESS",
+        severity="informational",
+        ip_address=request.client.host if request.client else None,
+    ))
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Unable to confirm a Wallet PIN reset.")
+        raise HTTPException(status_code=500, detail="Unable to reset your Wallet PIN.")
+    return {"has_wallet_pin": True, "message": "Wallet PIN reset successfully."}
 
 
 @app.get("/api/products/{product_id}/pay-summary")
@@ -14299,6 +15236,27 @@ def pay_for_product(
         raise HTTPException(status_code=409, detail="Add this product to your cart before paying.")
     scoped_key = f"{buyer.student_id}:{key}"
 
+    # PIN attempts are committed independently so failed-attempt counters
+    # cannot be erased by a later rollback in the wallet transaction.
+    try:
+        locked_buyer = db.query(Student).filter(
+            Student.student_id == buyer.student_id,
+        ).with_for_update().first()
+        if not locked_buyer:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        _verify_wallet_pin(
+            db,
+            locked_buyer,
+            payload.pin.get_secret_value(),
+            request,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Unable to validate password for product payment.")
+        raise HTTPException(status_code=500, detail="Unable to verify payment credentials.")
+
     existing = db.query(PaymentIdempotency).filter(
         PaymentIdempotency.idempotency_key == scoped_key,
     ).first()
@@ -14312,82 +15270,6 @@ def pay_for_product(
         order = db.query(Order).filter(Order.id == existing.order_id).first()
         if order:
             return _payment_result(order, already_paid=True)
-
-    # PIN attempts are committed independently so failed-attempt counters
-    # cannot be erased by a later rollback in the wallet transaction.
-    try:
-        locked_buyer = db.query(Student).filter(
-            Student.student_id == buyer.student_id,
-        ).with_for_update().first()
-        if not locked_buyer:
-            raise HTTPException(status_code=401, detail="Authentication required.")
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        if locked_buyer.pay_locked_until and locked_buyer.pay_locked_until > now:
-            retry_after_seconds = max(1, int((locked_buyer.pay_locked_until - now).total_seconds()))
-            db.rollback()
-            raise HTTPException(
-                status_code=423,
-                detail={
-                    "code": "PAYMENTS_LOCKED",
-                    "message": "Wallet payments are locked after too many incorrect PIN attempts.",
-                    "retry_after_seconds": retry_after_seconds,
-                },
-            )
-        if not locked_buyer.has_wallet_pin:
-            db.rollback()
-            raise HTTPException(status_code=409, detail={
-                "code": "PIN_NOT_SET",
-                "message": "Set up a 4-digit Wallet PIN before paying.",
-                "action": "set_pin",
-            })
-        if locked_buyer.pay_locked_until and locked_buyer.pay_locked_until <= now:
-            locked_buyer.pay_failed_attempts = 0
-            locked_buyer.pay_locked_until = None
-        if not _wallet_pin_matches(locked_buyer, payload.pin.get_secret_value()):
-            locked_buyer.pay_failed_attempts = int(locked_buyer.pay_failed_attempts or 0) + 1
-            attempts_left = max(0, get_pay_max_failed_attempts() - locked_buyer.pay_failed_attempts)
-            should_lock = attempts_left == 0
-            if should_lock:
-                locked_buyer.pay_locked_until = now + timedelta(minutes=get_pay_lock_minutes())
-            _audit_wallet_pin_failure(db, locked_buyer, request, locked=should_lock)
-            if should_lock:
-                _add_student_notification(
-                    db,
-                    locked_buyer,
-                    "Payments temporarily locked",
-                    f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
-                    "payment",
-                )
-            db.commit()
-            if should_lock:
-                _send_student_notification_email(
-                    locked_buyer,
-                    "Payments temporarily locked",
-                    f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
-                    "payment",
-                )
-                raise HTTPException(
-                    status_code=423,
-                    detail={
-                        "code": "PAYMENTS_LOCKED",
-                        "message": f"Wallet payments are locked for {get_pay_lock_minutes()} minutes after too many incorrect PIN attempts.",
-                        "retry_after_seconds": get_pay_lock_minutes() * 60,
-                    },
-                )
-            raise HTTPException(status_code=401, detail={
-                "code": "INCORRECT_PIN",
-                "message": "Incorrect wallet PIN.",
-                "attempts_left": attempts_left,
-            })
-        locked_buyer.pay_failed_attempts = 0
-        locked_buyer.pay_locked_until = None
-        db.commit()
-    except HTTPException:
-        raise
-    except SQLAlchemyError:
-        db.rollback()
-        logger.exception("Unable to validate password for product payment.")
-        raise HTTPException(status_code=500, detail="Unable to verify payment credentials.")
 
     try:
         product = db.query(Product).filter(Product.id == product_id).with_for_update().first()
@@ -15900,7 +16782,7 @@ def _send_outbox_email(recipient: str, subject: str, body: str) -> None:
     email.attach(MIMEText(body, "plain", "utf-8"))
     email.attach(MIMEText(f"<p>{escaped_body}</p>", "html", "utf-8"))
     context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(
+    with _IPv4SMTP_SSL(
         "smtp.gmail.com",
         465,
         context=context,
@@ -17807,6 +18689,7 @@ def _submit_chapa_withdrawal(db: Session, payout_id: int):
 @app.post("/api/student/wallet/withdraw")
 async def withdraw_student_wallet(
     request: WalletWithdrawalRequest,
+    http_request: Request,
     authorization: Optional[str] = Header(None),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
@@ -17814,9 +18697,6 @@ async def withdraw_student_wallet(
     student = _student_from_authorization(authorization, db)
     if not student.is_verified:
         raise HTTPException(status_code=403, detail="Only verified student accounts can withdraw wallet funds.")
-    payout_account = _require_active_payout_account(db, student)
-    if request.payout_account_id and (not payout_account or payout_account.id != request.payout_account_id):
-        raise HTTPException(status_code=400, detail="The selected payout account does not belong to this seller.")
 
     # Serialize withdrawal attempts for this student before checking for an
     # active payout. The wallet is locked after the student row (same lock order
@@ -17826,6 +18706,16 @@ async def withdraw_student_wallet(
     ).with_for_update().first()
     if not locked_student:
         raise HTTPException(status_code=404, detail="Student wallet owner not found.")
+    _verify_wallet_pin(
+        db,
+        locked_student,
+        request.pin.get_secret_value(),
+        http_request,
+    )
+
+    payout_account = _require_active_payout_account(db, locked_student)
+    if request.payout_account_id and (not payout_account or payout_account.id != request.payout_account_id):
+        raise HTTPException(status_code=400, detail="The selected payout account does not belong to this seller.")
     wallet = _get_or_create_wallet_for_student(db, locked_student)
 
     normalized_name = " ".join(str(payout_account.account_name or "").split()).casefold()
@@ -19857,6 +20747,58 @@ def get_admin_products(
         })
 
     return results
+
+
+def _get_admin_product_status_counts(
+    db: Session,
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+) -> Dict[str, int]:
+    normalized_status = func.lower(func.trim(func.coalesce(Product.status, "")))
+    query = db.query(
+        normalized_status.label("normalized_status"),
+        func.count(Product.id).label("status_count"),
+    )
+
+    if category and category.strip().lower() != "all":
+        query = query.filter(Product.category.ilike(category.strip()))
+    if subcategory and subcategory.strip().lower() != "all":
+        query = query.filter(Product.subcategory.ilike(subcategory.strip()))
+
+    query = query.group_by(normalized_status)
+    logger.debug(
+        "Admin product moderation status SQL: %s",
+        query.statement.compile(
+            bind=db.get_bind(),
+            compile_kwargs={"literal_binds": True},
+        ),
+    )
+
+    counts = {"total": 0, "available": 0, "sold": 0, "pending": 0, "flagged": 0}
+    for status_value, row_count in query.all():
+        count = int(row_count)
+        status_value = str(status_value or "")
+        counts["total"] += count
+        if status_value in {"approved", "active", "available"}:
+            counts["available"] += count
+        elif status_value == "sold":
+            counts["sold"] += count
+        elif status_value == "pending":
+            counts["pending"] += count
+        elif status_value == "flagged":
+            counts["flagged"] += count
+
+    logger.debug("Admin product moderation status counts: %s", counts)
+    return counts
+
+
+@app.get("/api/admin/products/stats")
+def get_admin_product_stats(
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    return _get_admin_product_status_counts(db, category, subcategory)
 
 
 def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):

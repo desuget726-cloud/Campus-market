@@ -137,6 +137,7 @@ function SellerOperationsCenter({
   const { t } = useLanguage();
   const [activeHubView, dispatchHubView] = useReducer(sellerHubViewReducer, null, getInitialSellerHubView);
   const [chartRange, setChartRange] = useState("3m");
+  const [leaderboardSort, setLeaderboardSort] = useState("revenue");
   const [salesAnalyticsRetry, setSalesAnalyticsRetry] = useState(0);
   const [salesAnalyticsError, setSalesAnalyticsError] = useState("");
   const salesAnalyticsRequestId = useRef(0);
@@ -412,12 +413,7 @@ function SellerOperationsCenter({
 
   const normalizedInsights = visibleListings.map(normalizeSellerInsight);
   const topProducts = normalizedInsights
-    .sort(
-      (left, right) =>
-        right.views +
-        right.orderCount * 30 -
-        (left.views + left.orderCount * 30),
-    )
+    .sort((left, right) => right[leaderboardSort] - left[leaderboardSort])
     .slice(0, 3);
   const analyticsStats = salesAnalytics.stats || {};
   const productsSold = Number(analyticsStats.products_sold ?? 0);
@@ -1408,9 +1404,23 @@ function SellerOperationsCenter({
                 Top Performing Products
               </h3>
             </div>
-            <span className="text-sm text-slate-400">
-              Views · Orders · Revenue
-            </span>
+            <div className="flex items-center gap-1 rounded-full bg-slate-100 p-1" role="group" aria-label="Sort top performing products">
+              {[
+                { value: "views", label: "Views" },
+                { value: "orderCount", label: "Orders" },
+                { value: "revenue", label: "Revenue" },
+              ].map(({ value, label }) => (
+                <button
+                  type="button"
+                  key={value}
+                  aria-pressed={leaderboardSort === value}
+                  onClick={() => setLeaderboardSort(value)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${leaderboardSort === value ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="mt-5 grid gap-4 md:grid-cols-3">
             {topProducts.length ? (
@@ -1434,8 +1444,8 @@ function SellerOperationsCenter({
                       className="h-14 w-14 shrink-0 rounded-xl object-cover"
                     />
                     <div className="min-w-0">
-                      <span className="text-3xl">
-                        {["🥇", "🥈", "🥉"][index]}
+                      <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                        #{index + 1}
                       </span>
                       <h4 className="mt-1 truncate font-black text-slate-950">
                         {product.title || product.name}
@@ -1447,11 +1457,12 @@ function SellerOperationsCenter({
                       </p>
                     </div>
                   </div>
-                  <p className="mt-3 text-sm text-slate-600">
+                  <p className="mt-3 text-xs text-slate-500">
                     {product.views} views · {product.orderCount} orders
                   </p>
-                  <p className="mt-2 font-bold text-emerald-600">
-                    {formatSellerEtb(product.revenue)} generated
+                  <p className="mt-2 text-lg font-black text-emerald-700">
+                    {formatSellerEtb(product.revenue)}
+                    <span className="ml-1 text-xs font-medium text-slate-500">generated</span>
                   </p>
                 </button>
               ))

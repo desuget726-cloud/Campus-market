@@ -3930,3 +3930,194 @@ Traceback (most recent call last):
   File "C:\Python312\Lib\smtplib.py", line 405, in getreply
     raise SMTPServerDisconnected("Connection unexpectedly closed")
 smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-28 23:31:56,355 ERROR OTP email SMTP failed during authentication recipient=desalegngood136@gmail.com error=Connection unexpectedly closed
+2026-10-28 23:35:54,462 ERROR OTP email SMTP failed during authentication recipient=desalegngood136@gmail.com error=Connection unexpectedly closed: [WinError 10054] An existing connection was forcibly closed by the remote host
+2026-10-28 23:42:07,264 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:42:07,264 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:42:08,834 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:43:27,188 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:43:27,633 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:43:27,848 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:43:27,848 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:43:28,819 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:43:29,064 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:44:05,068 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:44:05,653 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:44:05,845 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:44:05,846 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:44:06,353 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:44:06,602 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:44:38,720 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:44:39,484 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:44:39,724 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:44:39,724 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:44:40,540 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:44:40,850 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:45:20,231 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:45:20,708 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:45:21,022 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:45:21,022 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:45:21,996 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:45:22,281 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:46:38,517 ERROR SMTP delivery failed at stage=connect mode=starttls host=smtp.gmail.com port=587 error_type=TimeoutError; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:46:38,518 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=connect failed.
+2026-10-28 23:46:39,373 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:46:39,629 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:46:41,024 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:46:41,802 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:46:42,063 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:46:42,063 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:46:42,605 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:46:42,863 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:46:45,580 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:46:46,035 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:46:46,861 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:46:46,880 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:46:47,444 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:46:47,818 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:53:49,819 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:53:50,284 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:53:50,648 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:53:50,649 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:54:05,711 ERROR SMTP delivery failed at stage=connect mode=ssl host=smtp.gmail.com port=465 error_type=TimeoutError; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:54:07,425 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:54:07,875 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:54:08,080 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:54:08,080 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:54:08,896 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:54:09,164 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:54:11,867 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:54:12,318 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:54:12,571 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:54:12,572 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:54:13,076 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:54:13,992 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:55:08,180 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:55:08,990 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:55:10,398 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:55:10,398 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:55:10,953 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:55:12,076 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:55:28,167 ERROR SMTP delivery failed at stage=connect mode=starttls host=smtp.gmail.com port=587 error_type=TimeoutError; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:55:28,168 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=connect failed.
+2026-10-28 23:55:28,837 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-28 23:55:29,098 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:55:32,159 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:55:32,609 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-28 23:55:33,106 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-28 23:55:33,106 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-28 23:55:48,222 ERROR SMTP delivery failed at stage=connect mode=ssl host=smtp.gmail.com port=465 error_type=TimeoutError; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-29 00:03:34,136 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 00:03:34,601 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 00:03:34,862 ERROR SMTP delivery failed at stage=login mode=starttls host=smtp.gmail.com port=587 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-29 00:03:34,862 WARNING SMTP retrying once with fallback mode=ssl port=465 after stage=login failed.
+2026-10-29 00:03:35,698 INFO SMTP stage succeeded stage=connect mode=ssl host=smtp.gmail.com port=465.
+2026-10-29 00:03:35,961 ERROR SMTP delivery failed at stage=login mode=ssl host=smtp.gmail.com port=465 error_type=SMTPServerDisconnected; hint: Check whether the port is blocked by firewall/antivirus/network.
+2026-10-29 00:35:12,196 ERROR Failed to send student notification email: Connection unexpectedly closed: [WinError 10054] An existing connection was forcibly closed by the remote host
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 398, in getreply
+    line = self.file.readline(_MAXLINE + 1)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1304, in recv_into
+    return self.read(nbytes, buffer)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\ssl.py", line 1138, in read
+    return self._sslobj.read(len, buffer)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 3657, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 739, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 642, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 432, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 401, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed: "
+                                 + str(e))
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed: [WinError 10054] An existing connection was forcibly closed by the remote host
+2026-10-29 00:35:15,823 ERROR Failed to send student notification email: Connection unexpectedly closed
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 3657, in _send_student_notification_email
+    server.login(SENDER_EMAIL, SENDER_PASSWORD)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 739, in login
+    (code, resp) = self.auth(
+                   ~~~~~~~~~^
+        authmethod, getattr(self, method_name),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        initial_response_ok=initial_response_ok)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 642, in auth
+    (code, resp) = self.docmd("AUTH", mechanism + " " + response)
+                   ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 432, in docmd
+    return self.getreply()
+           ~~~~~~~~~~~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 405, in getreply
+    raise SMTPServerDisconnected("Connection unexpectedly closed")
+smtplib.SMTPServerDisconnected: Connection unexpectedly closed
+2026-10-29 01:15:51,604 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-10-29 01:15:51,604 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-10-29 01:15:52,171 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:15:53,113 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:15:53,338 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:15:54,690 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:15:54,691 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desuget726@gmail.com host=smtp.gmail.com port=587.
+2026-10-29 01:17:03,863 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:17:03,864 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:17:04,380 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:17:04,827 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:17:05,010 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:17:06,745 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:17:06,747 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desu9595@gmail.com host=smtp.gmail.com port=587.
+2026-10-29 01:20:58,193 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:20:58,193 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:20:58,999 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:21:00,323 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:21:00,530 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:21:01,818 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:21:01,821 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desu9595@gmail.com host=smtp.gmail.com port=587.
+2026-10-29 01:26:10,058 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:26:10,059 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:26:11,270 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:26:12,144 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:26:12,628 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:26:13,868 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:26:13,869 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desu9595@gmail.com host=smtp.gmail.com port=587.
+2026-10-29 01:32:58,456 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-10-29 01:32:58,456 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-10-29 01:32:59,133 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:33:00,638 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:33:00,848 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:33:02,037 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:33:02,038 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desuget726@gmail.com host=smtp.gmail.com port=587.
+2026-10-29 01:39:28,166 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-10-29 01:39:28,168 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-10-29 01:39:30,047 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:39:30,666 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:39:30,841 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:39:32,139 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:39:32,141 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desuget726@gmail.com host=smtp.gmail.com port=587.
+2026-10-29 01:43:00,249 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:43:00,250 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desu9595@gmail.com.
+2026-10-29 01:43:01,467 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:43:02,306 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:43:02,566 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:43:03,975 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-10-29 01:43:03,985 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desu9595@gmail.com host=smtp.gmail.com port=587.

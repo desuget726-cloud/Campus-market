@@ -512,6 +512,9 @@ function StudentDashboard({
   const [paymentVerificationState, setPaymentVerificationState] = useState('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawPin, setWithdrawPin] = useState('');
+  const [withdrawAttemptsLeft, setWithdrawAttemptsLeft] = useState(null);
+  const [withdrawRetryAfterSeconds, setWithdrawRetryAfterSeconds] = useState(null);
   const [payoutAccount, setPayoutAccount] = useState(null);
   const [payoutAccountLoading, setPayoutAccountLoading] = useState(false);
   const [payoutSetupOpen, setPayoutSetupOpen] = useState(false);
@@ -2805,6 +2808,8 @@ function StudentDashboard({
     e.preventDefault();
     if (withdrawSubmitInFlightRef.current) return;
     setWithdrawError('');
+    setWithdrawAttemptsLeft(null);
+    setWithdrawRetryAfterSeconds(null);
     const amount = Number(withdrawAmount);
 
     if (!amount || amount < 100) {
@@ -2831,6 +2836,10 @@ function StudentDashboard({
       setWithdrawError('Student ID is missing. Please log in again.');
       return;
     }
+    if (!/^\d{4}$/.test(withdrawPin)) {
+      setWithdrawError('Enter your 4-digit Wallet PIN to authorize this withdrawal.');
+      return;
+    }
 
     // Guard synchronously: React's disabled-state render may not occur before
     // a rapid second submit event reaches this handler.
@@ -2844,6 +2853,7 @@ function StudentDashboard({
       const payload = {
         amount,
         payout_account_id: payoutAccountOverride?.id || null,
+        pin: withdrawPin,
       };
 
       const token = getStudentSessionToken();
@@ -2863,6 +2873,12 @@ function StudentDashboard({
           setPayoutSetupOpen(true);
           setPayoutSetupError('');
           return;
+        }
+        if (Number.isInteger(data?.detail?.attempts_left)) {
+          setWithdrawAttemptsLeft(data.detail.attempts_left);
+        }
+        if (Number.isFinite(data?.detail?.retry_after_seconds)) {
+          setWithdrawRetryAfterSeconds(data.detail.retry_after_seconds);
         }
         if (res.status === 503) {
           setWithdrawProviderUnavailable(true);
@@ -2909,6 +2925,7 @@ function StudentDashboard({
       await fetchBuyerDashboardData();
       setShowWithdrawModal(false);
       setWithdrawAmount('');
+      setWithdrawPin('');
       if (String(data.status || '').toLowerCase() === 'successful') {
         notifySuccess(studentToast('withdrawalSubmitted'), 'student-withdrawal-submit');
       } else {
@@ -2919,6 +2936,7 @@ function StudentDashboard({
       setWithdrawError(getErrorMessage(err));
       notifyError(err, 'student-withdrawal-submit');
     } finally {
+      setWithdrawPin('');
       withdrawSubmitInFlightRef.current = false;
       setWithdrawLoading(false);
     }
@@ -6397,6 +6415,7 @@ function StudentDashboard({
                   setPayoutSetupOpen(false);
                   setPayoutSetupAccountNumber('');
                   setWithdrawError('');
+                  setWithdrawPin('');
                 }}
                 className="rounded-full border border-slate-200 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -6420,6 +6439,23 @@ function StudentDashboard({
                   placeholder="Enter withdrawal amount"
                   className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
                 />
+              </div>
+              <div>
+                <label htmlFor="withdraw-wallet-pin" className="block text-sm font-semibold text-slate-700">Wallet PIN</label>
+                <input
+                  id="withdraw-wallet-pin"
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]{4}"
+                  maxLength={4}
+                  autoComplete="off"
+                  value={withdrawPin}
+                  onChange={(event) => setWithdrawPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                  disabled={payoutAccountLoading || withdrawLoading}
+                  required
+                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm tracking-[0.4em] focus:border-emerald-500 focus:bg-white focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-slate-500">Enter your 4-digit Wallet PIN to authorize this transaction.</p>
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
@@ -6596,7 +6632,16 @@ function StudentDashboard({
                     {withdrawalStatusLoading ? 'Refreshing status...' : 'Refresh payout status'}
                   </button>
                 </div>
-              ) : withdrawError && <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{withdrawError}</p>}
+              ) : withdrawError && (
+                <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                  <p>{withdrawError}</p>
+                  {withdrawAttemptsLeft !== null && <p className="mt-1 font-bold">{withdrawAttemptsLeft} PIN attempt{withdrawAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
+                  {withdrawRetryAfterSeconds !== null && <p className="mt-1 font-bold">Try again in {Math.ceil(withdrawRetryAfterSeconds / 60)} minute{Math.ceil(withdrawRetryAfterSeconds / 60) === 1 ? '' : 's'}.</p>}
+                  {withdrawError.toLowerCase().includes('wallet pin') && withdrawError.toLowerCase().includes('set up') && (
+                    <button type="button" onClick={() => { setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('security'); }} className="mt-2 font-bold underline">Set up Wallet PIN in Settings</button>
+                  )}
+                </div>
+              )}
 
               </div>
               <div className="shrink-0 border-t border-slate-200 bg-white px-6 py-4">
@@ -6612,7 +6657,7 @@ function StudentDashboard({
                 ) : (
                   <button
                     type="submit"
-                    disabled={payoutAccountLoading || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
+                    disabled={payoutAccountLoading || Boolean(activeWithdrawal) || withdrawProviderUnavailable || withdrawLoading || withdrawPin.length !== 4 || !Number.isFinite(withdrawAmountValue) || withdrawAmountValue < 100 || withdrawExceedsBalance}
                     className="w-full rounded-full bg-emerald-500 py-3.5 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
                   >
                     {withdrawLoading ? t('walletPayout.processing') : t('walletPayout.submitWithdrawal')}

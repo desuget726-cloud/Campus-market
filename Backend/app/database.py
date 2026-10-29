@@ -113,6 +113,40 @@ def _add_column_if_missing(table_name: str, column_name: str, column_definition:
             raise
 
 
+def _migrate_password_reset_expiry_column() -> None:
+    if engine.dialect.name != "mysql":
+        return
+
+    with engine.connect() as connection:
+        expiry_column = connection.execute(text(
+            "SELECT DATA_TYPE AS data_type, DATETIME_PRECISION AS datetime_precision, "
+            "EXTRA AS extra FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() "
+            "AND TABLE_NAME = 'password_resets' AND COLUMN_NAME = 'expires_at'"
+        )).mappings().first()
+
+    if not expiry_column or "on update current_timestamp" not in str(
+        expiry_column["extra"] or ""
+    ).lower():
+        return
+
+    data_type = expiry_column["data_type"].lower()
+    if data_type not in {"datetime", "timestamp"}:
+        raise RuntimeError(
+            f"Unsupported password_resets.expires_at type for MySQL migration: {data_type}"
+        )
+    precision = expiry_column["datetime_precision"]
+    column_type = f"{data_type.upper()}({int(precision)})" if precision is not None else data_type.upper()
+    with engine.begin() as connection:
+        connection.execute(text(
+            f"ALTER TABLE password_resets "
+            f"MODIFY COLUMN expires_at {column_type} NOT NULL"
+        ))
+    logging.getLogger("app.startup").info(
+        "Removed automatic update behavior from password_resets.expires_at."
+    )
+
+
 def missing_model_columns(table_names: Optional[Iterable[str]] = None) -> dict[str, list[str]]:
     """List model columns missing from the current database schema."""
     selected_tables = set(table_names) if table_names is not None else None
@@ -244,6 +278,47 @@ def init_db() -> None:
         _add_column_if_missing("admin_sessions", "revoked_at", "DATETIME NULL")
         _add_column_if_missing("admin_sessions", "revoke_reason", "VARCHAR(60) NULL")
         _add_column_if_missing("admin_sessions", "location", "VARCHAR(255) NULL")
+    if "password_resets" in inspector.get_table_names():
+        _add_column_if_missing(
+            "password_resets",
+            "delivery_status",
+            "VARCHAR(20) NOT NULL DEFAULT 'queued'",
+        )
+        password_reset_columns = {
+            column["name"]: column["type"]
+            for column in inspect(engine).get_columns("password_resets")
+        }
+        reset_schema_needs_migration = (
+            "created_at" not in password_reset_columns
+            or "verification_attempts" not in password_reset_columns
+            or "purpose" not in password_reset_columns
+        )
+        _add_column_if_missing("password_resets", "created_at", "DATETIME NULL")
+        _add_column_if_missing(
+            "password_resets",
+            "verification_attempts",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _add_column_if_missing(
+            "password_resets",
+            "purpose",
+            "VARCHAR(30) NOT NULL DEFAULT 'password_reset'",
+        )
+        if reset_schema_needs_migration:
+            with engine.begin() as connection:
+                connection.execute(text(
+                    "UPDATE password_resets "
+                    "SET is_used = 1, otp_code = '', delivery_status = 'invalidated'"
+                ))
+        _migrate_password_reset_expiry_column()
+        if engine.dialect.name == "mysql":
+            otp_column = password_reset_columns.get("otp_code")
+            if getattr(otp_column, "length", 0) < 64:
+                with engine.begin() as connection:
+                    connection.execute(text(
+                        "ALTER TABLE password_resets "
+                        "MODIFY COLUMN otp_code VARCHAR(64) NOT NULL"
+                    ))
     if "audit_logs" in inspector.get_table_names():
         audit_log_additions = {
             "user_agent": "VARCHAR(255) NULL",

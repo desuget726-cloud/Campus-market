@@ -1158,6 +1158,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     { id: 1, title: "HP Pavilion Laptop", price: "24,000 ETB", seller: "Tefesayiku", category: "Electronics", condition: "New", status: "Pending", image: "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?auto=format&fit=crop&w=900&q=80", description: "Premium lightweight laptop with 16GB RAM and a 512GB SSD for student productivity.", seller_verified: true },
     { id: 2, title: "Calculus II Textbook", price: "450 ETB", seller: "Abebe Kebede", category: "Books", condition: "Gently Used", status: "Approved", image: "https://images.unsplash.com/photo-1512820790803-83ca734da794?auto=format&fit=crop&w=900&q=80", description: "Well-maintained calculus reference book with highlighted notes and exercise solutions.", seller_verified: true }
   ]);
+  const [adminProductStatusCounts, setAdminProductStatusCounts] = useState(null);
   const [selectedProductDetails, setSelectedProductDetails] = useState(null);
   const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [bulkRejectMode, setBulkRejectMode] = useState(false);
@@ -1765,7 +1766,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         params.set('subcategory', productSubcategoryFilter);
       }
       const query = params.toString();
-      const response = await fetch(`${API_BASE_URL}/api/admin/products${query ? `?${query}` : ''}`);
+      const queryString = query ? `?${query}` : '';
+      const response = await fetch(`${API_BASE_URL}/api/admin/products${queryString}`);
       if (!response.ok) {
         throw new Error('Catalog products endpoint unavailable');
       }
@@ -1789,6 +1791,17 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           seller_verified: product.seller_verified ?? product.is_verified ?? true,
         }));
         setProductsList(mappedProducts);
+      }
+
+      try {
+        const statsResponse = await fetch(`${API_BASE_URL}/api/admin/products/stats${queryString}`);
+        if (!statsResponse.ok) {
+          throw new Error('Catalog product statistics endpoint unavailable');
+        }
+        setAdminProductStatusCounts(await statsResponse.json());
+      } catch (error) {
+        console.error('Failed to fetch admin catalog product statistics:', error);
+        setAdminProductStatusCounts(null);
       }
     } catch (error) {
       console.error('Failed to fetch admin catalog products:', error);
@@ -5320,7 +5333,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         );
       }
       case 'product-management': {
-        const productStatusCounts = getAdminProductStatusCounts(productsList);
+        const productStatusCounts = adminProductStatusCounts || getAdminProductStatusCounts(productsList);
         const filteredProds = productsList.filter(product => {
           const matchesSearch =
             product.title?.toLowerCase().includes(prodSearch.toLowerCase()) ||
