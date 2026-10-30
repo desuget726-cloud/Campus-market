@@ -293,8 +293,15 @@ def test_pin_failures_are_committed_and_lock_even_correct_pin(market):
         _pay(client, product_id, pin="0000", key=f"wrong-key-{i:02d}")
         for i in range(5)
     ]
-    assert [response.status_code for response in responses] == [401, 401, 401, 401, 423]
-    assert [response.json()["detail"].get("attempts_left") for response in responses[:4]] == [4, 3, 2, 1]
+    assert [response.status_code for response in responses] == [400, 400, 400, 400, 423]
+    assert [response.json() for response in responses[:4]] == [
+        {
+            "detail": "Incorrect Wallet PIN",
+            "error_code": "INCORRECT_PIN",
+            "remaining_attempts": attempts_left,
+        }
+        for attempts_left in [4, 3, 2, 1]
+    ]
     assert responses[-1].json()["detail"]["retry_after_seconds"] == 15 * 60
     locked = _pay(client, product_id, key="correct-but-locked")
     assert locked.status_code == 423
@@ -354,8 +361,12 @@ def test_wallet_pin_change_requires_current_pin_and_validates_four_digits(market
         headers=_headers(),
         json={"pin": "5678"},
     )
-    assert missing_current_pin.status_code == 401
-    assert missing_current_pin.json()["detail"]["code"] == "INCORRECT_PIN"
+    assert missing_current_pin.status_code == 400
+    assert missing_current_pin.json() == {
+        "detail": "Current wallet PIN is incorrect.",
+        "error_code": "INCORRECT_PIN",
+        "remaining_attempts": 4,
+    }
 
     changed = client.post(
         "/api/wallet/set-pin",

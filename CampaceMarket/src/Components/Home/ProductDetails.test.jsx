@@ -379,6 +379,53 @@ describe('ProductDetails guest actions', () => {
     expect(screen.queryByRole('button', { name: 'Pay with wallet' })).toBeNull();
   });
 
+  it('shows an incorrect PIN toast, clears the input, and keeps checkout focused', async () => {
+    mockCartItems.push({ id: 8, product_id: 42, student_id: 'buyer-1', quantity: 1 });
+    const toastError = vi.spyOn(toast, 'error');
+    const fetchMock = vi.fn((input) => {
+      const url = String(input);
+      if (url.includes('/api/products/42/pay-summary')) {
+        return Promise.resolve(jsonResponse({
+          title: 'Test phone',
+          unit_price: '1000.00',
+          total: '1000.00',
+          quantity_limit: 1,
+          seller_name: 'Seller',
+          wallet_balance: '2000.00',
+          has_wallet_pin: true,
+        }));
+      }
+      if (url.endsWith('/api/products/42/pay')) {
+        return Promise.resolve(jsonResponse({
+          detail: 'Incorrect Wallet PIN',
+          error_code: 'INCORRECT_PIN',
+          remaining_attempts: 3,
+        }, 400));
+      }
+      if (url.includes('/api/products/42/similar')) return Promise.resolve(jsonResponse([]));
+      if (/\/api\/products\/42(?:\?track_view=false)?$/.test(url)) return Promise.resolve(jsonResponse(detail));
+      if (url.includes('/api/settings/moderation')) return Promise.resolve(jsonResponse({ allowStudentReports: true }));
+      if (url.includes('/api/settings/chat')) return Promise.resolve(jsonResponse({ enabled: true }));
+      if (url.includes('/api/student/wishlist')) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ProductDetails product={product} currentUser={{ studentId: 'buyer-1' }} />);
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Pay with wallet' }))[0]);
+    const pinInput = await screen.findByLabelText('Enter your 4-digit Wallet PIN');
+    fireEvent.change(pinInput, { target: { value: '0000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Pay 1000.00 ETB' }));
+
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith('Incorrect Wallet PIN. Please try again.');
+      expect(screen.getByLabelText('Enter your 4-digit Wallet PIN').value).toBe('');
+      expect(document.activeElement).toBe(screen.getByLabelText('Enter your 4-digit Wallet PIN'));
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Pay with wallet' })).toBeTruthy();
+  });
+
   it('sets a Wallet PIN before checkout when the account does not have one', async () => {
     mockCartItems.push({ id: 8, product_id: 42, student_id: 'buyer-1', quantity: 1 });
     let hasWalletPin = false;

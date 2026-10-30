@@ -4755,7 +4755,7 @@ function StudentDashboard({
 
                     {/* Recent Campus Activity */}
                     <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-                      <h3 className="mb-4 break-words border-b pb-2 text-xl font-bold text-slate-900">Recent Campus Activity</h3>
+                      <h3 className="mb-4 break-words border-b pb-2 text-xl font-bold text-slate-900">Recent UniXchange Activity</h3>
                       <div className="space-y-3">
                         {recentCampusActivity.length ? (
                           recentCampusActivity.map((item, index) => (

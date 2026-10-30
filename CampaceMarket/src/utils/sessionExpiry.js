@@ -12,8 +12,9 @@ export function isSessionExpiryResponse({
   storedSessionExists,
   authorizationHeader = '',
   credentials = 'same-origin',
+  errorCode = null,
 }) {
-  if (responseStatus !== 401 || !storedSessionExists) return false;
+  if (responseStatus !== 401 || !storedSessionExists || errorCode === 'INCORRECT_PIN') return false;
 
   let requestedUrl;
   let apiOrigin;

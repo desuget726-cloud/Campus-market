@@ -158,6 +158,13 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
   const cartAddInFlightRef = useRef(false);
   const payAttemptKeyRef = useRef(null);
   const messageInputRef = useRef(null);
+  const payPinInputRef = useRef(null);
+  const focusPayPinAfterErrorRef = useRef(false);
+  useEffect(() => {
+    if (!focusPayPinAfterErrorRef.current) return;
+    focusPayPinAfterErrorRef.current = false;
+    payPinInputRef.current?.focus();
+  }, [payPin]);
   useEffect(() => {
     if (pinResetCooldown <= 0) return undefined;
     const timer = setTimeout(() => {
@@ -648,8 +655,17 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         const detail = data.detail;
+        const errorCode = data.error_code || detail?.code;
         if (response.status >= 400 && response.status < 500) {
           clearPaymentAttempt();
+        }
+        if (errorCode === 'INCORRECT_PIN' || response.status === 400) {
+          focusPayPinAfterErrorRef.current = true;
+          setPayPin('');
+          setPayAttemptsLeft(null);
+          setPayError('');
+          toast.error('Incorrect Wallet PIN. Please try again.');
+          return;
         }
         if (detail?.code === 'PIN_NOT_SET') {
           setPaySummary((current) => ({
@@ -1804,7 +1820,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
                   !showPinResetForm && (
                   <form onSubmit={submitProductPayment} className="mt-5 space-y-4">
                     <label className="block text-sm font-bold text-slate-700" htmlFor="wallet-payment-pin">Enter your 4-digit Wallet PIN</label>
-                    <input id="wallet-payment-pin" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={payPin} onChange={(event) => setPayPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={payLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
+                    <input ref={payPinInputRef} id="wallet-payment-pin" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={payPin} onChange={(event) => setPayPin(event.target.value.replace(/\D/g, '').slice(0, 4))} required disabled={payLoading} className="w-full rounded-xl border border-slate-300 px-4 py-3 text-base tracking-[0.4em] outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100" />
                     <button type="submit" disabled={payLoading || payPin.length !== 4} className="w-full rounded-full bg-emerald-600 py-3.5 text-sm font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{payLoading ? 'Processing payment…' : `Pay ${paySummary.total} ETB`}</button>
                     <button type="button" onClick={requestWalletPinReset} disabled={pinResetLoading || pinResetCooldown > 0} className="w-full text-center text-sm font-bold text-emerald-700 underline disabled:cursor-not-allowed disabled:opacity-50">{pinResetLoading ? 'Requesting code…' : 'Forgot Wallet PIN?'}</button>
                   </form>

@@ -81,6 +81,14 @@ test('recognizes endpoints authenticated by an explicit session cookie', () => {
   }), true);
 });
 
+test('does not treat an incorrect wallet PIN response as an expired session', () => {
+  assert.equal(isSessionExpiryResponse({
+    ...authenticatedRequest,
+    requestUrl: `${apiBaseUrl}/api/products/29/pay`,
+    errorCode: 'INCORRECT_PIN',
+  }), false);
+});
+
 test('ignores non-API and other-origin 401s', () => {
   assert.equal(isSessionExpiryResponse({
     ...authenticatedRequest,

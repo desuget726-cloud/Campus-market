@@ -342,6 +342,11 @@ function AppContent() {
           console.error('Failed to inspect the stored session after an API 401:', error);
         }
 
+        const payload = await response.clone().json().catch(() => null);
+        const errorCode = payload?.error_code
+          || (typeof payload?.detail === 'object' && !Array.isArray(payload.detail)
+            ? payload.detail.code
+            : null);
         if (isSessionExpiryResponse({
           responseStatus: response.status,
           requestUrl,
@@ -349,8 +354,8 @@ function AppContent() {
           storedSessionExists,
           authorizationHeader: headers.get('Authorization') || '',
           credentials: args[1]?.credentials || request?.credentials || 'same-origin',
+          errorCode,
         })) {
-          const payload = await response.clone().json().catch(() => null);
           const detail = payload?.detail;
           window.dispatchEvent(new CustomEvent('campace:api-unauthorized', {
             detail: {

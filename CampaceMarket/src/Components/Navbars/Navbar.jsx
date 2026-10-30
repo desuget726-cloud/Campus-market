@@ -9,6 +9,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isProfileImageOpen, setIsProfileImageOpen] = useState(false);
   const [activeMobilePage, setActiveMobilePage] = useState(() => {
     const initialPage = window.location.pathname.replace(/\/+$/, '').split('/').pop();
     return ['about', 'services', 'contact'].includes(initialPage) ? initialPage : 'home';
@@ -30,6 +31,18 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   const avatarSrc = displayUser?.avatarUrl || displayUser?.avatar_url || (isAdmin
     ? ''
     : (displayUser?.studentId ? `/static/uploads/avatars/${displayUser.studentId}.jpg` : ''));
+  const resolvedAvatarSrc = avatarSrc ? resolveImageUrl(avatarSrc) : IMAGE_PLACEHOLDER;
+
+  useEffect(() => {
+    if (!isProfileImageOpen) return undefined;
+
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setIsProfileImageOpen(false);
+    };
+
+    document.addEventListener('keydown', closeOnEscape);
+    return () => document.removeEventListener('keydown', closeOnEscape);
+  }, [isProfileImageOpen]);
 
   useEffect(() => {
     if (!isLanguageMenuOpen) return undefined;
@@ -241,36 +254,47 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 </div>
               ) : (
               <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsDropdownOpen((prev) => !prev)}
-                  className="flex cursor-pointer items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-1 text-left shadow-sm transition hover:bg-slate-50 max-[400px]:gap-0.5 max-[400px]:px-0.5 md:gap-3 md:px-2 md:py-1.5"
-                  title="Account Menu"
-                >
-                  <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50 max-[400px]:h-7 max-[400px]:w-7 md:h-10 md:w-10">
+                <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-1 text-left shadow-sm transition hover:bg-slate-50 max-[400px]:gap-0.5 max-[400px]:px-0.5 md:gap-3 md:px-2 md:py-1.5">
+                  <button
+                    type="button"
+                    aria-label={`View ${displayName}'s profile picture`}
+                    onClick={() => {
+                      setIsDropdownOpen(false);
+                      setIsProfileImageOpen(true);
+                    }}
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50 transition hover:ring-2 hover:ring-blue-400 max-[400px]:h-7 max-[400px]:w-7 md:h-10 md:w-10"
+                  >
                     {avatarSrc ? (
-                      <img src={resolveImageUrl(avatarSrc)} alt={displayName} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
+                      <img src={resolvedAvatarSrc} alt="" className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
                     ) : (
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
                       </svg>
                     )}
-                  </div>
-                  <div className="hidden leading-tight md:block">
-                    <div className="text-sm font-bold leading-tight text-slate-900">{displayName}</div>
-                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{displayRole}</div>
-                  </div>
-                  <svg
-                    xmlns="http://www.w3.org/2000/svg"
-                    className={`h-3.5 w-3.5 text-slate-500 transition-transform duration-200 max-[400px]:h-3 max-[400px]:w-3 md:h-4 md:w-4 ${isDropdownOpen ? 'rotate-180' : ''}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth="2"
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsDropdownOpen((prev) => !prev)}
+                    className="flex cursor-pointer items-center gap-1 text-left max-[400px]:gap-0.5 md:gap-3"
+                    title="Account Menu"
+                    aria-expanded={isDropdownOpen}
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
+                    <div className="hidden leading-tight md:block">
+                      <div className="text-sm font-bold leading-tight text-slate-900">{displayName}</div>
+                      <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{displayRole}</div>
+                    </div>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className={`h-3.5 w-3.5 text-slate-500 transition-transform duration-200 max-[400px]:h-3 max-[400px]:w-3 md:h-4 md:w-4 ${isDropdownOpen ? 'rotate-180' : ''}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                </div>
 
                 {isDropdownOpen && (
                   <div className="absolute right-0 top-14 z-50 w-60 overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-lg">
@@ -402,6 +426,40 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             </div>
           </aside>
         </>
+      )}
+      {isProfileImageOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+          onClick={() => setIsProfileImageOpen(false)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${displayName}'s profile picture`}
+            className="relative flex flex-col items-center rounded-2xl bg-slate-900/90 p-8 text-center text-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              aria-label="Close profile picture"
+              onClick={() => setIsProfileImageOpen(false)}
+              className="absolute right-3 top-3 flex h-10 w-10 cursor-pointer items-center justify-center rounded-full text-2xl text-white transition hover:bg-white/15"
+            >
+              ✕
+            </button>
+            <img
+              src={resolvedAvatarSrc}
+              alt={displayName}
+              className="h-72 w-72 rounded-full border-4 border-white object-cover shadow-2xl"
+              onError={(event) => {
+                event.currentTarget.onerror = null;
+                event.currentTarget.src = IMAGE_PLACEHOLDER;
+              }}
+            />
+            <p className="mt-5 text-xl font-bold">{displayName}</p>
+            <p className="mt-1 text-sm font-medium text-slate-300">Verified Student</p>
+          </section>
+        </div>
       )}
     </header>
   );

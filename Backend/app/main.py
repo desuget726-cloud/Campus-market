@@ -117,6 +117,37 @@ def _admin_2fa_disabled() -> bool:
 
 
 app = FastAPI(title="DG Market Backend API", version="1.0.0", description="Backend API for the DG Market platform.")
+
+
+class IncorrectWalletPinError(HTTPException):
+    def __init__(self, remaining_attempts: int, message: str = "Incorrect Wallet PIN"):
+        super().__init__(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "INCORRECT_PIN",
+                "message": message,
+                "attempts_left": remaining_attempts,
+            },
+        )
+        self.remaining_attempts = remaining_attempts
+        self.message = message
+
+
+@app.exception_handler(IncorrectWalletPinError)
+async def incorrect_wallet_pin_error_handler(
+    _request: Request,
+    error: IncorrectWalletPinError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={
+            "detail": error.message,
+            "error_code": "INCORRECT_PIN",
+            "remaining_attempts": error.remaining_attempts,
+        },
+    )
+
+
 PRIVATE_SUPPORT_UPLOAD_DIR = os.path.join(BACKEND_DIR, "private_uploads", "support")
 PRIVATE_REPORT_UPLOAD_DIR = os.path.join(BACKEND_DIR, "private_uploads", "reports")
 _chapa_banks_cache: List[dict] = []
@@ -11977,6 +12008,36 @@ def format_products_for_response(products: List[Product]) -> str:
     return "\n".join(product_cards)
 
 
+def _local_ai_advisor_fallback(
+    intent: str,
+    products: List[Product],
+    price_data: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if intent == "buy":
+        if not products:
+            return (
+                "I couldn't find matching listings in the marketplace. "
+                "Try a more specific product or category."
+            )
+        return f"Here are matching marketplace listings:\n{format_products_for_response(products[:10])}"
+
+    if intent == "sell":
+        if not price_data or price_data.get("status") != "success":
+            suggestion = (price_data or {}).get(
+                "suggestion",
+                "Try checking current marketplace listings for similar items.",
+            )
+            return f"I couldn't estimate a price from similar listings. {suggestion}"
+        return (
+            f"Based on {price_data['similar_products_analyzed']} similar listings, "
+            f"a competitive price is {price_data['price_range']} "
+            f"(average {price_data['average_market_price']:,} ETB). "
+            "Condition and demand can affect your final price."
+        )
+
+    return None
+
+
 def perform_web_search(query: str) -> str:
     """Perform a Google Custom Search and return a concise summary of top results."""
     cleaned_query = (query or '').strip()
@@ -12243,6 +12304,7 @@ async def ai_advisor(
 
     logger.info("[AI ADVISOR] Query from %s: %s", request.student_id, message[:100])
 
+    intent = "general"
     try:
         intent = detect_intent(message)
         keywords = extract_search_keywords(message)
@@ -12311,8 +12373,13 @@ async def ai_advisor(
             }
 
         ollama_error = provider_failures.get("ollama")
-        offline_message = AI_ADVISOR_OFFLINE_MESSAGE
-        if ollama_error and ollama_model_missing(ollama_error):
+        local_fallback = _local_ai_advisor_fallback(
+            intent,
+            cloud_products,
+            local_price_data,
+        )
+        offline_message = local_fallback or AI_ADVISOR_OFFLINE_MESSAGE
+        if not local_fallback and ollama_error and ollama_model_missing(ollama_error):
             offline_message = ollama_model_install_message()
         logger.warning(
             "AI advisor exhausted providers=%s",
@@ -12320,14 +12387,23 @@ async def ai_advisor(
         )
         return {
             "reply": offline_message,
+            "products": [
+                {"id": product.id, "title": product.title, "price": product.price}
+                for product in cloud_products[:10]
+            ],
             "intent": intent,
-            "message_type": "offline_guidance",
+            "message_type": "local_search" if local_fallback else "offline_guidance",
             "provider": "local-search",
         }
     
     except Exception as e:
         logger.error(f"[AI ADVISOR ERROR] {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Unable to process the AI Advisor request.") from e
+        return {
+            "reply": AI_ADVISOR_OFFLINE_MESSAGE,
+            "intent": intent,
+            "message_type": "offline_guidance",
+            "provider": "local-search",
+        }
 
 
 @app.get("/api/ai/status")
@@ -14884,7 +14960,7 @@ def _verify_wallet_pin(
     pin: str,
     request: Request,
     *,
-    incorrect_message: str = "Incorrect wallet PIN.",
+    incorrect_message: str = "Incorrect Wallet PIN",
 ) -> None:
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     if student.pay_locked_until and student.pay_locked_until > now:
@@ -14937,11 +15013,7 @@ def _verify_wallet_pin(
                 status_code=423,
                 detail=_wallet_pin_lock_detail(get_pay_lock_minutes() * 60),
             )
-        raise HTTPException(status_code=401, detail={
-            "code": "INCORRECT_PIN",
-            "message": incorrect_message,
-            "attempts_left": attempts_left,
-        })
+        raise IncorrectWalletPinError(attempts_left, incorrect_message)
 
     student.pay_failed_attempts = 0
     student.pay_locked_until = None

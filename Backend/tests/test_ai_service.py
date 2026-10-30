@@ -66,6 +66,27 @@ class AIServiceTests(unittest.IsolatedAsyncioTestCase):
         RecordingAsyncClient.timeouts = []
         RecordingAsyncClient.get_responses = []
 
+    def test_local_advisor_fallback_uses_listing_and_pricing_results(self):
+        product = MagicMock(id=42, title="Used laptop", price="12000")
+        self.assertEqual(
+            api._local_ai_advisor_fallback("buy", [product], None),
+            "Here are matching marketplace listings:\n[PRODUCT:42:Used laptop:12000]",
+        )
+        self.assertEqual(
+            api._local_ai_advisor_fallback(
+                "sell",
+                [],
+                {
+                    "status": "success",
+                    "similar_products_analyzed": 3,
+                    "price_range": "8,500 - 11,500 ETB",
+                    "average_market_price": 10000,
+                },
+            ),
+            "Based on 3 similar listings, a competitive price is 8,500 - 11,500 ETB "
+            "(average 10,000 ETB). Condition and demand can affect your final price.",
+        )
+
     async def test_openai_uses_chat_completions_and_configured_timeout(self):
         with patch.dict(os.environ, {
             "OPENAI_API_KEY": "test-key",
@@ -281,6 +302,69 @@ class AIServiceTests(unittest.IsolatedAsyncioTestCase):
             result["reply"],
             "model not installed: run ollama pull campus-model",
         )
+        self.assertEqual(result["provider"], "local-search")
+
+    async def test_advisor_returns_local_listing_when_providers_are_offline(self):
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/api/ai/advisor",
+            "headers": [],
+            "client": ("127.0.0.1", 1234),
+            "server": ("testserver", 80),
+            "scheme": "http",
+            "query_string": b"",
+        })
+        product = MagicMock(id=42, title="Used laptop", price="12000")
+        with (
+            patch.dict(os.environ, {"AI_PROVIDER": "auto"}),
+            patch.object(api, "_public_marketplace_product_query") as product_query,
+            patch.object(api, "perform_web_search", return_value=""),
+            patch.object(api, "search_products_by_intent", return_value=[product]),
+            patch.object(api, "ask_openai", new=AsyncMock(side_effect=RuntimeError("provider offline"))),
+            patch.object(api, "ask_ollama", new=AsyncMock(side_effect=RuntimeError("provider offline"))),
+        ):
+            product_query.return_value.all.return_value = []
+            result = await api.ai_advisor(
+                api.AIAdvisorRequest(message="I want to buy a laptop", student_id="local-search-test"),
+                request,
+                MagicMock(),
+            )
+
+        self.assertEqual(
+            result["reply"],
+            "Here are matching marketplace listings:\n[PRODUCT:42:Used laptop:12000]",
+        )
+        self.assertEqual(result["provider"], "local-search")
+        self.assertEqual(result["message_type"], "local_search")
+        self.assertEqual(result["products"], [{"id": 42, "title": "Used laptop", "price": "12000"}])
+
+    async def test_advisor_returns_friendly_fallback_for_unexpected_errors(self):
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/api/ai/advisor",
+            "headers": [],
+            "client": ("127.0.0.1", 1234),
+            "server": ("testserver", 80),
+            "scheme": "http",
+            "query_string": b"",
+        })
+
+        with (
+            patch.object(api, "detect_intent", side_effect=RuntimeError("unexpected failure")),
+            self.assertLogs("ai_advisor", level="ERROR") as captured,
+        ):
+            result = await api.ai_advisor(
+                api.AIAdvisorRequest(message="Help me with campus shopping", student_id="unexpected-error-test"),
+                request,
+                MagicMock(),
+            )
+
+        self.assertIn("unexpected failure", captured.output[0])
+        self.assertEqual(result["reply"], api.AI_ADVISOR_OFFLINE_MESSAGE)
+        self.assertEqual(result["intent"], "general")
+        self.assertEqual(result["message_type"], "offline_guidance")
         self.assertEqual(result["provider"], "local-search")
 
 

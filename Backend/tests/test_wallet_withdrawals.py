@@ -282,7 +282,7 @@ class WalletWithdrawalTests(unittest.TestCase):
                 except main_module.HTTPException as error:
                     responses.append(error)
 
-        self.assertEqual([error.status_code for error in responses], [401, 401, 401, 401, 423])
+        self.assertEqual([error.status_code for error in responses], [400, 400, 400, 400, 423])
         self.assertEqual([error.detail.get("attempts_left") for error in responses[:4]], [4, 3, 2, 1])
         self.assertEqual(self.wallet.balance, Decimal("1000.00"))
         self.assertEqual(self.db.query(PayoutTransaction).count(), 0)
