@@ -213,6 +213,16 @@ class ProductOwnershipTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual([product["title"] for product in response.json()], ["Visible listing"])
 
+    def test_default_product_listing_limit_is_twelve(self):
+        for index in range(15):
+            self.add_product(self.seller.student_id, f"Additional listing {index}")
+        self.db.commit()
+
+        response = self.client.get("/api/products")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()), 12)
+
     def test_search_results_exclude_owner_products(self):
         own_match = self.add_product(
             self.buyer.student_id,

@@ -5,11 +5,6 @@ import { apiUrl } from '../../api/config';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import { filterPublicProducts, getStudentAccessToken } from '../../utils/publicListings';
-import logs from '../../assets/logs.png';
-import laptop_586 from '../../assets/laptop_586.webp';
-import phone1 from '../../assets/phone1.jpg';
-import c3 from '../../assets/c3.jpg';
-import c7 from '../../assets/c7.jpg';
 
 const fetchWithTimeout = (url, timeoutMs = 15000, parentSignal, init = {}) => {
   const controller = new AbortController();
@@ -60,14 +55,6 @@ const getListingFailureKind = (error) => (
     ? 'offline'
     : 'generic'
 );
-
-const bannerImages = [
-  logs,
-  c3,
-  laptop_586,
-  phone1,
-  c7
-];
 
 const formatEtb = (value, language = 'en') => {
   if (value === null || value === undefined || value === '') return 'Price unavailable';
@@ -123,7 +110,6 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [selectedCategory, setSelectedCategory] = useState('');
   const [searchedTitle, setSearchedTitle] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
-  const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [aiRecommendations, setAiRecommendations] = useState([]);
   const [recommendationsStudentId, setRecommendationsStudentId] = useState('');
   const [isDirectoryOpen, setIsDirectoryOpen] = useState(false);
@@ -155,22 +141,6 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   };
 
   const visibleCategories = showAllCategories ? categories : categories.slice(0, 8);
-
-  const handlePrevBanner = () => {
-    setCurrentImageIndex((prevIndex) => (prevIndex - 1 + bannerImages.length) % bannerImages.length);
-  };
-
-  const handleNextBanner = () => {
-    setCurrentImageIndex((prevIndex) => (prevIndex + 1) % bannerImages.length);
-  };
-
-  useEffect(() => {
-    const intervalId = setInterval(() => {
-      setCurrentImageIndex((prevIndex) => (prevIndex + 1) % bannerImages.length);
-    }, 5000);
-
-    return () => clearInterval(intervalId);
-  }, []);
 
   const fetchCategories = useCallback(async (signal) => {
     try {
@@ -447,11 +417,6 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
       ) : (
         <div className="w-full space-y-6 pt-1">
           <HeroSection
-            bannerImages={bannerImages}
-            currentImageIndex={currentImageIndex}
-            onPreviousBanner={handlePrevBanner}
-            onNextBanner={handleNextBanner}
-            onSelectBanner={setCurrentImageIndex}
             searchQuery={searchQuery}
             onSearchQueryChange={handleSearchInputChange}
             categories={categories}

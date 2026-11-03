@@ -150,10 +150,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         {/* Navigation Links */}
         {!isDashboardLayout && (
           <nav className="hidden min-w-0 flex-1 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
-            <button onClick={() => onNavigate('home')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">Home</button>
-            <button onClick={() => onNavigate('about')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">About</button>
-            <button onClick={() => onNavigate('services')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">Services</button>
-            <button onClick={() => onNavigate('contact')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">Contact</button>
+            <button onClick={() => onNavigate('home')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Home</button>
+            <button onClick={() => onNavigate('about')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">About</button>
+            <button onClick={() => onNavigate('services')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Services</button>
+            <button onClick={() => onNavigate('contact')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Contact</button>
 
             {user && (
               <button

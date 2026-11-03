@@ -47,6 +47,7 @@ const STUDENT_SIDEBAR_TOOLTIP_POSITIONS = {
 };
 const EDIT_WINDOW_MINUTES = 15;
 const MAX_CHAT_MESSAGE_LENGTH = 1000;
+const BUYER_HUB_PAGE_SIZE = 12;
 const disputeReasons = [
   'Item not received',
   'Wrong item',
@@ -1926,7 +1927,7 @@ function StudentDashboard({
 
   const loadSearchDefaults = useCallback(async () => {
     if (activeTab !== 'buyer' || buyerTab !== 'search') return;
-    await fetchProducts({ limit: 10, department: user?.department });
+    await fetchProducts({ limit: BUYER_HUB_PAGE_SIZE, department: user?.department });
   }, [activeTab, buyerTab, fetchProducts, user?.department]);
 
   useEffect(() => {
@@ -1941,7 +1942,7 @@ function StudentDashboard({
 
     const loadAiRecommendations = async () => {
       try {
-        await fetchProducts({ limit: 12, department: user?.department });
+        await fetchProducts({ limit: BUYER_HUB_PAGE_SIZE, department: user?.department });
       } catch (err) {
         console.error('Error loading AI advisor recommendations:', err);
       }
@@ -2310,6 +2311,7 @@ function StudentDashboard({
       search: searchQuery,
       category: searchCategory,
       subcategory: searchSubcategory,
+      limit: BUYER_HUB_PAGE_SIZE,
     });
     setBuyerTab('search');
   };
@@ -5095,7 +5097,7 @@ function StudentDashboard({
                       </div>
                       <div className="flex min-w-0 flex-col justify-end gap-3 sm:flex-row sm:justify-end lg:col-span-3">
                         <button type="submit" className="btn-primary inline-flex h-11 w-full min-w-[120px] items-center justify-center rounded-2xl px-5 text-sm font-semibold shadow-sm transition cursor-pointer sm:w-auto">Search</button>
-                        <button type="button" onClick={() => { resetSearchFilters(); fetchProducts(); }} className="inline-flex h-11 w-full min-w-[120px] items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer sm:w-auto">Reset</button>
+                        <button type="button" onClick={() => { resetSearchFilters(); fetchProducts({ limit: BUYER_HUB_PAGE_SIZE }); }} className="inline-flex h-11 w-full min-w-[120px] items-center justify-center rounded-2xl border border-slate-200 bg-white px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition cursor-pointer sm:w-auto">Reset</button>
                       </div>
                     </form>
 
@@ -5107,7 +5109,7 @@ function StudentDashboard({
                       ) : searchResults.length === 0 ? (
                         <p className="text-sm text-slate-500">No products match your search yet. Try a different keyword or category.</p>
                       ) : (
-                        <div className="grid min-w-0 grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+                        <div className="grid min-w-0 grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
                           {searchResults.map((item) => {
                             const productId = String(item.id);
                             const buyerStudentId = String(user?.studentId || user?.student_id || '').trim();

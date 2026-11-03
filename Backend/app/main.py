@@ -10607,7 +10607,7 @@ def get_products(
     category: Optional[str] = None,
     subcategory: Optional[str] = None,
     search: Optional[str] = None,
-    limit: Optional[int] = None,
+    limit: int = 24,
     department: Optional[str] = None,
     seller: Optional[str] = None,
     product_ids: Optional[List[int]] = Query(None),
@@ -10700,8 +10700,7 @@ def get_products(
     else:
         query = query.order_by(Product.created_at.desc())
 
-    if limit is not None and not manual_filters_active:
-        query = query.limit(limit)
+    query = query.limit(limit)
 
     try:
         products = query.all()
