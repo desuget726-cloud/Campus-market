@@ -46,6 +46,9 @@ function ReportsInbox({ accessToken, onInvalidReportLink }) {
   const [replyAttachment, setReplyAttachment] = useState(null);
   const [appealDraft, setAppealDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [messageDraft, setMessageDraft] = useState('');
+  const [messageActionBusy, setMessageActionBusy] = useState(false);
   const [ticketSubject, setTicketSubject] = useState('');
   const [ticketCategory, setTicketCategory] = useState('General Inquiry');
   const [ticketMessage, setTicketMessage] = useState('');
@@ -243,6 +246,48 @@ function ReportsInbox({ accessToken, onInvalidReportLink }) {
       setError(getErrorMessage(requestError));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const editMessage = async (message) => {
+    const body = messageDraft.trim();
+    if (!selected || selected.kind !== 'support' || !body) return;
+    setMessageActionBusy(true);
+    setError('');
+    try {
+      await apiFetch(`/support/tickets/${selected.id}/messages/${message.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ body }),
+      });
+      setDetail(await apiGet(`/api/student/support/tickets/${selected.id}`, { headers }));
+      setEditingMessageId(null);
+      setMessageDraft('');
+    } catch (requestError) {
+      setError(getErrorMessage(requestError));
+    } finally {
+      setMessageActionBusy(false);
+    }
+  };
+
+  const deleteMessage = async (message) => {
+    if (!selected || selected.kind !== 'support' || !window.confirm('Delete this message?')) return;
+    setMessageActionBusy(true);
+    setError('');
+    try {
+      await apiFetch(`/support/tickets/${selected.id}/messages/${message.id}`, {
+        method: 'DELETE',
+        headers,
+      });
+      setDetail(await apiGet(`/api/student/support/tickets/${selected.id}`, { headers }));
+      if (editingMessageId === message.id) {
+        setEditingMessageId(null);
+        setMessageDraft('');
+      }
+    } catch (requestError) {
+      setError(getErrorMessage(requestError));
+    } finally {
+      setMessageActionBusy(false);
     }
   };
 
@@ -457,9 +502,30 @@ function ReportsInbox({ accessToken, onInvalidReportLink }) {
                     {messages.map((message) => (
                       <div key={message.id} className={`max-w-[90%] rounded-2xl p-3 text-sm ${message.sender_type === 'student' ? 'ml-auto bg-sky-700 text-white' : 'mr-auto border border-slate-200 bg-white text-slate-800'}`}>
                         <p className={`mb-1 text-[11px] font-bold ${message.sender_type === 'student' ? 'text-sky-100' : 'text-sky-800'}`}>{message.sender_type === 'student' ? 'You' : 'UniXchange Support'}</p>
-                        <p className="whitespace-pre-wrap break-words">{message.body}</p>
+                        {editingMessageId === message.id ? (
+                          <div className="space-y-2">
+                            <textarea aria-label={`Edit message ${message.id}`} maxLength={5000} rows={3} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2 text-sm text-slate-900" />
+                            <div className="flex gap-2">
+                              <button type="button" aria-label={`Save edit ${message.id}`} disabled={messageActionBusy || !messageDraft.trim()} onClick={() => editMessage(message)} className="rounded-full bg-sky-700 px-3 py-1 text-xs font-bold text-white disabled:opacity-50">Save</button>
+                              <button type="button" aria-label={`Cancel edit ${message.id}`} disabled={messageActionBusy} onClick={() => { setEditingMessageId(null); setMessageDraft(''); }} className="rounded-full border border-slate-300 px-3 py-1 text-xs font-bold text-slate-700 disabled:opacity-50">Cancel</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap break-words">{message.body}</p>
+                        )}
                         {message.attachment_url && <button type="button" onClick={() => downloadAttachment(message.attachment_url, `${detail.ticket_number}-attachment`)} className="mt-2 underline">Download attachment</button>}
-                        <p className={`mt-2 text-[10px] ${message.sender_type === 'student' ? 'text-sky-100' : 'text-slate-500'}`}>{formatDate(message.created_at)}</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <p className={`text-[10px] ${message.sender_type === 'student' ? 'text-sky-100' : 'text-slate-500'}`}>
+                            {formatDate(message.created_at)}
+                            {message.is_edited && <span className="ml-1 italic">(edited)</span>}
+                          </p>
+                          {(message.can_edit || message.can_delete) && editingMessageId !== message.id && (
+                            <div className={`flex gap-2 text-[10px] font-semibold ${message.sender_type === 'student' ? 'text-sky-100' : 'text-slate-500'}`}>
+                              {message.can_edit && <button type="button" aria-label={`Edit message ${message.id}`} disabled={messageActionBusy} onClick={() => { setEditingMessageId(message.id); setMessageDraft(message.body); }} className="hover:underline disabled:opacity-50">✏️ Edit</button>}
+                              {message.can_delete && <button type="button" aria-label={`Delete message ${message.id}`} disabled={messageActionBusy} onClick={() => deleteMessage(message)} className="hover:underline disabled:opacity-50">🗑️ Delete</button>}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>

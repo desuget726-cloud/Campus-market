@@ -5,7 +5,6 @@ import autoTable from 'jspdf-autotable';
 import { Check, Copy, Eye, Pencil, Trash2, X } from 'lucide-react';
 import AdminDisputeReview from './AdminDisputeReview';
 import AdminSupportInbox from './AdminSupportInbox';
-import AdminReportLinkSearchResults from './AdminReportLinkSearchResults';
 import { AdminProductReviewsPage } from './AdminDirectoryPages';
 import AdminProfileMenu from './AdminProfileMenu';
 import AdminSidebarNavigation from './AdminSidebarNavigation';
@@ -26,7 +25,6 @@ import { notifyAdminSeenChanged, subscribeToAdminSeenChanges } from '../../utils
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { getAdminSettings, invalidateAdminSettingsCache, patchAdminSettings } from '../../api/adminSettings';
 import { useLanguage } from '../../context/LanguageContext';
-import { applyReportLinkSelection } from './reportLinkSelection';
 import { getAdminProductStatusCounts, matchesAdminProductStatusFilter } from '../../utils/adminProductStatus';
 import {
   analyticsSalesPeriods,
@@ -1240,77 +1238,13 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [reportContextLoading, setReportContextLoading] = useState(false);
   const [reportError, setReportError] = useState('');
   const reportActionInFlightRef = useRef(false);
-  const [reportLinkSearch, setReportLinkSearch] = useState('');
-  const [reportLinkOptions, setReportLinkOptions] = useState({ sellers: [], products: [], orders: [] });
-  const [reportLinkSelection, setReportLinkSelection] = useState({ seller_id: '', product_id: '', order_id: '' });
-  const [reportLinkSelectedSeller, setReportLinkSelectedSeller] = useState(null);
-  const [reportLinkConfirmed, setReportLinkConfirmed] = useState(false);
-  const [reportLinkConflict, setReportLinkConflict] = useState(null);
-  const [reportLinkSearchLoading, setReportLinkSearchLoading] = useState(false);
-  const [reportLinkSearchError, setReportLinkSearchError] = useState('');
   const [reportReporterMessage, setReportReporterMessage] = useState('');
   const [reportReviewBy, setReportReviewBy] = useState('');
-  const [reportLinksSaving, setReportLinksSaving] = useState(false);
   const [broadcastSending, setBroadcastSending] = useState(false);
   const [evidenceImage, setEvidenceImage] = useState(null);
   const [conversationLogs, setConversationLogs] = useState(null);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [reportToast, setReportToast] = useState('');
-
-  const handleReportLinkResultSelect = (type, target) => {
-    setReportLinkSelection((current) => applyReportLinkSelection(current, type, target));
-    setReportLinkConflict(null);
-    const seller = type === 'student'
-      ? target
-      : target.seller_id
-        ? {
-          student_id: target.seller_id,
-          name: target.seller_name || 'Selected seller',
-          products: target.products || target.seller_products || [],
-        }
-        : null;
-    setReportLinkSelectedSeller(seller);
-    setReportLinkConfirmed(false);
-  };
-
-  useEffect(() => {
-    const query = reportLinkSearch.trim();
-    if (!showReportModal || query.length < 2) {
-      setReportLinkOptions({ sellers: [], products: [], orders: [] });
-      setReportLinkSearchLoading(false);
-      setReportLinkSearchError('');
-      return undefined;
-    }
-    const controller = new AbortController();
-    setReportLinkOptions({ sellers: [], products: [], orders: [] });
-    setReportLinkSearchLoading(true);
-    setReportLinkSearchError('');
-    const timeout = window.setTimeout(async () => {
-      try {
-        const response = await fetch(
-          `${API_BASE_URL}/api/admin/reports/link-options?q=${encodeURIComponent(query)}`,
-          { headers: getReportRequestHeaders(), signal: controller.signal },
-        );
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(getErrorMessage(payload));
-        setReportLinkOptions({
-          sellers: Array.isArray(payload.sellers) ? payload.sellers : [],
-          products: Array.isArray(payload.products) ? payload.products : [],
-          orders: Array.isArray(payload.orders) ? payload.orders : [],
-        });
-      } catch (error) {
-        if (error.name !== 'AbortError') {
-          setReportLinkSearchError(getErrorMessage(error));
-        }
-      } finally {
-        if (!controller.signal.aborted) setReportLinkSearchLoading(false);
-      }
-    }, 250);
-    return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [reportLinkSearch, showReportModal]);
 
   const calculatedReportMetrics = useMemo(() => {
     const openStatuses = new Set(['Open']);
@@ -3439,58 +3373,6 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   };
 
-  const handleSaveReportLinks = async (confirmProductOwner = false) => {
-    if (!selectedReport || reportLinksSaving) return;
-    const links = Object.fromEntries(
-      Object.entries(reportLinkSelection).filter(([, value]) => value !== ''),
-    );
-    if (!Object.keys(links).length) {
-      setReportError('Select a seller, product, or order to link.');
-      return;
-    }
-    setReportLinksSaving(true);
-    setReportError('');
-    setReportLinkConflict(null);
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/reports/${selectedReport.id}/links`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getReportRequestHeaders() },
-        body: JSON.stringify({
-          ...links,
-          ...(links.product_id ? { product_id: Number(links.product_id) } : {}),
-          ...(links.order_id ? { order_id: Number(links.order_id) } : {}),
-          confirm_product_owner: confirmProductOwner,
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const detail = payload.detail;
-        if (response.status === 409 && typeof detail === 'object' && detail !== null) {
-          setReportLinkConflict(detail);
-          return;
-        }
-        const code = typeof detail === 'object' && detail !== null ? detail.code : null;
-        const message = typeof detail === 'object' && detail !== null
-          ? detail.message || 'Unable to link report targets.'
-          : detail || 'Unable to link report targets.';
-        throw new Error(`${code ? `${code}: ` : ''}${message}`);
-      }
-      setSelectedReport((current) => current?.id === selectedReport.id ? { ...current, ...payload } : current);
-      setReportsList((current) => current.map((item) => item.id === selectedReport.id ? { ...item, ...payload } : item));
-      setReportLinkSelection({ seller_id: '', product_id: '', order_id: '' });
-      setReportLinkSelectedSeller(null);
-      setReportLinkConfirmed(false);
-      setReportLinkSearch('');
-      setReportLinkSearchError('');
-      setReportLinkConflict(null);
-      await loadReportContext(selectedReport.id, false);
-    } catch (error) {
-      setReportError(getErrorMessage(error));
-    } finally {
-      setReportLinksSaving(false);
-    }
-  };
-
   const loadReportContext = async (reportId, markSeen = true) => {
     setReportContextLoading(true);
     try {
@@ -3531,12 +3413,6 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setReportDecision('');
     setReportReason('');
     setReportDecisionOptions([]);
-    setReportLinkSearch('');
-    setReportLinkSelection({ seller_id: '', product_id: '', order_id: '' });
-    setReportLinkSelectedSeller(null);
-    setReportLinkConfirmed(false);
-    setReportLinkConflict(null);
-    setReportLinkSearchError('');
     setReportReporterMessage('');
     setReportReviewBy('');
     setReportContext(null);
@@ -7000,120 +6876,6 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                               </button>
                               .
                             </p>
-                          )}
-                          {!closedReport && (
-                            <details className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                              <summary className="cursor-pointer text-sm font-bold text-slate-800">Link Targets (Optional)</summary>
-                              <div className="mt-3 space-y-3">
-                                <p className="text-xs text-slate-600">Search students by name, ID, or email; products by title or seller; and orders by ID, product, or buyer.</p>
-                                <label className="block text-xs font-semibold text-slate-700" htmlFor="report-link-search">Search targets
-                                  <input id="report-link-search" type="search" value={reportLinkSearch} onChange={(event) => setReportLinkSearch(event.target.value)} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm" placeholder="Name, student ID, email, product, or order ID" />
-                                </label>
-                                {reportLinkSearch.trim().length < 2 && <p className="text-xs text-slate-500">Enter at least 2 characters to search.</p>}
-                                {reportLinkSearchLoading && <p role="status" className="text-sm font-semibold text-sky-700">Searching report targets…</p>}
-                                {reportLinkSearchError && <p role="alert" className="text-sm font-semibold text-rose-700">{reportLinkSearchError}</p>}
-                                {reportLinkConflict && (
-                                  <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
-                                    <p className="font-bold">{reportLinkConflict.message}</p>
-                                    <p>Product owner: {reportLinkConflict.owner
-                                      ? `${reportLinkConflict.owner.name} (${reportLinkConflict.owner.student_id})`
-                                      : 'No verified owner'}</p>
-                                    <p>Selected seller: {reportLinkConflict.selected_seller
-                                      ? `${reportLinkConflict.selected_seller.name} (${reportLinkConflict.selected_seller.student_id})`
-                                      : 'None'}</p>
-                                    {reportLinkConflict.owner == null && reportLinkSelectedSeller && (
-                                      <button type="button" onClick={() => {
-                                        if (!window.confirm(`Set ${reportLinkSelectedSeller.name} (${reportLinkSelectedSeller.student_id}) as the verified owner of this product? This change will be saved and audited.`)) return;
-                                        handleSaveReportLinks(true);
-                                      }} disabled={reportLinksSaving} className="rounded-full bg-amber-700 px-4 py-2 text-xs font-bold text-white hover:bg-amber-800 disabled:opacity-50">
-                                        {reportLinksSaving ? 'Saving owner…' : 'Fix owner'}
-                                      </button>
-                                    )}
-                                    <button type="button" onClick={() => {
-                                      setReportLinkSelection((current) => ({ ...current, seller_id: '' }));
-                                      setReportLinkSelectedSeller(null);
-                                      setReportLinkConfirmed(false);
-                                      setReportLinkConflict(null);
-                                    }} className="ml-2 rounded-full border border-rose-300 bg-white px-4 py-2 text-xs font-bold text-rose-800 hover:bg-rose-100">
-                                      Choose another seller
-                                    </button>
-                                  </div>
-                                )}
-                                {!reportLinkSearchLoading && !reportLinkSearchError && reportLinkSearch.trim().length >= 2
-                                  && !reportLinkOptions.sellers.length && !reportLinkOptions.products.length && !reportLinkOptions.orders.length
-                                  && <p role="status" className="text-sm font-semibold text-slate-600">No results</p>}
-                                <AdminReportLinkSearchResults
-                                  options={reportLinkOptions}
-                                  onSelect={handleReportLinkResultSelect}
-                                />
-                                <div className="grid gap-3 sm:grid-cols-3">
-                                  <label className="text-xs font-semibold text-slate-700">Seller
-                                    <select value={reportLinkSelection.seller_id} onChange={(event) => {
-                                      const seller = reportLinkOptions.sellers.find((item) => item.student_id === event.target.value);
-                                      setReportLinkSelection((current) => ({ ...current, seller_id: event.target.value }));
-                                      setReportLinkSelectedSeller(seller || null);
-                                      setReportLinkConfirmed(false);
-                                      setReportLinkConflict(null);
-                                    }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
-                                      <option value="">Keep current</option>
-                                      {reportLinkOptions.sellers.map((seller) => <option key={seller.student_id} value={seller.student_id}>{seller.name} ({seller.student_id})</option>)}
-                                    </select>
-                                  </label>
-                                  <label className="text-xs font-semibold text-slate-700">Product
-                                    <select value={reportLinkSelection.product_id} onChange={(event) => {
-                                      const product = reportLinkOptions.products.find((item) => String(item.id) === event.target.value);
-                                      setReportLinkSelection((current) => ({
-                                        ...current,
-                                        product_id: event.target.value,
-                                        ...(product?.seller_id ? { seller_id: product.seller_id } : {}),
-                                      }));
-                                      setReportLinkSelectedSeller(product?.seller_id ? {
-                                        student_id: product.seller_id,
-                                        name: product.seller_name || 'Selected seller',
-                                        products: product.seller_products || [],
-                                      } : null);
-                                      setReportLinkConfirmed(false);
-                                      setReportLinkConflict(null);
-                                    }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
-                                      <option value="">Keep current</option>
-                                      {reportLinkOptions.products.map((product) => <option key={product.id} value={product.id}>{product.title} (seller {product.seller_id || 'not linked'})</option>)}
-                                    </select>
-                                  </label>
-                                  <label className="text-xs font-semibold text-slate-700">Order
-                                    <select value={reportLinkSelection.order_id} onChange={(event) => {
-                                      const order = reportLinkOptions.orders.find((item) => String(item.id) === event.target.value);
-                                      setReportLinkSelection((current) => ({
-                                        ...current,
-                                        order_id: event.target.value,
-                                        ...(order ? { product_id: String(order.product_id) } : {}),
-                                        ...(order?.seller_id ? { seller_id: order.seller_id } : {}),
-                                      }));
-                                      setReportLinkSelectedSeller(order?.seller_id ? {
-                                        student_id: order.seller_id,
-                                        name: order.seller_name || 'Selected seller',
-                                        products: order.seller_products || [],
-                                      } : null);
-                                      setReportLinkConfirmed(false);
-                                      setReportLinkConflict(null);
-                                    }} className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
-                                      <option value="">Keep current</option>
-                                      {reportLinkOptions.orders.map((order) => <option key={order.id} value={order.id}>#{order.id} · {order.title}</option>)}
-                                    </select>
-                                  </label>
-                                </div>
-                                {reportLinkSelectedSeller && (
-                                  <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-950">
-                                    <p className="font-bold">Confirm seller: {reportLinkSelectedSeller.name} ({reportLinkSelectedSeller.student_id})</p>
-                                    <p className="mt-1 text-xs">Their products: {reportLinkSelectedSeller.products?.map((product) => product.title).join(', ') || 'No products found'}</p>
-                                    <label className="mt-2 flex items-center gap-2 text-xs font-semibold">
-                                      <input type="checkbox" checked={reportLinkConfirmed} onChange={(event) => setReportLinkConfirmed(event.target.checked)} />
-                                      Confirm these report targets before saving
-                                    </label>
-                                  </div>
-                                )}
-                                <button type="button" onClick={() => handleSaveReportLinks()} disabled={reportLinksSaving || !Object.values(reportLinkSelection).some(Boolean) || !reportLinkConfirmed} className="rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-bold text-sky-800 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50">{reportLinksSaving ? 'Saving links…' : 'Save links'}</button>
-                              </div>
-                            </details>
                           )}
                           {reportDecision === 'escalate' && (
                             <div className="grid gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:grid-cols-2">

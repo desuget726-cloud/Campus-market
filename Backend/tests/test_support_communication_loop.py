@@ -375,6 +375,123 @@ class SupportCommunicationLoopTests(unittest.TestCase):
         self.assertNotIn(reply_body, sent)
         self.assertNotIn("Internal account review note", sent)
 
+    def test_support_message_edits_and_deletes_enforce_authorship(self):
+        ticket_id = self._create_ticket().json()["ticket"]["id"]
+        student_detail = self._request(
+            "GET",
+            f"/api/student/support/tickets/{ticket_id}",
+            headers=self._headers(self.reporter.student_id),
+        ).json()
+        student_message = student_detail["messages"][0]
+        self.assertTrue(student_message["can_edit"])
+        self.assertTrue(student_message["can_delete"])
+        self.assertFalse(student_message["is_edited"])
+
+        edit_student_message = self._request(
+            "PATCH",
+            f"/support/tickets/{ticket_id}/messages/{student_message['id']}",
+            headers=self._headers(self.reporter.student_id),
+            json_body={"body": "Updated support request details."},
+        )
+        self.assertEqual(edit_student_message.status_code, 200, edit_student_message.text)
+        student_detail = self._request(
+            "GET",
+            f"/api/student/support/tickets/{ticket_id}",
+            headers=self._headers(self.reporter.student_id),
+        ).json()
+        edited_message = student_detail["messages"][0]
+        self.assertEqual(edited_message["body"], "Updated support request details.")
+        self.assertTrue(edited_message["is_edited"])
+        self.assertIsNotNone(edited_message["updated_at"])
+
+        other_student_edit = self._request(
+            "PATCH",
+            f"/support/tickets/{ticket_id}/messages/{student_message['id']}",
+            headers=self._headers(self.other_student.student_id),
+            json_body={"body": "Unauthorized edit."},
+        )
+        self.assertEqual(other_student_edit.status_code, 404)
+
+        student_reply = self._request(
+            "POST",
+            f"/api/student/support/tickets/{ticket_id}/messages",
+            headers=self._headers(self.reporter.student_id),
+            json_body={"body": "A reply that I can delete."},
+        )
+        self.assertEqual(student_reply.status_code, 201, student_reply.text)
+        student_reply_message = self.db.query(SupportTicketMessage).filter(
+            SupportTicketMessage.ticket_id == ticket_id,
+            SupportTicketMessage.body == "A reply that I can delete.",
+        ).one()
+        student_delete = self._request(
+            "DELETE",
+            f"/support/tickets/{ticket_id}/messages/{student_reply_message.id}",
+            headers=self._headers(self.reporter.student_id),
+        )
+        self.assertEqual(student_delete.status_code, 200, student_delete.text)
+
+        admin_reply = self._request(
+            "POST",
+            f"/support/tickets/{ticket_id}/messages",
+            headers=self._admin_headers(),
+            json_body={"body": "An admin reply."},
+        )
+        self.assertEqual(admin_reply.status_code, 200, admin_reply.text)
+        admin_message = self.db.query(SupportTicketMessage).filter(
+            SupportTicketMessage.ticket_id == ticket_id,
+            SupportTicketMessage.sender_type == "admin",
+        ).one()
+        admin_detail = self._request(
+            "GET",
+            f"/support/tickets/{ticket_id}",
+            headers=self._admin_headers(),
+        ).json()
+        admin_permissions = {
+            message["id"]: message
+            for message in admin_detail["messages"]
+        }
+        self.assertTrue(admin_permissions[admin_message.id]["can_edit"])
+        self.assertTrue(admin_permissions[student_message["id"]]["can_delete"])
+        self.assertFalse(admin_permissions[student_message["id"]]["can_edit"])
+        student_edit_admin_message = self._request(
+            "PATCH",
+            f"/support/tickets/{ticket_id}/messages/{admin_message.id}",
+            headers=self._headers(self.reporter.student_id),
+            json_body={"body": "Unauthorized admin reply edit."},
+        )
+        self.assertEqual(student_edit_admin_message.status_code, 403)
+
+        admin_edit = self._request(
+            "PATCH",
+            f"/support/tickets/{ticket_id}/messages/{admin_message.id}",
+            headers=self._admin_headers(),
+            json_body={"body": "An edited admin reply."},
+        )
+        self.assertEqual(admin_edit.status_code, 200, admin_edit.text)
+        admin_delete_student_message = self._request(
+            "DELETE",
+            f"/support/tickets/{ticket_id}/messages/{student_message['id']}",
+            headers=self._admin_headers(),
+        )
+        self.assertEqual(admin_delete_student_message.status_code, 200, admin_delete_student_message.text)
+        admin_delete_admin_message = self._request(
+            "DELETE",
+            f"/support/tickets/{ticket_id}/messages/{admin_message.id}",
+            headers=self._admin_headers(),
+        )
+        self.assertEqual(admin_delete_admin_message.status_code, 200, admin_delete_admin_message.text)
+
+        final_detail = self._request(
+            "GET",
+            f"/api/student/support/tickets/{ticket_id}",
+            headers=self._headers(self.reporter.student_id),
+        ).json()
+        self.assertEqual(final_detail["messages"], [])
+        self.assertTrue(self.db.query(SupportTicketMessage).filter_by(
+            id=student_message["id"],
+            is_deleted=True,
+        ).one())
+
     def test_email_failure_is_retried_and_does_not_undo_admin_reply(self):
         ticket_id = self._create_ticket().json()["ticket"]["id"]
 

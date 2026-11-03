@@ -2429,6 +2429,10 @@ class SupportTicketMessageCreate(BaseModel):
     revision: Optional[int] = None
 
 
+class SupportTicketMessageUpdate(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
 class SupportTicketAssignRequest(BaseModel):
     admin_id: Optional[int]
 
@@ -16838,6 +16842,7 @@ def _admin_support_activity_map(db: Session, tickets: list[SupportTicket]) -> di
         SupportTicketMessage.ticket_id.in_(ticket_ids),
         SupportTicketMessage.sender_type == "student",
         SupportTicketMessage.is_internal.is_(False),
+        SupportTicketMessage.is_deleted.is_(False),
     ).group_by(SupportTicketMessage.ticket_id).all())
     return {
         ticket.id: max(
@@ -17203,11 +17208,21 @@ def _notify_admins(
         ))
 
 
-def _support_ticket_detail(db: Session, ticket: SupportTicket, *, include_internal: bool) -> dict:
-    messages = db.query(SupportTicketMessage).filter(
+def _support_ticket_detail(
+    db: Session,
+    ticket: SupportTicket,
+    *,
+    include_internal: bool,
+    viewer_type: Optional[str] = None,
+    viewer_id: Optional[str] = None,
+) -> dict:
+    all_messages = db.query(SupportTicketMessage).filter(
         SupportTicketMessage.ticket_id == ticket.id,
-        *([] if include_internal else [SupportTicketMessage.is_internal.is_(False)]),
     ).order_by(SupportTicketMessage.created_at.asc(), SupportTicketMessage.id.asc()).all()
+    messages = [
+        item for item in all_messages
+        if not item.is_deleted and (include_internal or not item.is_internal)
+    ]
     payload = _support_ticket_payload(ticket, include_private=include_internal)
     if include_internal and ticket.assigned_admin_id is not None:
         assigned_admin = db.query(Admin).filter(Admin.id == ticket.assigned_admin_id).first()
@@ -17223,7 +17238,7 @@ def _support_ticket_detail(db: Session, ticket: SupportTicket, *, include_intern
         and ticket.updated_at
         and now - ticket.updated_at <= timedelta(days=SUPPORT_REOPEN_DAYS)
     )
-    if not messages and ticket.message:
+    if not all_messages and ticket.message:
         payload["messages"] = [{
             "id": f"legacy-{ticket.id}",
             "sender_type": "student",
@@ -17231,6 +17246,9 @@ def _support_ticket_detail(db: Session, ticket: SupportTicket, *, include_intern
             "attachment_url": None,
             "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
             "is_internal": False,
+            "is_edited": False,
+            "can_edit": False,
+            "can_delete": False,
         }]
         return payload
     payload["messages"] = [{
@@ -17243,9 +17261,39 @@ def _support_ticket_detail(db: Session, ticket: SupportTicket, *, include_intern
             else item.attachment_url
         ),
         "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         "is_internal": item.is_internal if include_internal else False,
+        "is_edited": bool(item.is_edited),
+        "can_edit": (
+            viewer_type == item.sender_type
+            and viewer_id == str(item.sender_id)
+        ),
+        "can_delete": (
+            viewer_type == "admin"
+            or (
+                viewer_type == "student"
+                and item.sender_type == "student"
+                and viewer_id == str(item.sender_id)
+            )
+        ),
     } for item in messages]
     return payload
+
+
+def _support_message_actor(
+    authorization: Optional[str],
+    session_token: Optional[str],
+    db: Session,
+) -> tuple[str, str]:
+    try:
+        student = _student_from_authorization(authorization, db)
+    except HTTPException as student_auth_error:
+        try:
+            admin = _require_admin(authorization, session_token, db)
+        except HTTPException:
+            raise student_auth_error
+        return "admin", str(admin.id)
+    return "student", student.student_id
 
 
 async def _store_ticket_attachment(file: Optional[UploadFile], db: Session) -> Optional[str]:
@@ -17511,7 +17559,13 @@ def get_student_support_ticket(
     ticket = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
     if not ticket or ticket.user_id != student.student_id:
         raise HTTPException(status_code=404, detail="Support ticket not found.")
-    return _support_ticket_detail(db, ticket, include_internal=False)
+    return _support_ticket_detail(
+        db,
+        ticket,
+        include_internal=False,
+        viewer_type="student",
+        viewer_id=student.student_id,
+    )
 
 
 @app.get("/api/student/support/tickets/{ticket_id}/attachments/{message_id}")
@@ -17527,6 +17581,7 @@ def get_student_support_attachment(
         SupportTicketMessage.ticket_id == ticket_id,
         SupportTicket.user_id == student.student_id,
         SupportTicketMessage.is_internal.is_(False),
+        SupportTicketMessage.is_deleted.is_(False),
     ).first()
     if not message or not (message.attachment_url or "").startswith("private-support:"):
         raise HTTPException(status_code=404, detail="Attachment not found.")
@@ -17557,7 +17612,13 @@ def get_admin_support_ticket(
         status="SUCCESS",
     ))
     db.commit()
-    payload = _support_ticket_detail(db, ticket, include_internal=True)
+    payload = _support_ticket_detail(
+        db,
+        ticket,
+        include_internal=True,
+        viewer_type="admin",
+        viewer_id=str(admin.id),
+    )
     activity = _admin_support_activity_map(db, [ticket])[ticket.id]
     payload["overdue"] = _ticket_is_overdue(ticket, last_student_activity_at=activity)
     seen = db.query(AdminItemSeen).filter_by(
@@ -17582,6 +17643,7 @@ def get_admin_support_attachment(
         SupportTicketMessage.id == message_id,
         SupportTicketMessage.ticket_id == ticket_id,
         SupportTicketMessage.attachment_url.is_not(None),
+        SupportTicketMessage.is_deleted.is_(False),
     ).first()
     if not message or not (message.attachment_url or "").startswith("private-support:"):
         raise HTTPException(status_code=404, detail="Attachment not found.")
@@ -17773,6 +17835,87 @@ async def admin_reply_to_support_ticket(
         raise HTTPException(status_code=409, detail="Another admin updated this ticket. Reload before replying.")
     _schedule_outbox_delivery(background_tasks, db, outbox_id)
     return {"success": True, "ticket": _support_ticket_payload(ticket, include_private=True)}
+
+
+@app.patch("/support/tickets/{ticket_id}/messages/{message_id}")
+def update_support_ticket_message(
+    ticket_id: int,
+    message_id: int,
+    payload: SupportTicketMessageUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    actor_type, actor_id = _support_message_actor(authorization, session_token, db)
+    ticket = db.query(SupportTicket).filter(
+        SupportTicket.id == ticket_id,
+    ).with_for_update().first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+    if actor_type == "student" and ticket.user_id != actor_id:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+    message = db.query(SupportTicketMessage).filter(
+        SupportTicketMessage.id == message_id,
+        SupportTicketMessage.ticket_id == ticket.id,
+        SupportTicketMessage.is_deleted.is_(False),
+    ).with_for_update().first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Support message not found.")
+    if message.sender_type != actor_type or str(message.sender_id) != actor_id:
+        raise HTTPException(status_code=403, detail="You can only edit messages you authored.")
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="A message body is required.")
+    now = _utc_now().replace(tzinfo=None)
+    message.body = body
+    message.updated_at = now
+    message.is_edited = True
+    ticket.updated_at = now
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The ticket changed while editing. Reload and try again.")
+    return {"success": True}
+
+
+@app.delete("/support/tickets/{ticket_id}/messages/{message_id}")
+def delete_support_ticket_message(
+    ticket_id: int,
+    message_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    actor_type, actor_id = _support_message_actor(authorization, session_token, db)
+    ticket = db.query(SupportTicket).filter(
+        SupportTicket.id == ticket_id,
+    ).with_for_update().first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+    if actor_type == "student" and ticket.user_id != actor_id:
+        raise HTTPException(status_code=404, detail="Support ticket not found.")
+    message = db.query(SupportTicketMessage).filter(
+        SupportTicketMessage.id == message_id,
+        SupportTicketMessage.ticket_id == ticket.id,
+        SupportTicketMessage.is_deleted.is_(False),
+    ).with_for_update().first()
+    if not message:
+        raise HTTPException(status_code=404, detail="Support message not found.")
+    if actor_type == "student" and (
+        message.sender_type != "student" or str(message.sender_id) != actor_id
+    ):
+        raise HTTPException(status_code=403, detail="You can only delete messages you authored.")
+    now = _utc_now().replace(tzinfo=None)
+    message.is_deleted = True
+    message.updated_at = now
+    ticket.updated_at = now
+    try:
+        db.commit()
+    except StaleDataError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The ticket changed while deleting. Reload and try again.")
+    return {"success": True}
 
 
 @app.patch("/support/tickets/{ticket_id}")

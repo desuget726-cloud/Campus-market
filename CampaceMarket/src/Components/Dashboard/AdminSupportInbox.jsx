@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { apiFetch, apiGet, apiPatch, getStoredAccessToken } from '../../api/apiClient';
+import { apiFetch, apiGet, getStoredAccessToken } from '../../api/apiClient';
 import { API_BASE_URL } from '../../config';
-import { getErrorMessage, notifySuccess } from '../../utils/notify';
+import { getErrorMessage } from '../../utils/notify';
 
 const ticketStatuses = ['Open', 'In Progress', 'Waiting for User', 'Resolved', 'Closed'];
 const ticketStatusStyles = {
@@ -26,8 +26,6 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
   const token = getStoredAccessToken();
   const headers = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
   const [tickets, setTickets] = useState([]);
-  const [admins, setAdmins] = useState([]);
-  const [currentAdminId, setCurrentAdminId] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [counters, setCounters] = useState({});
   const [selectedId, setSelectedId] = useState(() => {
@@ -39,7 +37,9 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
   const [draft, setDraft] = useState('');
   const [attachment, setAttachment] = useState(null);
   const [internal, setInternal] = useState(false);
-  const [assignedAdminId, setAssignedAdminId] = useState('');
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [messageDraft, setMessageDraft] = useState('');
+  const [messageActionBusy, setMessageActionBusy] = useState(false);
   const [statusFilter, setStatusFilter] = useState('All');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [overdueOnly, setOverdueOnly] = useState(false);
@@ -72,22 +72,6 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
   }, [categoryFilter, headers, overdueOnly, statusFilter]);
 
   useEffect(() => {
-    let cancelled = false;
-    apiGet('/api/admin/support/admins', { headers })
-      .then((result) => {
-        if (cancelled) return;
-        setAdmins(result?.items || []);
-        setCurrentAdminId(result?.current_admin_id ?? null);
-      })
-      .catch((requestError) => {
-        if (!cancelled) setError(formatRequestError(requestError));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [headers]);
-
-  useEffect(() => {
     void Promise.resolve().then(loadTickets);
   }, [loadTickets]);
 
@@ -104,7 +88,6 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
       .then(async (ticket) => {
         await apiFetch(`/api/admin/support/${ticket.id}/seen`, { method: 'POST', headers });
         setDetail({ ...ticket, is_unseen: false });
-        setAssignedAdminId(ticket.assigned_admin_id ? String(ticket.assigned_admin_id) : '');
         setTickets((current) => current.map((item) => (
           item.id === ticket.id ? { ...item, is_unseen: false } : item
         )));
@@ -169,25 +152,6 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
     }
   };
 
-  const saveAssignment = async (adminId = assignedAdminId) => {
-    if (!detail) return;
-    setBusy(true);
-    setError('');
-    try {
-      const result = await apiPatch(`/api/admin/support/${detail.id}/assign`, {
-        admin_id: adminId ? Number(adminId) : null,
-      }, { headers });
-      setDetail((current) => current?.id === detail.id ? { ...current, ...result.ticket } : current);
-      setAssignedAdminId(result.ticket?.assigned_admin_id ? String(result.ticket.assigned_admin_id) : '');
-      notifySuccess('Support ticket assignment saved.');
-      await loadTickets();
-    } catch (requestError) {
-      setError(formatRequestError(requestError));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submitMessage = async (event) => {
     event.preventDefault();
     if (!detail || !draft.trim()) return;
@@ -226,6 +190,48 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
       setError(formatRequestError(requestError));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const editMessage = async (message) => {
+    const body = messageDraft.trim();
+    if (!detail || !body) return;
+    setMessageActionBusy(true);
+    setError('');
+    try {
+      await apiFetch(`/support/tickets/${detail.id}/messages/${message.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ body }),
+      });
+      setDetail(await apiGet(`/support/tickets/${detail.id}`, { headers }));
+      setEditingMessageId(null);
+      setMessageDraft('');
+    } catch (requestError) {
+      setError(formatRequestError(requestError));
+    } finally {
+      setMessageActionBusy(false);
+    }
+  };
+
+  const deleteMessage = async (message) => {
+    if (!detail || !window.confirm('Delete this message?')) return;
+    setMessageActionBusy(true);
+    setError('');
+    try {
+      await apiFetch(`/support/tickets/${detail.id}/messages/${message.id}`, {
+        method: 'DELETE',
+        headers,
+      });
+      setDetail(await apiGet(`/support/tickets/${detail.id}`, { headers }));
+      if (editingMessageId === message.id) {
+        setEditingMessageId(null);
+        setMessageDraft('');
+      }
+    } catch (requestError) {
+      setError(formatRequestError(requestError));
+    } finally {
+      setMessageActionBusy(false);
     }
   };
 
@@ -359,26 +365,7 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
                 {detail.overdue && <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-bold text-rose-800">Overdue</span>}
               </div>
 
-              <div className="flex flex-wrap items-end gap-2">
-                <div className="text-xs font-semibold text-slate-600">
-                  <label>
-                    Assign admin
-                    <select value={assignedAdminId} onChange={(event) => setAssignedAdminId(event.target.value)} className="mt-1 block min-w-52 rounded-lg border border-slate-200 px-3 py-2 text-sm">
-                      <option value="">Unassigned</option>
-                      {detail.assigned_admin_id && !admins.some((item) => item.id === detail.assigned_admin_id) && (
-                        <option value={String(detail.assigned_admin_id)} disabled>
-                          {detail.assigned_admin?.name || `Admin #${detail.assigned_admin_id}`} (inactive)
-                        </option>
-                      )}
-                      {admins.map((item) => (
-                        <option key={item.id} value={String(item.id)}>{item.name} (@{item.username})</option>
-                      ))}
-                    </select>
-                  </label>
-                  <p className="mt-1">Current assignee: {detail.assigned_admin?.name || (detail.assigned_admin_id ? `Admin #${detail.assigned_admin_id}` : 'Unassigned')}</p>
-                </div>
-                <button type="button" disabled={busy} onClick={() => saveAssignment()} className="rounded-full border border-slate-300 px-4 py-2 text-sm font-bold hover:bg-slate-50 disabled:opacity-50">Save assignment</button>
-                <button type="button" disabled={busy || !currentAdminId} onClick={() => saveAssignment(String(currentAdminId))} className="rounded-full border border-sky-300 px-4 py-2 text-sm font-bold text-sky-800 hover:bg-sky-50 disabled:opacity-50">Assign to me</button>
+              <div className="flex justify-end">
                 <label className="text-xs font-semibold text-slate-600">
                   Status
                   <select value={detail.status} onChange={(event) => updateStatus(event.target.value)} disabled={busy} className="mt-1 block rounded-lg border border-slate-200 px-3 py-2 text-sm">
@@ -391,9 +378,30 @@ function AdminSupportInbox({ onItemsSeen = ignoreSeenCount }) {
                 {(detail.messages || []).map((message) => (
                   <div key={message.id} className={`rounded-xl p-3 text-sm ${message.is_internal ? 'border border-amber-300 bg-amber-50 text-amber-950' : message.sender_type === 'student' ? 'bg-white text-slate-800' : 'bg-sky-50 text-sky-950'}`}>
                     <p className="text-[11px] font-bold">{message.is_internal ? 'INTERNAL NOTE · ADMINS ONLY' : message.sender_type === 'student' ? 'Student' : 'UniXchange Support'}</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words">{message.body}</p>
+                    {editingMessageId === message.id ? (
+                      <div className="mt-2 space-y-2">
+                        <textarea aria-label={`Edit message ${message.id}`} maxLength={5000} rows={3} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white p-2 text-sm text-slate-900" />
+                        <div className="flex gap-2">
+                          <button type="button" aria-label={`Save edit ${message.id}`} disabled={messageActionBusy || !messageDraft.trim()} onClick={() => editMessage(message)} className="rounded-full bg-sky-700 px-3 py-1 text-xs font-bold text-white disabled:opacity-50">Save</button>
+                          <button type="button" aria-label={`Cancel edit ${message.id}`} disabled={messageActionBusy} onClick={() => { setEditingMessageId(null); setMessageDraft(''); }} className="rounded-full border border-slate-300 px-3 py-1 text-xs font-bold disabled:opacity-50">Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-1 whitespace-pre-wrap break-words">{message.body}</p>
+                    )}
                     {message.attachment_url && <button type="button" onClick={() => downloadAttachment(message.attachment_url, `${detail.ticket_number}-attachment`)} className="mt-2 text-xs font-bold underline">Download attachment</button>}
-                    <p className="mt-2 text-[10px] text-slate-500">{message.created_at ? new Date(message.created_at).toLocaleString() : ''}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <p className="text-[10px] text-slate-500">
+                        {message.created_at ? new Date(message.created_at).toLocaleString() : ''}
+                        {message.is_edited && <span className="ml-1 italic">(edited)</span>}
+                      </p>
+                      {(message.can_edit || message.can_delete) && editingMessageId !== message.id && (
+                        <div className="flex gap-2 text-[10px] font-semibold text-slate-500">
+                          {message.can_edit && <button type="button" aria-label={`Edit message ${message.id}`} disabled={messageActionBusy} onClick={() => { setEditingMessageId(message.id); setMessageDraft(message.body); }} className="hover:text-sky-700 disabled:opacity-50">✏️ Edit</button>}
+                          {message.can_delete && <button type="button" aria-label={`Delete message ${message.id}`} disabled={messageActionBusy} onClick={() => deleteMessage(message)} className="hover:text-rose-700 disabled:opacity-50">🗑️ Delete</button>}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

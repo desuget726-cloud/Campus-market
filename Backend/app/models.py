@@ -724,7 +724,10 @@ class SupportTicketMessage(Base):
     body = Column(Text, nullable=False)
     attachment_url = Column(String(500), nullable=True)
     is_internal = Column(Boolean, nullable=False, default=False)
+    is_edited = Column(Boolean, nullable=False, default=False, server_default=text("0"))
+    is_deleted = Column(Boolean, nullable=False, default=False, server_default=text("0"))
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, nullable=True)
 
 
 class ReportMessage(Base):

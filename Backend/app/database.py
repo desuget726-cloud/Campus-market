@@ -381,6 +381,18 @@ def init_db() -> None:
                 "UPDATE support_tickets SET updated_at = CURRENT_TIMESTAMP "
                 "WHERE updated_at IS NULL"
             ))
+    if "support_ticket_messages" in inspector.get_table_names():
+        support_message_additions = {
+            "is_edited": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "updated_at": "DATETIME NULL",
+        }
+        for column_name, column_definition in support_message_additions.items():
+            _add_column_if_missing(
+                "support_ticket_messages",
+                column_name,
+                column_definition,
+            )
     if "notifications" in inspector.get_table_names():
         _migrate_legacy_notification_index()
         changed_moderation_links = 0
