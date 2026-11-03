@@ -60,6 +60,7 @@ from time import monotonic, sleep as time_sleep
 from urllib.parse import urlencode, urlsplit, urlunsplit
 import smtplib
 import html
+from email.utils import formataddr
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
@@ -1557,10 +1558,17 @@ def _smtp_attempt(
     recipient: str,
     subject: str,
     body: str,
+    html_body: Optional[str] = None,
 ) -> None:
-    message = MIMEText(body, "plain", "utf-8")
+    if html_body is None:
+        message = MIMEText(body, "plain", "utf-8")
+    else:
+        message = MIMEMultipart("alternative")
+        message.attach(MIMEText(body, "plain", "utf-8"))
+        message.attach(MIMEText(html_body, "html", "utf-8"))
     message["Subject"] = subject
-    message["From"] = sender_email
+    message["From"] = formataddr(("UniXchange Security", sender_email))
+    message["Reply-To"] = formataddr(("UniXchange Support", sender_email))
     message["To"] = recipient
     stage = "connect"
     print(
@@ -1620,6 +1628,7 @@ def _send_smtp_message(
     recipient: str,
     subject: str,
     body: str,
+    html_body: Optional[str] = None,
 ) -> dict[str, Any]:
     sender_email, sender_password = _smtp_credentials()
     print(
@@ -1685,6 +1694,7 @@ def _send_smtp_message(
                 recipient,
                 subject,
                 body,
+                html_body,
             )
         except SMTPDeliveryError as delivery_error:
             error = delivery_error.original_error
@@ -1804,18 +1814,118 @@ def send_otp_email_diagnostic(
             "hint": "The recipient email address is missing.",
             "attempts": [],
         }
-    if purpose == "wallet_pin_reset":
-        subject = "Wallet PIN reset verification code"
-        body = f"Use this code to reset your Wallet PIN. It expires in 10 minutes.\n\n{otp}"
-    else:
-        subject = "Password recovery verification code"
-        body = str(otp)
-    return _send_smtp_message(receiver_email, subject, body)
+
+    purpose_key = purpose.strip().lower()
+    purpose_templates = {
+        "password_reset": (
+            "Password Reset Code",
+            "Use this verification code to securely reset your UniXchange account password.",
+        ),
+        "wallet_pin_reset": (
+            "Wallet PIN Reset Code",
+            "Use this authorization code to reset your 4-digit Wallet security PIN.",
+        ),
+        "student_login": (
+            "Login Verification Code",
+            "Use this verification code to securely sign in to your UniXchange account.",
+        ),
+        "login_2fa": (
+            "Login Verification Code",
+            "Use this verification code to securely complete your UniXchange sign-in.",
+        ),
+        "admin_login_2fa": (
+            "Admin Login Verification Code",
+            "Use this verification code to securely complete administrator sign-in to UniXchange.",
+        ),
+        "support": (
+            "Support Verification Code",
+            "Use this verification code to securely verify your request with UniXchange Support.",
+        ),
+        "support_2fa": (
+            "Support Verification Code",
+            "Use this verification code to securely verify your request with UniXchange Support.",
+        ),
+    }
+    title, description = purpose_templates.get(
+        purpose_key,
+        (
+            f"{purpose.replace('_', ' ').strip().title()} Code",
+            "Use this verification code to complete your requested action on UniXchange.",
+        ),
+    )
+    otp_text = str(otp)
+    notice = (
+        "This code expires in 10 minutes and can be used only once. "
+        "Never share this code with anyone."
+    )
+    footer = "© 2026 UniXchange Campus Marketplace. All rights reserved."
+    plain_body = "\n\n".join((title, description, otp_text, notice, footer))
+    html_body = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{html.escape(title)}</title>
+  <style>
+    @media only screen and (max-width: 600px) {{
+      .email-card {{ width: 100% !important; }}
+      .email-content {{ padding: 28px 20px !important; }}
+      .otp-code {{ font-size: 28px !important; letter-spacing: 5px !important; }}
+    }}
+  </style>
+</head>
+<body style="margin:0; padding:0; background-color:#f8fafc; color:#1e293b; font-family:Arial, Helvetica, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#f8fafc;">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+        <table role="presentation" class="email-card" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%; max-width:600px; background-color:#ffffff; border:1px solid #e2e8f0; border-radius:16px; overflow:hidden;">
+          <tr>
+            <td align="center" style="padding:28px 24px; background-color:#4338ca; background-image:linear-gradient(120deg,#4338ca 0%,#2563eb 100%); color:#ffffff; font-size:24px; font-weight:700; letter-spacing:0.3px;">
+              UniXchange
+            </td>
+          </tr>
+          <tr>
+            <td class="email-content" style="padding:40px 48px 32px;">
+              <h1 style="margin:0 0 14px; color:#0f172a; font-size:24px; line-height:1.3; font-weight:700;">{html.escape(title)}</h1>
+              <p style="margin:0 0 28px; color:#475569; font-size:16px; line-height:1.6;">{html.escape(description)}</p>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px; background-color:#f1f5f9; border:1px solid #e2e8f0; border-radius:12px;">
+                <tr>
+                  <td align="center" style="padding:22px 12px;">
+                    <span class="otp-code" style="color:#312e81; font-family:'Courier New', Courier, monospace; font-size:32px; font-weight:700; letter-spacing:6px; white-space:nowrap;">{html.escape(otp_text)}</span>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:0; color:#64748b; font-size:14px; line-height:1.6;">{html.escape(notice)}</p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:20px 24px; border-top:1px solid #e2e8f0; color:#94a3b8; font-size:12px; line-height:1.5;">
+              {html.escape(footer)}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+    return _send_smtp_message(
+        receiver_email,
+        title,
+        plain_body,
+        html_body,
+    )
 
 
-def send_otp_email(receiver_email: str, otp: str) -> bool:
+def send_otp_email(
+    receiver_email: str,
+    otp: str,
+    purpose: str = "password_reset",
+) -> bool:
     """Send an OTP email without logging the OTP or SMTP credentials."""
-    return bool(send_otp_email_diagnostic(receiver_email, otp)["success"])
+    return bool(
+        send_otp_email_diagnostic(receiver_email, otp, purpose=purpose)["success"]
+    )
 
 
 
@@ -1845,7 +1955,8 @@ def send_verification_status_email(receiver_email: str, status: str, reason: Opt
 
         msg = MIMEMultipart()
         msg["Subject"] = "Campus Marketplace Verification Update"
-        msg["From"] = normalized_sender_email
+        msg["From"] = formataddr(("UniXchange Security", normalized_sender_email))
+        msg["Reply-To"] = formataddr(("UniXchange Support", normalized_sender_email))
         msg["To"] = receiver_email
         msg.attach(MIMEText("\n".join(body_lines), "plain"))
 
@@ -3739,7 +3850,8 @@ def _send_student_notification_email(student: Student, subject: str, message: st
     try:
         email_message = MIMEMultipart("alternative")
         email_message["Subject"] = subject
-        email_message["From"] = SENDER_EMAIL
+        email_message["From"] = formataddr(("UniXchange Security", SENDER_EMAIL))
+        email_message["Reply-To"] = formataddr(("UniXchange Support", SENDER_EMAIL))
         email_message["To"] = student.email
         email_message.attach(MIMEText(message, "html"))
         context = ssl.create_default_context()
@@ -4783,7 +4895,11 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
             ))
             db.commit()
 
-            email_sent = send_otp_email(student.email, otp)
+            email_sent = send_otp_email(
+                student.email,
+                otp,
+                purpose="student_login",
+            )
             login_otp = _latest_password_reset(
                 db,
                 student.email,
@@ -4867,9 +4983,12 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
                 db, admin.id, "login_failed_locked", request
             )
 
-            lockout_email_sent = send_otp_email(
-                admin.email,
-                f"Admin account locked after {security.max_login_attempts} failed login attempts",
+            lockout_email_sent = bool(
+                _send_smtp_message(
+                    admin.email,
+                    "Admin account locked",
+                    f"Admin account locked after {security.max_login_attempts} failed login attempts",
+                )["success"]
             )
 
             if not lockout_email_sent:
@@ -5006,7 +5125,11 @@ def send_admin_login_two_factor_email_code(
         db.add(email_code_record)
         db.commit()
 
-        if not send_otp_email(admin.email, email_code):
+        if not send_otp_email(
+            admin.email,
+            email_code,
+            purpose="admin_login_2fa",
+        ):
             email_code_record.used = True
             _audit_admin_login_email_event(
                 db,
@@ -15180,6 +15303,11 @@ def confirm_wallet_pin_reset(
     now = _utc_now()
     expires_at = _as_utc_datetime(reset_record.expires_at) if reset_record else None
     failure_reason = None
+    expected_hash_match = None
+    identifier_matches = bool(
+        reset_record
+        and _login_identifier(reset_record.email) == email
+    )
 
     if not reset_record:
         failure_reason = "missing reset record"
@@ -15191,21 +15319,29 @@ def confirm_wallet_pin_reset(
         failure_reason = f"delivery_status={reset_record.delivery_status}"
     elif expires_at is None or expires_at <= now:
         failure_reason = "expired"
-    elif not _password_reset_code_matches(
-        db,
-        reset_record,
-        payload.otp_code,
-    ):
-        failure_reason = "invalid code"
+    else:
+        expected_hash_match = _password_reset_code_matches(
+            db,
+            reset_record,
+            payload.otp_code,
+        )
+        if not expected_hash_match:
+            failure_reason = "invalid code"
 
     if failure_reason is not None:
-        logging.getLogger("app.auth").warning(
-            "Wallet PIN reset verification rejected reason=%s email=%s reset_id=%s status=%s expires_at=%s attempts=%s",
+        logger.warning(
+            "Wallet PIN reset failed: reason=%s entered_code_present=%s expected_hash_match=%s "
+            "expires_at=%s is_used=%s purpose=%s identifier_matches=%s delivery_status=%s "
+            "reset_id=%s attempts=%s",
             failure_reason,
-            email,
-            getattr(reset_record, "id", None),
+            bool(payload.otp_code),
+            expected_hash_match,
+            expires_at.isoformat() if expires_at else None,
+            getattr(reset_record, "is_used", None),
+            getattr(reset_record, "purpose", None),
+            identifier_matches,
             getattr(reset_record, "delivery_status", None),
-            getattr(reset_record, "expires_at", None),
+            getattr(reset_record, "id", None),
             getattr(reset_record, "verification_attempts", None),
         )
         raise HTTPException(status_code=400, detail="Invalid or expired Wallet PIN reset code.")
@@ -16848,7 +16984,8 @@ def _queue_communication_email(
 def _send_outbox_email(recipient: str, subject: str, body: str) -> None:
     email = MIMEMultipart("alternative")
     email["Subject"] = subject
-    email["From"] = SENDER_EMAIL
+    email["From"] = formataddr(("UniXchange Security", SENDER_EMAIL))
+    email["Reply-To"] = formataddr(("UniXchange Support", SENDER_EMAIL))
     email["To"] = recipient
     escaped_body = "<br>".join(html.escape(line) for line in body.splitlines())
     email.attach(MIMEText(body, "plain", "utf-8"))
@@ -20724,13 +20861,35 @@ def update_admin_product_moderation(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
 
-    normalized_status = payload.status.strip()
-    if normalized_status not in {"Approved", "Flagged", "Pending", "Rejected"}:
-        raise HTTPException(status_code=400, detail="Invalid product moderation status.")
+    status_by_key = {value.lower(): value for value in ("Approved", "Flagged", "Pending", "Rejected")}
+    normalized_status = status_by_key.get(payload.status.strip().lower())
+    if normalized_status is None:
+        detail = "Invalid product moderation status."
+        logger.warning(
+            "Admin product moderation rejected: product_id=%s status=%r detail=%s",
+            product_id,
+            payload.status,
+            detail,
+        )
+        raise HTTPException(status_code=400, detail=detail)
+
+    reason = payload.reason.strip() if payload.reason else None
+    if normalized_status == "Approved":
+        product.stock = max(1, int(getattr(product, "stock", None) or 1))
 
     try:
-        reason = payload.reason.strip() if payload.reason else None
         _validate_product_stock_status(int(getattr(product, "stock", 0) or 0), normalized_status)
+    except HTTPException as error:
+        if error.status_code == 400:
+            logger.warning(
+                "Admin product moderation rejected: product_id=%s status=%r detail=%s",
+                product_id,
+                payload.status,
+                error.detail,
+            )
+        raise
+
+    try:
         product.status = normalized_status
         product.moderation_reason = reason if normalized_status in {"Flagged", "Rejected"} else None
 
@@ -20767,6 +20926,7 @@ def update_admin_product_moderation(
         }
     except SQLAlchemyError:
         db.rollback()
+        logger.exception("Database error updating admin product moderation: product_id=%s", product_id)
         raise HTTPException(status_code=500, detail="Failed to update product moderation.")
 
 
@@ -21001,11 +21161,6 @@ def update_product_status_impl(id: int, data: ProductStatusUpdate, db: Session):
 
 @app.patch("/api/admin/products/{id}")
 def update_product_status_patch(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
-    return update_product_status_impl(id=id, data=data, db=db)
-
-
-@app.put("/api/admin/products/{id}")
-def update_product_status_put(id: int, data: ProductStatusUpdate, db: Session = Depends(get_db)):
     return update_product_status_impl(id=id, data=data, db=db)
 
 

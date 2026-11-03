@@ -3,6 +3,7 @@ import socket
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
+from email import message_from_string
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -128,12 +129,88 @@ class OtpEmailTests(unittest.TestCase):
             server = smtp.return_value.__enter__.return_value
             server.sendmail.return_value = {}
             self.assertTrue(main_module.send_otp_email("student@example.test", "123456"))
+            message = message_from_string(server.sendmail.call_args.args[2])
 
         smtp.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
         smtp_ssl.assert_not_called()
+        self.assertEqual(
+            message["From"],
+            "UniXchange Security <sender@example.test>",
+        )
+        self.assertEqual(
+            message["Reply-To"],
+            "UniXchange Support <sender@example.test>",
+        )
         self.assertEqual(server.ehlo.call_count, 2)
         self.assertIsNotNone(server.starttls.call_args.kwargs["context"])
         server.login.assert_called_once_with("sender@example.test", "testapppassword")
+
+    def test_otp_emails_include_purpose_specific_html_and_plain_text(self):
+        expected_content = {
+            "password_reset": (
+                "Password Reset Code",
+                "Use this verification code to securely reset your UniXchange account password.",
+            ),
+            "wallet_pin_reset": (
+                "Wallet PIN Reset Code",
+                "Use this authorization code to reset your 4-digit Wallet security PIN.",
+            ),
+            "student_login": (
+                "Login Verification Code",
+                "Use this verification code to securely sign in to your UniXchange account.",
+            ),
+            "admin_login_2fa": (
+                "Admin Login Verification Code",
+                "Use this verification code to securely complete administrator sign-in to UniXchange.",
+            ),
+            "support_2fa": (
+                "Support Verification Code",
+                "Use this verification code to securely verify your request with UniXchange Support.",
+            ),
+            "account_security": (
+                "Account Security Code",
+                "Use this verification code to complete your requested action on UniXchange.",
+            ),
+        }
+
+        with (
+            patch.object(main_module, "_notifications_enabled", return_value=True),
+            patch.object(main_module, "_IPv4SMTP") as smtp,
+            patch.object(main_module, "_IPv4SMTP_SSL"),
+            self.assertLogs("app.email", level="INFO"),
+        ):
+            server = smtp.return_value.__enter__.return_value
+            server.sendmail.return_value = {}
+            for purpose, (title, description) in expected_content.items():
+                with self.subTest(purpose=purpose):
+                    result = main_module.send_otp_email_diagnostic(
+                        "student@example.test",
+                        "123456",
+                        purpose=purpose,
+                    )
+
+                    self.assertTrue(result["success"])
+                    message = message_from_string(server.sendmail.call_args.args[2])
+                    self.assertEqual(message["Subject"], title)
+                    self.assertEqual(message.get_content_type(), "multipart/alternative")
+                    plain_part, html_part = message.get_payload()
+                    plain_body = plain_part.get_payload(decode=True).decode("utf-8")
+                    html_body = html_part.get_payload(decode=True).decode("utf-8")
+                    self.assertIn(description, plain_body)
+                    self.assertIn("123456", plain_body)
+                    self.assertIn(
+                        "This code expires in 10 minutes and can be used only once. "
+                        "Never share this code with anyone.",
+                        plain_body,
+                    )
+                    self.assertIn(title, html_body)
+                    self.assertIn(description, html_body)
+                    self.assertIn("123456", html_body)
+                    self.assertIn("letter-spacing:6px", html_body)
+                    self.assertIn(
+                        "© 2026 UniXchange Campus Marketplace. All rights reserved.",
+                        html_body,
+                    )
 
     def test_port_465_selects_implicit_ssl(self):
         with (
@@ -733,7 +810,23 @@ class OtpEmailTests(unittest.TestCase):
             patch.object(main_module, "_student_from_authorization", return_value=student),
             patch.object(main_module, "_require_verified_student"),
         ):
-            for attempt in range(5):
+            with self.assertLogs(main_module.logger, level="WARNING") as captured:
+                with self.assertRaises(HTTPException) as error:
+                    main_module.confirm_wallet_pin_reset(
+                        main_module.WalletPinResetRequest(otp_code="000000", pin="2468"),
+                        request,
+                        "test-token",
+                        db,
+                    )
+                self.assertEqual(error.exception.status_code, 400)
+            log_output = "\n".join(captured.output)
+            self.assertIn("reason=invalid code", log_output)
+            self.assertIn("entered_code_present=True", log_output)
+            self.assertIn("expected_hash_match=False", log_output)
+            self.assertIn("is_used=False", log_output)
+            self.assertNotIn("000000", log_output)
+
+            for attempt in range(4):
                 with self.assertRaises(HTTPException) as error:
                     main_module.confirm_wallet_pin_reset(
                         main_module.WalletPinResetRequest(otp_code="000000", pin="2468"),

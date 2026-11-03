@@ -1,4 +1,3 @@
-import dg from '../../assets/dg.jpg';
 import { useLanguage } from '../../context/LanguageContext';
 
 const socialLinks = [
@@ -27,56 +26,54 @@ const Footer = ({ onNavigate }) => {
   return (
     <footer className="w-full border-t border-slate-800 bg-slate-900 px-4 py-12 text-sm text-slate-300 sm:px-6 lg:px-8">
       <div className="flex w-full flex-col gap-10 px-4 md:flex-row md:justify-between md:px-[60px]">
-          {/* <div>
+        {/* <div>
             <button type="button" onClick={() => navigate('home')} className="flex items-center gap-3 text-left">
-              <img src={dg} alt="DG Market logo" className="h-14 w-14 rounded-2xl object-cover ring-2 ring-white/30" />
-              <span className="text-xl font-black tracking-tight">DG Market</span>
+              <img src={dg} alt="UniXchange logo" className="h-14 w-14 rounded-2xl object-cover ring-2 ring-white/30" />
+              <span className="text-xl font-black tracking-tight">UniXchange</span>
             </button>
             <p className="mt-4 max-w-xs leading-6 text-blue-100">Your trusted campus marketplace for buying, selling, and exchanging with confidence.</p>
           </div> */}
 
-          <nav aria-label="Footer quick links">
-            <h2 className="font-bold uppercase tracking-[0.16em] text-blue-400">Quick Links</h2>
-            <div className="mt-4 grid gap-3">
-              {[
-                ['Home', 'home'],
-                ['About', 'about'],
-                ['Services', 'services'],
-                ['Contact', 'contact'],
-                ['Dashboard', 'student-dashboard'],
-              ].map(([label, view]) => (
-                <button key={view} type="button" onClick={() => navigate(view)} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">{label}</button>
-              ))}
-            </div>
-          </nav>
-
-          <nav aria-label="Footer legal links">
-            <h2 className="font-bold uppercase tracking-[0.16em] text-blue-400">Legal</h2>
-            <div className="mt-4 grid gap-3">
-              <button type="button" onClick={() => navigate('terms')} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">Terms of Service</button>
-              <button type="button" onClick={() => navigate('privacy')} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">Privacy Policy</button>
-              <button type="button" onClick={() => navigate('refund-dispute')} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">Refund / Dispute Policy</button>
-            </div>
-          </nav>
-
-          <div>
-            <h2 className="font-bold uppercase tracking-[0.16em] text-blue-400">Contact</h2>
-            <div className="mt-4 grid gap-3 text-slate-200">
-              <a href="mailto:desuget726@gmail.com" className="inline-flex min-h-[44px] w-fit items-center transition-colors hover:text-white md:min-h-0">desuget726@gmail.com</a>
-              <a href="tel:+251962714305" className="inline-flex min-h-[44px] w-fit items-center transition-colors hover:text-white md:min-h-0">0962714305</a>
-            </div>
-            <div className="mt-5 flex gap-3">
-              {socialLinks.map((social) => (
-                <a key={social.label} href={social.href} target={social.href.startsWith('http') ? '_blank' : undefined} rel={social.href.startsWith('http') ? 'noreferrer' : undefined} aria-label={social.label} title={social.label} className="flex h-11 w-11 items-center justify-center rounded-xl border border-blue-300/50 bg-white/10 text-slate-200 transition-colors hover:border-white hover:bg-blue-500 hover:text-white md:h-10 md:w-10">
-                  <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">{social.icon}</svg>
-                </a>
-              ))}
-            </div>
+        <nav aria-label="Footer quick links">
+          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-400">Quick Links</h2>
+          <div className="mt-4 grid gap-3">
+            {[
+              ['Home', 'home'],
+              ['About', 'about'],
+              ['Services', 'services'],
+              ['Contact', 'contact'],
+            ].map(([label, view]) => (
+              <button key={view} type="button" onClick={() => navigate(view)} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">{label}</button>
+            ))}
           </div>
+        </nav>
+
+        <nav aria-label="Footer legal links">
+          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-400">Legal</h2>
+          <div className="mt-4 grid gap-3">
+            <button type="button" onClick={() => navigate('terms')} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">Terms of Service</button>
+            <button type="button" onClick={() => navigate('privacy')} className="inline-flex min-h-[44px] w-fit items-center text-left text-slate-200 transition-colors hover:text-white md:min-h-0">Privacy Policy</button>
+          </div>
+        </nav>
+
+        <div>
+          <h2 className="font-bold uppercase tracking-[0.16em] text-blue-400">Contact</h2>
+          <div className="mt-4 grid gap-3 text-slate-200">
+            <a href="mailto:desuget726@gmail.com" className="inline-flex min-h-[44px] w-fit items-center transition-colors hover:text-white md:min-h-0">desuget726@gmail.com</a>
+            <a href="tel:+251962714305" className="inline-flex min-h-[44px] w-fit items-center transition-colors hover:text-white md:min-h-0">0962714305</a>
+          </div>
+          <div className="mt-5 flex gap-3">
+            {socialLinks.map((social) => (
+              <a key={social.label} href={social.href} target={social.href.startsWith('http') ? '_blank' : undefined} rel={social.href.startsWith('http') ? 'noreferrer' : undefined} aria-label={social.label} title={social.label} className="flex h-11 w-11 items-center justify-center rounded-xl border border-blue-300/50 bg-white/10 text-slate-200 transition-colors hover:border-white hover:bg-blue-500 hover:text-white md:h-10 md:w-10">
+                <svg className="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">{social.icon}</svg>
+              </a>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="mt-10 flex w-full flex-col gap-3 border-t border-white/15 px-4 pt-5 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between md:px-[60px]">
-        <p className="text-left">© 2026 DG Market. All rights reserved.</p>
+        <p className="text-left">© 2026 UniXchange. All rights reserved.</p>
         <div className="notranslate flex items-center gap-2 font-semibold" aria-label="Language switcher">
           <button type="button" aria-pressed={language === 'en'} onClick={() => setLanguage('en')} className={`min-h-[44px] md:min-h-0 ${language === 'en' ? 'text-white underline underline-offset-4' : 'text-slate-300 hover:text-white'}`}>English</button>
           <span aria-hidden="true">|</span>

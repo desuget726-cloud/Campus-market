@@ -4128,3 +4128,150 @@ smtplib.SMTPServerDisconnected: Connection unexpectedly closed
 2026-10-29 04:13:09,162 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
 2026-10-29 04:13:10,263 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
 2026-10-29 04:13:10,271 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.
+2026-11-02 03:26:52,289 ERROR Failed to send student notification email: [Errno 11001] getaddrinfo failed
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 3746, in _send_student_notification_email
+    with _IPv4SMTP_SSL(
+         ~~~~~~~~~~~~~^
+        "smtp.gmail.com",
+        ^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        timeout=15,
+        ^^^^^^^^^^^
+    ) as server:
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1022, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 255, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 341, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1547, in _get_socket
+    new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1524, in _create_ipv4_smtp_socket
+    addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 977, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 11001] getaddrinfo failed
+2026-11-02 21:49:03,326 ERROR Failed to send student notification email: [Errno 11001] getaddrinfo failed
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 3746, in _send_student_notification_email
+    with _IPv4SMTP_SSL(
+         ~~~~~~~~~~~~~^
+        "smtp.gmail.com",
+        ^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        timeout=15,
+        ^^^^^^^^^^^
+    ) as server:
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1022, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 255, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 341, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1547, in _get_socket
+    new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1524, in _create_ipv4_smtp_socket
+    addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 977, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 11001] getaddrinfo failed
+2026-11-02 22:31:47,558 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-11-02 22:31:47,559 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-11-02 22:31:51,477 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:31:52,486 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:31:52,818 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:31:54,412 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:31:54,416 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desuget726@gmail.com host=smtp.gmail.com port=587.
+2026-11-02 22:33:06,821 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-11-02 22:33:06,822 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-11-02 22:33:09,603 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:33:10,764 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:33:11,089 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:33:13,623 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:33:13,625 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desuget726@gmail.com host=smtp.gmail.com port=587.
+2026-11-02 22:42:14,519 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-11-02 22:42:14,520 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desuget726@gmail.com.
+2026-11-02 22:42:17,584 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:42:18,717 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:42:19,098 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:42:20,618 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:42:20,620 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desuget726@gmail.com host=smtp.gmail.com port=587.
+2026-11-02 22:49:11,049 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=login-2fa@example.test.
+2026-11-02 22:49:11,049 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=login-2fa@example.test.
+2026-11-02 22:49:12,723 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:49:13,567 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:49:13,790 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:49:15,483 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:49:15,483 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=login-2fa@example.test host=smtp.gmail.com port=587.
+2026-11-02 22:49:56,558 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-02 22:49:56,560 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-02 22:49:58,703 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:49:59,788 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:50:00,106 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:50:01,848 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:50:01,865 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.
+2026-11-02 22:56:05,942 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=login-2fa@example.test.
+2026-11-02 22:56:05,942 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=login-2fa@example.test.
+2026-11-02 22:56:19,895 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:56:20,676 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:56:20,906 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:56:22,350 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:56:22,353 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=login-2fa@example.test host=smtp.gmail.com port=587.
+2026-11-02 22:57:02,528 ERROR Failed to send student notification email: timed out
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 3858, in _send_student_notification_email
+    with _IPv4SMTP_SSL(
+         ~~~~~~~~~~~~~^
+        "smtp.gmail.com",
+        ^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        timeout=15,
+        ^^^^^^^^^^^
+    ) as server:
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1022, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 255, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 341, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1548, in _get_socket
+    new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1533, in _create_ipv4_smtp_socket
+    raise last_error
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1529, in _create_ipv4_smtp_socket
+    return socket.create_connection(address, timeout, source_address)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 864, in create_connection
+    raise exceptions[0]
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 849, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out
+2026-11-02 22:58:18,883 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-02 22:58:18,884 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-02 22:58:20,846 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:58:21,741 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:58:21,999 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:58:23,406 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-02 22:58:23,407 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.

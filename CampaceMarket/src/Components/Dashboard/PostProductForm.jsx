@@ -9,18 +9,18 @@ const PostProductForm = () => {
     photos: []
   });
 
-  const categories = [
-    'Electronics', 'Books & Textbooks', 'Fashion', 'Furniture',
-    'Sports & Outdoors', 'Home & Kitchen', 'Beauty & Health',
-    'Toys & Games', 'Movies & Music', 'Art & Crafts',
-    'Services', 'Jobs', 'Real Estate', 'Vehicles',
-    'Food & Beverages', 'Other'
-  ];
-  const universities = [
-    'Addis Ababa University', 'Bahir Dar University', 'Hawassa University',
-    'Jimma University', 'Mekelle University', 'University of Gondar',
-    'Adama Science and Technology University', 'Aksum University'
-  ];
+  // const categories = [
+  //   'Electronics', 'Books & Textbooks', 'Fashion', 'Furniture',
+  //   'Sports & Outdoors', 'Home & Kitchen', 'Beauty & Health',
+  //   'Toys & Games', 'Movies & Music', 'Art & Crafts',
+  //   'Services', 'Jobs', 'Real Estate', 'Vehicles',
+  //   'Food & Beverages', 'Other'
+  // ];
+  // const universities = [
+  //   'Addis Ababa University', 'Bahir Dar University', 'Hawassa University',
+  //   'Jimma University', 'Mekelle University', 'University of Gondar',
+  //   'Adama Science and Technology University', 'Aksum University'
+  // ];
 
 
   const handleInputChange = (e) => {

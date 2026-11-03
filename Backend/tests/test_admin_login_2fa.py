@@ -448,8 +448,8 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         challenge_token = self.login().json()["challenge_token"]
         sent_codes = []
 
-        def mock_send_email(email, code):
-            sent_codes.append((email, code))
+        def mock_send_email(email, code, purpose="password_reset"):
+            sent_codes.append((email, code, purpose))
             return True
 
         with patch.dict(os.environ, {"SENDER_EMAIL": "sender@example.test", "SENDER_PASSWORD": "app-password"}), \
@@ -463,6 +463,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         payload = sent.json()
         self.assertEqual(payload["masked_email"], "l***@example.test")
         self.assertEqual(payload["resend_after_seconds"], 60)
+        self.assertEqual(sent_codes[0][2], "admin_login_2fa")
         self.assertNotIn(sent_codes[0][1], sent.text)
         code_record = self.db.query(AdminLoginEmailCode).one()
         self.assertNotIn(sent_codes[0][1], code_record.code_hash)
@@ -493,7 +494,7 @@ class AdminLoginTwoFactorTests(unittest.TestCase):
         challenge_token = self.login().json()["challenge_token"]
         sent_codes = []
         with patch.dict(os.environ, {"SENDER_EMAIL": "sender@example.test", "SENDER_PASSWORD": "app-password"}), \
-             patch.object(main_module, "send_otp_email", side_effect=lambda _email, code: sent_codes.append(code) or True):
+             patch.object(main_module, "send_otp_email", side_effect=lambda _email, code, purpose="password_reset": sent_codes.append(code) or True):
             self.client.post(
                 "/api/admin/login/2fa/email-code",
                 json={"challenge_token": challenge_token},
