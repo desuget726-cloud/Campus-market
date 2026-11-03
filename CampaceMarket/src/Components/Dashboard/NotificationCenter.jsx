@@ -203,7 +203,7 @@ function NotificationCenter({
 
     return (
         <div data-dashboard-view="notifications" className="w-full min-w-0 max-w-full px-0 py-0">
-            <section className="min-h-[550px] min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
+            <section className="min-h-[550px] min-w-0 w-full max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-8">
                 <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0">
                         <p className="text-xs font-bold uppercase tracking-[0.28em] text-sky-600">

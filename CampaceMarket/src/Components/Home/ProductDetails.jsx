@@ -94,7 +94,14 @@ const parseProductImages = (image) => {
 
 function ProductDetails({ product, currentUser, pendingAction, onPendingActionHandled, onNavigate, onNavigateToMessages, onBack, onStartChat }) {
   const { t, language } = useLanguage();
-  const { items: cartItems, setItems: setCartItems, loadedStudentId: cartStudentId, loading: cartLoading, error: cartError } = useCart();
+  const {
+    items: cartItems,
+    setItems: setCartItems,
+    markCheckoutComplete,
+    loadedStudentId: cartStudentId,
+    loading: cartLoading,
+    error: cartError,
+  } = useCart();
   const [phoneProductId, setPhoneProductId] = useState(null);
   const [detailedProduct, setDetailedProduct] = useState(null);
   const [previewAsBuyer, setPreviewAsBuyer] = useState(false);
@@ -680,6 +687,7 @@ function ProductDetails({ product, currentUser, pendingAction, onPendingActionHa
         return;
       }
       setPayResult(data);
+      markCheckoutComplete();
       setPayPin('');
       clearPaymentAttempt();
       await refreshPaySummary().catch(() => {});

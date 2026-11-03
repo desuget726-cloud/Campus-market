@@ -3,7 +3,7 @@ import SellerOrderDetails from "./SellerOrderDetails";
 import SellerCompletedOrders from "./SellerCompletedOrders";
 import { useSellerOrders } from '../../hooks/useSellerOrders';
 import { notifyError, notifySuccess } from '../../utils/notify';
-import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
+import { API_BASE_URL, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
 import { getSellerHubSections, SELLER_HUB_VIEWS, sellerHubViewReducer } from '../../utils/sellerHubViewState';
 
@@ -117,14 +117,10 @@ function SellerOperationsCenter({
   user,
   sellerData,
   sellerDashboardData,
-  sellerOrdersLoading,
-  sellerOrdersError,
   onRefreshOrders,
   myListings,
-  onAddProduct,
   onNavigate: onTabNavigate,
   onViewProduct,
-  onPaymentHistory,
   onEditProduct,
   onDeleteProduct,
   onTogglePause,
@@ -133,6 +129,7 @@ function SellerOperationsCenter({
   onOpenSellerOrder,
   onBackToSellerOrders,
   onOpenSellerChat,
+  navigationRequest,
 }) {
   const { t } = useLanguage();
   const [activeHubView, dispatchHubView] = useReducer(sellerHubViewReducer, null, getInitialSellerHubView);
@@ -153,6 +150,21 @@ function SellerOperationsCenter({
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [selectedOrderLoading, setSelectedOrderLoading] = useState(false);
   const [selectedOrderError, setSelectedOrderError] = useState("");
+
+  useEffect(() => {
+    if (!navigationRequest?.id) return;
+    if (navigationRequest.destination === 'dashboard') {
+      dispatchHubView({ type: 'back-to-overview' });
+    } else if (navigationRequest.destination === 'listings') {
+      dispatchHubView({ type: 'open-product-management' });
+    } else if (navigationRequest.destination === 'orders' || navigationRequest.destination === 'analytics') {
+      dispatchHubView({ type: 'open-operations' });
+      const sectionId = navigationRequest.destination === 'orders' ? 'seller-orders' : 'seller-analytics';
+      window.setTimeout(() => {
+        document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth' });
+      }, 0);
+    }
+  }, [navigationRequest]);
   const [productActionState, setProductActionState] = useState({});
   const [productActionFeedback, setProductActionFeedback] = useState(null);
   const [productPage, setProductPage] = useState({
@@ -347,70 +359,6 @@ function SellerOperationsCenter({
     sold: Number(dashboardStats.sold_listings ?? calculatedCounts.sold),
   };
 
-  const normalizeOrderStatus = (rawStatus) => {
-    const value = String(rawStatus ?? "Pending").trim();
-    const normalized = value.toLowerCase();
-    const aliases = {
-      pending: "pending",
-      "waiting for acceptance": "waiting for acceptance",
-      waiting_acceptance: "waiting for acceptance",
-      accepted: "accepted",
-      processing: "processing",
-      "ready for pickup": "in progress",
-      ready_for_pickup: "in progress",
-      "ready to meet": "in progress",
-      completed: "completed",
-      success: "completed",
-      successful: "completed",
-      delivered: "completed",
-      sold: "completed",
-      cancelled: "cancelled",
-      canceled: "cancelled",
-      rejected: "rejected",
-      expired: "expired",
-      failed: "cancelled",
-    };
-    return aliases[normalized] || normalized || "pending";
-  };
-
-  const completedOrderStatuses = new Set(["completed", "sold"]);
-  const legacyOrderStatuses = new Set([
-    "pending",
-    "waiting for acceptance",
-    "accepted",
-    "processing",
-    "in progress",
-    "cancelled",
-    "rejected",
-    "expired",
-  ]);
-
-  const incomingOrders = orders.filter((order) =>
-    legacyOrderStatuses.has(normalizeOrderStatus(order.status)),
-  );
-  const getOrderBadgeConfig = (orderStatus) => {
-    const normalized = normalizeOrderStatus(orderStatus);
-
-    if (legacyOrderStatuses.has(normalized)) {
-      return {
-        label: "Legacy order",
-        className: "border border-slate-200 bg-slate-100 text-slate-700",
-      };
-    }
-
-    if (completedOrderStatuses.has(normalized)) {
-      return {
-        label: "Sold",
-        className: "border border-emerald-200 bg-emerald-100 text-emerald-700",
-      };
-    }
-
-    return {
-      label: String(orderStatus || "Pending"),
-      className: "border border-slate-200 bg-slate-100 text-slate-700",
-    };
-  };
-
   const normalizedInsights = visibleListings.map(normalizeSellerInsight);
   const topProducts = normalizedInsights
     .sort((left, right) => right[leaderboardSort] - left[leaderboardSort])
@@ -587,8 +535,6 @@ function SellerOperationsCenter({
     }
   };
 
-  const orderAction = () => <span className="text-xs font-semibold text-emerald-700">Completed and paid</span>;
-
   if (selectedOrder) {
     return (
       <SellerOrderDetails
@@ -625,65 +571,15 @@ function SellerOperationsCenter({
           Open latest order details
         </button>
       )}
-      <section className="rounded-[30px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white sm:p-8">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.24em] text-slate-600">
-              Seller Hub
-            </p>
-            <div className="mt-2 flex min-w-0 items-center gap-3">
-              <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 dark:text-white sm:text-3xl">
-                Seller Operations Center
-              </h2>
-            </div>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-              Monitor listings, fulfill customer orders, and turn marketplace
-              activity into measurable campus sales.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                dispatchHubView({ type: 'open-operations' });
-                window.setTimeout(() => document.getElementById("seller-orders")?.scrollIntoView({ behavior: "smooth" }), 0);
-              }}
-              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
-            >
-              Manage Orders
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate("messages")}
-              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
-            >
-              Messages
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                dispatchHubView({ type: 'open-operations' });
-                window.setTimeout(() => document.getElementById("seller-analytics")?.scrollIntoView({ behavior: "smooth" }), 0);
-              }}
-              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
-            >
-              View Analytics
-            </button>
-            <button
-              type="button"
-              onClick={() => dispatchHubView({ type: 'open-product-management' })}
-              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800"
-            >
-              {t('sellerHub.productManagement')}
-            </button>
-            <button
-              type="button"
-              onClick={onPaymentHistory}
-              className="rounded-full border border-slate-300 px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-100"
-            >
-              Payment History
-            </button>
-          </div>
+      <section className="w-full rounded-[30px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white sm:p-8">
+        <div>
+          <h2 className="min-w-0 break-words text-2xl font-black text-slate-950 dark:text-white sm:text-3xl">
+            Seller Operations Center
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
+            Monitor listings, fulfill customer orders, and turn marketplace
+            activity into measurable campus sales.
+          </p>
         </div>
       </section>
 
@@ -714,7 +610,7 @@ function SellerOperationsCenter({
         </section>
       )}
 
-      {showOverview && <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {showOverview && <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {[
           [
             "My Listings",
@@ -737,13 +633,6 @@ function SellerOperationsCenter({
             "◈",
             "text-amber-600",
           ],
-          [
-            "Legacy Orders",
-            Number(dashboardStats.pending_orders ?? incomingOrders.length),
-            "Historical records; no seller action",
-            "◔",
-            "text-rose-600",
-          ],
         ].map(([label, value, detail, icon, tone]) => {
           const cardNavigation = {
             "My Listings": {
@@ -765,13 +654,6 @@ function SellerOperationsCenter({
               onClick: () => navigateToSellerSection(
                 "open-operations",
                 "seller-analytics",
-              ),
-            },
-            "Legacy Orders": {
-              title: "View legacy order records",
-              onClick: () => navigateToSellerSection(
-                "open-operations",
-                "seller-orders",
               ),
             },
           }[label];
@@ -812,44 +694,24 @@ function SellerOperationsCenter({
 
       {showProductManagement && (
         <div className="min-w-0 w-full space-y-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <button type="button" onClick={() => dispatchHubView({ type: 'back-to-overview' })} className="self-start rounded-full border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800">
-              {t('sellerHub.backToOverview')}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (payoutStatus !== "active") {
-                  onNavigate("payout-settings");
-                  return;
-                }
-                onAddProduct();
-              }}
-              title={payoutStatus !== "active" ? "Configure payouts first" : "Add a product"}
-              className="btn-primary rounded-full px-4 py-2.5 text-sm font-bold"
-            >
-              + Add Product
-            </button>
-          </div>
-          <section id="seller-products" className="min-w-0 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between gap-4">
+          <section id="seller-products" className="min-w-0 w-full rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex flex-col gap-1">
               <div>
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
                   Inventory
                 </p>
-                <h3 className="mt-1 text-xl font-black text-slate-950 dark:text-white">
-                  My Products
-                </h3>
+                <div className="mt-1 flex flex-wrap items-center gap-3">
+                  <h3 className="text-xl font-black text-slate-950 dark:text-white">
+                    My Products
+                  </h3>
+                  <div role="group" aria-label="Inventory summary" className="flex flex-wrap gap-2 text-xs font-semibold text-slate-500 dark:text-slate-300">
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">{productPage.summary.total} {t('sellerHub.inventoryTotal')}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">{productPage.summary.active} {t('sellerHub.inventoryActive')}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">{productPage.summary.sold} {t('sellerHub.inventorySold')}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">{productPage.summary.pending} {t('sellerHub.inventoryPending')}</span>
+                  </div>
+                </div>
               </div>
-              <span className="flex flex-wrap justify-end gap-x-1.5 text-right text-sm font-semibold text-slate-400">
-                <span>{productPage.summary.total} {t('sellerHub.inventoryTotal')}</span>
-                <span aria-hidden="true">·</span>
-                <span>{productPage.summary.active} {t('sellerHub.inventoryActive')}</span>
-                <span aria-hidden="true">·</span>
-                <span>{productPage.summary.sold} {t('sellerHub.inventorySold')}</span>
-                <span aria-hidden="true">·</span>
-                <span>{productPage.summary.pending} {t('sellerHub.inventoryPending')}</span>
-              </span>
             </div>
             {productActionFeedback && (
               <p className={`mt-4 rounded-xl border p-3 text-sm font-semibold ${productActionFeedback.type === "error" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
@@ -878,7 +740,7 @@ function SellerOperationsCenter({
                 No active products yet. Add your first campus product to get started.
               </div>
             ) : (
-              <div className="mt-5 min-w-0 max-w-full overflow-x-auto">
+              <div className="mt-5 min-w-0 w-full max-w-full overflow-x-auto">
                 <table className="w-full min-w-[1120px] table-auto text-left text-sm">
                   <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500 dark:border-slate-700 dark:text-slate-300">
                     <tr>
@@ -1174,105 +1036,6 @@ function SellerOperationsCenter({
       </section>}
 
       {showOperations && <div className="space-y-6">
-        <section
-          id="seller-orders"
-          className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.2em] text-sky-600">
-                Legacy Order History
-              </p>
-              <h3 className="mt-1 text-xl font-black text-slate-950">
-                Historical Customer Orders
-              </h3>
-            </div>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-              {incomingOrders.length} orders
-            </span>
-          </div>
-          {sellerOrdersLoading ? (
-            <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm font-semibold text-slate-600">
-              Loading seller orders...
-            </p>
-          ) : sellerOrdersError ? (
-            <p className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-sm font-semibold text-rose-700">
-              {sellerOrdersError}
-            </p>
-          ) : incomingOrders.length === 0 ? (
-            <p className="mt-6 rounded-2xl bg-slate-50 p-6 text-center text-sm text-slate-500">
-              No legacy customer orders.
-            </p>
-          ) : (
-            <div className="mt-5 overflow-x-auto">
-              <table className="min-w-full text-left text-sm">
-                <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                  <tr>
-                    <th className="px-3 py-3">Order</th>
-                    <th className="px-3 py-3">Customer</th>
-                    <th className="px-3 py-3">Product</th>
-                    <th className="px-3 py-3">Amount</th>
-                    <th className="px-3 py-3">Payment</th>
-                    <th className="px-3 py-3">Status</th>
-                    <th className="px-3 py-3">Handover</th>
-                    <th className="px-3 py-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {incomingOrders.map((order) => {
-                    const badge = getOrderBadgeConfig(order.status);
-                    return (
-                      <tr
-                        key={order.id ?? order.order_id}
-                        className="border-b border-slate-100"
-                      >
-                        <td className="px-3 py-4 font-bold text-slate-900">
-                          {order.id ?? order.order_id}
-                        </td>
-                        <td className="px-3 py-4 text-slate-600">
-                          {order.buyer_name || order.buyer_id || "Student"}
-                        </td>
-                        <td className="px-3 py-4 text-slate-700">
-                          <div className="flex items-center gap-2">
-                            {order.image && (
-                              <img
-                                src={resolveImageUrl(order.image)}
-                                alt=""
-                                onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }}
-                                className="h-10 w-10 rounded-lg object-cover"
-                              />
-                            )}
-                            <span>
-                              {order.product_title ||
-                                order.title ||
-                                "Campus product"}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-3 py-4 font-bold text-slate-900">
-                          {formatSellerEtb(order.price)}
-                        </td>
-                        <td className="px-3 py-4 text-slate-600">
-                          {order.payment_status || "Successful"}
-                        </td>
-                        <td className="px-3 py-4">
-                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold ${badge.className}`}>
-                            {badge.label}
-                          </span>
-                        </td>
-                        <td className="px-3 py-4 text-slate-600">
-                          <p>Historical record; no seller action required</p>
-                        </td>
-                        <td className="px-3 py-4">{orderAction(order)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
         <SellerCompletedOrders
           pageData={completedOrderPage}
           filters={sellerOrderFilters}

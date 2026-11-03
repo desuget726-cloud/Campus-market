@@ -1,6 +1,6 @@
 const VIEWPORT_WIDTHS = [320, 360, 375, 414, 600, 767, 1024];
 const DASHBOARD_VIEWS = ['home', 'buyer', 'seller', 'messages', 'notifications', 'settings'];
-const BUYER_TABS = ['search', 'wishlist', 'cart', 'orders', 'payments'];
+const BUYER_NAVIGATION = ['marketplace', 'orders', 'wishlist', 'cart', 'payments', 'reports-support'];
 const SETTINGS_TABS = ['account', 'payout', 'security', 'notifications'];
 
 const waitForLayout = (page) => page.evaluate(() => new Promise((resolve) => {
@@ -63,7 +63,7 @@ export async function checkDashboardViewport(page, {
                     await page.locator(`[data-dashboard-view="${view}"]`).waitFor();
 
                     const tabs = view === 'buyer'
-                        ? BUYER_TABS.map((tab) => `[data-buyer-tab="${tab}"]`)
+                        ? BUYER_NAVIGATION.map((item) => `[data-dashboard-target="${item}"]`)
                         : view === 'settings'
                             ? SETTINGS_TABS.map((tab) => `[data-settings-tab="${tab}"]`)
                             : [];

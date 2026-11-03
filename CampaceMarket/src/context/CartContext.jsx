@@ -17,16 +17,36 @@ const getStudentAccessToken = (user) => {
 
 export function CartProvider({ user, children }) {
   const studentId = String(user?.studentId || user?.student_id || '').trim();
-  const [items, setItems] = useState([]);
+  const [items, setItemsState] = useState([]);
   const [loadedStudentId, setLoadedStudentId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [cartBadgeDismissed, setCartBadgeDismissed] = useState(false);
   const requestIdRef = useRef(0);
+  const badgeStudentIdRef = useRef(studentId);
+
+  const setItems = useCallback((nextItems) => {
+    setItemsState(nextItems);
+    setCartBadgeDismissed(false);
+  }, []);
+
+  const replaceItems = useCallback((nextItems) => {
+    setItemsState(nextItems);
+  }, []);
+
+  const markCheckoutComplete = useCallback(() => {
+    setCartBadgeDismissed(true);
+  }, []);
 
   const refreshCart = useCallback(async () => {
     const requestId = ++requestIdRef.current;
+    if (badgeStudentIdRef.current !== studentId) {
+      badgeStudentIdRef.current = studentId;
+      setCartBadgeDismissed(false);
+    }
     if (!studentId) {
-      setItems([]);
+      setCartBadgeDismissed(false);
+      setItemsState([]);
       setLoadedStudentId('');
       setError('');
       return [];
@@ -47,7 +67,7 @@ export function CartProvider({ user, children }) {
       }
       const cartItems = Array.isArray(data.items) ? data.items : [];
       if (requestId === requestIdRef.current) {
-        setItems(cartItems);
+        setItemsState(cartItems);
         setLoadedStudentId(studentId);
       }
       return cartItems;
@@ -62,24 +82,22 @@ export function CartProvider({ user, children }) {
   }, [studentId, user]);
 
   useEffect(() => {
-    if (!studentId) {
-      requestIdRef.current += 1;
-      return undefined;
-    }
-
     Promise.resolve().then(() => refreshCart()).catch((cartError) => {
       console.error('Unable to load the buyer cart:', cartError);
     });
-  }, [refreshCart, studentId]);
+  }, [refreshCart]);
 
   const value = useMemo(() => ({
     items: studentId && loadedStudentId === studentId ? items : [],
     setItems,
+    replaceItems,
+    cartBadgeDismissed,
+    markCheckoutComplete,
     loadedStudentId,
     loading: Boolean(studentId && loading),
     error: studentId ? error : '',
     refreshCart,
-  }), [studentId, items, loadedStudentId, loading, error, refreshCart]);
+  }), [studentId, items, setItems, replaceItems, cartBadgeDismissed, markCheckoutComplete, loadedStudentId, loading, error, refreshCart]);
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }

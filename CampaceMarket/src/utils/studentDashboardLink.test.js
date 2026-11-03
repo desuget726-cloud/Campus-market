@@ -34,6 +34,21 @@ test('seller moderation deep links resolve the report ID and section', () => {
   );
 });
 
+test('mode-based buyer and seller links map to dashboard sections', () => {
+  assert.deepEqual(
+    parseStudentDashboardLink('/dashboard?mode=buyer&tab=marketplace'),
+    { tab: 'buyer', section: 'search', itemId: null, mode: 'buyer' },
+  );
+  assert.deepEqual(
+    parseStudentDashboardLink('/dashboard?mode=seller&tab=add_product'),
+    { tab: 'seller', section: null, itemId: null, mode: 'seller', sellerDestination: 'add_product' },
+  );
+  assert.deepEqual(
+    parseStudentDashboardLink('/dashboard?mode=seller&tab=customer_orders'),
+    { tab: 'seller', section: null, itemId: null, mode: 'seller', sellerDestination: 'orders' },
+  );
+});
+
 test('malformed notice IDs fall back safely', () => {
   assert.equal(
     parseStudentDashboardLink('/dashboard?tab=seller&section=warnings&item=SUP-0016').tab,

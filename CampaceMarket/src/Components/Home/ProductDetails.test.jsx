@@ -5,9 +5,10 @@ import ProductDetails from './ProductDetails';
 import { IMAGE_PLACEHOLDER } from '../../config';
 import { clearPendingProductAction, getPendingProductAction } from '../../utils/productActionState';
 
-const { mockSetCartItems, mockCartItems } = vi.hoisted(() => ({
+const { mockSetCartItems, mockCartItems, mockMarkCheckoutComplete } = vi.hoisted(() => ({
   mockSetCartItems: vi.fn(),
   mockCartItems: [],
+  mockMarkCheckoutComplete: vi.fn(),
 }));
 
 vi.mock('../../context/LanguageContext', () => ({
@@ -21,6 +22,7 @@ vi.mock('../../context/CartContext', () => ({
   useCart: () => ({
     items: mockCartItems,
     setItems: mockSetCartItems,
+    markCheckoutComplete: mockMarkCheckoutComplete,
     loadedStudentId: 'buyer-1',
     loading: false,
     error: null,
@@ -86,6 +88,7 @@ describe('ProductDetails guest actions', () => {
   beforeEach(() => {
     clearPendingProductAction();
     mockSetCartItems.mockClear();
+    mockMarkCheckoutComplete.mockClear();
     mockCartItems.length = 0;
     localStorage.removeItem('token');
     localStorage.removeItem('campaceSession');
@@ -473,6 +476,7 @@ describe('ProductDetails guest actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Pay 1000.00 ETB' }));
 
     expect(await screen.findByText(/Payment completed\. Order #123/)).toBeTruthy();
+    expect(mockMarkCheckoutComplete).toHaveBeenCalledOnce();
     const paymentRequest = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/api/products/42/pay'));
     expect(JSON.parse(paymentRequest[1].body)).toEqual({ pin: '2468', quantity: 1 });
   });

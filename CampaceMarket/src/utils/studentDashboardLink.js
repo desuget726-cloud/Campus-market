@@ -32,10 +32,29 @@ export function parseStudentDashboardLink(input) {
 
   if (url.pathname.replace(/\/+$/, '').toLowerCase() !== '/dashboard') return null;
 
-  const tab = url.searchParams.get('tab');
+  const requestedMode = url.searchParams.get('mode');
+  const mode = requestedMode === 'buyer' || requestedMode === 'seller' ? requestedMode : null;
+  const requestedTab = url.searchParams.get('tab');
+  const modeAliases = {
+    buyer: {
+      marketplace: { tab: 'buyer', section: 'search' },
+      orders: { tab: 'buyer', section: 'orders' },
+      wishlist: { tab: 'buyer', section: 'wishlist' },
+      cart: { tab: 'buyer', section: 'cart' },
+    },
+    seller: {
+      add_product: { tab: 'seller', sellerDestination: 'add_product' },
+      my_listings: { tab: 'seller', sellerDestination: 'listings' },
+      customer_orders: { tab: 'seller', sellerDestination: 'orders' },
+      sales_analytics: { tab: 'seller', sellerDestination: 'analytics' },
+      wallet: { tab: 'seller', sellerDestination: 'wallet' },
+    },
+  };
+  const alias = mode && requestedTab ? modeAliases[mode][requestedTab] : null;
+  const tab = alias?.tab || requestedTab || (mode === 'buyer' ? 'buyer' : mode === 'seller' ? 'seller' : null);
   if (!tab || !studentTabs.has(tab)) return fallback();
 
-  const section = url.searchParams.get('section');
+  const section = alias?.section || url.searchParams.get('section');
   const item = url.searchParams.get('item');
   let itemId = null;
   if (tab === 'buyer') {
@@ -70,5 +89,11 @@ export function parseStudentDashboardLink(input) {
     return fallback();
   }
 
-  return { tab, section, itemId };
+  return {
+    tab,
+    section,
+    itemId,
+    ...(mode ? { mode } : {}),
+    ...(alias?.sellerDestination ? { sellerDestination: alias.sellerDestination } : {}),
+  };
 }

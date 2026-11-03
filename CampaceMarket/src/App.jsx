@@ -12,6 +12,7 @@ import Footer from './Components/Layout/Footer';
 import PolicyView from './Components/Views/PolicyView';
 import AdminDashboard from './Components/Dashboard/AdminDashboard';
 import StudentDashboard from './Components/Dashboard/StudentDashboard';
+import NotificationDrawer from './Components/Dashboard/NotificationDrawer';
 import SuccessModal from './Components/Authontication/SuccessModal';
 import AuthInfoModal from './Components/Authontication/AuthInfoModal';
 import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
@@ -184,6 +185,7 @@ function AppContent() {
     }
   });
   const [unreadCount, setUnreadCount] = useState(0);
+  const [isNotificationDrawerOpen, setIsNotificationDrawerOpen] = useState(false);
   const [dashboardTab, setDashboardTab] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     try {
@@ -197,6 +199,8 @@ function AppContent() {
   const [adminTab, setAdminTab] = useState(() => getStoredAdminTab());
   const [studentDashboardLink, setStudentDashboardLink] = useState(getStudentDashboardLink);
   const [studentTab, setStudentTab] = useState(() => studentDashboardLink.tab || 'home');
+  const [studentMode, setStudentMode] = useState(() => studentDashboardLink.mode || (studentDashboardLink.tab === 'seller' ? 'seller' : 'buyer'));
+  const [studentComposerRequest, setStudentComposerRequest] = useState(0);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [pendingUsername] = useState('');
   const [pendingProductId, setPendingProductId] = useState(() => (
@@ -249,6 +253,7 @@ function AppContent() {
     setUserRole(null);
     setIsStudentSessionVerified(false);
     setUnreadCount(0);
+    setIsNotificationDrawerOpen(false);
     setCurrentView('home');
     setDashboardTab('home');
     setStudentTab('home');
@@ -279,6 +284,7 @@ function AppContent() {
     setUserRole(null);
     setIsStudentSessionVerified(false);
     setUnreadCount(0);
+    setIsNotificationDrawerOpen(false);
     setShowSuccessModal(false);
     setCurrentView('login');
     setDashboardTab('home');
@@ -558,7 +564,9 @@ function AppContent() {
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
-    if (!studentId || !studentAccessToken) {
+    const normalizedRole = String(activeRole || '').toLowerCase().replace(/[\s-]+/g, '_');
+    const isAdminUser = ['admin', 'sub_admin', 'super_admin'].includes(normalizedRole);
+    if ((!studentId && !isAdminUser) || !studentAccessToken) {
       setUnreadCount((current) => current === 0 ? current : 0);
       return;
     }
@@ -570,9 +578,9 @@ function AppContent() {
       requestInFlight = true;
       try {
         const response = await fetch(
-          `${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(
-            studentId,
-          )}`,
+          isAdminUser
+            ? `${API_BASE_URL}/support/notifications`
+            : `${API_BASE_URL}/api/student/notifications/unread-count?student_id=${encodeURIComponent(studentId)}`,
           {
             credentials: 'include',
             headers: { Authorization: `Bearer ${studentAccessToken}` },
@@ -582,7 +590,7 @@ function AppContent() {
         const data = await response.json();
         if (cancelled) return;
         if (response.ok) {
-          const parsedCount = Number(data.unreadCount ?? 0);
+          const parsedCount = Number(isAdminUser ? data.unread_count ?? 0 : data.unreadCount ?? 0);
           const nextCount = Number.isFinite(parsedCount) ? parsedCount : 0;
           setUnreadCount((current) => current === nextCount ? current : nextCount);
         } else {
@@ -606,13 +614,14 @@ function AppContent() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [studentAccessToken, studentId]);
+  }, [activeRole, studentAccessToken, studentId]);
 
   const handleRegisterSuccess = () => {
     setUser(null);
     setUserRole(null);
     setIsStudentSessionVerified(false);
     setUnreadCount(0);
+    setIsNotificationDrawerOpen(false);
     setCurrentView('login');
     setLoginMessage('');
     notifySuccess('Registration complete! Please sign in to continue.');
@@ -630,10 +639,13 @@ function AppContent() {
     const productAction = getPendingProductAction();
     const loginParams = new URLSearchParams(window.location.search);
     const returnTo = normalizeInternalReturnTo(loginParams.get('returnTo'));
-    const shouldOpenSellerHub = loginParams.get('redirect') === 'post-item' && role === 'student';
+    const redirectDestination = loginParams.get('redirect');
+    const shouldOpenSellerHub = redirectDestination === 'post-item' && role === 'student';
+    const shouldOpenBuyerHub = redirectDestination === 'browse-market' && role === 'student';
     const productId = getProductIdFromReturnTo(returnTo) || productAction?.returnTo || null;
     const nextView = productId ? 'home' : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
-    const nextStudentTab = shouldOpenSellerHub && !productId ? 'seller' : 'home';
+    const nextStudentTab = !productId && shouldOpenSellerHub ? 'seller' : !productId && shouldOpenBuyerHub ? 'buyer' : 'home';
+    const nextStudentMode = shouldOpenSellerHub ? 'seller' : shouldOpenBuyerHub ? 'buyer' : studentMode;
     const nextSection = role === 'admin' ? 'dashboard' : 'home';
 
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
@@ -644,12 +656,15 @@ function AppContent() {
     setPendingProductAction(productId ? productAction : null);
     setDashboardTab('home');
     setStudentTab(nextStudentTab);
+    setStudentMode(nextStudentMode);
     setAdminTab(nextSection);
     persistAdminTab(nextSection);
     setCurrentView(nextView);
     setShowSuccessModal(false);
     if (shouldOpenSellerHub && !productId) {
-      window.history.replaceState({}, '', '/dashboard?tab=seller');
+      window.history.replaceState({}, '', '/dashboard?mode=seller');
+    } else if (shouldOpenBuyerHub && !productId) {
+      window.history.replaceState({}, '', '/dashboard?mode=buyer&tab=marketplace');
     } else if (returnTo) {
       window.history.replaceState({}, '', returnTo);
     }
@@ -745,19 +760,27 @@ function AppContent() {
     window.history.replaceState({}, '', '/dashboard?tab=home');
   }, []);
 
-  const handleStudentTabChange = useCallback((tab) => {
+  const handleStudentTabChange = useCallback((tab, mode = tab === 'seller' ? 'seller' : tab === 'buyer' ? 'buyer' : studentMode, section = null) => {
+    setStudentMode(mode);
+    const url = new URL(window.location.href);
+    if (url.pathname.replace(/\/+$/, '').toLowerCase() === '/dashboard' && (mode === 'buyer' || mode === 'seller')) {
+      url.searchParams.set('mode', mode);
+      window.history.replaceState(window.history.state, '', url);
+    }
     if (studentDashboardLink.tab === tab) {
+      setStudentDashboardLink((link) => ({ ...link, section, mode }));
       setStudentTab(tab);
       return;
     }
-    setStudentDashboardLink({ tab, section: null, itemId: null });
+    setStudentDashboardLink({ tab, section, itemId: null, mode });
     setStudentTab(tab);
-  }, [studentDashboardLink.tab]);
+  }, [studentDashboardLink.tab, studentMode]);
 
   const handleNavigate = (view, params = {}) => {
     const dashboardLink = typeof view === 'string' ? parseOrderDashboardLink(view) : null;
     if (dashboardLink?.hasOrderParameter) {
       setStudentTab(dashboardLink.tab);
+      setStudentMode(dashboardLink.tab === 'seller' ? 'seller' : 'buyer');
       setStudentDashboardLink(dashboardLink);
       setCurrentView('student-dashboard');
       const nextUrl = new URL(view, window.location.origin);
@@ -774,6 +797,12 @@ function AppContent() {
     if (studentDashboardLinkFromUrl) {
       setStudentDashboardLink(studentDashboardLinkFromUrl);
       setStudentTab(studentDashboardLinkFromUrl.tab);
+      const requestedMode = studentDashboardLinkFromUrl.mode || (studentDashboardLinkFromUrl.tab === 'seller' ? 'seller' : studentDashboardLinkFromUrl.tab === 'buyer' ? 'buyer' : studentMode);
+      setStudentMode(requestedMode);
+      const destinationUrl = new URL(view, window.location.origin);
+      if (destinationUrl.searchParams.get('action') === 'create-listing' || destinationUrl.searchParams.get('tab') === 'add_product') {
+        setStudentComposerRequest((request) => request + 1);
+      }
       setCurrentView('student-dashboard');
       const nextUrl = new URL(view, window.location.origin);
       const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -790,8 +819,8 @@ function AppContent() {
       const nextView = view === 'signup' ? 'register' : view;
       setLoginMessage(params.message || '');
       const returnTo = nextView === 'login' ? normalizeInternalReturnTo(params.returnTo) : null;
-      if (nextView === 'login' && params.redirect === 'post-item') {
-        window.history.pushState({}, '', '/login?redirect=post-item');
+      if (nextView === 'login' && ['post-item', 'browse-market'].includes(params.redirect)) {
+        window.history.pushState({}, '', `/login?redirect=${params.redirect}`);
       } else if (returnTo) {
         window.history.pushState({}, '', `/login?returnTo=${encodeURIComponent(returnTo)}`);
       }
@@ -874,6 +903,7 @@ function AppContent() {
       const dashboardLink = parseOrderDashboardLink(window.location.href);
       if (dashboardLink?.hasOrderParameter) {
         setStudentTab(dashboardLink.tab);
+        setStudentMode(dashboardLink.tab === 'seller' ? 'seller' : 'buyer');
         setCurrentView('student-dashboard');
         return;
       }
@@ -882,6 +912,10 @@ function AppContent() {
       if (studentDashboardLinkFromUrl) {
         setStudentDashboardLink(studentDashboardLinkFromUrl);
         setStudentTab(studentDashboardLinkFromUrl.tab);
+        setStudentMode((currentMode) => (
+          studentDashboardLinkFromUrl.mode
+          || (studentDashboardLinkFromUrl.tab === 'seller' ? 'seller' : studentDashboardLinkFromUrl.tab === 'buyer' ? 'buyer' : currentMode)
+        ));
         setCurrentView('student-dashboard');
         return;
       }
@@ -908,39 +942,33 @@ function AppContent() {
     setCurrentView(activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard');
   }, [activeRole, currentView, hasUser]);
 
-  const handleNotificationClick = async () => {
-    const effectiveRole = userRole || user?.role;
+  const handleNotificationClick = () => {
+    setIsNotificationDrawerOpen((isOpen) => !isOpen);
+  };
 
-    if (effectiveRole === 'admin') {
+  const handleNotificationViewAll = () => {
+    setIsNotificationDrawerOpen(false);
+    const normalizedRole = String(activeRole || '').toLowerCase().replace(/[\s-]+/g, '_');
+    if (['admin', 'sub_admin', 'super_admin'].includes(normalizedRole)) {
       setCurrentView('admin-dashboard');
-      setAdminTab('notifications');
-      return;
+      setAdminTab('support');
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', 'support');
+      window.history.pushState({}, '', `${url.pathname}${url.search}`);
+    } else if (normalizedRole === 'student') {
+      handleNavigate('/dashboard?tab=notifications');
     }
+  };
 
-    if (effectiveRole !== 'student' || !user?.studentId) return;
-
-    setCurrentView('student-dashboard');
-    setStudentTab('notifications');
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/student/notifications/mark-read`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${user?.access_token || user?.accessToken || user?.token || ''}`,
-        },
-        body: JSON.stringify({ student_id: user.studentId }),
-      });
-
-      if (response.ok) {
-        setUnreadCount(0);
-      } else {
-        const data = await response.json().catch(() => null);
-        console.error('Failed to mark notifications as read:', data);
-      }
-    } catch (error) {
-      console.error('Notification mark-read request failed:', error);
-    }
+  const handleNotificationSelect = (notification) => {
+    const normalizedRole = String(activeRole || '').toLowerCase().replace(/[\s-]+/g, '_');
+    if (!['admin', 'sub_admin', 'super_admin'].includes(normalizedRole) || notification.reference_type !== 'support') return;
+    setCurrentView('admin-dashboard');
+    setAdminTab('support');
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', 'support');
+    url.searchParams.set('ticket', String(notification.reference_id));
+    window.history.pushState({}, '', `${url.pathname}${url.search}`);
   };
 
   return (
@@ -1014,12 +1042,14 @@ function AppContent() {
         <Navbar
           variant={isDashboardView ? 'dashboard' : 'public'}
           activePage={currentView}
+          activeStudentMode={studentMode}
           onNavigate={handleNavigate}
           user={user}
           userRole={userRole}
           onLogout={activeRole === 'admin' ? handleAdminLogout : handleLogout}
           unreadCount={unreadCount}
           onNotificationClick={handleNotificationClick}
+          notificationDrawerOpen={isNotificationDrawerOpen}
           activeAdminTab={adminTab}
           onAdminProfileClick={() => {
             setAdminTab('profile');
@@ -1033,6 +1063,19 @@ function AppContent() {
             setStudentTab('profile');
             setCurrentView('student-dashboard');
           }}
+        />
+      )}
+      {user && (
+        <NotificationDrawer
+          open={isNotificationDrawerOpen}
+          user={user}
+          userRole={activeRole}
+          unreadCount={unreadCount}
+          onUnreadCountChange={setUnreadCount}
+          onClose={() => setIsNotificationDrawerOpen(false)}
+          onNavigate={handleNavigate}
+          onViewAll={handleNotificationViewAll}
+          onNotificationSelect={handleNotificationSelect}
         />
       )}
       <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-[calc(100dvh-72px)] min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-[calc(100dvh-72px)] lg:overflow-hidden' : currentView === 'student-dashboard' ? 'h-[calc(100dvh-72px)] !min-h-0 overflow-hidden' : 'min-h-0'}`}>
@@ -1134,6 +1177,8 @@ function AppContent() {
             <StudentDashboard
               user={user}
               initialTab={studentTab}
+              mode={studentMode}
+              openProductComposerRequest={studentComposerRequest}
               dashboardLink={studentDashboardLink}
               onDashboardLinkInvalid={handleStudentDashboardFallback}
               onTabChange={handleStudentTabChange}

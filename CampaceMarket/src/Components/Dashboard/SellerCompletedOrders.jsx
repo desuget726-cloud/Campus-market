@@ -58,7 +58,7 @@ function SellerCompletedOrders({
   };
 
   return (
-    <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+    <section id="seller-orders" className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">

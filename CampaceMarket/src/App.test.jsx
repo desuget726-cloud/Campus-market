@@ -5,7 +5,23 @@ import App from './App';
 import { API_BASE_URL } from './config';
 
 vi.mock('./Components/Navbars/Navbar', () => ({
-  default: () => <div>Navbar</div>,
+  default: ({ onNavigate, user }) => (
+    <div>
+      Navbar
+      <button
+        type="button"
+        onClick={() => onNavigate(user ? '/dashboard?tab=buyer' : 'login', user ? undefined : { redirect: 'browse-market' })}
+      >
+        Browse Market
+      </button>
+      <button
+        type="button"
+        onClick={() => onNavigate(user ? '/dashboard?mode=seller' : 'login', user ? undefined : { redirect: 'post-item' })}
+      >
+        Sell an Item
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('./Components/Navbars/TopBar', () => ({
@@ -17,7 +33,17 @@ vi.mock('./Components/Authontication/RegisterForm', () => ({
 }));
 
 vi.mock('./Components/Authontication/LoginForm', () => ({
-  default: () => <div>Login Form</div>,
+  default: ({ onLoginSuccess }) => (
+    <div>
+      Login Form
+      <button
+        type="button"
+        onClick={() => onLoginSuccess({ studentId: 'student-1', role: 'student' }, 'student')}
+      >
+        Complete Student Login
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock('./Components/Home/HomeView', () => ({
@@ -128,6 +154,44 @@ describe('admin dashboard default section', () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     window.history.replaceState({}, '', '/');
+  });
+
+  it('sends a guest Browse Market login to the buyer dashboard', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Browse Market' }));
+
+    expect(await screen.findByText('Login Form')).toBeTruthy();
+    expect(window.location.search).toBe('?redirect=browse-market');
+    fireEvent.click(screen.getByRole('button', { name: 'Complete Student Login' }));
+
+    expect(await screen.findByText('Student tab: buyer')).toBeTruthy();
+    expect(window.location.pathname + window.location.search).toBe('/dashboard?mode=buyer&tab=marketplace');
+  });
+
+  it('sends a guest Sell an Item login to the seller dashboard overview', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Sell an Item' }));
+
+    expect(await screen.findByText('Login Form')).toBeTruthy();
+    expect(window.location.search).toBe('?redirect=post-item');
+    fireEvent.click(screen.getByRole('button', { name: 'Complete Student Login' }));
+
+    expect(await screen.findByText('Student tab: seller')).toBeTruthy();
+    expect(window.location.pathname + window.location.search).toBe('/dashboard?mode=seller');
   });
 
   it('redirects guest dashboard deep links to the public home page', async () => {

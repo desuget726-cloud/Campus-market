@@ -5,7 +5,7 @@ import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import AdminProfileMenu from '../Dashboard/AdminProfileMenu';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onAdminSettingsClick, onStudentProfileClick, activeAdminTab, activePage, variant = 'public' }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, notificationDrawerOpen = false, onAdminProfileClick, onAdminSettingsClick, onStudentProfileClick, activeAdminTab, activePage, activeStudentMode, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -24,12 +24,43 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     : (displayUser?.name || displayUser?.studentId || 'Student');
   const displayEmail = displayUser?.email || 'Email unavailable';
   const displayRole = String(displayUser?.role || effectiveRole).toUpperCase();
+  const currentUrl = typeof window === 'undefined' ? '' : window.location.href.toLowerCase();
+  const urlMode = typeof window === 'undefined'
+    ? null
+    : new URLSearchParams(window.location.search).get('mode');
+  const isSellerModeActive = Boolean(
+    user
+    && !isAdmin
+    && (
+      activeStudentMode === 'seller'
+      || urlMode === 'seller'
+      || currentUrl.includes('seller_hub')
+      || currentUrl.includes('inventory')
+    ),
+  );
+  const isBuyerModeActive = Boolean(
+    user
+    && !isAdmin
+    && !isSellerModeActive
+    && (activeStudentMode === 'buyer' || urlMode === 'buyer'),
+  );
+  const handleBrowseClick = () => {
+    if (!user) {
+      onNavigate('login', { redirect: 'browse-market' });
+      return;
+    }
+    if (!isAdmin) {
+      onNavigate('/dashboard?mode=buyer');
+      return;
+    }
+    onNavigate('admin-dashboard');
+  };
   const handleSellClick = () => {
     if (!user) {
       onNavigate('login', { redirect: 'post-item' });
       return;
     }
-    onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard?tab=seller');
+    onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard?mode=seller');
   };
   const languageSelector = (
     <div className="notranslate relative shrink-0" ref={languageMenuRef}>
@@ -240,20 +271,46 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           {user ? (
             // Logged In Dropdown View
             <div className="relative flex min-w-0 max-w-full items-center gap-2 sm:gap-3 max-[400px]:gap-1">
-              {!isDashboardLayout && (
-                <button
-                  type="button"
-                  onClick={handleSellClick}
-                  className="hidden min-h-10 items-center gap-1.5 rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:inline-flex"
-                >
-                  + Sell an Item
-                </button>
+              {!isAdmin && (
+                <div className="hidden items-center gap-2 md:flex">
+                  {isSellerModeActive ? (
+                    <button
+                      type="button"
+                      onClick={handleBrowseClick}
+                      className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-white/60 bg-white/10 px-3 py-2 text-sm font-bold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    >
+                      🛒 Switch to Buying
+                    </button>
+                  ) : (
+                    <>
+                      {!isBuyerModeActive && (
+                        <button
+                          type="button"
+                          onClick={handleBrowseClick}
+                          className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-white/60 bg-white/10 px-3 py-2 text-sm font-bold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                        >
+                          🛒 Browse Market
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleSellClick}
+                        className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                      >
+                        + Sell an Item
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
               {languageSelector}
               <button
                 type="button"
                 onClick={onNotificationClick}
                 aria-label="Open notifications"
+                aria-haspopup="dialog"
+                aria-expanded={notificationDrawerOpen}
+                aria-controls="notification-drawer"
                 className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10 hover:text-slate-200 focus:outline-none max-[400px]:h-8 max-[400px]:w-8 md:h-11 md:w-11"
                 title="Notifications"
               >
@@ -380,6 +437,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             <div className="flex items-center gap-2">
               <button
                 type="button"
+                onClick={handleBrowseClick}
+                className="hidden min-h-10 items-center gap-1.5 rounded-xl border border-white/60 bg-white/10 px-3 py-2 text-sm font-bold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:inline-flex"
+              >
+                🛒 Browse Market
+              </button>
+              <button
+                type="button"
                 onClick={handleSellClick}
                 className="hidden min-h-10 items-center gap-1.5 rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:inline-flex"
               >
@@ -436,16 +500,43 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             </nav>
             <div className="my-2 border-t border-white/15" />
             <div className="flex flex-col gap-2 px-4">
-              <button
-                type="button"
-                onClick={() => {
-                  handleSellClick();
-                  setIsMobileMenuOpen(false);
-                }}
-                className="min-h-[48px] w-full rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
-              >
-                + Sell an Item
-              </button>
+              {isSellerModeActive ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleBrowseClick();
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="min-h-[48px] w-full rounded-xl border border-white/50 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10"
+                >
+                  🛒 Switch to Buying
+                </button>
+              ) : (
+                <>
+                  {!isBuyerModeActive && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleBrowseClick();
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="min-h-[48px] w-full rounded-xl border border-white/50 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10"
+                    >
+                      🛒 Browse Market
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleSellClick();
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="min-h-[48px] w-full rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
+                  >
+                    + Sell an Item
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 onClick={() => {

@@ -31,6 +31,12 @@ vi.mock('../../context/LanguageContext', () => ({
       'sellerHub.salesNoSales': 'No sales in this period',
       'sellerHub.salesLoadError': "We couldn't load sales analytics. Please try again.",
       'sellerHub.salesRetry': 'Retry',
+      'sellerOrders.history': 'Order History',
+      'sellerOrders.completedOrders': 'Completed Orders',
+      'sellerOrders.search': 'Search',
+      'sellerOrders.searchPlaceholder': 'Product or customer name',
+      'sellerOrders.dateFrom': 'Completed from',
+      'sellerOrders.dateTo': 'Completed to',
       'sellerOrders.previous': 'Previous',
       'sellerOrders.next': 'Next',
     })[key] || key,
@@ -121,11 +127,8 @@ const renderProductManagement = (props = {}) => render(
       my_listings: [],
       received_orders: [],
     }}
-    sellerOrdersLoading={false}
-    sellerOrdersError=""
     onRefreshOrders={vi.fn()}
     myListings={[]}
-    onAddProduct={vi.fn()}
     onNavigate={vi.fn()}
     onViewProduct={vi.fn()}
     onPaymentHistory={vi.fn()}
@@ -157,6 +160,31 @@ describe('SellerOperationsCenter product pagination', () => {
     expect(await screen.findByText('Product 1')).toBeTruthy();
     expect(screen.queryByRole('navigation', { name: 'Product pages' })).toBeNull();
     expect(screen.getByText('7 total')).toBeTruthy();
+  });
+
+  it('keeps seller navigation out of the header and aligns inventory badges with the title', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => (
+      String(url).includes('/seller/products')
+        ? { ok: true, json: async () => createPageResponse(1, 18, 10) }
+        : createAnalyticsResponse()
+    )));
+    renderProductManagement();
+    await screen.findByText('18 total');
+
+    const banner = screen.getByRole('heading', { name: 'Seller Operations Center' }).closest('section');
+    expect(within(banner).queryByRole('button')).toBeNull();
+    expect(within(banner).getByText(
+      'Monitor listings, fulfill customer orders, and turn marketplace activity into measurable campus sales.',
+    )).toBeTruthy();
+
+    const inventory = screen.getByRole('heading', { name: 'My Products' }).closest('section');
+    expect(within(inventory).queryByRole('button', { name: 'Back to Overview' })).toBeNull();
+    expect(within(inventory).queryByRole('button', { name: '+ Add Product' })).toBeNull();
+    const summary = within(inventory).getByRole('group', { name: 'Inventory summary' });
+    expect(within(summary).getByText('18 total')).toBeTruthy();
+    expect(within(summary).getByText('18 Active')).toBeTruthy();
+    expect(within(summary).getByText('0 Sold')).toBeTruthy();
+    expect(within(summary).getByText('0 Pending')).toBeTruthy();
   });
 
   it('opens product details from the inventory row and View button', async () => {
@@ -345,18 +373,17 @@ describe('SellerOperationsCenter overview metrics', () => {
     delete HTMLElement.prototype.scrollIntoView;
   });
 
-  it('renders all four metric cards as titled interactive buttons', () => {
+  it('renders the three current metric cards without a legacy orders shortcut', () => {
     renderProductManagement();
 
     expect(screen.getByTitle('View your listings').tagName).toBe('BUTTON');
     expect(screen.getByTitle('View received orders').tagName).toBe('BUTTON');
     expect(screen.getByTitle('View revenue and analytics').tagName).toBe('BUTTON');
-    expect(screen.getByTitle('View legacy order records').tagName).toBe('BUTTON');
+    expect(screen.queryByTitle('View legacy order records')).toBeNull();
     for (const title of [
       'View your listings',
       'View received orders',
       'View revenue and analytics',
-      'View legacy order records',
     ]) {
       expect(screen.getByTitle(title).className).toContain('hover:-translate-y-0.5');
       expect(screen.getByTitle(title).className).toContain('hover:border-blue-400');
@@ -409,12 +436,19 @@ describe('SellerOperationsCenter overview metrics', () => {
     expect(scrollIntoView.mock.contexts[0].id).toBe('seller-products');
   });
 
-  it('opens received orders and smoothly scrolls to the legacy order history', async () => {
+  it('opens completed orders without rendering legacy order history', async () => {
     const user = userEvent.setup();
     renderProductManagement();
 
     await user.click(screen.getByTitle('View received orders'));
-    expect(await screen.findByText('Historical Customer Orders')).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Completed Orders' })).toBeTruthy();
+    expect(screen.queryByText('Historical Customer Orders')).toBeNull();
+    expect(screen.queryByText('No legacy customer orders.')).toBeNull();
+    const completedOrders = document.getElementById('seller-orders');
+    expect(completedOrders).toBeTruthy();
+    expect(within(completedOrders).getByLabelText('Search')).toBeTruthy();
+    expect(within(completedOrders).getByLabelText('Completed from')).toBeTruthy();
+    expect(within(completedOrders).getByLabelText('Completed to')).toBeTruthy();
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' }));
     expect(scrollIntoView.mock.contexts[0].id).toBe('seller-orders');
   });
@@ -429,13 +463,4 @@ describe('SellerOperationsCenter overview metrics', () => {
     expect(scrollIntoView.mock.contexts[0].id).toBe('seller-analytics');
   });
 
-  it('opens historical records and smoothly scrolls to legacy orders', async () => {
-    const user = userEvent.setup();
-    renderProductManagement();
-
-    await user.click(screen.getByTitle('View legacy order records'));
-    expect(await screen.findByText('Historical Customer Orders')).toBeTruthy();
-    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' }));
-    expect(scrollIntoView.mock.contexts[0].id).toBe('seller-orders');
-  });
 });
