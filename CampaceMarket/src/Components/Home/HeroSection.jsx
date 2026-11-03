@@ -5,7 +5,6 @@ const QUICK_FILTERS = [
   { icon: '📱', label: 'Phones', query: 'Mobile Phones' },
   { icon: '📚', label: 'Textbooks', query: 'Academic Books' },
   { icon: '🎧', label: 'Audio', query: 'Earphone' },
-  { icon: '🖨️', label: 'Dorm Gear', query: 'Dorm Gear' },
 ];
 
 function HeroSection({

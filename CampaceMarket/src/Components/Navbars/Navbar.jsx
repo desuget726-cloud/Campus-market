@@ -5,15 +5,11 @@ import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import AdminProfileMenu from '../Dashboard/AdminProfileMenu';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onAdminSettingsClick, onStudentProfileClick, activeAdminTab, variant = 'public' }) {
+function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, onAdminProfileClick, onAdminSettingsClick, onStudentProfileClick, activeAdminTab, activePage, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileImageOpen, setIsProfileImageOpen] = useState(false);
-  const [activeMobilePage, setActiveMobilePage] = useState(() => {
-    const initialPage = window.location.pathname.replace(/\/+$/, '').split('/').pop();
-    return ['about', 'services', 'contact'].includes(initialPage) ? initialPage : 'home';
-  });
   const [profileState, setProfileState] = useState(() => ({ source: user, value: user }));
   const profileUser = profileState.source === user ? profileState.value : user;
   const languageMenuRef = useRef(null);
@@ -28,6 +24,52 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     : (displayUser?.name || displayUser?.studentId || 'Student');
   const displayEmail = displayUser?.email || 'Email unavailable';
   const displayRole = String(displayUser?.role || effectiveRole).toUpperCase();
+  const handleSellClick = () => {
+    if (!user) {
+      onNavigate('login', { redirect: 'post-item' });
+      return;
+    }
+    onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard?tab=seller');
+  };
+  const languageSelector = (
+    <div className="notranslate relative shrink-0" ref={languageMenuRef}>
+      <button
+        type="button"
+        aria-label={t('navbar.language')}
+        aria-haspopup="menu"
+        aria-expanded={isLanguageMenuOpen}
+        aria-controls="navbar-language-menu"
+        onClick={() => setIsLanguageMenuOpen((isOpen) => !isOpen)}
+        className="inline-flex h-9 items-center gap-1 rounded-lg border border-white/30 bg-white/10 px-1.5 text-[11px] font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 max-[400px]:px-1 md:h-10 md:gap-2 md:px-3 md:text-sm"
+      >
+        <span>{language === 'am' ? 'አማርኛ' : 'English'}</span>
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform md:h-4 md:w-4 ${isLanguageMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </button>
+      {isLanguageMenuOpen && (
+        <div id="navbar-language-menu" role="menu" aria-label={t('navbar.language')} className="absolute right-0 top-full z-[60] mt-2 w-40 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm text-slate-800 shadow-xl">
+          {[
+            ['en', 'English'],
+            ['am', 'አማርኛ'],
+          ].map(([code, label]) => (
+            <button
+              key={code}
+              type="button"
+              role="menuitemradio"
+              aria-checked={language === code}
+              onClick={() => {
+                setLanguage(code);
+                setIsLanguageMenuOpen(false);
+              }}
+              className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 ${language === code ? 'bg-blue-50 font-semibold text-blue-700' : 'text-slate-700'}`}
+            >
+              <span>{label}</span>
+              {language === code && <Check className="h-4 w-4 shrink-0" aria-hidden="true" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
   const avatarSrc = displayUser?.avatarUrl || displayUser?.avatar_url || (isAdmin
     ? ''
     : (displayUser?.studentId ? `/static/uploads/avatars/${displayUser.studentId}.jpg` : ''));
@@ -151,7 +193,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         {!isDashboardLayout && (
           <nav className="hidden min-w-0 flex-1 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
             <button onClick={() => onNavigate('home')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Home</button>
-            <button onClick={() => onNavigate('about')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">About</button>
+            <button
+              onClick={() => onNavigate('about')}
+              aria-current={activePage === 'about' ? 'page' : undefined}
+              className={`${activePage === 'about' ? 'border-b-2 border-white pb-0.5 font-bold text-white' : 'font-medium text-white'} text-sm transition-colors duration-200 hover:text-sky-100 sm:text-base`}
+            >
+              About
+            </button>
             <button onClick={() => onNavigate('services')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Services</button>
             <button onClick={() => onNavigate('contact')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Contact</button>
 
@@ -169,43 +217,6 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
         {/* Right side: Login/Register OR Profile Dropdown */}
         <div className="relative ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-2 sm:gap-3 max-[400px]:gap-1">
-          <div className="notranslate relative shrink-0" ref={languageMenuRef}>
-            <button
-              type="button"
-              aria-label={t('navbar.language')}
-              aria-haspopup="menu"
-              aria-expanded={isLanguageMenuOpen}
-              aria-controls="navbar-language-menu"
-              onClick={() => setIsLanguageMenuOpen((isOpen) => !isOpen)}
-              className="inline-flex h-9 items-center gap-1 rounded-lg border border-white/30 bg-white/10 px-1.5 text-[11px] font-semibold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 max-[400px]:px-1 md:h-10 md:gap-2 md:px-3 md:text-sm"
-            >
-              <span>{language === 'am' ? 'አማርኛ' : 'English'}</span>
-              <ChevronDown className={`h-3.5 w-3.5 transition-transform md:h-4 md:w-4 ${isLanguageMenuOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
-            </button>
-            {isLanguageMenuOpen && (
-              <div id="navbar-language-menu" role="menu" aria-label={t('navbar.language')} className="absolute right-0 top-full z-[60] mt-2 w-40 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-sm text-slate-800 shadow-xl">
-                {[
-                  ['en', 'English'],
-                  ['am', 'አማርኛ'],
-                ].map(([code, label]) => (
-                  <button
-                    key={code}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={language === code}
-                    onClick={() => {
-                      setLanguage(code);
-                      setIsLanguageMenuOpen(false);
-                    }}
-                    className={`flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 ${language === code ? 'bg-blue-50 font-semibold text-blue-700' : 'text-slate-700'}`}
-                  >
-                    <span>{label}</span>
-                    {language === code && <Check className="h-4 w-4 shrink-0" aria-hidden="true" />}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
           {(!isDashboardLayout || !isAdmin) && (
             <button
               type="button"
@@ -229,6 +240,16 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
           {user ? (
             // Logged In Dropdown View
             <div className="relative flex min-w-0 max-w-full items-center gap-2 sm:gap-3 max-[400px]:gap-1">
+              {!isDashboardLayout && (
+                <button
+                  type="button"
+                  onClick={handleSellClick}
+                  className="hidden min-h-10 items-center gap-1.5 rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:inline-flex"
+                >
+                  + Sell an Item
+                </button>
+              )}
+              {languageSelector}
               <button
                 type="button"
                 onClick={onNotificationClick}
@@ -358,6 +379,14 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             // Logged Out Login/Register View
             <div className="flex items-center gap-2">
               <button
+                type="button"
+                onClick={handleSellClick}
+                className="hidden min-h-10 items-center gap-1.5 rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:inline-flex"
+              >
+                + Sell an Item
+              </button>
+              {languageSelector}
+              <button
                 onClick={() => onNavigate('login')}
                 className="hidden min-h-10 cursor-pointer items-center rounded-xl border border-white/25 px-4 font-semibold text-white transition duration-200 hover:border-white/50 hover:bg-white/10 md:flex"
               >
@@ -365,7 +394,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
               </button>
               <button
                 onClick={() => onNavigate('register')}
-                className="hidden min-h-10 cursor-pointer items-center rounded-lg bg-sky-500 px-4 font-semibold text-white shadow-sm transition duration-200 hover:bg-sky-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 md:flex"
+                className="hidden min-h-10 cursor-pointer items-center rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 md:flex"
               >
                 {t('navbar.signup')}
               </button>
@@ -395,12 +424,11 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   key={view}
                   type="button"
                   onClick={() => {
-                    setActiveMobilePage(view);
                     setIsMobileMenuOpen(false);
                     onNavigate(view);
                   }}
-                  aria-current={activeMobilePage === view ? 'page' : undefined}
-                  className={`flex min-h-[48px] items-center rounded-lg px-4 text-left text-base font-semibold text-white transition hover:bg-white/10 ${activeMobilePage === view ? 'bg-white/15' : ''}`}
+                  aria-current={activePage === view ? 'page' : undefined}
+                  className={`flex min-h-[48px] items-center rounded-lg px-4 text-left text-base font-semibold text-white transition hover:bg-white/10 ${activePage === view ? 'bg-white/15' : ''}`}
                 >
                   {label}
                 </button>
@@ -408,6 +436,16 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             </nav>
             <div className="my-2 border-t border-white/15" />
             <div className="flex flex-col gap-2 px-4">
+              <button
+                type="button"
+                onClick={() => {
+                  handleSellClick();
+                  setIsMobileMenuOpen(false);
+                }}
+                className="min-h-[48px] w-full rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
+              >
+                + Sell an Item
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -424,7 +462,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   onNavigate('register');
                   setIsMobileMenuOpen(false);
                 }}
-                className="min-h-[48px] w-full rounded-lg bg-sky-500 text-center font-bold text-white shadow-sm transition-colors hover:bg-sky-600"
+                className="min-h-[48px] w-full rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-600"
               >
                 {t('navbar.signup')}
               </button>

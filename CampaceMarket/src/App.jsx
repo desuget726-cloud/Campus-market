@@ -628,9 +628,12 @@ function AppContent() {
     unauthorizedHandledRef.current = false;
     setLoginMessage('');
     const productAction = getPendingProductAction();
-    const returnTo = normalizeInternalReturnTo(new URLSearchParams(window.location.search).get('returnTo'));
+    const loginParams = new URLSearchParams(window.location.search);
+    const returnTo = normalizeInternalReturnTo(loginParams.get('returnTo'));
+    const shouldOpenSellerHub = loginParams.get('redirect') === 'post-item' && role === 'student';
     const productId = getProductIdFromReturnTo(returnTo) || productAction?.returnTo || null;
     const nextView = productId ? 'home' : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
+    const nextStudentTab = shouldOpenSellerHub && !productId ? 'seller' : 'home';
     const nextSection = role === 'admin' ? 'dashboard' : 'home';
 
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
@@ -640,15 +643,17 @@ function AppContent() {
     setPendingProductId(productId);
     setPendingProductAction(productId ? productAction : null);
     setDashboardTab('home');
-    setStudentTab('home');
+    setStudentTab(nextStudentTab);
     setAdminTab(nextSection);
     persistAdminTab(nextSection);
     setCurrentView(nextView);
     setShowSuccessModal(false);
-    if (returnTo) {
+    if (shouldOpenSellerHub && !productId) {
+      window.history.replaceState({}, '', '/dashboard?tab=seller');
+    } else if (returnTo) {
       window.history.replaceState({}, '', returnTo);
     }
-    persistSession(nextUser, role, nextView, 'home', 'home');
+    persistSession(nextUser, role, nextView, 'home', nextStudentTab);
   };
 
   const handleContinueToDashboard = () => {
@@ -785,7 +790,9 @@ function AppContent() {
       const nextView = view === 'signup' ? 'register' : view;
       setLoginMessage(params.message || '');
       const returnTo = nextView === 'login' ? normalizeInternalReturnTo(params.returnTo) : null;
-      if (returnTo) {
+      if (nextView === 'login' && params.redirect === 'post-item') {
+        window.history.pushState({}, '', '/login?redirect=post-item');
+      } else if (returnTo) {
         window.history.pushState({}, '', `/login?returnTo=${encodeURIComponent(returnTo)}`);
       }
       setCurrentView(nextView);
@@ -1006,6 +1013,7 @@ function AppContent() {
       {!['login', 'register'].includes(currentView) && (
         <Navbar
           variant={isDashboardView ? 'dashboard' : 'public'}
+          activePage={currentView}
           onNavigate={handleNavigate}
           user={user}
           userRole={userRole}

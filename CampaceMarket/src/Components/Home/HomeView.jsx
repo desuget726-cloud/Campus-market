@@ -1,4 +1,6 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react';
+import { Heart } from 'lucide-react';
+import toast from 'react-hot-toast';
 import ProductDetails from './ProductDetails';
 import HeroSection from './HeroSection';
 import { apiUrl } from '../../api/config';
@@ -48,6 +50,21 @@ const fetchWithRetries = async (url, signal, init) => {
     }
   }
   throw lastError;
+};
+
+const getProductPrice = (product) => {
+  const price = Number(String(product?.price ?? '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(price) ? price : 0;
+};
+
+const getProductTimestamp = (product) => {
+  const timestamp = new Date(product?.created_at || product?.createdAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const getProductViews = (product) => {
+  const views = Number(product?.views ?? product?.view_count ?? product?.stats?.views ?? 0);
+  return Number.isFinite(views) ? views : 0;
 };
 
 const getListingFailureKind = (error) => (
@@ -101,6 +118,8 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [categories, setCategories] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [sortOrder, setSortOrder] = useState('newest');
+  const [wishlistState, setWishlistState] = useState({ studentId: '', items: {} });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [isLoadErrorDismissed, setIsLoadErrorDismissed] = useState(false);
@@ -121,10 +140,41 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const hasSignedInUser = Boolean(user);
   const selectedProductAccessToken = getStudentAccessToken(user);
   const studentAccessToken = getStudentAccessToken(user);
+  const currentStudentId = user?.studentId || user?.student_id;
+  const wishlistItems = wishlistState.studentId === String(currentStudentId || '')
+    ? wishlistState.items
+    : {};
 
   useEffect(() => () => {
     if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!currentStudentId) return undefined;
+
+    let active = true;
+    const accessToken = studentAccessToken;
+    fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${encodeURIComponent(currentStudentId)}`, {
+      headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Unable to load your wishlist.');
+        return response.json();
+      })
+      .then((items) => {
+        if (!active) return;
+        const nextWishlistItems = {};
+        (Array.isArray(items) ? items : []).forEach((item) => {
+          if (item?.product_id != null) nextWishlistItems[String(item.product_id)] = item.id || true;
+        });
+        setWishlistState({ studentId: String(currentStudentId), items: nextWishlistItems });
+      })
+      .catch((error) => {
+        if (active) console.error('Unable to load the product wishlist.', error);
+      });
+
+    return () => { active = false; };
+  }, [currentStudentId, studentAccessToken]);
 
   const openProduct = (product) => {
     if (!product?.id) return;
@@ -377,7 +427,13 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   };
 
   const retryLastProductRequest = () => fetchProducts(lastProductRequestRef.current);
-  const visibleProducts = searchResults.slice(0, visibleCount);
+  const sortedProducts = [...searchResults].sort((left, right) => {
+    if (sortOrder === 'price-low') return getProductPrice(left) - getProductPrice(right);
+    if (sortOrder === 'price-high') return getProductPrice(right) - getProductPrice(left);
+    if (sortOrder === 'popular') return getProductViews(right) - getProductViews(left);
+    return getProductTimestamp(right) - getProductTimestamp(left);
+  });
+  const visibleProducts = sortedProducts.slice(0, visibleCount);
   const listingFailureMessage = loadError?.kind === 'offline'
     ? t('home.noConnection')
     : t('home.listingsFailure');
@@ -389,6 +445,57 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const handleShowLessProducts = () => {
     setVisibleCount(PAGE_SIZE);
     allProductsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const handleWishlistToggle = async (event, product) => {
+    event.stopPropagation();
+    const studentId = user?.studentId || user?.student_id;
+    if (!studentId) {
+      onNavigate?.('login');
+      return;
+    }
+
+    const productId = String(product.id);
+    const wishlistItemId = wishlistItems[productId];
+    const accessToken = getStudentAccessToken(user);
+    try {
+      const response = wishlistItemId
+        ? await fetch(`${API_BASE_URL}/api/student/wishlist/${wishlistItemId}`, { method: 'DELETE' })
+        : await fetch(`${API_BASE_URL}/api/student/wishlist`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({ student_id: studentId, product_id: Number(product.id) }),
+        });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Unable to update your wishlist.');
+      }
+
+      if (wishlistItemId) {
+        setWishlistState((current) => {
+          const nextItems = { ...current.items };
+          delete nextItems[productId];
+          return { ...current, items: nextItems };
+        });
+        toast.success('Removed from wishlist.');
+      } else {
+        const item = await response.json().catch(() => ({}));
+        setWishlistState((current) => ({
+          studentId: String(currentStudentId),
+          items: {
+            ...(current.studentId === String(currentStudentId) ? current.items : {}),
+            [productId]: item.id || true,
+          },
+        }));
+        toast.success('Added to wishlist.');
+      }
+    } catch (error) {
+      console.error('Unable to update the product wishlist.', error);
+      toast.error(error.message || 'Unable to update your wishlist.');
+    }
   };
 
   return (
@@ -597,9 +704,23 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                   </section>
                 )}
 
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-xl font-bold text-slate-900">{searchedTitle || t('home.allProducts')}</h3>
-                  {!loading && !loadError && <span className="text-sm text-slate-500">{t('home.itemsFound').replace('{count}', String(searchResults.length))}</span>}
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <h3 className="text-xl font-bold text-slate-900">{searchedTitle || t('home.allProducts')}</h3>
+                    {!loading && !loadError && <span className="text-sm text-slate-500">{t('home.itemsFound').replace('{count}', String(searchResults.length))}</span>}
+                  </div>
+                  <label className="sr-only" htmlFor="catalog-sort">Sort products</label>
+                  <select
+                    id="catalog-sort"
+                    value={sortOrder}
+                    onChange={(event) => setSortOrder(event.target.value)}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700"
+                  >
+                    <option value="newest">Sort: Newest First</option>
+                    <option value="price-low">Price: Low to High</option>
+                    <option value="price-high">Price: High to Low</option>
+                    <option value="popular">Most Popular</option>
+                  </select>
                 </div>
 
                 {loading ? (
@@ -634,14 +755,27 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                     <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
                       {visibleProducts.map((product, idx) => (
                         <article key={product.id ?? idx} onClick={() => openProduct(product)} onKeyDown={(event) => handleProductCardKeyDown(event, product)} role="button" tabIndex={0} className="flex h-full min-w-0 cursor-pointer flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md sm:rounded-[24px]">
-                          <div className="min-w-0">
-                            <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl object-cover md:aspect-[4/3] md:rounded-none" />
+                          <div className="relative min-w-0">
+                            <img src={resolveImageUrl(getPrimaryImage(product))} onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} alt={product.title} className="aspect-square w-full rounded-xl bg-slate-50/50 p-2 object-contain md:rounded-none" />
+                            <span className="absolute top-2.5 left-2.5 rounded-md bg-white/90 px-2 py-0.5 text-[10px] font-bold text-slate-700 shadow-xs backdrop-blur-xs">
+                              {String(product.condition || '').toLowerCase().includes('new') ? '✨ New' : '👌 Used'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(event) => handleWishlistToggle(event, product)}
+                              aria-label={`${wishlistItems[String(product.id)] ? 'Remove' : 'Add'} ${product.title} ${wishlistItems[String(product.id)] ? 'from' : 'to'} wishlist`}
+                              aria-pressed={Boolean(wishlistItems[String(product.id)])}
+                              className="absolute top-2.5 right-2.5 rounded-full bg-white/90 p-1.5 text-slate-400 shadow-xs transition hover:bg-white hover:text-red-500"
+                            >
+                              <Heart className={`h-4 w-4 ${wishlistItems[String(product.id)] ? 'fill-current text-red-500' : ''}`} aria-hidden="true" />
+                            </button>
                             <div className="flex min-w-0 flex-col p-2 sm:p-4">
                               <div className="hidden min-w-0 flex-wrap gap-1 sm:flex">
                                 <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.category}</span>
                                 {product.subcategory && <span className="max-w-full truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">{product.subcategory}</span>}
                               </div>
                               <h4 className="mt-1 line-clamp-2 break-words text-sm leading-tight text-slate-900 sm:line-clamp-1 sm:leading-normal sm:font-semibold">{product.title}</h4>
+                              <p className="mt-1 text-xs text-slate-400">📍 {product.handover_location || product.pickup_location || 'Campus'}</p>
                               <p
                                 className="mt-1 hidden overflow-hidden text-ellipsis text-sm text-gray-600 sm:mb-3 sm:block"
                                 style={{
@@ -658,7 +792,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                               </p>
                             </div>
                           </div>
-                          <div className="mt-auto min-w-0 p-2 pt-0 sm:p-4 sm:pt-0">
+                          <div className="mt-auto flex min-w-0 flex-col justify-between p-4 pb-5">
                             <div className="flex min-w-0 flex-col gap-2 border-t border-slate-50 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                               <CompactEtbPrice value={product.price} language={language} className="min-w-0 whitespace-nowrap text-sm font-bold text-slate-900 sm:text-base sm:font-semibold" />
                               <button
@@ -684,7 +818,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                           onClick={visibleCount < searchResults.length ? handleShowMoreProducts : handleShowLessProducts}
                           className="btn-primary rounded-full px-4 py-2 text-sm font-semibold transition"
                         >
-                          {visibleCount < searchResults.length ? 'Show More Products' : 'Show Less'}
+                          {visibleCount < searchResults.length ? 'Load More Products' : 'Show Less'}
                         </button>
                       </div>
                     )}

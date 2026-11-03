@@ -1,4 +1,4 @@
-import { API_BASE } from "./config";
+import * as config from "./config";
 
 async function handleResponse(res) {
   if (!res.ok) {
@@ -33,7 +33,7 @@ export async function apiFetch(path, options = {}) {
   // If path is an absolute URL, use it directly; otherwise prefix with API_BASE
   const url = path.startsWith("http://") || path.startsWith("https://")
     ? path
-    : `${API_BASE}${path}`;
+    : `${config.API_BASE}${path}`;
 
   const defaultHeaders = typeof FormData !== "undefined" && options.body instanceof FormData
     ? {}
