@@ -2319,6 +2319,10 @@ class NotificationMarkReadRequest(BaseModel):
     notification_id: Optional[int] = None
 
 
+class StudentMessagesMarkReadRequest(BaseModel):
+    sender_id: str
+
+
 class NotificationCreate(BaseModel):
     student_id: str
     title: Optional[str] = None
@@ -13800,7 +13804,7 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
         if unread_message_ids:
             db.query(Message).filter(Message.id.in_(unread_message_ids)).update(
                 {Message.is_read: True},
-                synchronize_session=False
+                synchronize_session="fetch"
             )
             db.commit()
 
@@ -13826,6 +13830,38 @@ def get_student_chat_history(sender_id: str, receiver_id: str, db: Session = Dep
         db.rollback()
         logging.error(f"Error fetching chat history {sender_id}-{receiver_id}: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch chat history.")
+
+
+@app.post("/api/student/messages/mark-read")
+def mark_student_messages_read(
+    request: StudentMessagesMarkReadRequest,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    sender_id = _validate_student_id(db, request.sender_id, field_name="sender_id")
+    if student.student_id == sender_id:
+        raise HTTPException(status_code=400, detail="sender_id must be another student.")
+
+    updated_count = db.query(Message).filter(
+        Message.sender_id == sender_id,
+        Message.receiver_id == student.student_id,
+        Message.is_read.is_(False),
+    ).update(
+        {Message.is_read: True},
+        synchronize_session="fetch",
+    )
+    db.commit()
+
+    unread_count = db.query(Message.id).filter(
+        Message.receiver_id == student.student_id,
+        Message.is_read.is_(False),
+    ).count()
+    return {
+        "success": True,
+        "updated_count": updated_count,
+        "unread_count": unread_count,
+    }
 
 
 @app.delete("/api/student/messages/{message_id}")
@@ -14027,6 +14063,54 @@ async def student_chat_websocket(websocket: WebSocket, student_id: str):
                 await websocket.send_json({
                     "success": False,
                     "error": "Invalid JSON. Required: receiver_id, message_text. Optional: product_id"
+                })
+                continue
+
+            if payload.get("type") == "mark_read":
+                sender_id = str(payload.get("sender_id") or "").strip()
+                if not sender_id or sender_id == student_id:
+                    await websocket.send_json({
+                        "success": False,
+                        "error": "A valid sender_id is required to mark messages as read.",
+                    })
+                    continue
+                if not db.query(Student.student_id).filter(
+                    Student.student_id == sender_id
+                ).first():
+                    await websocket.send_json({
+                        "success": False,
+                        "error": "Student not found.",
+                    })
+                    continue
+
+                try:
+                    db.query(Message).filter(
+                        Message.sender_id == sender_id,
+                        Message.receiver_id == student_id,
+                        Message.is_read.is_(False),
+                    ).update(
+                        {Message.is_read: True},
+                        synchronize_session=False,
+                    )
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    logger.error(
+                        "[DB ERROR] Failed to mark messages read for %s from %s: %s",
+                        student_id,
+                        sender_id,
+                        exc,
+                    )
+                    await websocket.send_json({
+                        "success": False,
+                        "error": "Failed to mark messages as read.",
+                    })
+                    continue
+
+                await manager.send_personal_message(sender_id, {
+                    "type": "read_receipt_updated",
+                    "reader_id": student_id,
+                    "conversation_id": f"conv-{student_id}",
                 })
                 continue
 

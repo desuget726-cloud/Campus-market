@@ -436,6 +436,9 @@ function StudentDashboard({
   const [unreadCount, setUnreadCount] = useState(initialConversations.reduce((sum, conversation) => sum + Number(conversation.unread || 0), 0));
   const socketRef = useRef(null);
   const activePeerIdRef = useRef('');
+  const activeTabRef = useRef(activeTab);
+  const mobileChatViewRef = useRef(mobileChatView);
+  const markConversationReadRef = useRef(null);
   const sellerChatParticipantsRef = useRef({});
   const paymentVerificationStartedRef = useRef(false);
   const testDepositAutoChecksRef = useRef(new Set());
@@ -443,6 +446,11 @@ function StudentDashboard({
   const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const walletBalanceRef = useRef(walletBalance);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+    mobileChatViewRef.current = mobileChatView;
+  }, [activeTab, mobileChatView]);
   const [isMarkingRead, setIsMarkingRead] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
@@ -2610,7 +2618,72 @@ function StudentDashboard({
     }
   };
 
+  function markConversationRead(partnerId) {
+    const normalizedPartnerId = String(partnerId || '').trim().replace(/^conv-/, '');
+    if (!normalizedPartnerId || !user?.studentId) return;
+
+    const remainingUnread = conversationsList.reduce((total, conversation) => {
+      const conversationPartnerId = String(
+        conversation.studentId
+        || conversation.student_id
+        || String(conversation.id || '').replace(/^conv-/, '')
+      );
+      return conversationPartnerId === normalizedPartnerId
+        ? total
+        : total + Number(conversation.unread || 0);
+    }, 0);
+
+    setConversationsList((previousConversations) => previousConversations.map((conversation) => {
+      const conversationPartnerId = String(
+        conversation.studentId
+        || conversation.student_id
+        || String(conversation.id || '').replace(/^conv-/, '')
+      );
+      return conversationPartnerId === normalizedPartnerId
+        ? { ...conversation, unread: 0 }
+        : conversation;
+    }));
+    setUnreadCount(remainingUnread);
+    setUnreadMessageCount(remainingUnread);
+
+    const token = getStudentSessionToken();
+    void (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/student/messages/mark-read`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ sender_id: normalizedPartnerId }),
+        });
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.detail || 'Failed to mark conversation as read.');
+        }
+      } catch (error) {
+        console.error('Error marking student conversation as read:', error);
+      }
+    })();
+
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'mark_read',
+        sender_id: normalizedPartnerId,
+      }));
+    }
+  }
+  markConversationReadRef.current = markConversationRead;
+
   function selectConversation(conversationId) {
+    const selectedConversation = conversationsList.find(
+      (conversation) => conversation.id === conversationId
+    );
+    markConversationRead(
+      selectedConversation?.studentId
+      || String(conversationId || '').replace(/^conv-/, '')
+    );
     const url = new URL(window.location.href);
     const currentConversationId = url.searchParams.get('conversation');
     url.searchParams.set('conversation', conversationId);
@@ -2658,6 +2731,7 @@ function StudentDashboard({
 
   const openSellerChat = (conversationId, buyer = {}) => {
     const partnerId = String(conversationId || '').replace(/^conv-/, '');
+    markConversationRead(partnerId);
     sellerChatParticipantsRef.current[conversationId] = buyer;
     setConversationsList((previous) => (
       previous.some((conversation) => conversation.id === conversationId)
@@ -3730,6 +3804,7 @@ function StudentDashboard({
             const formattedMessages = messages.map((msg) => ({
               id: msg.id,
               sender_id: msg.sender_id,
+              receiver_id: msg.receiver_id,
               sender: msg.sender_id === user.studentId ? 'me' : 'them',
               text: msg.message_text,
               attachment_url: msg.attachment_url,
@@ -3751,6 +3826,20 @@ function StudentDashboard({
 
     fetchChatHistory();
   }, [activeConversationId, user?.studentId, conversationsList, conversationsLoaded]);
+
+  useEffect(() => {
+    if (!conversationsLoaded || !activeConversationId || activeTab !== 'messages') return;
+    const desktopChatIsVisible = window.matchMedia('(min-width: 1024px)').matches;
+    if (mobileChatView !== 'chat' && !desktopChatIsVisible) return;
+    markConversationReadRef.current?.(
+      String(activeConversationId).replace(/^conv-/, '')
+    );
+  }, [
+    activeConversationId,
+    activeTab,
+    conversationsLoaded,
+    mobileChatView,
+  ]);
 
   useEffect(() => {
     const desktopChatIsVisible = window.matchMedia('(min-width: 1024px)').matches;
@@ -3985,6 +4074,18 @@ function StudentDashboard({
           }
           return;
         }
+        if (eventType === 'read_receipt_updated') {
+          const readerId = String(incoming.reader_id || '');
+          if (readerId) {
+            setActiveChatMessages((previousMessages) => previousMessages.map((message) => (
+              String(message.sender_id) === String(user.studentId)
+              && String(message.receiver_id) === readerId
+                ? { ...message, is_read: true }
+                : message
+            )));
+          }
+          return;
+        }
         if (eventType === 'message_edited') {
           const editedConversationId = String(incoming.conversationId || '');
           const editedMessageId = String(incoming.id || '');
@@ -4008,9 +4109,19 @@ function StudentDashboard({
 
         const counterpartId = message.sender_id === user.studentId ? message.receiver_id : message.sender_id;
         const counterpartConversationId = `conv-${counterpartId}`;
+        const isIncomingToCurrentUser = String(message.receiver_id) === String(user.studentId);
+        const isActiveConversation = String(counterpartId) === activePeerIdRef.current;
+        const isChatVisible = activeTabRef.current === 'messages'
+          && (
+            mobileChatViewRef.current === 'chat'
+            || window.matchMedia('(min-width: 1024px)').matches
+          );
+        const markIncomingAsRead = isIncomingToCurrentUser
+          && isActiveConversation
+          && isChatVisible;
 
         // Append message to active chat if this is the current conversation
-        if (activeConversationId === counterpartConversationId || activeConversationId?.includes(counterpartId)) {
+        if (activeConversationId === counterpartConversationId || isActiveConversation) {
           if (String(message.sender_id) === String(user.studentId)) {
             shouldAutoScrollRef.current = true;
           } else {
@@ -4021,6 +4132,7 @@ function StudentDashboard({
             {
               id: message.id,
               sender_id: message.sender_id,
+              receiver_id: message.receiver_id,
               sender: message.sender_id === user.studentId ? 'me' : 'them',
               text: message.message_text,
               attachment_url: message.attachment_url,
@@ -4033,6 +4145,9 @@ function StudentDashboard({
               edited_at: message.edited_at,
             }
           ]);
+        }
+        if (markIncomingAsRead) {
+          markConversationReadRef.current?.(counterpartId);
         }
 
         // Update conversation list
@@ -4050,12 +4165,13 @@ function StudentDashboard({
 
           return prev.map((item, index) => {
             if (index !== conversationIndex) return item;
-            const isIncomingToCurrentUser = message.receiver_id === user.studentId;
             return {
               ...item,
               lastMessage: message.message_text,
               timestamp: 'just now',
-              unread: isIncomingToCurrentUser ? Number(item.unread || 0) + 1 : 0,
+              unread: isIncomingToCurrentUser && !markIncomingAsRead
+                ? Number(item.unread || 0) + 1
+                : 0,
             };
           });
         });
@@ -4102,6 +4218,7 @@ function StudentDashboard({
     const newMessage = {
       id: `msg-${Date.now()}`,
       sender_id: user?.studentId,
+      receiver_id: receiverId,
       sender: 'me',
       text: safeMessage,
       created_at: now.toISOString(),
@@ -4502,7 +4619,12 @@ function StudentDashboard({
               { key: 'home', label: 'Home', icon: '🏠' },
               { key: 'buyer', label: 'Buyer Hub', icon: '🛒' },
               { key: 'seller', label: 'Seller Hub', icon: '🏪' },
-              { key: 'messages', label: 'Messages', icon: '💬', badge: unreadCount || unreadMessageCount },
+              {
+                key: 'messages',
+                label: 'Messages',
+                icon: '💬',
+                badge: conversationsLoaded ? unreadCount : unreadMessageCount,
+              },
               { key: 'notifications', label: 'Notifications', icon: '🔔', badge: unreadNotificationCount },
               { key: 'settings', label: 'Settings', icon: '⚙️' },
             ].map((item) => {

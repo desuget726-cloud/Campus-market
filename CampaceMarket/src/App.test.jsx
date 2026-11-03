@@ -130,6 +130,42 @@ describe('admin dashboard default section', () => {
     window.history.replaceState({}, '', '/');
   });
 
+  it('redirects guest dashboard deep links to the public home page', async () => {
+    window.history.replaceState({}, '', '/dashboard?tab=seller');
+    vi.spyOn(window, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText('Home View')).toBeTruthy();
+    expect(screen.queryByTestId('student-dashboard')).toBeNull();
+    await waitFor(() => {
+      expect(window.location.pathname + window.location.search).toBe('/');
+    });
+  });
+
+  it('does not restore a saved student dashboard view without a user session', async () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+      currentView: 'student-dashboard',
+      studentTab: 'seller',
+    }));
+    vi.spyOn(window, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText('Home View')).toBeTruthy();
+    expect(screen.queryByTestId('student-dashboard')).toBeNull();
+  });
+
   describe('student dashboard deep links', () => {
     let fetchMock;
 

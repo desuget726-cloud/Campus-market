@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect, useRef, useCallback } from 'react';
-import { Search, X } from 'lucide-react';
 import ProductDetails from './ProductDetails';
+import HeroSection from './HeroSection';
 import { apiUrl } from '../../api/config';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
 import { useLanguage } from '../../context/LanguageContext';
@@ -120,6 +120,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [hoveredCategoryId, setHoveredCategoryId] = useState(null);
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
   const [searchedTitle, setSearchedTitle] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -326,16 +327,24 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     });
   };
 
-  const performSearch = async (query) => {
+  const performSearch = async (query, category = selectedCategory) => {
     const trimmedSearch = query.trim();
     const department = user?.department || user?.college || user?.departmentName || '';
     setVisibleCount(PAGE_SIZE);
-    setSearchedTitle(trimmedSearch ? t('home.resultsFor').replace('{query}', trimmedSearch) : '');
-    if (!trimmedSearch) {
+    setSearchedTitle(
+      [trimmedSearch && t('home.resultsFor').replace('{query}', trimmedSearch), category]
+        .filter(Boolean)
+        .join(' · ')
+    );
+    if (!trimmedSearch && !category) {
       await fetchProducts({ department: department || undefined });
       return;
     }
-    await fetchProducts({ search: trimmedSearch, department: department || undefined });
+    await fetchProducts({
+      search: trimmedSearch || undefined,
+      category: category || undefined,
+      department: department || undefined,
+    });
   };
 
   const scheduleSearch = (query) => {
@@ -348,7 +357,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const handleSearch = (event) => {
     event?.preventDefault();
     if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
-    void performSearch(searchQuery);
+    void performSearch(searchQuery, selectedCategory);
   };
 
   const handleSearchInputChange = (value) => {
@@ -358,9 +367,11 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
 
   const clearSearch = () => {
     setSearchQuery('');
+    setSelectedCategory('');
     setVisibleCount(PAGE_SIZE);
     setSearchedTitle('');
-    scheduleSearch('');
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+    void performSearch('', '');
   };
 
   const handleCategoryClick = async (categoryName) => {
@@ -368,6 +379,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     setVisibleCount(PAGE_SIZE);
     setIsDirectoryOpen(false);
     setSearchQuery('');
+    setSelectedCategory(categoryName);
     const department = user?.department || user?.college || user?.departmentName || '';
     await fetchProducts({ category: categoryName, department: department || undefined });
     setSearchedTitle(categoryName);
@@ -379,10 +391,19 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
     setVisibleCount(PAGE_SIZE);
     setIsDirectoryOpen(false);
     setSearchQuery(subCategoryName);
+    setSelectedCategory('');
     const department = user?.department || user?.college || user?.departmentName || '';
     await fetchProducts({ subcategory: subCategoryName, department: department || undefined });
     setSearchedTitle(`${categoryName} > ${subCategoryName}`);
     setHoveredCategoryId(null);
+  };
+
+  const handleQuickFilter = (query) => {
+    if (searchDebounceTimeoutRef.current) window.clearTimeout(searchDebounceTimeoutRef.current);
+    setSearchQuery(query);
+    setSelectedCategory('');
+    void performSearch(query, '');
+    allProductsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   const retryLastProductRequest = () => fetchProducts(lastProductRequestRef.current);
@@ -425,51 +446,21 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
         </div>
       ) : (
         <div className="w-full space-y-6 pt-1">
-          <section className="group relative w-full rounded-none border-b border-slate-200/40 overflow-hidden shadow-md text-center text-slate-100 h-[600px]">
-            {bannerImages.map((src, index) => (
-              <img
-                key={index}
-                src={src}
-                alt={`Campus banner ${index + 1}`}
-                className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-1000 ease-in-out z-0 ${currentImageIndex === index ? 'opacity-100' : 'opacity-0'}`}
-              />
-            ))}
-            <button
-              type="button"
-              onClick={handlePrevBanner}
-              className="absolute left-6 top-1/2 -translate-y-1/2 z-30 rounded-full bg-black/30 hover:bg-black/50 text-white p-3.5"
-              aria-label="Previous banner"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
-                <path fillRule="evenodd" d="M12.707 15.707a1 1 0 01-1.414 0L6.586 11l4.707-4.707a1 1 0 011.414 1.414L9.414 11l3.293 3.293a1 1 0 010 1.414z" clipRule="evenodd" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              onClick={handleNextBanner}
-              className="absolute right-6 top-1/2 -translate-y-1/2 z-30 rounded-full bg-black/30 hover:bg-black/50 text-white p-3.5"
-              aria-label="Next banner"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
-                <path fillRule="evenodd" d="M7.293 4.293a1 1 0 011.414 0L13.414 9l-4.707 4.707a1 1 0 01-1.414-1.414L10.586 9 7.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
-              </svg>
-            </button>
-            <div className="relative z-20">
-              <h2 className="text-3xl font-bold text-white">Find What You Need on Campus</h2>
-              <p className="mt-2 text-slate-200">Browse peer listings or search specific academic items instantly.</p>
-            </div>
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex gap-2 justify-center">
-              {bannerImages.map((_, index) => (
-                <button
-                  key={index}
-                  type="button"
-                  onClick={() => setCurrentImageIndex(index)}
-                  aria-label={`Show banner ${index + 1}`}
-                  className={currentImageIndex === index ? 'w-6 h-2.5 rounded-full bg-white' : 'w-2.5 h-2.5 rounded-full bg-white/40 hover:bg-white/70'}
-                />
-              ))}
-            </div>
-          </section>
+          <HeroSection
+            bannerImages={bannerImages}
+            currentImageIndex={currentImageIndex}
+            onPreviousBanner={handlePrevBanner}
+            onNextBanner={handleNextBanner}
+            onSelectBanner={setCurrentImageIndex}
+            searchQuery={searchQuery}
+            onSearchQueryChange={handleSearchInputChange}
+            categories={categories}
+            selectedCategory={selectedCategory}
+            onCategoryChange={setSelectedCategory}
+            onSearch={handleSearch}
+            onQuickFilter={handleQuickFilter}
+            searchPlaceholder="Search books, laptops, dorm gear..."
+          />
 
           {loadError && hasSignedInUser && !isLoadErrorDismissed && (
             <div className={contentContainerClass}>
@@ -487,44 +478,14 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
           )}
 
           <div className={`${contentContainerClass} space-y-6`}>
-            <div className="sticky top-[88px] z-20 -mx-4 w-auto bg-white px-4 py-2 shadow-sm sm:mx-0 sm:px-0 sm:py-0 sm:shadow-none md:static md:z-auto md:bg-transparent">
-              <form onSubmit={handleSearch} role="search" className="mx-auto flex w-full min-w-0 items-center gap-2 rounded-full bg-white px-2 py-1.5 shadow sm:max-w-3xl sm:gap-3 sm:border sm:border-slate-200 sm:p-2 sm:shadow-md">
-                <Search aria-hidden="true" className="ml-1 h-4 w-4 shrink-0 text-slate-500 sm:hidden" />
-                <label className="relative flex min-w-0 flex-1 items-center">
-                  <span className="sr-only">{t('home.search')}</span>
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(event) => handleSearchInputChange(event.target.value)}
-                    aria-label={t('home.search')}
-                    className="min-w-0 flex-1 bg-transparent text-sm text-slate-900 outline-none placeholder:text-slate-400 sm:rounded-full sm:border sm:border-slate-100 sm:bg-slate-50 sm:px-6 sm:py-3.5 sm:focus:border-blue-300 sm:focus:ring-2 sm:focus:ring-blue-100 sm:transition"
-                  />
-                  {!searchQuery && (
-                    <span aria-hidden="true" className="pointer-events-none absolute left-0 truncate text-sm text-slate-400 sm:hidden">{t('home.searchPlaceholderMobile')}</span>
-                  )}
-                  {!searchQuery && (
-                    <span aria-hidden="true" className="pointer-events-none absolute left-0 hidden truncate text-sm text-slate-400 sm:block">{t('home.searchPlaceholderFull')}</span>
-                  )}
-                </label>
-                {searchQuery && (
-                  <button type="button" onClick={clearSearch} aria-label={t('home.clearSearch')} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300">
-                    <X aria-hidden="true" className="h-4 w-4" />
-                  </button>
-                )}
-                <button type="submit" aria-label={t('home.search')} className="btn-primary flex h-10 w-10 shrink-0 items-center justify-center rounded-full font-semibold transition shadow-md sm:h-auto sm:w-auto sm:whitespace-nowrap sm:px-8 sm:py-3.5">
-                  <Search aria-hidden="true" className="h-4 w-4 sm:hidden" />
-                  <span className="hidden sm:inline">{t('home.searchMaterials')}</span>
-                </button>
-              </form>
-              <div className="mt-2 flex min-w-0 items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:hidden">
-                <button
-                  type="button"
-                  onClick={() => setIsDirectoryOpen(true)}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
-                >
-                  <span aria-hidden="true">☰</span> {t('home.browseDirectory')}
-                </button>
-              </div>
+            <div className="flex justify-start md:hidden">
+              <button
+                type="button"
+                onClick={() => setIsDirectoryOpen(true)}
+                className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:border-emerald-300 hover:text-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+              >
+                <span aria-hidden="true">☰</span> {t('home.browseDirectory')}
+              </button>
             </div>
 
             {isDirectoryOpen && (
@@ -662,7 +623,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                             </p>
                             <div className="mt-auto flex min-w-0 flex-col gap-2 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
                               <CompactEtbPrice value={product.price} className="min-w-0 text-[10px] font-bold text-slate-700 sm:text-base" />
-                              <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="btn-primary hidden w-full shrink-0 cursor-pointer rounded-full px-3 py-1.5 text-xs font-bold transition-colors sm:inline-flex sm:w-auto">View Details</button>
+                              <button type="button" onClick={(event) => { event.stopPropagation(); openProduct(product); }} className="hidden w-full shrink-0 cursor-pointer rounded-lg bg-sky-500 px-4 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-sky-600 sm:inline-flex sm:w-auto">View Details</button>
                             </div>
                           </div>
                         </article>
@@ -740,7 +701,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                                   event.stopPropagation();
                                   openProduct(product);
                                 }}
-                                className="btn-primary inline-flex min-h-[40px] w-full shrink-0 cursor-pointer items-center justify-center rounded-full px-3 py-1.5 text-xs font-semibold transition-colors sm:w-auto"
+                                className="inline-flex min-h-[40px] w-full shrink-0 cursor-pointer items-center justify-center rounded-lg bg-sky-500 px-4 py-2 text-xs font-medium text-white shadow-sm transition hover:bg-sky-600 sm:w-auto"
                               >
                                 View Details
                               </button>

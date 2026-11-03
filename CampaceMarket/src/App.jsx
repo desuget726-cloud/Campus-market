@@ -142,11 +142,21 @@ function AppContent() {
     if (typeof window === 'undefined') return 'home';
     try {
       const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
-      if (pathname === '/dashboard') return 'student-dashboard';
       if (pathname === '/login') return 'login';
       if (pathname === '/signup' || pathname === '/register') return 'register';
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
+      const sessionRole = session?.userRole || session?.user?.role;
+      const hasStoredUser = Boolean(session?.user);
+      if (pathname === '/dashboard') {
+        return hasStoredUser && sessionRole === 'student' ? 'student-dashboard' : 'home';
+      }
+      if (session?.currentView === 'student-dashboard' && (!hasStoredUser || sessionRole !== 'student')) {
+        return 'home';
+      }
+      if (session?.currentView === 'admin-dashboard' && (!hasStoredUser || sessionRole !== 'admin')) {
+        return 'home';
+      }
       return session?.currentView || 'home';
     } catch {
       return 'home';
@@ -688,6 +698,40 @@ function AppContent() {
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
   const isStudentMessagesView = currentView === 'student-dashboard' && studentTab === 'messages';
   const isHomeView = currentView === 'home';
+  const canAccessStudentDashboard = isStudentSessionVerified && hasUser && activeRole === 'student';
+  const canAccessAdminDashboard = hasUser && activeRole === 'admin' && Boolean(getAccessToken(null, user));
+
+  useEffect(() => {
+    const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+    const isDashboardRoute = pathname === '/dashboard'
+      || ['student-dashboard', 'admin-dashboard'].includes(currentView);
+    if (!isDashboardRoute) return;
+
+    if (
+      canAccessStudentDashboard
+      || canAccessAdminDashboard
+      || (
+        currentView === 'student-dashboard'
+        && isRestoringStudentSession
+        && hasUser
+        && activeRole === 'student'
+      )
+    ) return;
+
+    setCurrentView('home');
+    setStudentDashboardLink({ tab: 'home', section: null, itemId: null });
+    setStudentTab('home');
+    if (window.location.pathname !== '/' || window.location.search || window.location.hash) {
+      window.history.replaceState({}, '', '/');
+    }
+  }, [
+    activeRole,
+    canAccessAdminDashboard,
+    canAccessStudentDashboard,
+    currentView,
+    hasUser,
+    isRestoringStudentSession,
+  ]);
 
   const handleStudentDashboardFallback = useCallback(() => {
     setStudentDashboardLink({ tab: 'home', section: null, itemId: null });
@@ -1067,7 +1111,7 @@ function AppContent() {
               onNavigate={handleNavigate}
             />
           )}
-          {activeRole === 'admin' && currentView === 'admin-dashboard' && (
+          {canAccessAdminDashboard && currentView === 'admin-dashboard' && (
             <AdminDashboard
               onLogout={handleAdminLogout}
               onNavigate={handleNavigate}
@@ -1079,24 +1123,6 @@ function AppContent() {
             />
           )}
           {!isRestoringStudentSession && isStudentSessionVerified && activeRole === 'student' && currentView === 'student-dashboard' && (
-            <StudentDashboard
-              user={user}
-              initialTab={studentTab}
-              dashboardLink={studentDashboardLink}
-              onDashboardLinkInvalid={handleStudentDashboardFallback}
-              onTabChange={handleStudentTabChange}
-              initialProductToEdit={pendingSellerProductEdit}
-              onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
-              initialMessagesProductId={pendingMessagesProductId}
-              onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
-              onUserUpdate={setUser}
-              onNavigate={handleNavigate}
-              appUnreadNotificationCount={unreadCount}
-              onOpenPrivacy={() => setShowFooterPrivacy(true)}
-              onOpenTerms={() => setShowFooterTerms(true)}
-            />
-          )}
-          {!activeRole && currentView === 'student-dashboard' && (
             <StudentDashboard
               user={user}
               initialTab={studentTab}

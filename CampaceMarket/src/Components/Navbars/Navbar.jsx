@@ -114,7 +114,12 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isAdmin, user, userRole]);
 
   return (
-    <header ref={headerRef} className="site-navbar sticky top-0 z-50 h-[72px] w-full shrink-0 border-b border-blue-900 text-white">
+    <header
+      ref={headerRef}
+      className={`${isDashboardLayout
+        ? 'site-navbar border-b border-blue-900'
+        : 'border-b border-white/10 bg-sky-500 shadow-sm backdrop-blur-md'} sticky top-0 z-50 h-[72px] w-full shrink-0 text-white`}
+    >
       <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
 
         {isDashboardLayout && isAdmin && (
@@ -145,10 +150,10 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
         {/* Navigation Links */}
         {!isDashboardLayout && (
           <nav className="hidden min-w-0 flex-1 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
-            <button onClick={() => onNavigate('home')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Home</button>
-            <button onClick={() => onNavigate('about')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">About</button>
-            <button onClick={() => onNavigate('services')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Services</button>
-            <button onClick={() => onNavigate('contact')} className="text-sm font-bold text-white hover:text-white/80 transition duration-150">Contact</button>
+            <button onClick={() => onNavigate('home')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">Home</button>
+            <button onClick={() => onNavigate('about')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">About</button>
+            <button onClick={() => onNavigate('services')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">Services</button>
+            <button onClick={() => onNavigate('contact')} className="text-sm font-semibold text-white/85 transition duration-200 hover:text-white">Contact</button>
 
             {user && (
               <button
@@ -354,13 +359,13 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             <div className="flex items-center gap-2">
               <button
                 onClick={() => onNavigate('login')}
-                className="hidden cursor-pointer font-semibold text-white hover:text-blue-200 md:flex"
+                className="hidden min-h-10 cursor-pointer items-center rounded-xl border border-white/25 px-4 font-semibold text-white transition duration-200 hover:border-white/50 hover:bg-white/10 md:flex"
               >
                 {t('navbar.login')}
               </button>
               <button
                 onClick={() => onNavigate('register')}
-                className="hidden cursor-pointer font-semibold text-white hover:text-blue-200 md:flex"
+                className="hidden min-h-10 cursor-pointer items-center rounded-lg bg-sky-500 px-4 font-semibold text-white shadow-sm transition duration-200 hover:bg-sky-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900 md:flex"
               >
                 {t('navbar.signup')}
               </button>
@@ -419,7 +424,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   onNavigate('register');
                   setIsMobileMenuOpen(false);
                 }}
-                className="min-h-[48px] w-full rounded-lg bg-white text-center font-bold text-sky-700 transition-colors hover:bg-sky-50"
+                className="min-h-[48px] w-full rounded-lg bg-sky-500 text-center font-bold text-white shadow-sm transition-colors hover:bg-sky-600"
               >
                 {t('navbar.signup')}
               </button>
