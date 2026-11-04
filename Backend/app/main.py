@@ -5847,6 +5847,7 @@ def _create_secure_session_for_student(
         "user": {
             "name": student.name,
             "studentId": student.student_id,
+            "student_id": student.student_id,
             "email": student.email,
             "avatarUrl": avatar_url,
             "is_verified": bool(student.is_verified),
@@ -6069,6 +6070,7 @@ def get_oauth_session(
         "user": {
             "name": student.name,
             "studentId": student.student_id,
+            "student_id": student.student_id,
             "email": student.email,
             "is_verified": bool(student.is_verified),
             "two_factor_enabled": bool(student.two_factor_enabled),
@@ -9393,10 +9395,10 @@ def update_student_me(
 ):
     student = _student_from_authorization(authorization, db)
     if profile.student_id is not None:
-        raise HTTPException(
-            status_code=403,
-            detail="Student ID changes require an admin-approved verification request.",
-        )
+        requested_student_id = profile.student_id.strip()
+        if not requested_student_id or len(requested_student_id) > 50:
+            raise HTTPException(status_code=422, detail="Student ID must contain 1 to 50 characters.")
+        student.student_id = requested_student_id
 
     if profile.phone_number is not None:
         student.phone = profile.phone_number.strip() or None
@@ -9898,11 +9900,17 @@ def revoke_other_student_sessions(
 
 
 @app.put("/api/student/profile")
-def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == profile.student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
+def update_student_profile(
+    profile: StudentProfileUpdate,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    requested_student_id = profile.student_id.strip()
+    if not requested_student_id or len(requested_student_id) > 50:
+        raise HTTPException(status_code=422, detail="Student ID must contain 1 to 50 characters.")
 
+    student.student_id = requested_student_id
     student.name = profile.name
     student.phone = profile.phone
     student.college = profile.college
@@ -9914,11 +9922,26 @@ def update_student_profile(profile: StudentProfileUpdate, db: Session = Depends(
         student.password = hash_password(profile.password)
         _revoke_user_sessions(db, student.student_id)
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That student ID is already in use.") from error
     db.refresh(student)
+
+    token = authorization.partition(" ")[-1].strip()
+    session_id = _decode_student_jwt(token).get("session_id")
+    access_token = _create_session_token(
+        student.student_id,
+        "student",
+        SESSION_TOKEN_TIMEOUT_MINUTES,
+        _get_session_secret(),
+        session_id=session_id,
+    )
 
     return {
         "success": True,
+        "access_token": access_token,
         "user": {
             "name": student.name,
             "studentId": student.student_id,

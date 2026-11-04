@@ -2409,14 +2409,15 @@ function StudentDashboard({
 
     try {
       const payload = {
+        student_id: profileForm.studentId,
         name: profileForm.name,
-        phone_number: profileForm.phone,
+        phone: profileForm.phone,
         college: profileForm.college,
         department: profileForm.department,
       };
 
-      const res = await fetch(`${API_BASE_URL}/students/me`, {
-        method: 'PATCH',
+      const res = await fetch(`${API_BASE_URL}/api/student/profile`, {
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
@@ -2434,11 +2435,14 @@ function StudentDashboard({
         ...data.user,
         access_token: data.access_token || user.access_token,
         name: data.user.name,
+        studentId: data.user.studentId,
+        student_id: data.user.student_id || data.user.studentId,
         phone: data.user.phone,
         college: data.user.college,
         department: data.user.department,
       };
 
+      setProfileForm((previous) => ({ ...previous, studentId: data.user.studentId || previous.studentId }));
       onUserUpdate(updatedUser);
       setProfileMessage('Profile updated successfully.');
       notifySuccess(studentToast('profileSaved'), 'student-profile-save');

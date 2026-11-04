@@ -4,8 +4,8 @@ import unittest
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from fastapi import HTTPException
 from sqlalchemy.sql import visitors
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -23,20 +23,69 @@ from app import main as main_module
 
 
 class OrderLifecycleTests(unittest.TestCase):
-    def test_direct_student_id_profile_edit_is_rejected(self):
-        student = SimpleNamespace(student_id="OAUTH-875D73CE2C")
-        original_auth = main_module._student_from_authorization
-        main_module._student_from_authorization = lambda _authorization, _db: student
-        try:
-            with self.assertRaises(HTTPException) as error:
-                main_module.update_student_me(
-                    main_module.StudentSelfProfileUpdate(student_id="MAU1600007"),
-                    "Bearer test-token",
-                    SimpleNamespace(),
-                )
-            self.assertEqual(error.exception.status_code, 403)
-        finally:
-            main_module._student_from_authorization = original_auth
+    def test_direct_student_id_profile_edit_is_saved_and_rotates_token(self):
+        student = SimpleNamespace(
+            student_id="OAUTH-875D73CE2C",
+            name="Student",
+            phone=None,
+            college="",
+            department="",
+            email="student@example.edu",
+            is_verified=False,
+            two_factor_enabled=False,
+            has_password=True,
+        )
+        database = SimpleNamespace(commit=lambda: None, refresh=lambda _student: None)
+        with (
+            patch.object(main_module, "_student_from_authorization", return_value=student),
+            patch.object(main_module, "_decode_student_jwt", return_value={"session_id": "session-1"}),
+            patch.object(main_module, "_get_session_secret", return_value="secret"),
+            patch.object(main_module, "_create_session_token", return_value="rotated-token"),
+        ):
+            result = main_module.update_student_me(
+                main_module.StudentSelfProfileUpdate(student_id="MAU1600007"),
+                "Bearer test-token",
+                database,
+            )
+
+        self.assertEqual(student.student_id, "MAU1600007")
+        self.assertEqual(result["user"]["studentId"], "MAU1600007")
+        self.assertEqual(result["access_token"], "rotated-token")
+
+    def test_put_student_profile_updates_id_and_returns_updated_profile(self):
+        student = SimpleNamespace(
+            student_id="OAUTH-875D73CE2C",
+            name="Old Name",
+            phone=None,
+            college="",
+            department="",
+            preferred_pickup_location="Student Center",
+            email="student@example.edu",
+            is_verified=False,
+            two_factor_enabled=False,
+        )
+        database = SimpleNamespace(commit=lambda: None, refresh=lambda _student: None)
+        profile = main_module.StudentProfileUpdate(
+            student_id="MAU1600007",
+            name="New Name",
+            phone="0912345678",
+            college="Engineering",
+            department="Computer Science",
+        )
+        with (
+            patch.object(main_module, "_student_from_authorization", return_value=student),
+            patch.object(main_module, "_decode_student_jwt", return_value={"session_id": "session-1"}),
+            patch.object(main_module, "_get_session_secret", return_value="secret"),
+            patch.object(main_module, "_create_session_token", return_value="rotated-token"),
+        ):
+            result = main_module.update_student_profile(profile, "Bearer test-token", database)
+
+        self.assertEqual(result["user"]["studentId"], "MAU1600007")
+        self.assertEqual(result["user"]["name"], "New Name")
+        self.assertEqual(result["user"]["phone"], "0912345678")
+        self.assertEqual(result["user"]["college"], "Engineering")
+        self.assertEqual(result["user"]["department"], "Computer Science")
+        self.assertEqual(result["access_token"], "rotated-token")
 
     def test_seller_analytics_query_is_scoped_to_authenticated_seller(self):
         captured_filters = []
