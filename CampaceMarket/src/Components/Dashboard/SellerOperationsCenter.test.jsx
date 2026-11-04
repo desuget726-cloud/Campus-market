@@ -187,6 +187,39 @@ describe('SellerOperationsCenter product pagination', () => {
     expect(within(summary).getByText('0 Pending')).toBeTruthy();
   });
 
+  it('optimistically moves a marked product from Active to Sold', async () => {
+    const action = deferred();
+    let markCompleted = false;
+    const onMarkAsSold = vi.fn(() => action.promise);
+    const fetchProducts = vi.fn(async (url) => {
+      if (!String(url).includes('/seller/products')) return createAnalyticsResponse();
+      const response = createPageResponse(1, 18, 10);
+      if (markCompleted) {
+        response.items[0] = { ...response.items[0], status: 'Sold', stock: 0 };
+        response.summary = { total: 18, active: 17, sold: 1, pending: 0 };
+      }
+      return { ok: true, json: async () => response };
+    });
+    vi.stubGlobal('fetch', fetchProducts);
+    const user = userEvent.setup();
+    renderProductManagement({ onMarkAsSold });
+
+    const row = await screen.findByRole('row', { name: /Product 1/ });
+    await user.click(within(row).getByRole('button', { name: 'Mark as Sold' }));
+
+    const summary = screen.getByRole('group', { name: 'Inventory summary' });
+    await waitFor(() => {
+      expect(within(summary).getByText('17 Active')).toBeTruthy();
+      expect(within(summary).getByText('1 Sold')).toBeTruthy();
+      expect(within(row).getByText('Sold')).toBeTruthy();
+    });
+
+    markCompleted = true;
+    action.resolve();
+    expect(onMarkAsSold).toHaveBeenCalledWith(1);
+    await waitFor(() => expect(fetchProducts).toHaveBeenCalledTimes(2));
+  });
+
   it('opens product details from the inventory row and View button', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url) => (
       String(url).includes('/seller/products')

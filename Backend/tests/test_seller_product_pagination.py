@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app import main as main_module
 from app.database import Base
-from app.models import Product, Student
+from app.models import Order, Product, Student
 
 
 class SellerProductPaginationTests(unittest.TestCase):
@@ -155,6 +155,28 @@ class SellerProductPaginationTests(unittest.TestCase):
         self.assertEqual(
             response.json()["summary"],
             {"total": 25, "active": 16, "sold": 5, "pending": 4},
+        )
+
+    def test_summary_counts_zero_stock_and_completed_paid_order_products_as_sold(self):
+        self.products[0].stock = 0
+        completed_order_product = self.products[1]
+        self.db.add(Order(
+            student_id=self.other_seller.student_id,
+            product_id=completed_order_product.id,
+            title=completed_order_product.title,
+            price=completed_order_product.price,
+            status="Completed",
+            payment_status="Successful",
+            seller_id=self.seller.student_id,
+        ))
+        self.db.commit()
+
+        response = self.get_products(1)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json()["summary"],
+            {"total": 25, "active": 14, "sold": 7, "pending": 4},
         )
 
     def test_invalid_pages_are_clamped_to_the_first_or_last_page(self):

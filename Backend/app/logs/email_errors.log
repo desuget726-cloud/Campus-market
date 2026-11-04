@@ -4275,3 +4275,122 @@ TimeoutError: timed out
 2026-11-02 22:58:21,999 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
 2026-11-02 22:58:23,406 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
 2026-11-02 22:58:23,407 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.
+2026-11-04 02:12:52,242 ERROR Failed to send student notification email: timed out
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 3866, in _send_student_notification_email
+    with _IPv4SMTP_SSL(
+         ~~~~~~~~~~~~~^
+        "smtp.gmail.com",
+        ^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        timeout=15,
+        ^^^^^^^^^^^
+    ) as server:
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1022, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 255, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 341, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1548, in _get_socket
+    new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1533, in _create_ipv4_smtp_socket
+    raise last_error
+  File "C:\Users\Administrator\Documents\Campus-market\backend\app\main.py", line 1529, in _create_ipv4_smtp_socket
+    return socket.create_connection(address, timeout, source_address)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 864, in create_connection
+    raise exceptions[0]
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 849, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out
+2026-11-04 02:51:26,592 ERROR Failed to send student notification email: timed out
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 3866, in _send_student_notification_email
+    with _IPv4SMTP_SSL(
+         ^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\smtplib.py", line 1022, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+  File "C:\Python312\Lib\smtplib.py", line 255, in __init__
+    (code, msg) = self.connect(host, port)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\smtplib.py", line 341, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 1548, in _get_socket
+    new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 1533, in _create_ipv4_smtp_socket
+    raise last_error
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 1529, in _create_ipv4_smtp_socket
+    return socket.create_connection(address, timeout, source_address)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python312\Lib\socket.py", line 865, in create_connection
+    raise exceptions[0]
+  File "C:\Python312\Lib\socket.py", line 850, in create_connection
+    sock.connect(sa)
+TimeoutError: timed out
+2026-11-04 03:34:53,279 ERROR Failed to send student notification email: timed out
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 3989, in _send_student_notification_email
+    with _IPv4SMTP_SSL(
+         ~~~~~~~~~~~~~^
+        "smtp.gmail.com",
+        ^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        timeout=15,
+        ^^^^^^^^^^^
+    ) as server:
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 1022, in __init__
+    SMTP.__init__(self, host, port, local_hostname, timeout,
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                  source_address)
+                  ^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 255, in __init__
+    (code, msg) = self.connect(host, port)
+                  ~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\smtplib.py", line 341, in connect
+    self.sock = self._get_socket(host, port, self.timeout)
+                ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 1566, in _get_socket
+    new_socket = _create_ipv4_smtp_socket(host, port, timeout, self.source_address)
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 1551, in _create_ipv4_smtp_socket
+    raise last_error
+  File "C:\Users\Administrator\Documents\Campus-market\Backend\app\main.py", line 1547, in _create_ipv4_smtp_socket
+    return socket.create_connection(address, timeout, source_address)
+           ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 864, in create_connection
+    raise exceptions[0]
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\socket.py", line 849, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+TimeoutError: timed out
+2026-11-04 03:37:47,007 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-04 03:37:47,016 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-04 03:37:47,690 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 03:37:48,361 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 03:37:48,579 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 03:37:50,097 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 03:37:50,099 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.
+2026-11-04 04:21:18,865 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-04 04:21:18,872 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-04 04:21:19,487 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:21:19,931 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:21:20,459 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:21:21,829 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:21:21,831 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.
+2026-11-04 04:32:26,908 INFO Preparing SMTP email sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-04 04:32:26,921 INFO Connecting to SMTP host=smtp.gmail.com port=587 mode=starttls sender=desu5392@gmail.com receiver=desget90@gmail.com.
+2026-11-04 04:32:27,583 INFO SMTP stage succeeded stage=connect mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:32:28,033 INFO SMTP stage succeeded stage=starttls mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:32:28,240 INFO SMTP stage succeeded stage=login mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:32:29,394 INFO SMTP stage succeeded stage=send mode=starttls host=smtp.gmail.com port=587.
+2026-11-04 04:32:29,396 INFO SMTP delivery succeeded sender=desu5392@gmail.com receiver=desget90@gmail.com host=smtp.gmail.com port=587.

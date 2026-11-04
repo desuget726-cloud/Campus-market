@@ -33,14 +33,15 @@ class AutoHideSoldSettingsTests(unittest.TestCase):
         self.assertEqual(len(query.filters), 2)
         status_filter, stock_filter = query.filters
         status_params = status_filter.compile().params
-        self.assertIn(["approved"], status_params.values())
+        self.assertIn(["approved", "active", "available"], status_params.values())
         self.assertIn("products.stock", str(stock_filter))
 
-    def test_disabled_includes_sold_products(self):
+    def test_disabled_still_excludes_sold_and_out_of_stock_products(self):
         query = self.build_query(False)
-        self.assertEqual(len(query.filters), 1)
+        self.assertEqual(len(query.filters), 2)
         status_params = query.filters[0].compile().params
-        self.assertIn(["approved", "sold"], status_params.values())
+        self.assertIn(["approved", "active", "available"], status_params.values())
+        self.assertIn("products.stock", str(query.filters[1]))
 
 
 if __name__ == "__main__":

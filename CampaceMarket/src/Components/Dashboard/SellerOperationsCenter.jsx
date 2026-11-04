@@ -264,6 +264,40 @@ function SellerOperationsCenter({
     setProductPageNumber(nextPage);
   };
 
+  const updateProductPageStatus = (productId, status) => {
+    setProductPage((previous) => {
+      const currentProduct = previous.items.find((item) => String(item.id) === String(productId));
+      if (!currentProduct) return previous;
+
+      const categoryFor = (item) => {
+        const normalizedStatus = String(item.status || "Pending").trim().toLowerCase();
+        if (normalizedStatus === "sold" || Number(item.stock ?? 0) <= 0 || item.has_completed_orders) return "sold";
+        if (normalizedStatus.includes("pending")) return "pending";
+        return "active";
+      };
+      const nextProduct = {
+        ...currentProduct,
+        status,
+        stock: status === "Sold" ? 0 : currentProduct.stock,
+        sold_via: status === "Sold" ? "Marked by Seller" : null,
+      };
+      const currentCategory = categoryFor(currentProduct);
+      const nextCategory = categoryFor(nextProduct);
+      const summary = { ...previous.summary };
+      if (currentCategory !== nextCategory) {
+        summary[currentCategory] = Math.max(0, Number(summary[currentCategory] || 0) - 1);
+        summary[nextCategory] = Number(summary[nextCategory] || 0) + 1;
+      }
+      return {
+        ...previous,
+        summary,
+        items: previous.items.map((item) => (
+          String(item.id) === String(productId) ? nextProduct : item
+        )),
+      };
+    });
+  };
+
   const {
     filters: sellerOrderFilters,
     updateFilters: updateSellerOrderFilters,
@@ -300,6 +334,9 @@ function SellerOperationsCenter({
   const runProductAction = async (productId, action, callback) => {
     setProductActionFeedback(null);
     setProductActionState((previous) => ({ ...previous, [productId]: action }));
+    const optimisticStatus = action === "sold" ? "Sold" : action === "available" ? "Approved" : null;
+    const previousProductPage = optimisticStatus ? productPage : null;
+    if (optimisticStatus) updateProductPageStatus(productId, optimisticStatus);
     try {
       await callback(productId);
       await fetchProductPage(productPageNumber);
@@ -328,6 +365,7 @@ function SellerOperationsCenter({
         `student-product-action-${productId}-${action}`,
       );
     } catch (error) {
+      if (previousProductPage) setProductPage(previousProductPage);
       setProductActionFeedback({
         type: "error",
         message: error.message || "The product action failed.",
@@ -760,7 +798,9 @@ function SellerOperationsCenter({
                       const stock = Number(listing.stock ?? 0);
                       const soldOut = stock === 0;
                       const hasOrders = listing.has_orders === true;
-                      const isSold = String(status).toLowerCase() === "sold";
+                      const isSold = String(status).trim().toLowerCase() === "sold"
+                        || soldOut
+                        || listing.has_completed_orders === true;
                       const isPaused = String(status).toLowerCase() === "paused";
                       const actionInProgress = Boolean(productActionState[listing.id]);
                       return (
@@ -898,9 +938,9 @@ function SellerOperationsCenter({
                                 <>
                                   <button
                                     type="button"
-                                    disabled={soldOut || actionInProgress}
+                                    disabled={soldOut || listing.has_completed_orders === true || actionInProgress}
                                     title={
-                                      soldOut
+                                      soldOut || listing.has_completed_orders === true
                                         ? "Add stock via Edit before marking this product available."
                                         : undefined
                                     }
@@ -910,12 +950,13 @@ function SellerOperationsCenter({
                                     }}
                                     className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400"
                                   >
-                                    {actionInProgress ? "Updating..." : "Mark as Available"}
+                                    {actionInProgress ? "Updating..." : "Reactivate"}
                                   </button>
-                                  {soldOut && (
+                                  {(soldOut || listing.has_completed_orders === true) && (
                                     <span className="basis-full text-xs font-semibold text-slate-500">
-                                      Add stock via Edit before marking this
-                                      product available.
+                                      {listing.has_completed_orders === true
+                                        ? "Completed order history keeps this product in Sold."
+                                        : "Add stock via Edit before reactivating this product."}
                                     </span>
                                   )}
                                 </>
@@ -1103,10 +1144,10 @@ function SellerOperationsCenter({
               </div>
             ) : !salesAnalyticsLoading
               && Number(salesAnalytics.stats?.total_orders ?? salesAnalytics.order_count ?? 0) === 0 ? (
-                <p className="mt-3 text-sm text-slate-500" role="status">
-                  {t("sellerHub.salesNoSales")}
-                </p>
-              ) : null}
+              <p className="mt-3 text-sm text-slate-500" role="status">
+                {t("sellerHub.salesNoSales")}
+              </p>
+            ) : null}
             <svg
               viewBox="0 0 640 230"
               className="mt-6 h-56 w-full"

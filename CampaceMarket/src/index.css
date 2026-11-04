@@ -1,5 +1,41 @@
 @import 'tailwindcss';
 
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.announcement-marquee::before,
+.announcement-marquee::after {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  width: 1rem;
+  content: '';
+  pointer-events: none;
+}
+
+.announcement-marquee::before {
+  left: 0;
+  background: linear-gradient(to right, rgb(254 243 199 / 95%), transparent);
+}
+
+.announcement-marquee::after {
+  right: 0;
+  background: linear-gradient(to left, rgb(254 243 199 / 95%), transparent);
+}
+
+.announcement-marquee-track {
+  will-change: transform;
+  animation: marquee 25s linear infinite;
+}
+
+.announcement-banner:hover .announcement-marquee-track {
+  animation-play-state: paused;
+}
+
 :root {
   --header-h: 72px;
   --student-sidebar-width: 280px;
@@ -435,7 +471,7 @@ body:has(#student-mobile-navigation) {
   overflow: hidden;
 }
 
-#root:has(#student-mobile-navigation) > div:first-child {
+#root:has(#student-mobile-navigation)>div:first-child {
   height: 100dvh;
   min-height: 0;
   overflow: hidden;

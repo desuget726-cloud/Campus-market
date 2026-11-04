@@ -1171,6 +1171,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [newCatIcon, setNewCatIcon] = useState('');
   const [newSubName, setNewSubName] = useState('');
   const [newSubParentId, setNewSubParentId] = useState('');
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [categoryEditForm, setCategoryEditForm] = useState({ name: '', icon: '', is_active: true });
+  const [editingSubcategory, setEditingSubcategory] = useState(null);
+  const [subcategoryEditForm, setSubcategoryEditForm] = useState({ name: '', icon: '', parent_category_id: '' });
 
   // 5. Order Management State
   const [ordersList, setOrdersList] = useState([]);
@@ -1303,17 +1307,25 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   const [announcementForm, setAnnouncementForm] = useState({
     title: '',
     message: '',
-    target: 'Everyone',
-    sendType: 'now',
-    scheduleDate: '',
-    scheduleTime: ''
+    image_url: '',
+    image_preview_url: '',
+    target: 'everyone',
+    department: '',
+    deliveryChannels: ['in_app'],
   });
+  const [announcementImageUploading, setAnnouncementImageUploading] = useState(false);
+  const [announcementImageError, setAnnouncementImageError] = useState('');
+  const announcementPreviewUrlRef = useRef('');
   const [announcementLog, setAnnouncementLog] = useState([]);
   const [verificationDeptsList, setVerificationDeptsList] = useState([]);
   const [notificationsSearch, setNotificationsSearch] = useState('');
   const [notificationsFilter, setNotificationsFilter] = useState('All');
   const [previewAnnouncement, setPreviewAnnouncement] = useState(null);
   const [showPreviewModal, setShowPreviewModal] = useState(false);
+
+  useEffect(() => () => {
+    if (announcementPreviewUrlRef.current) URL.revokeObjectURL(announcementPreviewUrlRef.current);
+  }, []);
 
   // 8. Audit Logs List
   const [auditLogs, setAuditLogs] = useState([]);
@@ -2679,10 +2691,30 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setPaymentVerificationLoading(true);
     setPaymentVerificationMessage('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/payment/verify/${encodeURIComponent(txRef)}`);
+      const adminToken = localStorage.getItem('admin_token')
+        || localStorage.getItem('token')
+        || getAdminSessionToken();
+      const authorization = adminToken
+        ? (/^Bearer\s/i.test(adminToken) ? adminToken : `Bearer ${adminToken}`)
+        : '';
+      const response = await fetch(`${API_BASE_URL}/api/admin/payments/${encodeURIComponent(txRef)}/verify`, {
+        method: 'POST',
+        headers: authorization ? { Authorization: authorization } : {},
+      });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || 'Verification failed.');
-      setPaymentVerificationMessage(`Gateway verification returned ${data.status}.`);
+      if (!response.ok || data.verified === false || data.success === false) {
+        const detail = typeof data.detail === 'string'
+          ? data.detail
+          : data.detail?.message || `Gateway verification returned ${data.status || 'an error'}.`;
+        setPaymentVerificationMessage(
+          data.status === 'Pending'
+            ? 'Verification check: Still pending on Chapa.'
+            : `Verification check: ${detail}`,
+        );
+        return;
+      }
+
+      setPaymentVerificationMessage(`Verification check: Payment verified successfully.`);
       setPaymentsList((previous) => previous.map((payment) => payment.transaction_id === txRef
         ? { ...payment, status: data.status }
         : payment));
@@ -2690,7 +2722,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       refreshAuditLogs();
       notifySuccess('Payment verification updated.', `admin-payment-verify-${txRef}`);
     } catch (error) {
-      notifyError(error, `admin-payment-verify-${txRef}`);
+      setPaymentVerificationMessage(`Verification check: ${error.message || 'Unable to verify payment.'}`);
     } finally {
       setPaymentVerificationLoading(false);
     }
@@ -3207,6 +3239,92 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setExpandedCategoryId((currentId) => currentId === catId ? null : catId);
   };
 
+  const openCategoryEditor = (category) => {
+    setEditingCategory(category);
+    setCategoryEditForm({
+      name: category.name || '',
+      icon: category.icon || '',
+      is_active: category.is_active ?? category.status !== 'Inactive',
+    });
+  };
+
+  const handleUpdateCategory = async (event) => {
+    event.preventDefault();
+    if (!editingCategory) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/categories/${editingCategory.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: categoryEditForm.name.trim(),
+          icon: categoryEditForm.icon.trim() || null,
+          is_active: categoryEditForm.is_active,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Failed to update category.');
+
+      setCategoriesList((categories) => categories.map((category) => (
+        category.id === editingCategory.id
+          ? { ...category, ...payload, subcategories: category.subcategories }
+          : category
+      )));
+      setEditingCategory(null);
+      refreshAuditLogs();
+      notifySuccess('Category updated successfully.', `admin-category-update-${editingCategory.id}`);
+    } catch (error) {
+      notifyError(error, `admin-category-update-${editingCategory.id}`);
+    }
+  };
+
+  const openSubcategoryEditor = (category, subcategory) => {
+    setEditingSubcategory(subcategory);
+    setSubcategoryEditForm({
+      name: subcategory.name || '',
+      icon: subcategory.icon || '',
+      parent_category_id: String(category.id),
+    });
+  };
+
+  const handleUpdateSubcategory = async (event) => {
+    event.preventDefault();
+    if (!editingSubcategory) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/subcategories/${editingSubcategory.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: subcategoryEditForm.name.trim(),
+          icon: subcategoryEditForm.icon.trim() || null,
+          parent_category_id: Number(subcategoryEditForm.parent_category_id),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Failed to update subcategory.');
+
+      setCategoriesList((categories) => categories.map((category) => {
+        const existingSubcategory = category.subcategories?.find((subcategory) => subcategory.id === payload.id);
+        const subcategory = {
+          ...(existingSubcategory || {}),
+          ...payload,
+          ads: payload.ads || existingSubcategory?.ads || editingSubcategory.ads || '0 ads',
+        };
+        const subcategories = (category.subcategories || []).filter((item) => item.id !== payload.id);
+        if (category.id === payload.category_id) {
+          subcategories.push(subcategory);
+        }
+        return { ...category, subcategories };
+      }));
+      setEditingSubcategory(null);
+      refreshAuditLogs();
+      notifySuccess('Subcategory updated successfully.', `admin-subcategory-update-${editingSubcategory.id}`);
+    } catch (error) {
+      notifyError(error, `admin-subcategory-update-${editingSubcategory.id}`);
+    }
+  };
+
   const handleDeleteCategory = async (id) => {
     if (!window.confirm('Are you sure you want to delete this category? This action cannot be undone.')) {
       return;
@@ -3511,31 +3629,46 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     }
   };
 
-  const handleDeleteAnnouncement = (id) => {
+  const handleDeleteAnnouncement = async (id) => {
     const targetAnnouncement = announcementLog.find(item => item.id === id);
     if (!targetAnnouncement) return;
 
     const confirmed = window.confirm(`Delete the announcement "${targetAnnouncement.title}" from the history?`);
     if (!confirmed) return;
 
-    setAnnouncementLog(prev => prev.filter(item => item.id !== id));
-    if (previewAnnouncement && previewAnnouncement.id === id) {
-      setPreviewAnnouncement(null);
-      setShowPreviewModal(false);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/broadcasts/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getReportRequestHeaders(),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Announcement deletion failed.');
+
+      setAnnouncementLog((previous) => previous.filter((item) => item.id !== id));
+      if (previewAnnouncement && previewAnnouncement.id === id) {
+        setPreviewAnnouncement(null);
+        setShowPreviewModal(false);
+      }
+      notifySuccess('Announcement deleted successfully.', `admin-announcement-delete-${id}`);
+    } catch (error) {
+      notifyError(error, `admin-announcement-delete-${id}`);
     }
-    notifySuccess('Announcement deleted successfully.', `admin-announcement-delete-${id}`);
   };
 
   const fetchBroadcastHistory = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/notifications/broadcasts`);
-      if (!response.ok) throw new Error('Broadcast history endpoint unavailable');
+      const response = await fetch(`${API_BASE_URL}/api/admin/broadcasts`, {
+        headers: getReportRequestHeaders(),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Broadcast history endpoint unavailable');
+      }
 
       const data = await response.json();
       setAnnouncementLog(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to fetch broadcast history:', error);
-      setAnnouncementLog([]);
     }
   };
 
@@ -3567,8 +3700,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       return;
     }
 
-    if (announcementForm.sendType === 'schedule' && (!announcementForm.scheduleDate || !announcementForm.scheduleTime)) {
-      notifyError(new Error('Please choose both the schedule date and time before previewing a scheduled notification.'), 'admin-broadcast-preview');
+    if (announcementForm.target === 'department' && !announcementForm.department) {
+      notifyError(new Error('Please choose a department before previewing the broadcast.'), 'admin-broadcast-preview');
       return;
     }
 
@@ -3578,66 +3711,176 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
       delivered: 0,
       read: 0,
       unread: 0,
-      status: announcementForm.sendType === 'schedule' ? 'Scheduled' : 'Ready to send',
+      status: 'Ready to send',
       date: new Date().toLocaleString()
     });
     setShowPreviewModal(true);
   };
 
+  const resetAnnouncementForm = () => {
+    if (announcementPreviewUrlRef.current) {
+      URL.revokeObjectURL(announcementPreviewUrlRef.current);
+      announcementPreviewUrlRef.current = '';
+    }
+    setAnnouncementImageError('');
+    setAnnouncementForm({
+      title: '',
+      message: '',
+      image_url: '',
+      image_preview_url: '',
+      target: 'everyone',
+      department: '',
+      deliveryChannels: ['in_app'],
+    });
+  };
+
+  const handleAnnouncementImageChange = async (event) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file || announcementImageUploading) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setAnnouncementImageError('Choose a JPG, PNG, or WebP image.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setAnnouncementImageError('Image must be 5 MB or smaller.');
+      return;
+    }
+
+    if (announcementPreviewUrlRef.current) URL.revokeObjectURL(announcementPreviewUrlRef.current);
+    const previewUrl = URL.createObjectURL(file);
+    announcementPreviewUrlRef.current = previewUrl;
+    setAnnouncementImageError('');
+    setAnnouncementForm((previous) => ({
+      ...previous,
+      image_url: '',
+      image_preview_url: previewUrl,
+    }));
+
+    const formData = new FormData();
+    formData.append('image', file);
+    setAnnouncementImageUploading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/broadcasts/image`, {
+        method: 'POST',
+        headers: getReportRequestHeaders(),
+        body: formData,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Image upload failed.');
+      if (!data.image_url) throw new Error('Image upload did not return a URL.');
+      URL.revokeObjectURL(previewUrl);
+      announcementPreviewUrlRef.current = '';
+      setAnnouncementForm((previous) => ({
+        ...previous,
+        image_url: data.image_url,
+        image_preview_url: data.image_url,
+      }));
+    } catch (error) {
+      setAnnouncementImageError(error.message || 'Image upload failed.');
+      notifyError(error, 'admin-broadcast-image-upload');
+    } finally {
+      setAnnouncementImageUploading(false);
+    }
+  };
+
+  const removeAnnouncementImage = () => {
+    if (announcementPreviewUrlRef.current) {
+      URL.revokeObjectURL(announcementPreviewUrlRef.current);
+      announcementPreviewUrlRef.current = '';
+    }
+    setAnnouncementImageError('');
+    setAnnouncementForm((previous) => ({ ...previous, image_url: '', image_preview_url: '' }));
+  };
+
   const handleEditPreview = () => {
     if (!previewAnnouncement) return;
 
+    const targetByType = {
+      everyone: 'everyone',
+      sellers: 'active_sellers',
+      buyers: 'active_buyers',
+      department: 'department',
+    };
     setAnnouncementForm((previous) => ({
       ...previous,
       title: previewAnnouncement.title || '',
-      target: previewAnnouncement.target || 'Everyone',
+      target: targetByType[previewAnnouncement.target_type] || previewAnnouncement.target || 'everyone',
+      department: previewAnnouncement.department || '',
+      deliveryChannels: previewAnnouncement.deliveryChannels || previewAnnouncement.delivery_channels || ['in_app'],
       message: previewAnnouncement.message || '',
+      image_url: previewAnnouncement.image_url || '',
+      image_preview_url: previewAnnouncement.image_preview_url || previewAnnouncement.image_url || '',
     }));
     setShowPreviewModal(false);
   };
 
-  const handleConfirmBroadcast = async () => {
-    if (!previewAnnouncement || broadcastSending) return;
+  const handleSendBroadcast = async (announcement = announcementForm) => {
+    if (broadcastSending) return;
+    if (announcementImageUploading) {
+      notifyError(new Error('Wait for the image upload to finish before sending.'), 'admin-broadcast-send');
+      return;
+    }
+    if (announcement.image_preview_url && !announcement.image_url) {
+      notifyError(new Error('The image could not be uploaded. Remove it or choose another image.'), 'admin-broadcast-send');
+      return;
+    }
+    if (!announcement.title.trim() || !announcement.message.trim()) {
+      notifyError(new Error('Please enter a title and message before sending the broadcast.'), 'admin-broadcast-send');
+      return;
+    }
+    if (announcement.target === 'department' && !announcement.department) {
+      notifyError(new Error('Please choose a department before sending the broadcast.'), 'admin-broadcast-send');
+      return;
+    }
+    if (!announcement.deliveryChannels?.length) {
+      notifyError(new Error('Choose at least one delivery channel.'), 'admin-broadcast-send');
+      return;
+    }
+
     setBroadcastSending(true);
 
     const payload = {
-      title: previewAnnouncement.title,
-      message: previewAnnouncement.message,
-      target: previewAnnouncement.target,
-      sendType: previewAnnouncement.sendType,
-      scheduleDate: previewAnnouncement.sendType === 'schedule' ? previewAnnouncement.scheduleDate : null,
-      scheduleTime: previewAnnouncement.sendType === 'schedule' ? previewAnnouncement.scheduleTime : null
+      title: announcement.title.trim(),
+      message: announcement.message.trim(),
+      image_url: announcement.image_url || null,
+      target: announcement.target,
+      department: announcement.target === 'department' ? announcement.department : null,
+      deliveryChannels: announcement.deliveryChannels,
     };
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/notifications/broadcast`, {
+      const response = await fetch(`${API_BASE_URL}/api/admin/broadcasts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getReportRequestHeaders() },
         body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
-        throw new Error('Broadcast request failed');
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || 'Broadcast request failed');
       }
 
-      await fetchBroadcastHistory();
-      notifySuccess('Broadcast sent successfully.', 'admin-broadcast-send');
+      const data = await response.json();
+      const campaign = data.campaign || data;
+      setAnnouncementLog((previous) => [
+        campaign,
+        ...previous.filter((item) => item.id !== campaign.id),
+      ]);
+      notifySuccess('Announcement published to campus!', 'admin-broadcast-send');
+      resetAnnouncementForm();
+      setPreviewAnnouncement(null);
+      setShowPreviewModal(false);
     } catch (error) {
       console.error('Failed to send broadcast notification:', error);
       notifyError(error, 'admin-broadcast-send');
     } finally {
       setBroadcastSending(false);
-      setAnnouncementForm({
-        title: '',
-        message: '',
-        target: 'Everyone',
-        sendType: 'now',
-        scheduleDate: '',
-        scheduleTime: ''
-      });
-      setPreviewAnnouncement(null);
-      setShowPreviewModal(false);
     }
+  };
+
+  const handleConfirmBroadcast = () => {
+    if (previewAnnouncement) handleSendBroadcast(previewAnnouncement);
   };
 
   const handleSaveSystemSettings = async () => {
@@ -4233,8 +4476,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                         aria-pressed={salesTrendRange === months}
                         onClick={() => setSalesTrendRange(months)}
                         className={`rounded-full px-3 py-1.5 text-xs font-bold transition-colors ${salesTrendRange === months
-                            ? 'bg-blue-600 text-white shadow-sm'
-                            : 'text-slate-600 hover:bg-white'
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'text-slate-600 hover:bg-white'
                           }`}
                       >
                         {months} months
@@ -5659,6 +5902,94 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               <p className="mt-1 text-slate-500 text-sm font-semibold">Organize, modify, and disable marketplace catalog categories.</p>
             </div>
 
+            {editingCategory && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+                <form onSubmit={handleUpdateCategory} role="dialog" aria-modal="true" aria-labelledby="edit-category-title" className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
+                  <h3 id="edit-category-title" className="text-xl font-black text-slate-950">Edit Main Category</h3>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                    Category Name
+                    <input
+                      type="text"
+                      required
+                      maxLength={100}
+                      value={categoryEditForm.name}
+                      onChange={(event) => setCategoryEditForm((form) => ({ ...form, name: event.target.value }))}
+                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                    />
+                  </label>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                    Icon (Emoji)
+                    <input
+                      type="text"
+                      maxLength={3}
+                      value={categoryEditForm.icon}
+                      onChange={(event) => setCategoryEditForm((form) => ({ ...form, icon: event.target.value }))}
+                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                    />
+                  </label>
+                  <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={categoryEditForm.is_active}
+                      onChange={(event) => setCategoryEditForm((form) => ({ ...form, is_active: event.target.checked }))}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Active
+                  </label>
+                  <div className="flex justify-end gap-3">
+                    <button type="button" onClick={() => setEditingCategory(null)} className="rounded-full border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Cancel</button>
+                    <button type="submit" className="btn-primary rounded-full px-5 py-3 text-sm font-bold">Save Changes</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {editingSubcategory && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+                <form onSubmit={handleUpdateSubcategory} role="dialog" aria-modal="true" aria-labelledby="edit-subcategory-title" className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl">
+                  <h3 id="edit-subcategory-title" className="text-xl font-black text-slate-950">Edit Subcategory</h3>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                    Subcategory Name
+                    <input
+                      type="text"
+                      required
+                      maxLength={100}
+                      value={subcategoryEditForm.name}
+                      onChange={(event) => setSubcategoryEditForm((form) => ({ ...form, name: event.target.value }))}
+                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                    />
+                  </label>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                    Icon (Emoji)
+                    <input
+                      type="text"
+                      maxLength={3}
+                      value={subcategoryEditForm.icon}
+                      onChange={(event) => setSubcategoryEditForm((form) => ({ ...form, icon: event.target.value }))}
+                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                    />
+                  </label>
+                  <label className="block text-xs font-bold uppercase tracking-wide text-slate-500">
+                    Parent Category
+                    <select
+                      required
+                      value={subcategoryEditForm.parent_category_id}
+                      onChange={(event) => setSubcategoryEditForm((form) => ({ ...form, parent_category_id: event.target.value }))}
+                      className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900"
+                    >
+                      {categoriesList.map((category) => (
+                        <option key={category.id} value={category.id}>{category.icon} {category.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="flex justify-end gap-3">
+                    <button type="button" onClick={() => setEditingSubcategory(null)} className="rounded-full border border-slate-200 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-50">Cancel</button>
+                    <button type="submit" className="btn-primary rounded-full px-5 py-3 text-sm font-bold">Save Changes</button>
+                  </div>
+                </form>
+              </div>
+            )}
+
             <div className="grid gap-6 lg:grid-cols-[1fr_400px] items-start">
 
               {/* Left Column: Active Categories with Nested Subcategories */}
@@ -5700,6 +6031,16 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              openCategoryEditor(cat);
+                            }}
+                            className="text-xs font-bold text-blue-600 hover:text-blue-800 transition"
+                          >
+                            ✏️ Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               handleDeleteCategory(cat.id);
                             }}
                             className="text-xs font-bold text-rose-600 hover:text-rose-800 transition"
@@ -5723,13 +6064,22 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                                       <div className="text-xs text-slate-400">{sub.ads}</div>
                                     </div>
                                   </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteSubcategory(cat.id, sub.id)}
-                                    className="text-xs font-bold text-rose-500 hover:text-rose-700 transition"
-                                  >
-                                    Remove ×
-                                  </button>
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => openSubcategoryEditor(cat, sub)}
+                                      className="text-xs font-bold text-blue-600 hover:text-blue-800 transition"
+                                    >
+                                      ✏️ Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteSubcategory(cat.id, sub.id)}
+                                      className="text-xs font-bold text-rose-500 hover:text-rose-700 transition"
+                                    >
+                                      Remove ×
+                                    </button>
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -6300,7 +6650,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                           <p className="whitespace-nowrap text-sm">{new Date(payment.created_date || payment.date).toLocaleDateString()}</p>
                           <p className="whitespace-nowrap text-xs text-slate-500">{new Date(payment.created_date || payment.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</p>
                         </div>
-                        <ActionButton type="button" onClick={() => setSelectedPaymentDetail(payment)} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
+                        <ActionButton type="button" onClick={() => { setPaymentVerificationMessage(''); setSelectedPaymentDetail(payment); }} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
                       </div>
                     </article>
                   );
@@ -6341,7 +6691,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                           <time className="block whitespace-nowrap text-xs text-slate-400">{transactionDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</time>
                         </td>
                         <td className="sticky right-0 z-10 min-w-[140px] bg-white px-4 py-3 align-middle shadow-[-8px_0_12px_-10px_rgba(15,23,42,0.4)]">
-                          <ActionButton type="button" onClick={() => setSelectedPaymentDetail(payment)} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
+                          <ActionButton type="button" onClick={() => { setPaymentVerificationMessage(''); setSelectedPaymentDetail(payment); }} className="border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100">View Details</ActionButton>
                         </td>
                       </tr>
                     );
@@ -6370,7 +6720,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                       <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-sky-600">Transaction Detail</p>
                       <h3 className="mt-1 text-2xl font-black text-slate-950">{selectedPaymentDetail.transaction_id}</h3>
                     </div>
-                    <button type="button" onClick={() => setSelectedPaymentDetail(null)} className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-sm font-bold text-slate-600">✕</button>
+                    <button type="button" onClick={() => { setPaymentVerificationMessage(''); setSelectedPaymentDetail(null); }} className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-sm font-bold text-slate-600">✕</button>
                   </div>
 
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -6436,7 +6786,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     </div>
                   )}
                   <div className="mt-6 flex justify-end border-t border-slate-100 pt-4">
-                    <button type="button" onClick={() => setSelectedPaymentDetail(null)} className="btn-primary rounded-full px-5 py-2.5 text-sm font-bold">
+                    <button type="button" onClick={() => { setPaymentVerificationMessage(''); setSelectedPaymentDetail(null); }} className="btn-primary rounded-full px-5 py-2.5 text-sm font-bold">
                       Back
                     </button>
                   </div>
@@ -6969,8 +7319,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-600">Marketplace Analytics</p>
-                  <h2 className="mt-2 text-3xl font-black text-slate-900">Academic Performance Dashboard</h2>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.28em] text-slate-600">UniXchange Analytics</p>
+                  <h2 className="mt-2 text-3xl font-black text-slate-900">Analytics </h2>
                 </div>
                 <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
                   <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -7178,7 +7528,6 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
               </div>
 
               <div className="rounded-[30px] border border-slate-200 bg-gradient-to-br from-slate-900 via-[#111c3a] to-indigo-950 p-5 text-white shadow-sm">
-                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-indigo-200">AI Recommendation Summary</p>
                 <h3 className="mt-1 text-xl font-black">Performance Overview</h3>
 
                 <div className="mt-5 space-y-4">
@@ -7288,71 +7637,87 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                       className="min-w-[140px] shrink-0 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm focus:border-violet-500 focus:outline-none"
                     >
                       <option value="All">All</option>
-                      <option value="Everyone">Everyone</option>
-                      <option value="Buyers">Buyers</option>
-                      <option value="Sellers">Sellers</option>
-                      {Array.from(new Set(verificationDeptsList.filter(Boolean))).map((department) => (
-                        <option key={department} value={department}>{department}</option>
+                      {Array.from(new Map(announcementLog.map((item) => [
+                        normalizeTarget(item.target),
+                        item.target,
+                      ])).entries()).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
                       ))}
                     </select>
                   </div>
                 </div>
 
-                <div className="mt-4 min-w-0 space-y-4">
-                  {filteredAnnouncements.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-medium text-slate-500">
-                      No announcements found
-                    </div>
-                  ) : (
-                    filteredAnnouncements.map((log) => (
-                      <div key={log.id} className="min-w-0 rounded-[24px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-[0.24em] text-violet-600">
-                              <StatusBadge status={log.target} className="uppercase tracking-[0.16em]" />
-                              <StatusBadge status="Delivered" className="uppercase tracking-[0.16em]" />
-                            </div>
-                            <h4 className="mt-2 break-words text-base font-black text-slate-950">{log.title}</h4>
-                            <p title={log.message} className="mt-2 min-w-0 break-words line-clamp-2 text-sm leading-6 text-slate-600">{log.message}</p>
-                            <p className="mt-3 whitespace-nowrap text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{log.date}</p>
-                          </div>
-                          <div className="flex gap-2 shrink-0">
-                            <ActionButton
-                              type="button"
-                              onClick={() => {
-                                setPreviewAnnouncement(log);
-                                setShowPreviewModal(true);
-                              }}
-                              className="border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:border-violet-200 hover:text-violet-700"
-                            >
-                              View
-                            </ActionButton>
-                            <ActionButton
-                              type="button"
-                              onClick={() => handleDeleteAnnouncement(log.id)}
-                              className="border border-rose-200 bg-rose-50 text-xs font-bold text-rose-700 hover:bg-rose-100"
-                            >
-                              Delete
-                            </ActionButton>
-                          </div>
-                        </div>
-
-                        <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                          <div className="rounded-2xl bg-white p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Delivered</p>
-                            <p className="mt-2 text-lg font-black text-slate-900">{log.delivered.toLocaleString()}</p>
-                          </div>
-                          <div className="rounded-2xl bg-white p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Read</p>
-                            <p className="mt-2 text-lg font-black text-slate-900">{log.read.toLocaleString()}</p>
-                          </div>
-                          <div className="rounded-2xl bg-white p-3">
-                            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">Unread</p>
-                            <p className="mt-2 text-lg font-black text-slate-900">{log.unread.toLocaleString()}</p>
-                          </div>
-                        </div>
-                      </div>
-                    )))}
+                <div className="mt-4 overflow-x-auto">
+                  <table className="min-w-[760px] w-full border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                        <th className="px-3 py-3">Title</th>
+                        <th className="px-3 py-3">Target Audience</th>
+                        <th className="px-3 py-3">Delivery Type</th>
+                        <th className="px-3 py-3">Sent Date</th>
+                        <th className="px-3 py-3">Read Rate</th>
+                        <th className="px-3 py-3"><span className="sr-only">Actions</span></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredAnnouncements.map((log) => {
+                        const readRate = Number(log.read_rate)
+                          || (Number(log.delivered) > 0 ? Number(log.read || 0) / Number(log.delivered) * 100 : 0);
+                        return (
+                          <tr key={log.id} className="align-top text-sm text-slate-700">
+                            <td className="max-w-[240px] px-3 py-4">
+                              <p className="font-bold text-slate-950">{log.title}</p>
+                              <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{log.message}</p>
+                            </td>
+                            <td className="px-3 py-4">{log.target}</td>
+                            <td className="max-w-[190px] px-3 py-4">
+                              {log.delivery_type || (log.delivery_channels || ['in_app'])
+                                .map((channel) => ({
+                                  in_app: 'In-App Notification',
+                                  banner: 'Urgent Top Banner',
+                                  email: 'Email Dispatch',
+                                })[channel] || channel)
+                                .join(', ')}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-4 text-xs text-slate-500">
+                              {log.date ? new Date(log.date).toLocaleString() : '—'}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-4 font-semibold">
+                              {readRate.toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-4">
+                              <div className="flex gap-2">
+                                <ActionButton
+                                  type="button"
+                                  onClick={() => {
+                                    setPreviewAnnouncement(log);
+                                    setShowPreviewModal(true);
+                                  }}
+                                  className="border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:border-violet-200 hover:text-violet-700"
+                                >
+                                  View
+                                </ActionButton>
+                                <ActionButton
+                                  type="button"
+                                  onClick={() => handleDeleteAnnouncement(log.id)}
+                                  className="border border-rose-200 bg-rose-50 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                                >
+                                  Delete
+                                </ActionButton>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {filteredAnnouncements.length === 0 && (
+                        <tr>
+                          <td colSpan="6" className="px-3 py-10 text-center text-sm font-medium text-slate-500">
+                            No announcements found
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
@@ -7367,6 +7732,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Title</label>
                     <input
                       type="text"
+                      maxLength={200}
                       value={announcementForm.title}
                       onChange={(e) => setAnnouncementForm({ ...announcementForm, title: e.target.value })}
                       placeholder="User message schedule update"
@@ -7378,22 +7744,41 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Target</label>
                     <select
                       value={announcementForm.target}
-                      onChange={(e) => setAnnouncementForm({ ...announcementForm, target: e.target.value })}
+                      onChange={(e) => setAnnouncementForm((previous) => ({
+                        ...previous,
+                        target: e.target.value,
+                        department: e.target.value === 'department' ? previous.department : '',
+                      }))}
                       className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-violet-500 focus:outline-none"
                     >
-                      <option value="Everyone">Everyone</option>
-                      <option value="Buyers">Buyers</option>
-                      <option value="Sellers">Sellers</option>
-                      {Array.from(new Set(verificationDeptsList.filter(Boolean))).map((department) => (
-                        <option key={department} value={department}>{department}</option>
-                      ))}
+                      <option value="everyone">All Campus Students (Everyone)</option>
+                      <option value="active_sellers">Active Sellers Only</option>
+                      <option value="active_buyers">Active Buyers Only</option>
+                      <option value="department">Specific Department</option>
                     </select>
                   </div>
+
+                  {announcementForm.target === 'department' && (
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Department</label>
+                      <select
+                        value={announcementForm.department}
+                        onChange={(e) => setAnnouncementForm((previous) => ({ ...previous, department: e.target.value }))}
+                        className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-violet-500 focus:outline-none"
+                      >
+                        <option value="">Select a department</option>
+                        {Array.from(new Set(verificationDeptsList.filter(Boolean))).map((department) => (
+                          <option key={department} value={department}>{department}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Message</label>
                     <textarea
                       rows="5"
+                      maxLength={500}
                       value={announcementForm.message}
                       onChange={(e) => setAnnouncementForm({ ...announcementForm, message: e.target.value })}
                       placeholder="Write your announcement for the campus community..."
@@ -7402,69 +7787,95 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   </div>
 
                   <div>
+                    <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+                      Attach Banner / Image (Optional)
+                    </label>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleAnnouncementImageChange}
+                      disabled={announcementImageUploading}
+                      className="mt-2 block w-full cursor-pointer rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-200 file:px-3 file:py-2 file:text-xs file:font-bold file:text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+                    {announcementForm.image_preview_url && (
+                      <div className="mt-3 flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-2.5">
+                        <img
+                          src={announcementForm.image_preview_url}
+                          alt="Broadcast image preview"
+                          className="h-16 w-24 rounded-lg object-cover"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-slate-700">
+                            {announcementImageUploading ? 'Uploading image…' : 'Image attached'}
+                          </p>
+                          {announcementImageError && (
+                            <p role="alert" className="mt-1 text-xs text-rose-600">{announcementImageError}</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={removeAnnouncementImage}
+                          disabled={announcementImageUploading}
+                          className="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 hover:text-rose-700 disabled:opacity-50"
+                        >
+                          ✕ Remove
+                        </button>
+                      </div>
+                    )}
+                    {!announcementForm.image_preview_url && announcementImageError && (
+                      <p role="alert" className="mt-2 text-xs text-rose-600">{announcementImageError}</p>
+                    )}
+                  </div>
+
+                  <div>
                     <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Delivery</label>
-                    <div className="mt-2 flex gap-4">
-                      <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
-                        <input
-                          type="radio"
-                          name="sendType"
-                          checked={announcementForm.sendType === 'now'}
-                          onChange={() => setAnnouncementForm({ ...announcementForm, sendType: 'now' })}
-                        />
-                        Send Now
-                      </label>
-                      <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
-                        <input
-                          type="radio"
-                          name="sendType"
-                          checked={announcementForm.sendType === 'schedule'}
-                          onChange={() => setAnnouncementForm({ ...announcementForm, sendType: 'schedule' })}
-                        />
-                        Schedule
-                      </label>
+                    <div className="mt-2 space-y-2">
+                      {[
+                        { value: 'in_app', label: 'In-App Notification', hint: 'Bell icon + dashboard feed', icon: '🔔' },
+                        { value: 'banner', label: 'Urgent Top Banner', hint: 'Pin an announcement on the marketplace', icon: '📌' },
+                        { value: 'email', label: 'Email Dispatch', hint: 'Send a branded email to student inboxes', icon: '✉️' },
+                      ].map((channel) => (
+                        <label key={channel.value} className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={announcementForm.deliveryChannels.includes(channel.value)}
+                            onChange={(event) => setAnnouncementForm((previous) => ({
+                              ...previous,
+                              deliveryChannels: event.target.checked
+                                ? [...new Set([...previous.deliveryChannels, channel.value])]
+                                : previous.deliveryChannels.filter((item) => item !== channel.value),
+                            }))}
+                            className="mt-1"
+                          />
+                          <span className="text-lg" aria-hidden="true">{channel.icon}</span>
+                          <span>
+                            <span className="block font-semibold">{channel.label}</span>
+                            <span className="mt-0.5 block text-xs text-slate-500">{channel.hint}</span>
+                          </span>
+                        </label>
+                      ))}
                     </div>
                   </div>
 
-                  {announcementForm.sendType === 'schedule' && (
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Date</label>
-                        <input
-                          type="date"
-                          value={announcementForm.scheduleDate}
-                          onChange={(e) => setAnnouncementForm({ ...announcementForm, scheduleDate: e.target.value })}
-                          className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-violet-500 focus:outline-none"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Time</label>
-                        <input
-                          type="time"
-                          value={announcementForm.scheduleTime}
-                          onChange={(e) => setAnnouncementForm({ ...announcementForm, scheduleTime: e.target.value })}
-                          className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-violet-500 focus:outline-none"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex gap-3 pt-2">
+                  <div className="grid gap-3 pt-2 sm:grid-cols-3">
                     <button
                       type="submit"
-                      className="flex-1 rounded-full bg-violet-600 py-3 text-sm font-bold text-white shadow-sm hover:bg-violet-700"
+                      className="rounded-full border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200"
                     >
                       Preview
                     </button>
                     <button
                       type="button"
-                      onClick={() => setAnnouncementForm({
-                        title: '',
-                        message: '',
-                        target: 'Everyone',
-                        sendType: 'now',
-                        scheduleDate: '',
-                        scheduleTime: ''
-                      })}
+                      onClick={() => handleSendBroadcast()}
+                      disabled={broadcastSending || announcementImageUploading}
+                      className="btn-primary rounded-full px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {broadcastSending ? 'Sending…' : '🚀 Send Broadcast'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetAnnouncementForm}
+                      disabled={announcementImageUploading}
                       className="rounded-full border border-slate-200 bg-slate-100 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200"
                     >
                       Clear
@@ -7492,21 +7903,38 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                   </div>
 
                   <div className="mt-5 rounded-[28px] border border-violet-200 bg-gradient-to-br from-violet-50 via-white to-sky-50 p-5 shadow-sm">
+                    {(previewAnnouncement.image_preview_url || previewAnnouncement.image_url) && (
+                      <img
+                        src={previewAnnouncement.image_preview_url || previewAnnouncement.image_url}
+                        alt="Broadcast image preview"
+                        className="mb-4 max-h-64 w-full rounded-2xl object-cover"
+                      />
+                    )}
                     <div className="flex items-center justify-between">
                       <span className="rounded-full bg-violet-600 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.2em] text-white">
-                        {previewAnnouncement.target}
+                        {previewAnnouncement.target === 'department'
+                          ? `Specific Department: ${previewAnnouncement.department}`
+                          : ({
+                            everyone: 'All Campus Students (Everyone)',
+                            active_sellers: 'Active Sellers Only',
+                            active_buyers: 'Active Buyers Only',
+                          })[previewAnnouncement.target] || previewAnnouncement.target}
                       </span>
                       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                        {previewAnnouncement.sendType === 'schedule' ? 'Scheduled' : 'Instant'}
+                        Ready to publish
                       </span>
                     </div>
                     <h4 className="mt-4 text-xl font-black text-slate-950">{previewAnnouncement.title}</h4>
                     <p className="mt-3 text-sm leading-6 text-slate-600">{previewAnnouncement.message}</p>
-                    {previewAnnouncement.sendType === 'schedule' && (
-                      <div className="mt-4 rounded-2xl border border-slate-200 bg-white/80 p-3 text-xs font-semibold text-slate-600">
-                        Scheduled for {previewAnnouncement.scheduleDate} at {previewAnnouncement.scheduleTime}
-                      </div>
-                    )}
+                    <p className="mt-4 text-xs font-semibold text-slate-500">
+                      Delivery: {previewAnnouncement.delivery_type || (previewAnnouncement.deliveryChannels || previewAnnouncement.delivery_channels || [])
+                        .map((channel) => ({
+                          in_app: 'In-App Notification',
+                          banner: 'Urgent Top Banner',
+                          email: 'Email Dispatch',
+                        })[channel] || channel)
+                        .join(', ')}
+                    </p>
                   </div>
 
                   <div className="mt-5 flex gap-3">
@@ -7520,9 +7948,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     <button
                       type="button"
                       onClick={handleConfirmBroadcast}
+                      disabled={broadcastSending || announcementImageUploading}
                       className="btn-primary flex-1 rounded-full px-4 py-3 text-sm font-bold"
                     >
-                      Confirm Send
+                      {broadcastSending ? 'Sending…' : 'Confirm Send'}
                     </button>
                   </div>
                 </div>

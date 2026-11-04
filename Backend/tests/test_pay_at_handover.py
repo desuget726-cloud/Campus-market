@@ -109,7 +109,7 @@ def market(monkeypatch, tmp_path):
         SimpleNamespace(id="test-session"),
         "test-token",
     ))
-    monkeypatch.setattr(main_module, "_send_student_notification_email", lambda *_args: True)
+    monkeypatch.setattr(main_module, "_send_student_notification_email", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(main_module, "_require_admin", lambda *_args: SimpleNamespace(id=1, username="admin"))
     main_module.app.dependency_overrides[get_db] = override_get_db
     client = TestClient(main_module.app)

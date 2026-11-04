@@ -24,7 +24,7 @@ function HeroSection({
           🎓 Verified UniXchange Community
         </span>
         <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">
-          UniXchange Campus Marketplace
+          UniXchange
         </h1>
         <p className="mt-1 text-xs text-slate-500 sm:text-sm">
           Find textbooks, tech &amp; essentials from fellow students

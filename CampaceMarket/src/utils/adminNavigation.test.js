@@ -42,3 +42,9 @@ test('hides children denied by the current admin permissions', () => {
   assert.equal(navigation.some((entry) => entry.key === 'marketplace-products'), false);
   assert.equal(navigation.some((entry) => entry.key === 'support'), true);
 });
+
+test('labels outbound announcements separately from notification alerts', () => {
+  const broadcastCenter = ADMIN_NAVIGATION.find((entry) => entry.key === 'notifications');
+  assert.equal(broadcastCenter.label, 'Broadcast Center');
+  assert.equal(broadcastCenter.badgeKey, null);
+});

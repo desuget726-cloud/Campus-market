@@ -228,6 +228,7 @@ class Category(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
     icon = Column(String(50), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
     ads_count = Column(String(50), default="0 ads")
     subcategories = relationship("SubCategory", back_populates="category", cascade="all, delete-orphan")
 
@@ -428,6 +429,7 @@ class Transaction(Base):
     amount = Column(Numeric(10, 2), nullable=False)
     description = Column(String(255), nullable=True)
     status = Column(String(50), default="Successful", nullable=False)
+    is_hidden = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Transaction.student_id == Student.student_id", back_populates="transactions")
@@ -795,6 +797,7 @@ class Notification(Base):
     student_id = Column(String(50), ForeignKey("students.student_id", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
     title = Column(String(200), nullable=True)
     message = Column(String(500), nullable=False)
+    image_url = Column(String(500), nullable=True)
     target = Column(String(150), nullable=True)
     reference_id = Column(String(75), nullable=True)
     action_label = Column(String(150), nullable=True)
@@ -804,6 +807,24 @@ class Notification(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     student = relationship("Student", primaryjoin="Notification.student_id == Student.student_id", back_populates="notifications")
+
+
+class BroadcastCampaign(Base):
+    __tablename__ = "broadcast_campaigns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)
+    target = Column(String(200), nullable=False)
+    target_type = Column(String(30), nullable=False)
+    department = Column(String(150), nullable=True)
+    delivery_channels = Column(JSON, nullable=False, default=list)
+    recipient_count = Column(Integer, nullable=False, default=0)
+    admin_id = Column(Integer, ForeignKey("admins.id", ondelete="SET NULL"), nullable=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+    banner_pinned = Column(Boolean, nullable=False, default=False, server_default="0")
+    sent_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
 
 
 class Message(Base):

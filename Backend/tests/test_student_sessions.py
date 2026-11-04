@@ -17,7 +17,7 @@ os.environ["SESSION_SECRET"] = "student-session-test-secret"
 
 from app import main as main_module
 from app.database import Base
-from app.models import AuditLog, Notification, Student, StudentSession, UserSession
+from app.models import AuditLog, LoginAttempt, Notification, PasswordReset, Student, StudentSession, UserSession
 from app.password_security import hash_password
 
 
@@ -175,6 +175,88 @@ class StudentSessionTests(unittest.TestCase):
         self.assertEqual(audit_log.metadata_json["details"], {
             "message": "Login successful via credentials",
         })
+
+    def test_student_login_otp_accepts_utc_expiry_and_clears_lockout_attempts(self):
+        now = datetime.now(timezone.utc)
+        otp = "123456"
+        reset = PasswordReset(
+            email=f"  {self.student.email.upper()}  ",
+            otp_hash=main_module._password_reset_otp_hash(
+                self.student.email,
+                otp,
+                "student_login",
+            ),
+            purpose="student_login",
+            expires_at=now.replace(tzinfo=None) + timedelta(minutes=5),
+            is_used=False,
+            delivery_status="sent",
+        )
+        attempt = LoginAttempt(
+            identifier=f"student:{self.student.student_id.lower()}",
+            failed_attempts=5,
+            locked_until=(now + timedelta(minutes=15)).replace(tzinfo=None),
+        )
+        self.db.add_all([reset, attempt])
+        self.db.commit()
+
+        with patch.object(main_module, "_utc_now", return_value=now):
+            result = main_module.verify_student_login_otp(
+                main_module.StudentLoginOtpRequest(
+                    email=f" {self.student.email.upper()} ",
+                    otp_code=otp,
+                ),
+                self._request("8.8.8.8", "Mozilla/5.0"),
+                self.db,
+            )
+
+        self.assertEqual(result["role"], "student")
+        self.assertTrue(result["access_token"])
+        self.assertTrue(reset.is_used)
+        self.assertIsNone(
+            self.db.query(LoginAttempt)
+            .filter_by(identifier=f"student:{self.student.student_id.lower()}")
+            .first()
+        )
+        self.assertEqual(
+            self.db.query(UserSession).filter_by(user_id=self.student.student_id).count(),
+            1,
+        )
+
+    def test_student_login_otp_logs_and_rejects_exhausted_attempts(self):
+        now = datetime.now(timezone.utc)
+        self.db.add(PasswordReset(
+            email=self.student.email,
+            otp_hash=main_module._password_reset_otp_hash(
+                self.student.email,
+                "123456",
+                "student_login",
+            ),
+            purpose="student_login",
+            expires_at=now.replace(tzinfo=None) + timedelta(minutes=5),
+            is_used=False,
+            delivery_status="sent",
+            verification_attempts=5,
+        ))
+        self.db.commit()
+
+        with (
+            patch.object(main_module, "_utc_now", return_value=now),
+            self.assertLogs(main_module.__name__, level="WARNING") as logs,
+            self.assertRaises(HTTPException) as error,
+        ):
+            main_module.verify_student_login_otp(
+                main_module.StudentLoginOtpRequest(
+                    email=self.student.email,
+                    otp_code="123456",
+                ),
+                self._request("8.8.8.8", "Mozilla/5.0"),
+                self.db,
+            )
+
+        self.assertEqual(error.exception.status_code, 400)
+        self.assertIn("reason=max attempts exceeded", logs.output[0])
+        self.assertIn("attempts=5", logs.output[0])
+        self.assertEqual(self.db.query(UserSession).count(), 0)
 
     def test_invalid_password_records_auth_failure_audit_event(self):
         request = self._request("8.8.4.4", "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0")

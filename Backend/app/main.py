@@ -57,12 +57,13 @@ from decimal import Decimal, InvalidOperation
 from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic, sleep as time_sleep
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 import smtplib
 import html
 from email.utils import formataddr
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from app.email_templates import render_system_email, render_system_email_text
 import asyncio
 import socket
 import ssl
@@ -90,7 +91,7 @@ from .models import (
     Student, StudentSession, UserSession, Category, SubCategory, Product, Admin, AuditLog, Report,
     Notification, Message, MessageBlock, WishlistItem, CartItem, Order, Transaction,
     PasswordReset, SystemSetting, Review, LoginAttempt, AIRecommendationLog,
-    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PasswordResetRequest, PAYMENT_SETTINGS_SCHEMA
+    AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PasswordResetRequest, BroadcastCampaign, PAYMENT_SETTINGS_SCHEMA
 )
 from .admin_bootstrap import create_admin_if_missing
 from .database import get_db, init_db, SessionLocal, Base, engine, DATABASE_URL
@@ -1103,6 +1104,12 @@ async def _reconcile_pending_payments() -> None:
                     "Payment Successful",
                     f"Your wallet deposit of {settlement['amount']} ETB was completed successfully.",
                     "payment",
+                    badge="Completed",
+                    details_table={
+                        "Amount": f"{settlement['amount']} ETB",
+                        "Reference": settlement["transaction_id"],
+                        "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+                    },
                 )
                 db.add(AuditLog(
                     admin_id=None,
@@ -1247,7 +1254,16 @@ def _resolve_pending_payout(
             ip_address="127.0.0.1",
         ))
         final_status = payout.status
-        notification_email = (student, notification) if notification else None
+        notification_email = (
+            student,
+            notification,
+            "Completed" if normalized_status == "completed" else "Failed",
+            {
+                "Amount": f"{amount} ETB",
+                "Reference": payout.internal_reference,
+                "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+            },
+        ) if notification else None
 
     if notification_email:
         _send_student_notification_email(
@@ -1255,6 +1271,8 @@ def _resolve_pending_payout(
             notification_email[1][0],
             notification_email[1][1],
             "payout",
+            badge=notification_email[2],
+            details_table=notification_email[3],
         )
     return final_status
 
@@ -1560,12 +1578,11 @@ def _smtp_attempt(
     body: str,
     html_body: Optional[str] = None,
 ) -> None:
-    if html_body is None:
-        message = MIMEText(body, "plain", "utf-8")
-    else:
-        message = MIMEMultipart("alternative")
-        message.attach(MIMEText(body, "plain", "utf-8"))
-        message.attach(MIMEText(html_body, "html", "utf-8"))
+    message = MIMEMultipart("alternative")
+    plain_body = render_system_email_text(subject, "Hello,", [body]) if html_body is None else body
+    rich_body = html_body or render_system_email(subject, "Hello,", [body])
+    message.attach(MIMEText(plain_body, "plain", "utf-8"))
+    message.attach(MIMEText(rich_body, "html", "utf-8"))
     message["Subject"] = subject
     message["From"] = formataddr(("UniXchange Security", sender_email))
     message["Reply-To"] = formataddr(("UniXchange Support", sender_email))
@@ -1930,7 +1947,7 @@ def send_otp_email(
 
 
 def send_verification_status_email(receiver_email: str, status: str, reason: Optional[str] = None) -> bool:
-    """Send a plain-text email summarizing the verification decision."""
+    """Send a branded verification status email with a plain-text fallback."""
     normalized_sender_email = os.getenv("SENDER_EMAIL", SENDER_EMAIL).strip()
     normalized_sender_password = os.getenv("SENDER_PASSWORD", SENDER_PASSWORD).strip().replace(" ", "")
 
@@ -1946,19 +1963,48 @@ def send_verification_status_email(receiver_email: str, status: str, reason: Opt
             )
             return False
 
-        body_lines = [
-            "Campus Marketplace Verification Update",
-            f"Status: {status}",
-        ]
+        greeting = "Hello,"
+        paragraphs = ["Your UniXchange account verification status has been updated."]
         if reason:
-            body_lines.append(f"Reason: {reason}")
+            paragraphs.append(f"Reason: {reason}")
+        details_table = {
+            "Status": status,
+            "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+        }
+        action_button = {
+            "label": "View Account",
+            "url": urljoin(FRONTEND_BASE_URL.rstrip("/") + "/", ""),
+        }
 
-        msg = MIMEMultipart()
+        msg = MIMEMultipart("alternative")
         msg["Subject"] = "Campus Marketplace Verification Update"
         msg["From"] = formataddr(("UniXchange Security", normalized_sender_email))
         msg["Reply-To"] = formataddr(("UniXchange Support", normalized_sender_email))
         msg["To"] = receiver_email
-        msg.attach(MIMEText("\n".join(body_lines), "plain"))
+        msg.attach(MIMEText(
+            render_system_email_text(
+                "Verification Update",
+                greeting,
+                paragraphs,
+                badge=status,
+                details_table=details_table,
+                action_button=action_button,
+            ),
+            "plain",
+            "utf-8",
+        ))
+        msg.attach(MIMEText(
+            render_system_email(
+                "Verification Update",
+                greeting,
+                paragraphs,
+                badge=status,
+                details_table=details_table,
+                action_button=action_button,
+            ),
+            "html",
+            "utf-8",
+        ))
 
         context = ssl.create_default_context()
         with _IPv4SMTP_SSL(
@@ -2331,9 +2377,12 @@ class NotificationCreate(BaseModel):
 
 
 class BroadcastNotificationRequest(BaseModel):
-    title: Optional[str] = None
-    message: str
+    title: Optional[str] = Field(default=None, max_length=200)
+    message: str = Field(max_length=500)
+    image_url: Optional[str] = Field(default=None, max_length=500)
     target: Optional[str] = "All Students"
+    department: Optional[str] = Field(default=None, max_length=150)
+    deliveryChannels: List[str] = Field(default_factory=lambda: ["in_app"])
     sendType: Optional[str] = "instant"
     scheduleDate: Optional[str] = None
     scheduleTime: Optional[str] = None
@@ -2516,6 +2565,18 @@ class SubCategoryCreate(BaseModel):
     name: str
     category_id: int
     icon: Optional[str] = None
+
+
+class CategoryUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    icon: Optional[str] = Field(default=None, max_length=50)
+    is_active: Optional[StrictBool] = None
+
+
+class SubCategoryUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    icon: Optional[str] = Field(default=None, max_length=50)
+    parent_category_id: Optional[int] = Field(default=None, gt=0)
 
 
 class ProductCreate(BaseModel):
@@ -3851,17 +3912,82 @@ def _add_student_notification(
     return True
 
 
-def _send_student_notification_email(student: Student, subject: str, message: str, notification_type: str) -> bool:
+def _send_student_notification_email(
+    student: Student,
+    subject: str,
+    message: str,
+    notification_type: str,
+    *,
+    badge: Optional[str] = None,
+    details_table: Optional[Dict[str, object]] = None,
+    action_button: Optional[Dict[str, str]] = None,
+) -> bool:
     preference_fields = NOTIFICATION_PREFERENCE_FIELDS.get(notification_type)
     if not preference_fields or not getattr(student, preference_fields[1], True) or not student.email:
         return False
     try:
+        normalized_subject = subject.strip()
+        if badge is None:
+            subject_status = normalized_subject.lower()
+            if any(word in subject_status for word in ("success", "completed", "received", "verified")):
+                badge = "Completed"
+            elif any(word in subject_status for word in ("pending", "submitted", "processing", "locked")):
+                badge = "Pending"
+            elif any(word in subject_status for word in ("failed", "rejected", "declined")):
+                badge = "Failed"
+        if details_table is None:
+            details_table = {}
+        if "Date" not in details_table:
+            details_table = {
+                **details_table,
+                "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+            }
+        if action_button is None:
+            action_config = {
+                "order": ("Track Order", "/dashboard?tab=buyer&section=orders"),
+                "payment": ("View Wallet", "/dashboard?tab=buyer&section=wallet"),
+                "payout": ("View Withdrawal", "/dashboard?tab=buyer&section=wallet"),
+                "security": ("View Account", "/"),
+                "message": ("View Messages", "/dashboard?tab=buyer&section=messages"),
+            }.get(notification_type)
+            if action_config:
+                action_button = {
+                    "label": action_config[0],
+                    "url": urljoin(FRONTEND_BASE_URL.rstrip("/") + "/", action_config[1].lstrip("/")),
+                }
+        paragraphs = [part.strip() for part in message.split("\n\n") if part.strip()]
+        if not paragraphs:
+            paragraphs = [message]
+        greeting = f"Hello {student.name}," if student.name else "Hello,"
         email_message = MIMEMultipart("alternative")
         email_message["Subject"] = subject
         email_message["From"] = formataddr(("UniXchange Security", SENDER_EMAIL))
         email_message["Reply-To"] = formataddr(("UniXchange Support", SENDER_EMAIL))
         email_message["To"] = student.email
-        email_message.attach(MIMEText(message, "html"))
+        email_message.attach(MIMEText(
+            render_system_email_text(
+                subject,
+                greeting,
+                paragraphs,
+                badge=badge,
+                details_table=details_table,
+                action_button=action_button,
+            ),
+            "plain",
+            "utf-8",
+        ))
+        email_message.attach(MIMEText(
+            render_system_email(
+                subject,
+                greeting,
+                paragraphs,
+                badge=badge,
+                details_table=details_table,
+                action_button=action_button,
+            ),
+            "html",
+            "utf-8",
+        ))
         context = ssl.create_default_context()
         with _IPv4SMTP_SSL(
             "smtp.gmail.com",
@@ -3885,11 +4011,63 @@ def _dispatch_student_notification(
     notification_type: str,
     target: Optional[str] = None,
     order_id: Optional[int] = None,
+    *,
+    badge: Optional[str] = None,
+    details_table: Optional[Dict[str, object]] = None,
+    action_button: Optional[Dict[str, str]] = None,
 ) -> None:
-    if notification_type == "order" and order_id is not None and not target:
-        target = json.dumps({"kind": "order", "order_id": int(order_id)})
+    if notification_type == "order":
+        if order_id is None and target:
+            try:
+                target_data = json.loads(target)
+                if isinstance(target_data, dict) and target_data.get("order_id") is not None:
+                    order_id = int(target_data["order_id"])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                order_id = None
+        if order_id is not None and not target:
+            target = json.dumps({"kind": "order", "order_id": int(order_id)})
     _add_student_notification(db, student, title, message, notification_type, target)
-    _send_student_notification_email(student, title, message, notification_type)
+    if notification_type == "order" and order_id is not None:
+        order = db.query(Order).filter(Order.id == order_id).first()
+        if order:
+            is_seller = str(student.student_id).strip().lower() == str(order.seller_id or "").strip().lower()
+            quantity = max(1, int(order.quantity or 1))
+            try:
+                total = (Decimal(str(order.price or 0)) * quantity).quantize(Decimal("0.01"))
+            except (InvalidOperation, ValueError):
+                total = Decimal("0.00")
+            details_table = details_table or {
+                "Order ID": f"#{order.id}",
+                "Item": order.title,
+                "Quantity": quantity,
+                "Total": f"{total} ETB",
+            }
+            action_button = action_button or {
+                "label": "View Order",
+                "url": urljoin(
+                    FRONTEND_BASE_URL.rstrip("/") + "/",
+                    f"dashboard?tab={'seller' if is_seller else 'buyer'}&section=orders&order={order.id}",
+                ),
+            }
+            badge = badge or order.status
+        else:
+            details_table = details_table or {"Order ID": f"#{order_id}"}
+            action_button = action_button or {
+                "label": "Track Order",
+                "url": urljoin(
+                    FRONTEND_BASE_URL.rstrip("/") + "/",
+                    f"dashboard?tab=buyer&section=orders&order={order_id}",
+                ),
+            }
+    _send_student_notification_email(
+        student,
+        title,
+        message,
+        notification_type,
+        badge=badge,
+        details_table=details_table,
+        action_button=action_button,
+    )
 
 
 def _parse_size_bytes(value, default=5 * 1024 * 1024):
@@ -4236,6 +4414,14 @@ def ensure_database_compatibility(db: Session) -> None:
         ))
         db.execute(text("UPDATE seller_payment_accounts SET payout_type = 'mobile_wallet' WHERE payout_type = 'wallet'"))
 
+        transaction_hidden_column = db.execute(text("SHOW COLUMNS FROM transactions LIKE 'is_hidden'"))
+        if transaction_hidden_column.fetchone() is None:
+            db.execute(text("ALTER TABLE transactions ADD COLUMN is_hidden BOOLEAN NOT NULL DEFAULT FALSE"))
+
+        category_active_column = db.execute(text("SHOW COLUMNS FROM categories LIKE 'is_active'"))
+        if category_active_column.fetchone() is None:
+            db.execute(text("ALTER TABLE categories ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
+
         order_add_statements = {
             "pickup_location": "ALTER TABLE orders ADD COLUMN pickup_location VARCHAR(255) NOT NULL DEFAULT 'Student Center'",
             "payment_status": "ALTER TABLE orders ADD COLUMN payment_status VARCHAR(50) NOT NULL DEFAULT 'Successful'",
@@ -4270,6 +4456,11 @@ def ensure_database_compatibility(db: Session) -> None:
         product_stock = db.execute(text("SHOW COLUMNS FROM products LIKE 'stock'"))
         if product_stock.fetchone() is None:
             db.execute(text("ALTER TABLE products ADD COLUMN stock INT NOT NULL DEFAULT 1"))
+        db.execute(text(
+            "UPDATE products SET status = 'Sold' "
+            "WHERE COALESCE(stock, 0) <= 0 "
+            "AND LOWER(TRIM(COALESCE(status, ''))) <> 'sold'"
+        ))
 
         message_add_statements = {
             "attachment_url": "ALTER TABLE messages ADD COLUMN attachment_url VARCHAR(500) NULL",
@@ -4286,6 +4477,24 @@ def ensure_database_compatibility(db: Session) -> None:
         notification_target = db.execute(text("SHOW COLUMNS FROM notifications LIKE 'target'"))
         if notification_target.fetchone() is None:
             db.execute(text("ALTER TABLE notifications ADD COLUMN target VARCHAR(150) NULL"))
+
+        for table_name in ("notifications", "broadcast_campaigns"):
+            image_column = db.execute(
+                text(f"SHOW COLUMNS FROM {table_name} LIKE 'image_url'")
+            )
+            if image_column.fetchone() is None:
+                db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN image_url VARCHAR(500) NULL"))
+
+        for column_name, statement in {
+            "is_active": "ALTER TABLE broadcast_campaigns ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE",
+            "banner_pinned": "ALTER TABLE broadcast_campaigns ADD COLUMN banner_pinned BOOLEAN NOT NULL DEFAULT FALSE",
+        }.items():
+            column = db.execute(
+                text("SHOW COLUMNS FROM broadcast_campaigns LIKE :column_name"),
+                {"column_name": column_name},
+            )
+            if column.fetchone() is None:
+                db.execute(text(statement))
 
         audit_severity = db.execute(text("SHOW COLUMNS FROM audit_logs LIKE 'severity'"))
         if audit_severity.fetchone() is None:
@@ -4893,7 +5102,11 @@ def login_user(data: LoginRequest, request: Request, db: Session = Depends(get_d
 
             db.add(PasswordReset(
                 email=student.email,
-                otp_hash=_password_reset_otp_hash(student.email, otp),
+                otp_hash=_password_reset_otp_hash(
+                    student.email,
+                    otp,
+                    "student_login",
+                ),
                 purpose="student_login",
                 expires_at=(
                     datetime.now(timezone.utc) + timedelta(minutes=10)
@@ -6013,9 +6226,18 @@ async def microsoft_oauth_callback(data: OAuthCallbackRequest, response: Respons
 
 @app.post("/api/auth/verify-login-otp")
 def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Request, db: Session = Depends(get_db)):
-    email = request.email.strip().lower()
+    email = _login_identifier(request.email)
     otp = request.otp_code.strip()
     if not otp.isdigit() or len(otp) != 6:
+        logger.warning(
+            "Student login OTP verification failed: email=%s, reason=%s, expires_at=%s, is_used=%s, purpose=%s, attempts=%s",
+            email,
+            "invalid code format",
+            None,
+            None,
+            None,
+            None,
+        )
         _record_auth_login(
             db,
             http_request,
@@ -6029,8 +6251,19 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid OTP format.")
 
-    student = db.query(Student).filter(Student.email.ilike(email)).first()
+    student = db.query(Student).filter(
+        func.lower(func.trim(Student.email)) == email
+    ).first()
     if not student:
+        logger.warning(
+            "Student login OTP verification failed: email=%s, reason=%s, expires_at=%s, is_used=%s, purpose=%s, attempts=%s",
+            email,
+            "student not found",
+            None,
+            None,
+            None,
+            None,
+        )
         _record_auth_login(
             db,
             http_request,
@@ -6043,19 +6276,44 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         )
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
-    otp_record = _latest_password_reset(
-        db,
-        student.email,
-        purpose="student_login",
-        lock_for_update=True,
+
+    record = (
+        db.query(PasswordReset)
+        .filter(
+            func.lower(func.trim(PasswordReset.email)) == email,
+            PasswordReset.purpose.in_(("login", "student_login", "login_2fa")),
+        )
+        .order_by(PasswordReset.id.desc())
+        .with_for_update()
+        .first()
     )
-    if (
-        not otp_record
-        or otp_record.is_used
-        or otp_record.expires_at < datetime.now(timezone.utc).replace(tzinfo=None)
-        or otp_record.delivery_status != "sent"
-        or not _password_reset_code_matches(db, otp_record, otp)
-    ):
+    expires_at = _as_utc_datetime(record.expires_at) if record else None
+    now = _utc_now()
+    failure_reason = None
+
+    if not record:
+        failure_reason = "missing OTP record"
+    elif record.verification_attempts >= 5:
+        failure_reason = "max attempts exceeded"
+    elif record.is_used:
+        failure_reason = "code already used"
+    elif record.delivery_status != "sent":
+        failure_reason = f"delivery_status={record.delivery_status}"
+    elif expires_at is None or expires_at <= now:
+        failure_reason = "expired"
+    elif not _password_reset_code_matches(db, record, otp):
+        failure_reason = "invalid code"
+
+    if failure_reason is not None:
+        logger.warning(
+            "Student login OTP verification failed: email=%s, reason=%s, expires_at=%s, is_used=%s, purpose=%s, attempts=%s",
+            email,
+            failure_reason,
+            expires_at.isoformat() if expires_at else None,
+            getattr(record, "is_used", None),
+            getattr(record, "purpose", None),
+            getattr(record, "verification_attempts", None),
+        )
         _record_auth_login(
             db,
             http_request,
@@ -6070,7 +6328,8 @@ def verify_student_login_otp(request: StudentLoginOtpRequest, http_request: Requ
         db.commit()
         raise HTTPException(status_code=400, detail="Invalid or expired student verification code.")
 
-    otp_record.is_used = True
+    _reset_login_attempts(db, f"student:{student.student_id.lower()}")
+    record.is_used = True
     user_session = _create_user_session(db, student, http_request)
     token = _create_session_token(
         student.student_id,
@@ -10317,7 +10576,7 @@ def get_categories(
         _public_marketplace_product_query(db),
         current_user,
     )
-    categories = db.query(Category).all()
+    categories = db.query(Category).filter(Category.is_active.is_(True)).all()
     result = []
     for cat in categories:
         category_ads_count = (
@@ -10395,21 +10654,12 @@ def _seller_payout_status(db: Session, seller_identifier: Optional[str]) -> str:
 
 
 def _public_marketplace_product_query(db: Session):
-    """Build the public product query with the admin sold-listing preference."""
-    auto_hide_sold = _setting_bool(
-        _get_setting_value(
-            db,
-            "marketplace",
-            "autoHideSold",
-            DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
+    """Build the public product query without sold or out-of-stock listings."""
+    return db.query(Product).filter(
+        func.lower(func.trim(func.coalesce(Product.status, ""))).in_(
+            ("approved", "active", "available"),
         ),
-        DEFAULT_SETTINGS_BLOCKS["marketplace"]["autoHideSold"],
-    )
-    visible_statuses = ("approved",) if auto_hide_sold else ("approved", "sold")
-    query = db.query(Product).filter(func.lower(Product.status).in_(visible_statuses))
-    if auto_hide_sold:
-        query = query.filter(Product.stock > 0)
-    return query
+    ).filter(Product.stock > 0)
 
 
 def _optional_student_from_authorization(
@@ -11519,6 +11769,42 @@ def get_student_listings(
 
 
 # 21. የሻጭ ስታቲስቲክስ እና የደረሱ ትዕዛዞች መጥሪያ ኤፒአይ (GET /api/student/seller/dashboard-data) - Database-driven
+SELLER_COMPLETED_ORDER_STATUSES = {"completed", "successful", "delivered", "sold"}
+SELLER_PAID_ORDER_STATUSES = {"successful", "success", "paid", "completed"}
+
+
+def _seller_completed_product_ids(db: Session, seller_filter) -> set[int]:
+    completed_product_rows = db.query(Order.product_id).join(
+        Product, Order.product_id == Product.id,
+    ).filter(
+        seller_filter,
+        func.lower(func.trim(func.coalesce(Order.status, ""))).in_(SELLER_COMPLETED_ORDER_STATUSES),
+        func.lower(func.trim(func.coalesce(Order.payment_status, ""))).in_(SELLER_PAID_ORDER_STATUSES),
+    ).distinct().all()
+    return {product_id for (product_id,) in completed_product_rows if product_id is not None}
+
+
+def _seller_product_is_sold(product: Product, completed_product_ids: set[int]) -> bool:
+    return bool(
+        str(product.status or "").strip().lower() == "sold"
+        or int(getattr(product, "stock", 0) or 0) <= 0
+        or product.id in completed_product_ids
+    )
+
+
+def _seller_inventory_summary(products: List[Product], completed_product_ids: set[int]) -> dict:
+    summary = {"total": len(products), "active": 0, "sold": 0, "pending": 0}
+    for product in products:
+        normalized_status = str(product.status or "Pending").strip().lower()
+        if _seller_product_is_sold(product, completed_product_ids):
+            summary["sold"] += 1
+        elif normalized_status in {"approved", "active", "available"}:
+            summary["active"] += 1
+        elif normalized_status in {"pending", "under review", "under_review"}:
+            summary["pending"] += 1
+    return summary
+
+
 @app.get("/api/student/seller/products")
 def get_seller_products(
     student_id: str,
@@ -11536,26 +11822,10 @@ def get_seller_products(
         & ((Product.seller == student.student_id) | (Product.seller == student.name))
     )
     page_size = min(max(page_size, 1), 50)
-    status_counts = (
-        db.query(
-            func.lower(func.trim(func.coalesce(Product.status, ""))),
-            func.count(Product.id),
-        )
-        .filter(seller_filter)
-        .group_by(func.lower(func.trim(func.coalesce(Product.status, ""))))
-        .all()
-    )
-    total = sum(count for _, count in status_counts)
-    counts_by_status = dict(status_counts)
-    summary = {
-        "total": total,
-        "active": sum(counts_by_status.get(status, 0) for status in {"approved", "active"}),
-        "sold": counts_by_status.get("sold", 0),
-        "pending": sum(
-            counts_by_status.get(status, 0)
-            for status in {"pending", "under review", "under_review"}
-        ),
-    }
+    inventory_products = db.query(Product).filter(seller_filter).all()
+    completed_product_ids = _seller_completed_product_ids(db, seller_filter)
+    summary = _seller_inventory_summary(inventory_products, completed_product_ids)
+    total = summary["total"]
     total_pages = math.ceil(total / page_size) if total else 0
     page = min(max(page, 1), total_pages) if total_pages else 1
 
@@ -11587,11 +11857,12 @@ def get_seller_products(
             "price": product.price,
             "stock": int(getattr(product, "stock", 1) or 0),
             "image": _normalize_product_image(product.image),
-            "status": product.status,
+            "status": "Sold" if _seller_product_is_sold(product, completed_product_ids) else product.status,
             "has_orders": product.id in products_with_orders,
+            "has_completed_orders": product.id in completed_product_ids,
             "sold_via": (
-                "Marketplace Order" if product.id in products_with_orders
-                else "Marked by Seller" if str(product.status or "").strip().lower() == "sold"
+                "Marketplace Order" if product.id in completed_product_ids
+                else "Marked by Seller" if _seller_product_is_sold(product, completed_product_ids)
                 else None
             ),
             "created_at": product.created_at,
@@ -11619,21 +11890,25 @@ def get_seller_dashboard_data(
     if student.student_id.strip().lower() != str(student_id).strip().lower():
         raise HTTPException(status_code=403, detail="You can only view your own seller dashboard.")
 
-    seller_filter = (Product.seller == student.student_id) | (Product.seller == student.name)
+    seller_filter = (Product.seller_id == student.student_id) | (
+        Product.seller_id.is_(None)
+        & ((Product.seller == student.student_id) | (Product.seller == student.name))
+    )
 
     all_listings = db.query(Product).filter(seller_filter).order_by(Product.created_at.desc()).all()
+    completed_product_ids = _seller_completed_product_ids(db, seller_filter)
     listings = [
         listing for listing in all_listings
-        if _should_show_in_my_products(getattr(listing, "status", None))
+        if not _seller_product_is_sold(listing, completed_product_ids)
     ]
     received_orders = db.query(Order).join(Product, Order.product_id == Product.id).filter(
-        (Product.seller == student.student_id) | (Product.seller == student.name)
+        seller_filter,
     ).order_by(Order.created_at.desc()).all()
 
-    listing_statuses = [str(listing.status or "Pending").strip().lower() for listing in all_listings]
-    active_listings = sum(status in {"approved", "active"} for status in listing_statuses)
-    pending_listings = sum(status in {"pending", "under review", "under_review"} for status in listing_statuses)
-    sold_listings = sum(status == "sold" for status in listing_statuses)
+    inventory_summary = _seller_inventory_summary(all_listings, completed_product_ids)
+    active_listings = inventory_summary["active"]
+    pending_listings = inventory_summary["pending"]
+    sold_listings = inventory_summary["sold"]
     pending_orders = sum(str(order.status or "").strip().lower() in {"pending", "processing"} for order in received_orders)
     completed_orders = [
         order for order in received_orders
@@ -13305,7 +13580,10 @@ def get_student_notifications(
 
     notifications = db.query(Notification).filter(
         Notification.student_id == student_id
-    ).order_by(Notification.created_at.desc()).all()
+    ).order_by(
+        Notification.created_at.desc(),
+        Notification.id.desc(),
+    ).all()
 
     unread_notifications = [
         {
@@ -15753,8 +16031,52 @@ def pay_for_product(
             action_url=f"/dashboard?tab=seller&section=orders&order={order.id}",
         )
         db.commit()
-        _send_student_notification_email(buyer, "Payment completed", buyer_message, "payment")
-        _send_student_notification_email(seller, "Payment received", seller_message, "payment")
+        order_date = completed_at.strftime("%b %d, %Y").replace(" 0", " ")
+        _send_student_notification_email(
+            buyer,
+            "Payment completed",
+            buyer_message,
+            "payment",
+            badge="Completed",
+            details_table={
+                "Order ID": f"#{order.id}",
+                "Item": product.title,
+                "Unit price": f"{unit_price} ETB",
+                "Quantity": quantity,
+                "Total": f"{amount} ETB",
+                "Reference": buyer_tx,
+                "Date": order_date,
+            },
+            action_button={
+                "label": "Track Order",
+                "url": urljoin(
+                    FRONTEND_BASE_URL.rstrip("/") + "/",
+                    f"dashboard?tab=buyer&section=orders&order={order.id}",
+                ),
+            },
+        )
+        _send_student_notification_email(
+            seller,
+            "Payment received",
+            seller_message,
+            "payment",
+            badge="Payment received",
+            details_table={
+                "Order ID": f"#{order.id}",
+                "Item": product.title,
+                "Quantity": quantity,
+                "Payout amount": f"{seller_credit} ETB",
+                "Reference": f"ORDER-SALE-{order.id}",
+                "Date": order_date,
+            },
+            action_button={
+                "label": "View Order",
+                "url": urljoin(
+                    FRONTEND_BASE_URL.rstrip("/") + "/",
+                    f"dashboard?tab=seller&section=orders&order={order.id}",
+                ),
+            },
+        )
         db.refresh(order)
         return _payment_result(order, already_paid=False)
     except HTTPException:
@@ -17053,10 +17375,22 @@ def _queue_communication_email(
         return None
     safe_summary = " ".join(str(summary).split())[:180]
     safe_status = " ".join(str(status_text).split())[:60]
-    body = (
-        f"{item_id}\nStatus: {safe_status}\n{safe_summary}\n"
-        f"View in UniXchange: {action_url}"
-    )
+    item_label = "Ticket ID" if item_id.startswith("SUP-") else "Report ID"
+    body = json.dumps({
+        "template": "system",
+        "title": subject[:250],
+        "greeting": f"Hello {student.name}," if student.name else "Hello,",
+        "message_paragraphs": [safe_summary],
+        "badge": safe_status,
+        "details_table": {
+            item_label: item_id,
+            "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+        },
+        "action_button": {
+            "label": "View Support Request" if item_label == "Ticket ID" else "View Report",
+            "url": action_url,
+        },
+    }, ensure_ascii=False)
     outbox = EmailOutbox(
         recipient=student.email,
         subject=subject[:250],
@@ -17070,14 +17404,78 @@ def _queue_communication_email(
 
 
 def _send_outbox_email(recipient: str, subject: str, body: str) -> None:
+    payload = None
+    try:
+        candidate = json.loads(body)
+        if isinstance(candidate, dict) and candidate.get("template") == "system":
+            payload = candidate
+    except (TypeError, ValueError):
+        pass
+
+    if payload is None:
+        paragraphs = []
+        details_table = {}
+        action_button = None
+        badge = None
+        for line in body.splitlines():
+            if line.startswith("Status: "):
+                badge = line.removeprefix("Status: ").strip()
+            elif line.startswith("View in UniXchange: "):
+                action_button = {
+                    "label": "View in UniXchange",
+                    "url": line.removeprefix("View in UniXchange: ").strip(),
+                }
+            elif line.strip():
+                if not paragraphs and line.startswith(("SUP-", "RPT-")):
+                    details_table["Reference"] = line.strip()
+                else:
+                    paragraphs.append(line.strip())
+        payload = {
+            "title": subject,
+            "greeting": "Hello,",
+            "message_paragraphs": paragraphs or [body],
+            "badge": badge,
+            "details_table": details_table,
+            "action_button": action_button,
+        }
+
+    title = str(payload.get("title") or subject)
+    greeting = str(payload.get("greeting") or "Hello,")
+    paragraphs = payload.get("message_paragraphs") or [body]
+    badge = payload.get("badge")
+    details_table = payload.get("details_table")
+    action_button = payload.get("action_button")
+    image_url = payload.get("image_url")
     email = MIMEMultipart("alternative")
     email["Subject"] = subject
     email["From"] = formataddr(("UniXchange Security", SENDER_EMAIL))
     email["Reply-To"] = formataddr(("UniXchange Support", SENDER_EMAIL))
     email["To"] = recipient
-    escaped_body = "<br>".join(html.escape(line) for line in body.splitlines())
-    email.attach(MIMEText(body, "plain", "utf-8"))
-    email.attach(MIMEText(f"<p>{escaped_body}</p>", "html", "utf-8"))
+    email.attach(MIMEText(
+        render_system_email_text(
+            title,
+            greeting,
+            paragraphs,
+            badge=badge,
+            details_table=details_table,
+            action_button=action_button,
+        ),
+        "plain",
+        "utf-8",
+    ))
+    email.attach(MIMEText(
+        render_system_email(
+            title,
+            greeting,
+            paragraphs,
+            badge=badge,
+            details_table=details_table,
+            action_button=action_button,
+            image_url=image_url,
+        ),
+        "html",
+        "utf-8",
+    ))
     context = ssl.create_default_context()
     with _IPv4SMTP_SSL(
         "smtp.gmail.com",
@@ -18607,26 +19005,38 @@ def submit_student_review(payload: ReviewCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/api/student/payments")
-def get_student_payments(student_id: str, db: Session = Depends(get_db)):
-    student = db.query(Student).filter(Student.student_id == student_id).first()
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found.")
+def get_student_payments(
+    student_id: str,
+    db: Session = Depends(get_db),
+    hidden: bool = Query(False),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    student = _student_from_authorization(authorization, db)
+    if student.student_id.strip().lower() != str(student_id).strip().lower():
+        raise HTTPException(status_code=403, detail="You can only view your own wallet transactions.")
+    student_id = student.student_id
     wallet = db.query(Wallet).filter(Wallet.student_id == student_id).first()
 
-    transactions = (
+    all_transactions = (
         db.query(Transaction)
         .filter(Transaction.student_id == student_id)
         .order_by(Transaction.created_at.desc())
         .all()
     )
+    transactions = [
+        transaction for transaction in all_transactions
+        if bool(getattr(transaction, "is_hidden", False)) is hidden
+    ]
+    hidden_count = sum(bool(getattr(transaction, "is_hidden", False)) for transaction in all_transactions)
+    transactions_to_return = transactions if hidden else transactions[:20]
 
     recent_tx = "No transactions yet"
-    recent_tx_record = transactions[0] if transactions else None
+    recent_tx_record = all_transactions[0] if all_transactions else None
     if recent_tx_record:
         recent_tx = recent_tx_record.description or f"{recent_tx_record.type} — {recent_tx_record.tx_id}"
 
     withdrawal_references = [
-        tx.tx_id for tx in transactions[:20]
+        tx.tx_id for tx in transactions_to_return
         if _normalize_payment_type(tx.type) == "Wallet Withdrawal"
     ]
     test_mode_by_reference = dict(db.query(
@@ -18636,7 +19046,7 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
     chapa_test_mode = os.getenv("CHAPA_MODE", "").strip().lower() == "test"
 
     ledger = []
-    for tx in transactions[:20]:
+    for tx in transactions_to_return:
         amount = abs(Decimal(str(tx.amount or 0)).quantize(Decimal("0.01")))
         direction = _transaction_direction(tx.type)
         signed_amount = amount if direction == "credit" else -amount
@@ -18650,7 +19060,9 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
             "signed_amount": float(signed_amount),
             "status": tx.status,
             "date": tx.created_at.strftime("%Y-%m-%d") if tx.created_at else None,
+            "created_at": tx.created_at.isoformat() if tx.created_at else None,
             "hash": tx.tx_id,
+            "is_hidden": bool(getattr(tx, "is_hidden", False)),
             "test_mode": bool(test_mode_by_reference.get(tx.tx_id, False))
             or (is_wallet_deposit and chapa_test_mode),
         })
@@ -18661,7 +19073,46 @@ def get_student_payments(student_id: str, db: Session = Depends(get_db)):
         "held_balance": float(wallet.held_balance or 0) if wallet else 0.0,
         "recentTx": recent_tx,
         "transactions": ledger,
+        "hidden_count": hidden_count,
     }
+
+
+@app.patch("/api/student/wallet/transactions/{transaction_id}/hide")
+def hide_student_transaction(
+    transaction_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    transaction = db.query(Transaction).filter(
+        Transaction.id == transaction_id,
+    ).with_for_update().first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+    if student.student_id.strip().lower() != transaction.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You can only hide your own transactions.")
+    transaction.is_hidden = True
+    db.commit()
+    return {"success": True, "transaction_id": transaction.id, "is_hidden": True}
+
+
+@app.patch("/api/student/wallet/transactions/{transaction_id}/unhide")
+def unhide_student_transaction(
+    transaction_id: int,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    student = _student_from_authorization(authorization, db)
+    transaction = db.query(Transaction).filter(
+        Transaction.id == transaction_id,
+    ).with_for_update().first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found.")
+    if student.student_id.strip().lower() != transaction.student_id.strip().lower():
+        raise HTTPException(status_code=403, detail="You can only restore your own transactions.")
+    transaction.is_hidden = False
+    db.commit()
+    return {"success": True, "transaction_id": transaction.id, "is_hidden": False}
 
 
 @app.get("/api/student/orders/tracker")
@@ -19346,6 +19797,12 @@ async def withdraw_student_wallet(
         "Withdraw request submitted",
         f"Your withdraw request of {amount} ETB was submitted and is awaiting {'admin approval' if requires_admin_approval else 'payout confirmation'}.",
         "payout",
+        badge="Pending approval" if requires_admin_approval else "Pending",
+        details_table={
+            "Amount": f"{amount} ETB",
+            "Reference": tx_ref,
+            "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+        },
     )
     if requires_admin_approval:
         return _withdrawal_response(
@@ -21676,7 +22133,13 @@ def verify_payment_with_chapa(
 
 
 @app.post("/api/admin/payments/{payment_ref}/verify")
-async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depends(get_db)):
+async def verify_admin_payment_with_chapa(
+    payment_ref: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin(authorization, session_token, db)
     tx_ref = str(payment_ref).strip()
     transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
     if not transaction:
@@ -21694,6 +22157,7 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
     if _normalize_payment_status(transaction.status) == "Successful":
         return {
             "success": True,
+            "verified": True,
             "warning": "Payment already processed; replay blocked.",
             "transaction_id": transaction.tx_id,
             "status": transaction.status,
@@ -21701,17 +22165,52 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
             "chapa_reference": transaction.tx_id,
         }
 
-    verification = _request_chapa_verification(transaction.tx_id)
+    try:
+        verification = _request_chapa_verification(transaction.tx_id)
+    except HTTPException as error:
+        logging.getLogger("app.payments").warning(
+            "Chapa verification could not be completed for tx_ref=%s: %s",
+            transaction.tx_id,
+            error.detail,
+        )
+        return JSONResponse(
+            status_code=400 if error.status_code == 400 else 200,
+            content={
+                "success": False,
+                "verified": False,
+                "transaction_id": transaction.tx_id,
+                "status": "Pending",
+                "chapa_reference": transaction.tx_id,
+                "detail": f"Chapa verification could not be completed: {error.detail}",
+            },
+        )
+
     expected_amount = Decimal(str(transaction.amount)).quantize(Decimal("0.01"))
     if verification["amount"] != expected_amount:
-        raise HTTPException(status_code=400, detail="Chapa transaction amount does not match the pending payment.")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "verified": False,
+                "transaction_id": transaction.tx_id,
+                "status": "Pending",
+                "chapa_reference": transaction.tx_id,
+                "detail": "Chapa transaction amount does not match the pending payment.",
+            },
+        )
     gateway_status = verification["status"]
     if gateway_status != "Successful":
         return {
             "success": False,
+            "verified": False,
             "transaction_id": transaction.tx_id,
-            "status": gateway_status,
+            "status": "Pending" if gateway_status == "Pending" else gateway_status,
             "chapa_reference": transaction.tx_id,
+            "detail": (
+                "Transaction is still pending on Chapa"
+                if gateway_status == "Pending"
+                else f"Chapa verification returned {gateway_status}."
+            ),
         }
 
     try:
@@ -21723,6 +22222,7 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
         if settlement["already_settled"]:
             return {
                 "success": True,
+                "verified": True,
                 "warning": "Payment already processed; replay blocked.",
                 "transaction_id": settlement["transaction_id"],
                 "status": "Successful",
@@ -21740,15 +22240,20 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
             "Payment Successful",
             f"Your wallet deposit of {settlement['amount']} ETB was completed successfully.",
             "payment",
+            badge="Completed",
+            details_table={
+                "Amount": f"{settlement['amount']} ETB",
+                "Reference": settlement["transaction_id"],
+                "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+            },
         )
 
-        admin = db.query(Admin).order_by(Admin.id.asc()).first()
         db.add(AuditLog(
-            admin_id=admin.id if admin else None,
+            admin_id=admin.id,
             action="Payment Verified",
             entity_type="Payment",
             entity_id=transaction.id,
-            description=f"Admin {admin.username if admin else 'system'} verified Chapa payment {transaction.tx_id}; credited {settlement['amount']} ETB to student {student.student_id}.",
+            description=f"Admin {admin.username} verified Chapa payment {transaction.tx_id}; credited {settlement['amount']} ETB to student {student.student_id}.",
             status="SUCCESS",
             ip_address="127.0.0.1",
         ))
@@ -21765,6 +22270,7 @@ async def verify_admin_payment_with_chapa(payment_ref: str, db: Session = Depend
 
     return {
         "success": True,
+        "verified": True,
         "transaction_id": transaction.tx_id,
         "status": transaction.status,
         "wallet_balance": float(student.wallet_balance or 0),
@@ -22083,6 +22589,12 @@ async def simulate_chapa_webhook(
             "Payment Successful",
             f"Your Chapa wallet deposit of {settlement['amount']} ETB was completed successfully.",
             "payment",
+            badge="Completed",
+            details_table={
+                "Amount": f"{settlement['amount']} ETB",
+                "Reference": settlement["transaction_id"],
+                "Date": datetime.now(timezone.utc).strftime("%b %d, %Y").replace(" 0", " "),
+            },
         )
 
         admin = db.query(Admin).order_by(Admin.id.asc()).first()
@@ -23498,120 +24010,379 @@ def appeal_report(
     return {"success": True, "message": "Your appeal was submitted."}
 
 
-# 19. የአስተዳዳሪ ማስታወቂያ ማሰራጫ (POST /api/admin/notifications/broadcast)
-@app.post("/api/admin/notifications/broadcast")
-def broadcast_notification(data: BroadcastNotificationRequest, db: Session = Depends(get_db)):
-    if not data.title or not data.title.strip():
-        raise HTTPException(status_code=400, detail="Broadcast title is required.")
-
-    announcement_notifications_enabled = _setting_bool(
-        _get_setting_value(
-            db,
-            "notifications",
-            "announcementNotifs",
-            DEFAULT_SETTINGS_BLOCKS["notifications"]["announcementNotifs"],
-        ),
-        DEFAULT_SETTINGS_BLOCKS["notifications"]["announcementNotifs"],
-    )
-    if not announcement_notifications_enabled:
-        raise HTTPException(
-            status_code=400,
-            detail="Announcement notifications are globally disabled in System Settings",
-        )
-
-    target = (data.target or "Everyone").strip()
-    normalized_target = target.lower()
-    if normalized_target in {"all students", "all", "everyone"}:
-        query = db.query(Student)
-    elif normalized_target == "sellers":
-        listed_sellers = db.query(Product.seller).filter(
-            Product.seller.isnot(None),
-            Product.status.in_(["Approved", "Sold", "Active"]),
+def _broadcast_audience_query(
+    db: Session,
+    target_type: str,
+    department: Optional[str] = None,
+):
+    active_students = func.lower(Student.status) == "active"
+    query = db.query(Student).filter(active_students)
+    if target_type == "sellers":
+        active_listings = db.query(Product.seller_id).filter(
+            Product.seller_id.isnot(None),
+            func.lower(Product.status).in_(("approved", "active")),
         ).distinct()
-        query = db.query(Student).filter(
-            (Student.is_verified.is_(True)) |
-            Student.student_id.in_(listed_sellers) |
-            Student.name.in_(listed_sellers)
-        )
-    elif normalized_target == "buyers":
-        placed_order_students = db.query(Order.student_id).filter(
-            Order.student_id.isnot(None)
+        return query.filter(Student.student_id.in_(active_listings))
+    if target_type == "buyers":
+        active_buyers = db.query(Order.student_id).filter(
+            Order.student_id.isnot(None),
         ).distinct()
-        query = db.query(Student).filter(
-            (Student.status == "Active") | Student.student_id.in_(placed_order_students)
-        )
-    else:
-        query = db.query(Student).filter(Student.department == target)
+        return query.filter(Student.student_id.in_(active_buyers))
+    if target_type == "department":
+        return query.filter(func.lower(Student.department) == (department or "").strip().lower())
+    return query
 
-    students = query.all()
-    for s in students:
-        db.add(Notification(
-            student_id=s.student_id,
-            title=data.title.strip(),
-            message=data.message,
-            target=target,
-            type=f"broadcast_{target}",
-            is_read=False
-        ))
-    db.commit()
+
+def _broadcast_campaign_response(
+    campaign: BroadcastCampaign,
+    *,
+    delivered: int,
+    read: int,
+) -> Dict[str, Any]:
+    channels = campaign.delivery_channels or []
     return {
-        "message": f"Broadcast delivered to {len(students)} students",
-        "delivered_count": len(students),
-        "target": target,
+        "id": campaign.id,
+        "title": campaign.title,
+        "message": campaign.message,
+        "image_url": campaign.image_url,
+        "target": campaign.target,
+        "target_type": campaign.target_type,
+        "department": campaign.department,
+        "delivery_channels": channels,
+        "delivery_type": ", ".join(
+            {
+                "in_app": "In-App Notification",
+                "banner": "Urgent Top Banner",
+                "email": "Email Dispatch",
+            }.get(channel, channel)
+            for channel in channels
+        ),
+        "delivered": delivered,
+        "read": read,
+        "unread": max(0, delivered - read),
+        "recipient_count": campaign.recipient_count,
+        "read_rate": round((read / delivered) * 100, 1) if delivered else 0,
+        "date": campaign.sent_at.isoformat() if campaign.sent_at else None,
     }
 
 
-@app.get("/api/admin/notifications/broadcasts")
-def get_broadcast_history(db: Session = Depends(get_db)):
-    broadcasts = (
-        db.query(Notification)
-        .filter(
-            or_(
-                Notification.type == "broadcast",
-                Notification.type.startswith("broadcast_", autoescape=True),
+@app.post("/api/admin/notifications/broadcast")
+@app.post("/api/admin/broadcasts")
+def broadcast_notification(
+    data: BroadcastNotificationRequest,
+    background_tasks: BackgroundTasks,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = Header(None, alias="X-Admin-Session-Token"),
+    db: Session = Depends(get_db),
+):
+    admin = _require_admin_dashboard_access(authorization, session_token, db)
+    title = (data.title or "").strip()
+    message = data.message.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Broadcast title is required.")
+    if not message:
+        raise HTTPException(status_code=400, detail="Broadcast message is required.")
+
+    channels = list(dict.fromkeys(channel.strip().lower() for channel in data.deliveryChannels))
+    allowed_channels = {"in_app", "banner", "email"}
+    if not channels or set(channels) - allowed_channels:
+        raise HTTPException(status_code=422, detail="Choose at least one valid delivery channel.")
+
+    raw_target = (data.target or "everyone").strip()
+    normalized_target = re.sub(r"[\s-]+", "_", raw_target.lower())
+    if normalized_target in {"all", "all_students", "everyone", "all_campus_students_(everyone)"}:
+        target_type = "everyone"
+        department = None
+        target_label = "All Campus Students (Everyone)"
+    elif normalized_target in {"sellers", "active_sellers", "active_sellers_only"}:
+        target_type = "sellers"
+        department = None
+        target_label = "Active Sellers Only"
+    elif normalized_target in {"buyers", "active_buyers", "active_buyers_only"}:
+        target_type = "buyers"
+        department = None
+        target_label = "Active Buyers Only"
+    else:
+        target_type = "department"
+        department = (data.department or (raw_target if normalized_target not in {"department", "specific_department"} else "")).strip()
+        if not department:
+            raise HTTPException(status_code=422, detail="Choose a department for this audience.")
+        target_label = f"Specific Department: {department}"
+
+    students = _broadcast_audience_query(db, target_type, department).all()
+    sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    campaign = BroadcastCampaign(
+        title=title,
+        message=message,
+        image_url=data.image_url.strip() if data.image_url and data.image_url.strip() else None,
+        target=target_label,
+        target_type=target_type,
+        department=department,
+        delivery_channels=channels,
+        recipient_count=len(students),
+        admin_id=admin.id,
+        sent_at=sent_at,
+        is_active=True,
+        banner_pinned="banner" in channels,
+    )
+    db.add(campaign)
+    db.flush()
+
+    if "in_app" in channels:
+        db.add_all([
+            Notification(
+                student_id=student.student_id,
+                title=title,
+                message=message,
+                image_url=campaign.image_url,
+                target=target_label[:150],
+                reference_id=str(campaign.id),
+                type="broadcast",
+                is_read=False,
+                created_at=sent_at,
             )
-        )
-        .order_by(Notification.created_at.desc(), Notification.id.desc())
+            for student in students
+        ])
+
+    email_queued_count = 0
+    if "email" in channels:
+        for student in students:
+            if not student.email or not student.is_verified:
+                continue
+            email_body = json.dumps({
+                "template": "system",
+                "title": title,
+                "greeting": f"Hello {student.name}," if student.name else "Hello,",
+                "message_paragraphs": [message],
+                "badge": "Campus announcement",
+                "details_table": {"Target Audience": target_label},
+                "image_url": campaign.image_url,
+            }, ensure_ascii=False)
+            outbox = EmailOutbox(
+                recipient=student.email,
+                subject=title[:250],
+                body=email_body,
+                status="queued",
+                attempts=0,
+            )
+            db.add(outbox)
+            db.flush()
+            _schedule_outbox_delivery(background_tasks, db, outbox.id)
+            email_queued_count += 1
+
+    try:
+        db.commit()
+        db.refresh(campaign)
+    except Exception:
+        db.rollback()
+        raise
+
+    response_campaign = _broadcast_campaign_response(campaign, delivered=len(students) if "in_app" in channels else 0, read=0)
+    return {
+        "success": True,
+        "message": f"Broadcast delivered to {len(students)} students",
+        "delivered_count": len(students) if "in_app" in channels else 0,
+        "email_queued_count": email_queued_count,
+        "campaign": response_campaign,
+        **response_campaign,
+    }
+
+
+@app.post("/api/admin/broadcasts/image")
+async def upload_broadcast_image(
+    image: UploadFile = File(...),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = Header(None, alias="X-Admin-Session-Token"),
+    db: Session = Depends(get_db),
+):
+    _require_admin_dashboard_access(authorization, session_token, db)
+    try:
+        image_url = save_upload(image, "campace/broadcasts", max_size_bytes=5 * 1024 * 1024)
+    finally:
+        await image.close()
+    return {"image_url": image_url}
+
+
+@app.get("/api/admin/notifications/broadcasts")
+@app.get("/api/admin/broadcasts")
+def get_broadcast_history(
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = Header(None, alias="X-Admin-Session-Token"),
+    db: Session = Depends(get_db),
+):
+    _require_admin_dashboard_access(authorization, session_token, db)
+    campaigns = (
+        db.query(BroadcastCampaign)
+        .order_by(BroadcastCampaign.sent_at.desc(), BroadcastCampaign.id.desc())
         .all()
     )
-    campaigns = {}
-    for notification in broadcasts:
-        notification_type = notification.type or ""
-        decoded_target = (
-            notification_type.replace("broadcast_", "", 1)
-            if notification_type.startswith("broadcast_")
-            else notification.target or ""
+    notification_stats = {
+        reference_id: (int(delivered or 0), int(read or 0))
+        for reference_id, delivered, read in db.query(
+            Notification.reference_id,
+            func.count(Notification.id),
+            func.sum(case((Notification.is_read.is_(True), 1), else_=0)),
+        ).filter(
+            Notification.type == "broadcast",
+            Notification.reference_id.isnot(None),
+        ).group_by(Notification.reference_id).all()
+    }
+    results = [
+        _broadcast_campaign_response(
+            campaign,
+            delivered=notification_stats.get(str(campaign.id), (0, 0))[0],
+            read=notification_stats.get(str(campaign.id), (0, 0))[1],
         )
-        normalized_decoded_target = decoded_target.strip().lower()
-        campaign_title = notification.title or "Untitled Broadcast"
-        if normalized_decoded_target in {"", "broadcast"}:
-            title_lower = campaign_title.lower()
-            if "information technology" in title_lower or re.search(r"\bit\b", title_lower):
-                campaign_target = "Department of Information Technology (IT)"
-            elif "buyers" in title_lower:
-                campaign_target = "Buyers"
-            else:
-                campaign_target = "Everyone"
-        else:
-            campaign_target = decoded_target.strip()
-        campaign_key = (notification_type, campaign_title, notification.message)
-        campaign = campaigns.setdefault(campaign_key, {
-            "id": notification.id,
-            "title": campaign_key[1],
+        for campaign in campaigns
+    ]
+
+    legacy_notifications = db.query(Notification).filter(
+        Notification.type.startswith("broadcast_", autoescape=True),
+        Notification.reference_id.is_(None),
+    ).order_by(Notification.created_at.desc(), Notification.id.desc()).all()
+    legacy_campaigns = {}
+    for notification in legacy_notifications:
+        legacy_target = notification.target or notification.type.removeprefix("broadcast_")
+        key = (notification.title or "Untitled Broadcast", notification.message, legacy_target)
+        legacy = legacy_campaigns.setdefault(key, {
+            "id": f"legacy-{notification.id}",
+            "title": key[0],
             "message": notification.message,
+            "target": legacy_target,
+            "delivery_channels": ["in_app"],
+            "delivery_type": "In-App Notification",
             "delivered": 0,
             "read": 0,
             "unread": 0,
+            "recipient_count": 0,
+            "read_rate": 0,
             "date": notification.created_at.isoformat() if notification.created_at else None,
-            "target": campaign_target,
         })
-        campaign["delivered"] += 1
-        if notification.is_read:
-            campaign["read"] += 1
-        else:
-            campaign["unread"] += 1
+        legacy["delivered"] += 1
+        legacy["recipient_count"] += 1
+        legacy["read"] += int(bool(notification.is_read))
+        legacy["unread"] += int(not notification.is_read)
+        legacy["read_rate"] = round(legacy["read"] / legacy["delivered"] * 100, 1)
+    results.extend(legacy_campaigns.values())
+    return sorted(results, key=lambda campaign: campaign.get("date") or "", reverse=True)
 
-    return list(campaigns.values())
+
+@app.delete("/api/admin/broadcasts/{campaign_id}")
+def delete_broadcast_campaign(
+    campaign_id: str,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    session_token: Optional[str] = Header(None, alias="X-Admin-Session-Token"),
+    db: Session = Depends(get_db),
+):
+    _require_admin_dashboard_access(authorization, session_token, db)
+    if campaign_id.startswith("legacy-"):
+        legacy_id = campaign_id.removeprefix("legacy-")
+        if not legacy_id.isdigit():
+            raise HTTPException(status_code=404, detail="Announcement not found.")
+        record = db.query(Notification).filter(
+            Notification.id == int(legacy_id),
+            Notification.type.startswith("broadcast_", autoescape=True),
+            Notification.reference_id.is_(None),
+        ).first()
+    else:
+        if not campaign_id.isdigit():
+            raise HTTPException(status_code=404, detail="Announcement not found.")
+        record = db.query(BroadcastCampaign).filter(
+            BroadcastCampaign.id == int(campaign_id),
+        ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Announcement not found.")
+    db.delete(record)
+    db.commit()
+    return {"success": True, "campaign_id": campaign_id}
+
+
+@app.get("/api/announcements/active")
+def get_active_public_announcements(
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=72)
+    campaigns = db.query(BroadcastCampaign).filter(
+        BroadcastCampaign.is_active.is_(True),
+        BroadcastCampaign.banner_pinned.is_(True),
+        BroadcastCampaign.target_type == "everyone",
+        BroadcastCampaign.sent_at >= cutoff,
+        BroadcastCampaign.sent_at <= now,
+    ).order_by(
+        BroadcastCampaign.sent_at.desc(),
+        BroadcastCampaign.id.desc(),
+    ).all()
+
+    def format_announcement_timestamp(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+
+    return [
+        {
+            "id": campaign.id,
+            "title": campaign.title,
+            "message": campaign.message,
+            "image_url": campaign.image_url,
+            "created_at": format_announcement_timestamp(campaign.sent_at),
+            "sent_at": format_announcement_timestamp(campaign.sent_at),
+            "banner_pinned": campaign.banner_pinned,
+            "urgent_banner": campaign.banner_pinned,
+        }
+        for campaign in campaigns
+    ]
+
+
+@app.get("/api/student/announcements/urgent")
+def get_urgent_student_announcement(
+    student_id: str,
+    response: Response,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    student = _student_from_authorization(authorization, db)
+    if student.student_id != student_id:
+        raise HTTPException(status_code=403, detail="Student access is required.")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=72)
+    campaigns = db.query(BroadcastCampaign).filter(
+        BroadcastCampaign.is_active.is_(True),
+        BroadcastCampaign.banner_pinned.is_(True),
+        BroadcastCampaign.sent_at >= cutoff,
+        BroadcastCampaign.sent_at <= now,
+    ).order_by(
+        BroadcastCampaign.sent_at.desc(),
+        BroadcastCampaign.id.desc(),
+    ).limit(50).all()
+
+    def format_announcement_timestamp(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+
+    for campaign in campaigns:
+        audience = _broadcast_audience_query(db, campaign.target_type, campaign.department)
+        if audience.filter(Student.student_id == student.student_id).first():
+            return {
+                "id": campaign.id,
+                "title": campaign.title,
+                "message": campaign.message,
+                "image_url": campaign.image_url,
+                "created_at": format_announcement_timestamp(campaign.sent_at),
+                "sent_at": format_announcement_timestamp(campaign.sent_at),
+                "banner_pinned": campaign.banner_pinned,
+                "urgent_banner": campaign.banner_pinned,
+            }
+    return None
 
 
 # 21. Create Main Category (POST /api/admin/categories)
@@ -23636,7 +24407,51 @@ def create_category(data: CategoryCreate, db: Session = Depends(get_db)):
         "name": db_category.name,
         "icon": db_category.icon,
         "ads_count": db_category.ads_count,
-        "status": "Active"
+        "is_active": db_category.is_active,
+        "status": "Active" if db_category.is_active else "Inactive"
+    }
+
+
+@app.put("/api/admin/categories/{category_id}")
+def update_category(category_id: int, data: CategoryUpdate, db: Session = Depends(get_db)):
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    if not data.model_fields_set:
+        raise HTTPException(status_code=422, detail="At least one category field must be provided")
+    if "is_active" in data.model_fields_set and data.is_active is None:
+        raise HTTPException(status_code=422, detail="Category active status must be a boolean")
+
+    if "name" in data.model_fields_set:
+        name = (data.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Category name cannot be empty")
+        existing = db.query(Category).filter(
+            func.lower(Category.name) == name.lower(),
+            Category.id != category_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Category already exists")
+        category.name = name
+    if "icon" in data.model_fields_set:
+        category.icon = data.icon
+    if "is_active" in data.model_fields_set:
+        category.is_active = data.is_active
+
+    try:
+        db.commit()
+        db.refresh(category)
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Category already exists") from error
+
+    return {
+        "id": category.id,
+        "name": category.name,
+        "icon": category.icon,
+        "ads_count": category.ads_count,
+        "is_active": category.is_active,
+        "status": "Active" if category.is_active else "Inactive",
     }
 
 
@@ -23674,6 +24489,60 @@ def create_subcategory(data: SubCategoryCreate, db: Session = Depends(get_db)):
     }
 
 
+@app.put("/api/admin/subcategories/{subcategory_id}")
+def update_subcategory(subcategory_id: int, data: SubCategoryUpdate, db: Session = Depends(get_db)):
+    subcategory = db.query(SubCategory).filter(SubCategory.id == subcategory_id).first()
+    if not subcategory:
+        raise HTTPException(status_code=404, detail="Subcategory not found")
+    if not data.model_fields_set:
+        raise HTTPException(status_code=422, detail="At least one subcategory field must be provided")
+
+    parent_category_id = subcategory.category_id
+    if "parent_category_id" in data.model_fields_set:
+        if data.parent_category_id is None:
+            raise HTTPException(status_code=422, detail="Parent category is required")
+        parent_category_id = data.parent_category_id
+        parent_category = db.query(Category).filter(Category.id == parent_category_id).first()
+        if not parent_category:
+            raise HTTPException(status_code=404, detail="Parent category not found")
+
+    if "name" in data.model_fields_set:
+        name = (data.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Subcategory name cannot be empty")
+        existing = db.query(SubCategory).filter(
+            func.lower(SubCategory.name) == name.lower(),
+            SubCategory.category_id == parent_category_id,
+            SubCategory.id != subcategory_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Subcategory already exists under this category")
+        subcategory.name = name
+    elif "parent_category_id" in data.model_fields_set:
+        existing = db.query(SubCategory).filter(
+            func.lower(SubCategory.name) == subcategory.name.lower(),
+            SubCategory.category_id == parent_category_id,
+            SubCategory.id != subcategory_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Subcategory already exists under this category")
+
+    if "icon" in data.model_fields_set:
+        subcategory.icon = data.icon
+    if "parent_category_id" in data.model_fields_set:
+        subcategory.category_id = parent_category_id
+
+    db.commit()
+    db.refresh(subcategory)
+    return {
+        "id": subcategory.id,
+        "name": subcategory.name,
+        "icon": subcategory.icon,
+        "category_id": subcategory.category_id,
+        "ads_count": subcategory.ads_count,
+    }
+
+
 # 23. Fetch all categories with subcategories (GET /api/admin/categories/all)
 @app.get("/api/admin/categories/all")
 def get_all_categories_with_subs(db: Session = Depends(get_db)):
@@ -23707,7 +24576,8 @@ def get_all_categories_with_subs(db: Session = Depends(get_db)):
             "name": cat.name,
             "icon": cat.icon,
             "ads": f"{category_ads} ads",
-            "status": "Active",
+            "is_active": cat.is_active,
+            "status": "Active" if cat.is_active else "Inactive",
             "subcategories": subcategories
         })
     

@@ -21,6 +21,7 @@ LOCAL_FOLDER_MAP = {
     "campace/profiles": "avatars",
     "campace/ids": "id_cards",
     "campace/chat": "attachments",
+    "campace/broadcasts": "broadcasts",
 }
 logger = logging.getLogger("app.storage")
 

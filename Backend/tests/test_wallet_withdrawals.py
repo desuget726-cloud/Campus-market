@@ -193,7 +193,11 @@ class WalletWithdrawalTests(unittest.TestCase):
         self.assertEqual(self.wallet.held_balance, Decimal("0.00"))
         self.assertTrue(payout.is_test_mode)
         self.assertTrue(self.db.query(Notification).filter_by(title="Withdraw successful").first())
-        wallet_payload = main_module.get_student_payments(self.student.student_id, self.db)
+        with patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            wallet_payload = main_module.get_student_payments(
+                self.student.student_id, self.db, hidden=False,
+                authorization="Bearer test-token",
+            )
         self.assertEqual(wallet_payload["held_balance"], 0.0)
         self.assertTrue(wallet_payload["transactions"][0]["test_mode"])
 

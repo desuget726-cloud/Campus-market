@@ -295,6 +295,13 @@ function NotificationCenter({
                                                             />
                                                         )}
                                                         <div className="min-w-0">
+                                                            {notification.image_url && (
+                                                                <img
+                                                                    src={notification.image_url}
+                                                                    alt=""
+                                                                    className="mb-3 max-h-56 w-full rounded-lg object-cover"
+                                                                />
+                                                            )}
                                                             <div className="flex flex-wrap items-center gap-2">
                                                                 <h4 className={`font-black ${isRead ? "text-slate-700" : "text-slate-950"}`}>
                                                                     {notification.title || "Campus update"}

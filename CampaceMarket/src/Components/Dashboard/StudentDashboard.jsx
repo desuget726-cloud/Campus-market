@@ -545,6 +545,11 @@ function StudentDashboard({
   const [copiedTransactionHash, setCopiedTransactionHash] = useState('');
   const [transactionFilter, setTransactionFilter] = useState('all');
   const [transactionSearch, setTransactionSearch] = useState('');
+  const [hiddenTransactions, setHiddenTransactions] = useState([]);
+  const [hiddenTransactionsCount, setHiddenTransactionsCount] = useState(0);
+  const [hiddenTransactionsLoading, setHiddenTransactionsLoading] = useState(false);
+  const [transactionVisibilityActionId, setTransactionVisibilityActionId] = useState(null);
+  const [transactionVisibilityError, setTransactionVisibilityError] = useState('');
   const [paymentVerificationState, setPaymentVerificationState] = useState('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
@@ -797,6 +802,7 @@ function StudentDashboard({
   const withdrawExceedsBalance = withdrawAmount !== '' && Number.isFinite(withdrawAmountValue) && withdrawAmountValue > currentWalletBalance;
 
   const transactionLedger = Array.isArray(paymentInfo?.transactions) ? paymentInfo.transactions : [];
+  const allTransactionLedger = [...transactionLedger, ...hiddenTransactions];
   const depositAmountValue = Number(depositAmount);
   const isValidDepositAmount = depositAmount !== '' && depositAmount !== null && Number.isFinite(depositAmountValue) && depositAmountValue > 0;
 
@@ -845,18 +851,21 @@ function StudentDashboard({
     return Number.isFinite(amount) ? Math.abs(amount) : 0;
   };
 
-  const totalDeposited = transactionLedger.reduce((total, tx) => (
+  const totalDeposited = allTransactionLedger.reduce((total, tx) => (
     getTransactionDirection(tx).sign === '+'
       ? total + getTransactionAmount(tx)
       : total
   ), 0);
-  const totalSpent = transactionLedger.reduce((total, tx) => (
+  const totalSpent = allTransactionLedger.reduce((total, tx) => (
     getTransactionDirection(tx).sign === '-'
       ? total + getTransactionAmount(tx)
       : total
   ), 0);
-  const filteredTransactions = transactionLedger.filter((tx) => {
-    const matchesFilter = transactionFilter === 'all' || getTransactionCategory(tx) === transactionFilter;
+  const transactionsForView = transactionFilter === 'hidden' ? hiddenTransactions : transactionLedger;
+  const filteredTransactions = transactionsForView.filter((tx) => {
+    const matchesFilter = transactionFilter === 'hidden'
+      || transactionFilter === 'all'
+      || getTransactionCategory(tx) === transactionFilter;
     const searchableText = [
       tx?.label,
       tx?.type,
@@ -905,7 +914,7 @@ function StudentDashboard({
     setOrdersError('');
 
     try {
-      const [wishRes, cartRes, orderRes, hiddenOrderRes, payRes] = await Promise.all([
+      const [wishRes, cartRes, orderRes, hiddenOrderRes, payRes, hiddenPayRes] = await Promise.all([
         fetch(`${API_BASE_URL}/api/student/wishlist?student_id=${studentId}`),
         fetch(`${API_BASE_URL}/api/student/cart?student_id=${studentId}`, {
           cache: 'no-store',
@@ -920,7 +929,14 @@ function StudentDashboard({
           cache: 'no-store',
           ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
         }),
-        fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}`, { cache: 'no-store' }),
+        fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}`, {
+          cache: 'no-store',
+          ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+        }),
+        fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}&hidden=true`, {
+          cache: 'no-store',
+          ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+        }),
       ]);
 
       if (wishRes.ok) {
@@ -952,6 +968,7 @@ function StudentDashboard({
         const nextBalance = Number(payData?.balance ?? payData?.walletBalance ?? payData?.wallet_balance ?? 0);
         const normalizedBalance = Number.isFinite(nextBalance) ? nextBalance : 0;
         const normalizedTransactions = Array.isArray(payData?.transactions) ? payData.transactions : [];
+        setHiddenTransactionsCount(Number(payData?.hidden_count || 0));
 
         setPaymentInfo({
           balance: normalizedBalance,
@@ -969,6 +986,13 @@ function StudentDashboard({
         if (balanceChanged && onUserUpdate) {
           onUserUpdate((currentUser) => currentUser ? { ...currentUser, wallet_balance: normalizedBalance } : currentUser);
         }
+      }
+
+      if (hiddenPayRes.ok) {
+        const hiddenPayData = await hiddenPayRes.json();
+        const hiddenTransactionRows = Array.isArray(hiddenPayData?.transactions) ? hiddenPayData.transactions : [];
+        setHiddenTransactions(hiddenTransactionRows);
+        setHiddenTransactionsCount(Number(hiddenPayData?.hidden_count ?? hiddenTransactionRows.length));
       }
     } catch (err) {
       console.error('Error fetching buyer data:', err);
@@ -1046,6 +1070,76 @@ function StudentDashboard({
   const handleOrdersViewChange = async (hidden) => {
     setShowHiddenOrders(hidden);
     await loadOrdersView(hidden);
+  };
+
+  const loadHiddenTransactions = async () => {
+    if (!studentId) return;
+    const token = getStudentSessionToken();
+    setHiddenTransactionsLoading(true);
+    setTransactionVisibilityError('');
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}&hidden=true`,
+        { cache: 'no-store', headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Unable to load hidden transactions.');
+      const rows = Array.isArray(data?.transactions) ? data.transactions : [];
+      setHiddenTransactions(rows);
+      setHiddenTransactionsCount(Number(data?.hidden_count ?? rows.length));
+    } catch (error) {
+      setTransactionVisibilityError(error.message || 'Unable to load hidden transactions.');
+    } finally {
+      setHiddenTransactionsLoading(false);
+    }
+  };
+
+  const handleTransactionVisibility = async (transaction) => {
+    if (!transaction?.id) return;
+    const isHidden = transactionFilter === 'hidden';
+    const actionId = transaction.id;
+    const token = getStudentSessionToken();
+    setTransactionVisibilityActionId(actionId);
+    setTransactionVisibilityError('');
+    const updateTransactionVisibilityState = (hidden) => {
+      if (hidden) {
+        setPaymentInfo((previous) => ({
+          ...previous,
+          transactions: (Array.isArray(previous.transactions) ? previous.transactions : []).filter((item) => item.id !== actionId),
+        }));
+        setHiddenTransactions((previous) => [{ ...transaction, is_hidden: true }, ...previous.filter((item) => item.id !== actionId)]);
+        setHiddenTransactionsCount((previous) => previous + 1);
+      } else {
+        setHiddenTransactions((previous) => previous.filter((item) => item.id !== actionId));
+        setPaymentInfo((previous) => ({
+          ...previous,
+          transactions: [
+            { ...transaction, is_hidden: false },
+            ...(Array.isArray(previous.transactions) ? previous.transactions : []).filter((item) => item.id !== actionId),
+          ].slice(0, 20),
+        }));
+        setHiddenTransactionsCount((previous) => Math.max(0, previous - 1));
+      }
+    };
+    updateTransactionVisibilityState(!isHidden);
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/student/wallet/transactions/${encodeURIComponent(actionId)}/${isHidden ? 'unhide' : 'hide'}`,
+        { method: 'PATCH', headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || `Unable to ${isHidden ? 'restore' : 'hide'} this transaction.`);
+      notifySuccess(
+        isHidden ? 'Transaction restored to history.' : 'Transaction hidden from history.',
+        `student-transaction-visibility-${actionId}`,
+      );
+    } catch (error) {
+      updateTransactionVisibilityState(isHidden);
+      setTransactionVisibilityError(error.message || `Unable to ${isHidden ? 'restore' : 'hide'} this transaction.`);
+      notifyError(error, `student-transaction-visibility-${actionId}`);
+    } finally {
+      setTransactionVisibilityActionId(null);
+    }
   };
 
   const isReceiptUnavailable = (orderId) => {
@@ -1781,7 +1875,11 @@ function StudentDashboard({
   useEffect(() => {
     if (!studentId || activeTab !== 'notifications') return;
 
+    let cancelled = false;
+    let requestInFlight = false;
     const fetchNotificationsData = async () => {
+      if (cancelled || requestInFlight) return;
+      requestInFlight = true;
       try {
         const response = await fetch(`${API_BASE_URL}/api/student/notifications?student_id=${encodeURIComponent(studentId)}`, {
           headers: { Authorization: `Bearer ${getStudentSessionToken()}` },
@@ -1797,17 +1895,26 @@ function StudentDashboard({
           read: Boolean(notification.read ?? notification.is_read),
           type: notification.type || notification.category || 'system',
         }));
-        setNotifications((previousNotifications) => (
-          JSON.stringify(previousNotifications) === JSON.stringify(normalizedNotifications)
-            ? previousNotifications
-            : normalizedNotifications
-        ));
+        if (!cancelled) {
+          setNotifications((previousNotifications) => (
+            JSON.stringify(previousNotifications) === JSON.stringify(normalizedNotifications)
+              ? previousNotifications
+              : normalizedNotifications
+          ));
+        }
       } catch (err) {
-        console.error('Error fetching notifications:', err);
+        if (!cancelled) console.error('Error fetching notifications:', err);
+      } finally {
+        requestInFlight = false;
       }
     };
 
-    fetchNotificationsData();
+    void fetchNotificationsData();
+    const refreshId = window.setInterval(fetchNotificationsData, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(refreshId);
+    };
   }, [activeTab, studentId, getStudentSessionToken]);
 
   const handleMarkNotificationRead = async (notificationId) => {
@@ -2074,7 +2181,10 @@ function StudentDashboard({
 
     const fetchWalletBalance = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/student/payments?student_id=${user.studentId}`, { cache: 'no-store' });
+        const res = await fetch(`${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${sessionToken}` },
+        });
         if (!res.ok) return;
         const data = await res.json();
         const nextBalance = Number(data.balance ?? data.walletBalance ?? data.wallet_balance ?? 0);
@@ -2092,7 +2202,7 @@ function StudentDashboard({
               balance: normalizedBalance,
               heldBalance: Number(data?.held_balance ?? prev?.heldBalance ?? 0),
               recentTx: data?.recentTx || data?.recent_tx || (normalizedTransactions[0] ? getTransactionSummaryText(normalizedTransactions[0]) : prev?.recentTx || 'No transactions yet'),
-              transactions: normalizedTransactions.length ? normalizedTransactions : prev?.transactions || [],
+              transactions: normalizedTransactions,
             };
             return Object.keys(nextPaymentInfo).every((key) => Object.is(prev?.[key], nextPaymentInfo[key]))
               ? prev
@@ -3015,7 +3125,7 @@ function StudentDashboard({
       // do not close the form or report success from an optimistic response.
       const confirmationResponse = await fetch(
         `${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(studentId)}`,
-        { cache: 'no-store' },
+        { cache: 'no-store', headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
       const confirmationData = await confirmationResponse.json().catch(() => ({}));
       if (!confirmationResponse.ok) {
@@ -3260,7 +3370,7 @@ function StudentDashboard({
       setPayoutSetupAccountNumber('');
       setPayoutSetupOpen(false);
       notifySuccess(data.message || t('studentToast.payoutAccountSaved'), 'student-payout-account-setup');
-      await handleWithdrawSubmit({ preventDefault: () => {} }, account);
+      await handleWithdrawSubmit({ preventDefault: () => { } }, account);
     } catch (error) {
       setPayoutSetupError(getErrorMessage(error));
       notifyError(error, 'student-payout-account-setup');
@@ -3823,26 +3933,26 @@ function StudentDashboard({
           throw new Error(data.detail || 'Failed to load conversations.');
         }
         if (data.conversations && Array.isArray(data.conversations)) {
-            const requestedConversationId = getConversationIdFromUrl();
-            const restoredConversation = data.conversations.find((conversation) => String(conversation.id) === String(requestedConversationId));
-            const requestedParticipant = sellerChatParticipantsRef.current[requestedConversationId];
-            const syntheticConversation = !initialMessagesProductId && requestedConversationId && !restoredConversation
-              ? {
-                id: requestedConversationId,
-                studentId: String(requestedConversationId).replace(/^conv-/, ''),
-                name: requestedParticipant?.name || 'Student',
-                department: requestedParticipant?.department || '',
-                unread: 0,
-                messages: [],
-              }
-              : null;
-            const selectedConversation = restoredConversation || syntheticConversation || data.conversations[0] || null;
-            setConversationsList(syntheticConversation
-              ? [...data.conversations, syntheticConversation]
-              : data.conversations);
-            setActiveConversationId(selectedConversation?.id || '');
-            setActiveChatMessages(selectedConversation?.messages || []);
-            setMobileChatView(initialMessagesProductId && selectedConversation ? 'chat' : requestedConversationId ? 'chat' : 'list');
+          const requestedConversationId = getConversationIdFromUrl();
+          const restoredConversation = data.conversations.find((conversation) => String(conversation.id) === String(requestedConversationId));
+          const requestedParticipant = sellerChatParticipantsRef.current[requestedConversationId];
+          const syntheticConversation = !initialMessagesProductId && requestedConversationId && !restoredConversation
+            ? {
+              id: requestedConversationId,
+              studentId: String(requestedConversationId).replace(/^conv-/, ''),
+              name: requestedParticipant?.name || 'Student',
+              department: requestedParticipant?.department || '',
+              unread: 0,
+              messages: [],
+            }
+            : null;
+          const selectedConversation = restoredConversation || syntheticConversation || data.conversations[0] || null;
+          setConversationsList(syntheticConversation
+            ? [...data.conversations, syntheticConversation]
+            : data.conversations);
+          setActiveConversationId(selectedConversation?.id || '');
+          setActiveChatMessages(selectedConversation?.messages || []);
+          setMobileChatView(initialMessagesProductId && selectedConversation ? 'chat' : requestedConversationId ? 'chat' : 'list');
         }
       } catch (error) {
         console.error('Error fetching conversations:', error);
@@ -4090,8 +4200,8 @@ function StudentDashboard({
   const visibleChatMessages = initialMessagesProductId && !conversationsLoaded
     ? []
     : initialMessagesProductId
-    ? activeChatMessages.filter((message) => String(message.productId) === String(initialMessagesProductId))
-    : activeChatMessages;
+      ? activeChatMessages.filter((message) => String(message.productId) === String(initialMessagesProductId))
+      : activeChatMessages;
 
   useEffect(() => {
     activePeerIdRef.current = String(activeConversation?.studentId || String(activeConversationId || '').replace(/^conv-/, ''));
@@ -4163,7 +4273,7 @@ function StudentDashboard({
           if (readerId) {
             setActiveChatMessages((previousMessages) => previousMessages.map((message) => (
               String(message.sender_id) === String(user.studentId)
-              && String(message.receiver_id) === readerId
+                && String(message.receiver_id) === readerId
                 ? { ...message, is_read: true }
                 : message
             )));
@@ -4653,7 +4763,7 @@ function StudentDashboard({
 
   const modeNavigationItems = dashboardMode === 'buyer'
     ? [
-      { key: 'marketplace', label: 'Marketplace', icon: '🛒', tab: 'buyer', buyerSection: 'search', mode: 'buyer' },
+      { key: 'marketplace', label: 'Browse products', icon: '🛒', tab: 'buyer', buyerSection: 'search', mode: 'buyer' },
       { key: 'orders', label: 'My Orders', icon: '📦', badge: orderCount, tab: 'buyer', buyerSection: 'orders', mode: 'buyer' },
       { key: 'wishlist', label: 'Wishlist', icon: '♡', badge: wishlistCount, tab: 'buyer', buyerSection: 'wishlist', mode: 'buyer' },
       { key: 'cart', label: 'Cart', icon: '🛍️', badge: cartItemCount, tab: 'buyer', buyerSection: 'cart', mode: 'buyer' },
@@ -4708,32 +4818,32 @@ function StudentDashboard({
           <div className={`mb-8 flex shrink-0 items-start justify-between ${isSidebarCollapsed ? 'lg:flex-col lg:items-center lg:gap-3' : ''}`}>
             <div className={`${isSidebarCollapsed ? 'w-full text-center' : ''}`}>
               <div className="flex items-center gap-2">
-                  <p className={`whitespace-nowrap overflow-hidden text-[10px] uppercase tracking-[0.24em] text-slate-400 font-bold border-b-2 border-white/80 w-fit pb-1 ${isSidebarCollapsed || !areSidebarLabelsVisible ? 'lg:hidden' : 'block'}`}>{dashboardMode === 'seller' ? 'Seller Dashboard' : 'Buyer Dashboard'}</p>
+                <p className={`whitespace-nowrap overflow-hidden text-[10px] uppercase tracking-[0.24em] text-slate-400 font-bold border-b-2 border-white/80 w-fit pb-1 ${isSidebarCollapsed || !areSidebarLabelsVisible ? 'lg:hidden' : 'block'}`}>{dashboardMode === 'seller' ? 'Seller Dashboard' : 'Buyer Dashboard'}</p>
                 <button
                   type="button"
                   onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-                    className={`group hidden h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-lg font-bold text-slate-200 transition-all duration-300 hover:scale-105 hover:border-slate-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:inline-flex ${isSidebarCollapsed ? 'lg:mx-auto [anchor-name:--student-sidebar-toggle]' : 'ml-auto'}`}
+                  className={`group hidden h-8 w-8 items-center justify-center rounded-xl border border-slate-700 bg-slate-900/60 text-lg font-bold text-slate-200 transition-all duration-300 hover:scale-105 hover:border-slate-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:inline-flex ${isSidebarCollapsed ? 'lg:mx-auto [anchor-name:--student-sidebar-toggle]' : 'ml-auto'}`}
                   title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                   aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 >
                   <span className="transition-transform duration-300" aria-hidden="true">{isSidebarCollapsed ? '→' : '←'}</span>
-                    {isSidebarCollapsed && (
-                      <span className="fixed z-50 hidden whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-xl group-hover:block group-focus-visible:block [position-anchor:--student-sidebar-toggle] [position-area:right] [margin-left:0.5rem]">
-                        Expand sidebar
-                      </span>
-                    )}
-                  </button>
-                </div>
-                <span className={`mt-3 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${verifiedStudent ? 'border border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border border-amber-400/40 bg-amber-500/10 text-amber-300'}`}>
-                  <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white ${verifiedStudent ? 'bg-emerald-500' : 'bg-amber-500'}`}>{verifiedStudent ? '✓' : '!'}</span>
-                  <span className={isSidebarCollapsed ? 'lg:sr-only' : 'whitespace-nowrap overflow-hidden'}>{verifiedStudent ? 'Verified Student' : 'Unverified Profile'}</span>
-                </span>
+                  {isSidebarCollapsed && (
+                    <span className="fixed z-50 hidden whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow-xl group-hover:block group-focus-visible:block [position-anchor:--student-sidebar-toggle] [position-area:right] [margin-left:0.5rem]">
+                      Expand sidebar
+                    </span>
+                  )}
+                </button>
               </div>
+              <span className={`mt-3 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${verifiedStudent ? 'border border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border border-amber-400/40 bg-amber-500/10 text-amber-300'}`}>
+                <span className={`flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold text-white ${verifiedStudent ? 'bg-emerald-500' : 'bg-amber-500'}`}>{verifiedStudent ? '✓' : '!'}</span>
+                <span className={isSidebarCollapsed ? 'lg:sr-only' : 'whitespace-nowrap overflow-hidden'}>{verifiedStudent ? 'Verified Student' : 'Unverified Profile'}</span>
+              </span>
+            </div>
 
-              <button
-                type="button"
-                onClick={() => setIsSidebarOpen(false)}
-                className="rounded-lg p-1.5 text-slate-300 transition-all duration-200 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:hidden"
+            <button
+              type="button"
+              onClick={() => setIsSidebarOpen(false)}
+              className="rounded-lg p-1.5 text-slate-300 transition-all duration-200 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:hidden"
               title="Close sidebar"
               aria-label="Close sidebar"
             >
@@ -4917,14 +5027,14 @@ function StudentDashboard({
 
                 <div className={`grid min-w-0 max-w-full gap-6 ${recommendationsStudentId === studentId && recommendedProducts.length ? 'xl:grid-cols-[1.35fr_0.65fr]' : 'xl:grid-cols-1'}`}>
                   {recommendationsStudentId === studentId && recommendedProducts.length > 0 && (
-                  <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6 dark:border-slate-700 dark:bg-slate-900">
-                    <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b pb-2">
-                      <h3 className="min-w-0 break-words text-xl font-bold text-slate-900 dark:text-white">AI Recommendations</h3>
-                      <span className="max-w-full whitespace-nowrap rounded-full bg-sky-100 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-sky-700 dark:bg-sky-950 dark:text-sky-200 sm:tracking-[0.2em]">Department Match</span>
-                    </div>
+                    <div className="min-w-0 max-w-full rounded-[32px] border border-slate-200 bg-white p-4 shadow-sm sm:p-6 dark:border-slate-700 dark:bg-slate-900">
+                      <div className="mb-4 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-b pb-2">
+                        <h3 className="min-w-0 break-words text-xl font-bold text-slate-900 dark:text-white">AI Recommendations</h3>
+                        <span className="max-w-full whitespace-nowrap rounded-full bg-sky-100 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-sky-700 dark:bg-sky-950 dark:text-sky-200 sm:tracking-[0.2em]">Department Match</span>
+                      </div>
 
-                    <div className="-mx-2 flex min-w-0 max-w-full snap-x snap-mandatory touch-pan-x gap-3 overflow-x-auto px-2 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mx-0 md:grid md:grid-cols-2 md:overflow-visible md:px-0 md:pb-0 lg:grid-cols-4">
-                      {recommendedProducts.map((item) => {
+                      <div className="-mx-2 flex min-w-0 max-w-full snap-x snap-mandatory touch-pan-x gap-3 overflow-x-auto px-2 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mx-0 md:grid md:grid-cols-2 md:overflow-visible md:px-0 md:pb-0 lg:grid-cols-4">
+                        {recommendedProducts.map((item) => {
                           const fallbackImage = getRecommendationPlaceholder(item.category);
                           const displayImage = getRecommendationImage(item.image) || fallbackImage;
 
@@ -4955,9 +5065,9 @@ function StudentDashboard({
                               </div>
                             </div>
                           );
-                      })}
+                        })}
+                      </div>
                     </div>
-                  </div>
                   )}
 
                   <div className="min-w-0 max-w-full space-y-6">
@@ -5183,7 +5293,7 @@ function StudentDashboard({
                             const isOwnProduct = Boolean(
                               buyerStudentId
                               && buyerStudentId.toLowerCase()
-                                === String(item.seller_id || item.seller || '').trim().toLowerCase(),
+                              === String(item.seller_id || item.seller || '').trim().toLowerCase(),
                             );
                             const isOutOfStock = Number.isFinite(Number(item.stock)) && Number(item.stock) <= 0;
                             const isInCart = cart.some((cartItem) => String(cartItem.product_id) === productId);
@@ -5644,7 +5754,7 @@ function StudentDashboard({
                             <h3 className="text-xl font-bold text-slate-900">Transactions &amp; Wallet</h3>
                             <p className="mt-1 text-sm text-slate-500">Review your wallet activity and payment history.</p>
                           </div>
-                          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">{transactionLedger.length} records</span>
+                          <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700">{transactionsForView.length} records</span>
                         </div>
 
                         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -5654,11 +5764,16 @@ function StudentDashboard({
                               { id: 'deposits', label: 'Deposits' },
                               { id: 'payments', label: 'Payments' },
                               { id: 'withdrawals', label: 'Withdrawals' },
+                              { id: 'hidden', label: hiddenTransactionsCount > 0 ? `Hidden (${hiddenTransactionsCount})` : 'Hidden' },
                             ].map((filter) => (
                               <button
                                 key={filter.id}
                                 type="button"
-                                onClick={() => setTransactionFilter(filter.id)}
+                                onClick={() => {
+                                  setTransactionFilter(filter.id);
+                                  if (filter.id === 'hidden') loadHiddenTransactions();
+                                  else setTransactionVisibilityError('');
+                                }}
                                 aria-pressed={transactionFilter === filter.id}
                                 className={`rounded-full px-3.5 py-2 text-xs font-semibold transition ${transactionFilter === filter.id ? 'bg-slate-900 text-white shadow-sm' : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
                               >
@@ -5679,12 +5794,22 @@ function StudentDashboard({
                           </label>
                         </div>
 
+                        {transactionVisibilityError && (
+                          <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                            {transactionVisibilityError}
+                          </p>
+                        )}
+
                         <div className="max-h-[30rem] space-y-2 overflow-y-auto pr-1">
-                          {filteredTransactions.length === 0 ? (
+                          {hiddenTransactionsLoading && transactionFilter === 'hidden' ? (
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">Loading hidden transactions...</div>
+                          ) : filteredTransactions.length === 0 ? (
                             <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
-                              {transactionLedger.length === 0
-                                ? 'No transaction records found. Your wallet deposits and product purchases will appear here.'
-                                : 'No transactions match your filters.'}
+                              {transactionFilter === 'hidden'
+                                ? 'No hidden transactions.'
+                                : transactionLedger.length === 0
+                                  ? 'No transaction records found. Your wallet deposits and product purchases will appear here.'
+                                  : 'No transactions match your filters.'}
                             </div>
                           ) : (
                             filteredTransactions.map((tx) => {
@@ -5744,9 +5869,21 @@ function StudentDashboard({
                                       </button>
                                     )}
                                   </div>
-                                  <span className={`shrink-0 text-sm font-bold sm:text-base ${colorClass}`}>
-                                    {sign}{formatETB(Math.abs(amount))}
-                                  </span>
+                                  <div className="flex shrink-0 flex-col items-end gap-2">
+                                    <span className={`text-sm font-bold sm:text-base ${colorClass}`}>
+                                      {sign}{formatETB(Math.abs(amount))}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleTransactionVisibility(tx)}
+                                      disabled={transactionVisibilityActionId === tx.id}
+                                      className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {transactionVisibilityActionId === tx.id
+                                        ? 'Saving...'
+                                        : transactionFilter === 'hidden' ? 'Unhide' : 'Hide'}
+                                    </button>
+                                  </div>
                                 </div>
                               );
                             })
@@ -6312,14 +6449,14 @@ function StudentDashboard({
                             ...activeConversation.product,
                             ...(productDetails[activeConversation.product.id] || {}),
                           }) && (
-                            <button
-                              type="button"
-                              onClick={() => handlePayProductFromChat(activeConversation.product.id)}
-                              className="mt-3 w-full rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
-                            >
-                              Pay with wallet
-                            </button>
-                          )}
+                              <button
+                                type="button"
+                                onClick={() => handlePayProductFromChat(activeConversation.product.id)}
+                                className="mt-3 w-full rounded-full bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-emerald-700"
+                              >
+                                Pay with wallet
+                              </button>
+                            )}
                         </div>
                       )}
                     </div>
@@ -6668,223 +6805,223 @@ function StudentDashboard({
 
             <form onSubmit={handleWithdrawSubmit} className="flex min-h-0 flex-1 flex-col">
               <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-6">
-              <div>
-                <label htmlFor="withdraw-amount" className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
-                <input
-                  id="withdraw-amount"
-                  type="number"
-                  min="100"
-                  max={currentWalletBalance}
-                  step="0.01"
-                  value={withdrawAmount}
-                  onChange={(event) => setWithdrawAmount(event.target.value)}
-                  disabled={payoutAccountLoading || withdrawProviderUnavailable}
-                  placeholder="Enter withdrawal amount"
-                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
-                />
-              </div>
-              <div>
-                <label htmlFor="withdraw-wallet-pin" className="block text-sm font-semibold text-slate-700">Wallet PIN</label>
-                <input
-                  id="withdraw-wallet-pin"
-                  type="password"
-                  inputMode="numeric"
-                  pattern="[0-9]{4}"
-                  maxLength={4}
-                  autoComplete="off"
-                  value={withdrawPin}
-                  onChange={(event) => setWithdrawPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
-                  disabled={payoutAccountLoading || withdrawLoading}
-                  required
-                  className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm tracking-[0.4em] focus:border-emerald-500 focus:bg-white focus:outline-none"
-                />
-                <p className="mt-1 text-xs text-slate-500">Enter your 4-digit Wallet PIN to authorize this transaction.</p>
-              </div>
+                <div>
+                  <label htmlFor="withdraw-amount" className="block text-sm font-semibold text-slate-700">Amount (ETB)</label>
+                  <input
+                    id="withdraw-amount"
+                    type="number"
+                    min="100"
+                    max={currentWalletBalance}
+                    step="0.01"
+                    value={withdrawAmount}
+                    onChange={(event) => setWithdrawAmount(event.target.value)}
+                    disabled={payoutAccountLoading || withdrawProviderUnavailable}
+                    placeholder="Enter withdrawal amount"
+                    className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm focus:border-emerald-500 focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="withdraw-wallet-pin" className="block text-sm font-semibold text-slate-700">Wallet PIN</label>
+                  <input
+                    id="withdraw-wallet-pin"
+                    type="password"
+                    inputMode="numeric"
+                    pattern="[0-9]{4}"
+                    maxLength={4}
+                    autoComplete="off"
+                    value={withdrawPin}
+                    onChange={(event) => setWithdrawPin(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                    disabled={payoutAccountLoading || withdrawLoading}
+                    required
+                    className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm tracking-[0.4em] focus:border-emerald-500 focus:bg-white focus:outline-none"
+                  />
+                  <p className="mt-1 text-xs text-slate-500">Enter your 4-digit Wallet PIN to authorize this transaction.</p>
+                </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                {payoutAccount ? (
-                  <>
-                    <span className="font-bold">{t('walletPayout.accountLabel')}</span> {payoutAccount.provider_name || t('walletPayout.providerFallback')} ({payoutAccount.payout_type === 'mobile_wallet' || payoutAccount.payout_type === 'wallet' ? t('walletPayout.mobileMoney') : t('walletPayout.bank')})
-                    <span className="ml-1">{payoutAccount.account_number_masked || `****${payoutAccount.account_last4 || ''}`}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReturnToWithdrawAfterPayoutSetup(true);
-                        setShowWithdrawModal(false);
-                        setActiveTab('settings');
-                        setSettingsTab('payout');
-                      }}
-                      className="ml-3 font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800"
-                    >
-                      {t('walletPayout.changeAccount')}
-                    </button>
-                  </>
-                ) : (
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span>{payoutAccountLoading ? t('walletPayout.accountLoading') : t('walletPayout.accountRequired')}</span>
-                    <button type="button" onClick={() => { setPayoutSetupError(''); setPayoutSetupOpen(true); }} disabled={payoutAccountLoading} className="font-semibold text-emerald-700 underline underline-offset-2 disabled:opacity-50">
-                      {t('walletPayout.setupButton')}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {payoutSetupOpen && !payoutAccount && (
-                <section className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4" aria-busy={payoutSetupLoading || payoutSetupBanksLoading}>
-                  <h3 className="font-bold text-slate-900">{t('walletPayout.setupTitle')}</h3>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    {t('walletPayout.method')}
-                    <select
-                      value={payoutSetupType}
-                      onChange={(event) => {
-                        const nextState = getPayoutSetupStateAfterMethodChange(event.target.value);
-                        setPayoutSetupType(nextState.payoutType);
-                        setPayoutSetupBankCode(nextState.providerCode);
-                        setPayoutSetupAccountNumber('');
-                        setPayoutSetupError('');
-                      }}
-                      disabled={payoutSetupLoading}
-                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
-                    >
-                      <option value="bank">{t('walletPayout.bank')}</option>
-                      <option value="mobile_wallet">{t('walletPayout.mobileMoney')}</option>
-                    </select>
-                  </label>
-                  <div className="block text-sm font-semibold text-slate-700">
-                    <span id="payout-provider-label">
-                      {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileProvider') : t('walletPayout.bank')}
-                    </span>
-                    <details className="group" aria-labelledby="payout-provider-label">
-                      <summary
-                        onClick={(event) => {
-                          if (payoutSetupBanksLoading || payoutSetupLoading || !visiblePayoutSetupProviders.length) {
-                            event.preventDefault();
-                          }
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  {payoutAccount ? (
+                    <>
+                      <span className="font-bold">{t('walletPayout.accountLabel')}</span> {payoutAccount.provider_name || t('walletPayout.providerFallback')} ({payoutAccount.payout_type === 'mobile_wallet' || payoutAccount.payout_type === 'wallet' ? t('walletPayout.mobileMoney') : t('walletPayout.bank')})
+                      <span className="ml-1">{payoutAccount.account_number_masked || `****${payoutAccount.account_last4 || ''}`}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReturnToWithdrawAfterPayoutSetup(true);
+                          setShowWithdrawModal(false);
+                          setActiveTab('settings');
+                          setSettingsTab('payout');
                         }}
-                        aria-disabled={payoutSetupBanksLoading || payoutSetupLoading || !visiblePayoutSetupProviders.length}
-                        className="mt-1 flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                        className="ml-3 font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800"
                       >
-                        <span>
-                          {visiblePayoutSetupProviders.find((bank) => bank.code === payoutSetupBankCode)?.name
-                            || (payoutSetupBanksLoading ? t('walletPayout.loadingBanks') : t('walletPayout.chooseProvider'))}
-                        </span>
-                        <ChevronDown className="h-4 w-4 transition group-open:rotate-180" aria-hidden="true" />
-                      </summary>
-                      <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1">
-                        {visiblePayoutSetupProviders.length ? visiblePayoutSetupProviders.map((bank) => (
-                          <button
-                            key={bank.code}
-                            type="button"
-                            aria-pressed={payoutSetupBankCode === bank.code}
-                            onClick={(event) => {
-                              setPayoutSetupBankCode(bank.code);
-                              event.currentTarget.closest('details')?.removeAttribute('open');
-                            }}
-                            className="block w-full rounded-lg px-3 py-2 text-left font-normal hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-                          >
-                            {bank.name}
-                          </button>
-                        )) : (
-                          <p className="px-3 py-2 text-sm font-normal text-slate-500">{t('walletPayout.noProviders')}</p>
-                        )}
-                      </div>
-                    </details>
-                  </div>
-                  {payoutSetupBanksLoading && (
-                    <p role="status" className="text-sm text-slate-600">{t('walletPayout.loadingBanks')}</p>
-                  )}
-                  {payoutSetupBanksError && (
-                    <div className="space-y-2" role="alert">
-                      <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{payoutSetupBanksError}</p>
-                      {!payoutSetupLoading && !payoutSetupBanksLoading && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPayoutSetupBanksError('');
-                            setPayoutSetupRetryCount((count) => count + 1);
-                          }}
-                          className="font-semibold text-emerald-700 underline underline-offset-2"
-                        >
-                          {t('walletPayout.retryProviders')}
-                        </button>
-                      )}
+                        {t('walletPayout.changeAccount')}
+                      </button>
+                    </>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span>{payoutAccountLoading ? t('walletPayout.accountLoading') : t('walletPayout.accountRequired')}</span>
+                      <button type="button" onClick={() => { setPayoutSetupError(''); setPayoutSetupOpen(true); }} disabled={payoutAccountLoading} className="font-semibold text-emerald-700 underline underline-offset-2 disabled:opacity-50">
+                        {t('walletPayout.setupButton')}
+                      </button>
                     </div>
                   )}
-                  {payoutSetupError && (
-                    <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                      {payoutSetupError}
-                    </p>
-                  )}
-                  <label className="block text-sm font-semibold text-slate-700">
-                    {t('walletPayout.holderName')}
-                    <input
-                      value={payoutSetupAccountName}
-                      onChange={(event) => setPayoutSetupAccountName(event.target.value)}
-                      autoComplete="name"
-                      disabled={payoutSetupLoading}
-                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
-                    />
-                  </label>
-                  <label className="block text-sm font-semibold text-slate-700">
-                    {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileNumber') : t('walletPayout.accountNumber')}
-                    <input
-                      value={payoutSetupAccountNumber}
-                      onChange={(event) => setPayoutSetupAccountNumber(event.target.value.replace(/\D/g, ''))}
-                      inputMode="numeric"
-                      type="tel"
-                      pattern={payoutSetupType === 'mobile_wallet' ? '(09|07)[0-9]{8}' : undefined}
-                      minLength={payoutSetupType === 'mobile_wallet' ? 10 : 10}
-                      maxLength={payoutSetupType === 'mobile_wallet' ? 10 : 15}
-                      autoComplete="off"
-                      disabled={payoutSetupLoading}
-                      className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
-                    />
-                  </label>
-                  {payoutSetupAccountNumber && !isValidPayoutAccountNumber(payoutSetupType, payoutSetupBankCode, payoutSetupAccountNumber) && (
-                    <p className="text-sm text-red-700">
-                      {payoutSetupType === 'mobile_wallet'
-                        ? t('walletPayout.mobileNumberInvalid')
-                        : t('walletPayout.accountNumberInvalid')}
-                    </p>
-                  )}
-                  {payoutSetupAccountName.trim() && user?.name
-                    && payoutSetupAccountName.trim().replace(/\s+/g, ' ').toLowerCase()
-                      !== user.name.trim().replace(/\s+/g, ' ').toLowerCase()
-                    && <p className="text-sm text-red-700">{t('walletPayout.holderNameInvalid')}</p>}
-                </section>
-              )}
+                </div>
 
-              {withdrawExceedsBalance && (
-                <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
-                  Insufficient wallet balance for this withdrawal.
-                </p>
-              )}
-              {withdrawProviderUnavailable ? (
-                <div className="space-y-3">
-                  <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
-                    ⚠️ {payoutAccount?.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.
+                {payoutSetupOpen && !payoutAccount && (
+                  <section className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4" aria-busy={payoutSetupLoading || payoutSetupBanksLoading}>
+                    <h3 className="font-bold text-slate-900">{t('walletPayout.setupTitle')}</h3>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      {t('walletPayout.method')}
+                      <select
+                        value={payoutSetupType}
+                        onChange={(event) => {
+                          const nextState = getPayoutSetupStateAfterMethodChange(event.target.value);
+                          setPayoutSetupType(nextState.payoutType);
+                          setPayoutSetupBankCode(nextState.providerCode);
+                          setPayoutSetupAccountNumber('');
+                          setPayoutSetupError('');
+                        }}
+                        disabled={payoutSetupLoading}
+                        className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                      >
+                        <option value="bank">{t('walletPayout.bank')}</option>
+                        <option value="mobile_wallet">{t('walletPayout.mobileMoney')}</option>
+                      </select>
+                    </label>
+                    <div className="block text-sm font-semibold text-slate-700">
+                      <span id="payout-provider-label">
+                        {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileProvider') : t('walletPayout.bank')}
+                      </span>
+                      <details className="group" aria-labelledby="payout-provider-label">
+                        <summary
+                          onClick={(event) => {
+                            if (payoutSetupBanksLoading || payoutSetupLoading || !visiblePayoutSetupProviders.length) {
+                              event.preventDefault();
+                            }
+                          }}
+                          aria-disabled={payoutSetupBanksLoading || payoutSetupLoading || !visiblePayoutSetupProviders.length}
+                          className="mt-1 flex cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                        >
+                          <span>
+                            {visiblePayoutSetupProviders.find((bank) => bank.code === payoutSetupBankCode)?.name
+                              || (payoutSetupBanksLoading ? t('walletPayout.loadingBanks') : t('walletPayout.chooseProvider'))}
+                          </span>
+                          <ChevronDown className="h-4 w-4 transition group-open:rotate-180" aria-hidden="true" />
+                        </summary>
+                        <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-white p-1">
+                          {visiblePayoutSetupProviders.length ? visiblePayoutSetupProviders.map((bank) => (
+                            <button
+                              key={bank.code}
+                              type="button"
+                              aria-pressed={payoutSetupBankCode === bank.code}
+                              onClick={(event) => {
+                                setPayoutSetupBankCode(bank.code);
+                                event.currentTarget.closest('details')?.removeAttribute('open');
+                              }}
+                              className="block w-full rounded-lg px-3 py-2 text-left font-normal hover:bg-emerald-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                            >
+                              {bank.name}
+                            </button>
+                          )) : (
+                            <p className="px-3 py-2 text-sm font-normal text-slate-500">{t('walletPayout.noProviders')}</p>
+                          )}
+                        </div>
+                      </details>
+                    </div>
+                    {payoutSetupBanksLoading && (
+                      <p role="status" className="text-sm text-slate-600">{t('walletPayout.loadingBanks')}</p>
+                    )}
+                    {payoutSetupBanksError && (
+                      <div className="space-y-2" role="alert">
+                        <p className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{payoutSetupBanksError}</p>
+                        {!payoutSetupLoading && !payoutSetupBanksLoading && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPayoutSetupBanksError('');
+                              setPayoutSetupRetryCount((count) => count + 1);
+                            }}
+                            className="font-semibold text-emerald-700 underline underline-offset-2"
+                          >
+                            {t('walletPayout.retryProviders')}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {payoutSetupError && (
+                      <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                        {payoutSetupError}
+                      </p>
+                    )}
+                    <label className="block text-sm font-semibold text-slate-700">
+                      {t('walletPayout.holderName')}
+                      <input
+                        value={payoutSetupAccountName}
+                        onChange={(event) => setPayoutSetupAccountName(event.target.value)}
+                        autoComplete="name"
+                        disabled={payoutSetupLoading}
+                        className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                      />
+                    </label>
+                    <label className="block text-sm font-semibold text-slate-700">
+                      {payoutSetupType === 'mobile_wallet' ? t('walletPayout.mobileNumber') : t('walletPayout.accountNumber')}
+                      <input
+                        value={payoutSetupAccountNumber}
+                        onChange={(event) => setPayoutSetupAccountNumber(event.target.value.replace(/\D/g, ''))}
+                        inputMode="numeric"
+                        type="tel"
+                        pattern={payoutSetupType === 'mobile_wallet' ? '(09|07)[0-9]{8}' : undefined}
+                        minLength={payoutSetupType === 'mobile_wallet' ? 10 : 10}
+                        maxLength={payoutSetupType === 'mobile_wallet' ? 10 : 15}
+                        autoComplete="off"
+                        disabled={payoutSetupLoading}
+                        className="mt-1 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 font-normal"
+                      />
+                    </label>
+                    {payoutSetupAccountNumber && !isValidPayoutAccountNumber(payoutSetupType, payoutSetupBankCode, payoutSetupAccountNumber) && (
+                      <p className="text-sm text-red-700">
+                        {payoutSetupType === 'mobile_wallet'
+                          ? t('walletPayout.mobileNumberInvalid')
+                          : t('walletPayout.accountNumberInvalid')}
+                      </p>
+                    )}
+                    {payoutSetupAccountName.trim() && user?.name
+                      && payoutSetupAccountName.trim().replace(/\s+/g, ' ').toLowerCase()
+                      !== user.name.trim().replace(/\s+/g, ' ').toLowerCase()
+                      && <p className="text-sm text-red-700">{t('walletPayout.holderNameInvalid')}</p>}
+                  </section>
+                )}
+
+                {withdrawExceedsBalance && (
+                  <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">
+                    Insufficient wallet balance for this withdrawal.
                   </p>
-                  <button type="button" onClick={() => { setReturnToWithdrawAfterPayoutSetup(true); setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('payout'); }} className="font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800">Change Payout Method</button>
-                </div>
-              ) : activeWithdrawal ? (
-                <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
-                  <p>{activeWithdrawal.status === 'pending_approval'
-                    ? 'Your withdrawal is held while an administrator approves it. You can request another withdrawal after it is resolved.'
-                    : 'You have a payout currently processing. You can request a new withdrawal once it completes.'}</p>
-                  <button type="button" onClick={refreshWithdrawalStatus} disabled={withdrawalStatusLoading} className="font-semibold text-amber-900 underline underline-offset-2 disabled:opacity-60">
-                    {withdrawalStatusLoading ? 'Refreshing status...' : 'Refresh payout status'}
-                  </button>
-                </div>
-              ) : withdrawError && (
-                <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
-                  <p>{withdrawError}</p>
-                  {withdrawAttemptsLeft !== null && <p className="mt-1 font-bold">{withdrawAttemptsLeft} PIN attempt{withdrawAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
-                  {withdrawRetryAfterSeconds !== null && <p className="mt-1 font-bold">Try again in {Math.ceil(withdrawRetryAfterSeconds / 60)} minute{Math.ceil(withdrawRetryAfterSeconds / 60) === 1 ? '' : 's'}.</p>}
-                  {withdrawError.toLowerCase().includes('wallet pin') && withdrawError.toLowerCase().includes('set up') && (
-                    <button type="button" onClick={() => { setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('security'); }} className="mt-2 font-bold underline">Set up Wallet PIN in Settings</button>
-                  )}
-                </div>
-              )}
+                )}
+                {withdrawProviderUnavailable ? (
+                  <div className="space-y-3">
+                    <p className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                      ⚠️ {payoutAccount?.provider_name || 'This payout provider'} is temporarily unavailable for withdrawals. Please update your payout method to continue.
+                    </p>
+                    <button type="button" onClick={() => { setReturnToWithdrawAfterPayoutSetup(true); setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('payout'); }} className="font-semibold text-emerald-700 underline underline-offset-2 hover:text-emerald-800">Change Payout Method</button>
+                  </div>
+                ) : activeWithdrawal ? (
+                  <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm font-medium text-amber-800">
+                    <p>{activeWithdrawal.status === 'pending_approval'
+                      ? 'Your withdrawal is held while an administrator approves it. You can request another withdrawal after it is resolved.'
+                      : 'You have a payout currently processing. You can request a new withdrawal once it completes.'}</p>
+                    <button type="button" onClick={refreshWithdrawalStatus} disabled={withdrawalStatusLoading} className="font-semibold text-amber-900 underline underline-offset-2 disabled:opacity-60">
+                      {withdrawalStatusLoading ? 'Refreshing status...' : 'Refresh payout status'}
+                    </button>
+                  </div>
+                ) : withdrawError && (
+                  <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">
+                    <p>{withdrawError}</p>
+                    {withdrawAttemptsLeft !== null && <p className="mt-1 font-bold">{withdrawAttemptsLeft} PIN attempt{withdrawAttemptsLeft === 1 ? '' : 's'} remaining.</p>}
+                    {withdrawRetryAfterSeconds !== null && <p className="mt-1 font-bold">Try again in {Math.ceil(withdrawRetryAfterSeconds / 60)} minute{Math.ceil(withdrawRetryAfterSeconds / 60) === 1 ? '' : 's'}.</p>}
+                    {withdrawError.toLowerCase().includes('wallet pin') && withdrawError.toLowerCase().includes('set up') && (
+                      <button type="button" onClick={() => { setShowWithdrawModal(false); setActiveTab('settings'); setSettingsTab('security'); }} className="mt-2 font-bold underline">Set up Wallet PIN in Settings</button>
+                    )}
+                  </div>
+                )}
 
               </div>
               <div className="shrink-0 border-t border-slate-200 bg-white px-6 py-4">

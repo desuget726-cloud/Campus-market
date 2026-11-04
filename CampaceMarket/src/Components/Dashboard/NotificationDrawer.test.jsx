@@ -108,6 +108,34 @@ describe('NotificationDrawer', () => {
     expect(onUnreadCountChange).toHaveBeenLastCalledWith(expect.any(Function));
   });
 
+  it('renders the attached image on a broadcast notification', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(response({
+      notifications: [{
+        id: 22,
+        title: 'Campus poster',
+        message: 'A new campus event.',
+        type: 'broadcast',
+        image_url: 'https://res.cloudinary.com/campus/image/upload/event.png',
+        is_read: true,
+      }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <NotificationDrawer
+        open
+        user={{ studentId: 'student-1', access_token: 'student-token' }}
+        userRole="student"
+        unreadCount={0}
+      />,
+    );
+
+    const notification = await screen.findByRole('button', { name: /Campus poster/ });
+    expect(notification.querySelector('img').getAttribute('src')).toBe(
+      'https://res.cloudinary.com/campus/image/upload/event.png',
+    );
+  });
+
   it('marks all student notifications as read from the drawer header', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({

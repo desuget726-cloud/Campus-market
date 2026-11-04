@@ -64,6 +64,17 @@ test('does not treat an authenticated API 401 as expired when no session is stor
   }), false);
 });
 
+test('does not treat payment verification failures as expired sessions', () => {
+  assert.equal(isSessionExpiryResponse({
+    ...authenticatedRequest,
+    requestUrl: `${apiBaseUrl}/api/admin/payments/TX-16426E1E/verify`,
+  }), false);
+  assert.equal(isSessionExpiryResponse({
+    ...authenticatedRequest,
+    requestUrl: `${apiBaseUrl}/api/payment/verify/TX-16426E1E`,
+  }), false);
+});
+
 test('does not treat an unauthenticated API 401 as expired', () => {
   assert.equal(isSessionExpiryResponse({
     ...authenticatedRequest,

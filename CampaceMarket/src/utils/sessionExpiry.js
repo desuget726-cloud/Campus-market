@@ -28,6 +28,9 @@ export function isSessionExpiryResponse({
   if (requestedUrl.origin !== apiOrigin || !requestedUrl.pathname.startsWith('/api/')) {
     return false;
   }
+  if (requestedUrl.pathname.toLowerCase().includes('/verify')) {
+    return false;
+  }
   if (AUTH_ENDPOINT_PATHS.some((path) => path.test(requestedUrl.pathname))) {
     return false;
   }

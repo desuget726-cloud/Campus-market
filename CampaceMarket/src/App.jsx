@@ -16,6 +16,7 @@ import NotificationDrawer from './Components/Dashboard/NotificationDrawer';
 import SuccessModal from './Components/Authontication/SuccessModal';
 import AuthInfoModal from './Components/Authontication/AuthInfoModal';
 import PaymentSuccessToast from './Components/Notifications/PaymentSuccessToast';
+import CampusAnnouncementBanner from './Components/Notifications/CampusAnnouncementBanner';
 import { LanguageProvider } from './context/LanguageContext';
 import { CartProvider } from './context/CartContext';
 import { Toaster } from 'react-hot-toast';
@@ -687,7 +688,7 @@ function AppContent() {
           method: 'POST',
           credentials: 'include',
         });
-    } catch (error) {
+      } catch (error) {
         console.error('Session expiry logout request failed:', error);
       } finally {
         window.localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -973,242 +974,249 @@ function AppContent() {
 
   return (
     <CartProvider user={isStudentSessionVerified && activeRole === 'student' ? user : null}>
-    <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-dvh lg:overflow-hidden' : ''}`}>
-      <Toaster
-        position="top-right"
-        containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
-        toastOptions={{
-          duration: 7000,
-          pauseOnHover: true,
-          style: {
-            borderRadius: '10px',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
-            padding: '12px 18px',
-            fontSize: '16px',
-            fontWeight: 600,
-            maxWidth: 'min(92vw, 560px)',
-            color: '#FFFFFF',
-          },
-          success: {
+      <div className={`flex min-h-[100dvh] h-auto flex-col ${['login', 'register'].includes(currentView) ? 'bg-white text-slate-800' : 'bg-slate-50 text-slate-800'} ${currentView === 'admin-dashboard' ? 'lg:h-dvh lg:overflow-hidden' : ''}`}>
+        <Toaster
+          position="top-right"
+          containerStyle={{ top: 92, right: 20, zIndex: 9999 }}
+          toastOptions={{
+            duration: 7000,
+            pauseOnHover: true,
             style: {
-              background: '#16A34A',
-              color: '#FFFFFF',
-              border: '1px solid rgba(255,255,255,0.16)',
               borderRadius: '10px',
               boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
               padding: '12px 18px',
+              fontSize: '16px',
               fontWeight: 600,
-            },
-            iconTheme: {
-              primary: '#ffffff',
-              secondary: '#16A34A',
-            },
-          },
-          error: {
-            style: {
-              background: '#DC2626',
+              maxWidth: 'min(92vw, 560px)',
               color: '#FFFFFF',
-              border: '1px solid rgba(255,255,255,0.16)',
-              borderRadius: '10px',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
-              padding: '12px 18px',
-              fontWeight: 600,
             },
-            iconTheme: {
-              primary: '#ffffff',
-              secondary: '#DC2626',
+            success: {
+              style: {
+                background: '#16A34A',
+                color: '#FFFFFF',
+                border: '1px solid rgba(255,255,255,0.16)',
+                borderRadius: '10px',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                padding: '12px 18px',
+                fontWeight: 600,
+              },
+              iconTheme: {
+                primary: '#ffffff',
+                secondary: '#16A34A',
+              },
             },
-          },
-          info: {
-            style: {
-              background: '#0284C7',
-              color: '#FFFFFF',
-              border: '1px solid rgba(255,255,255,0.16)',
-              borderRadius: '10px',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
-              padding: '12px 18px',
-              fontWeight: 600,
+            error: {
+              style: {
+                background: '#DC2626',
+                color: '#FFFFFF',
+                border: '1px solid rgba(255,255,255,0.16)',
+                borderRadius: '10px',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                padding: '12px 18px',
+                fontWeight: 600,
+              },
+              iconTheme: {
+                primary: '#ffffff',
+                secondary: '#DC2626',
+              },
             },
-            iconTheme: {
-              primary: '#ffffff',
-              secondary: '#0284C7',
+            info: {
+              style: {
+                background: '#0284C7',
+                color: '#FFFFFF',
+                border: '1px solid rgba(255,255,255,0.16)',
+                borderRadius: '10px',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+                padding: '12px 18px',
+                fontWeight: 600,
+              },
+              iconTheme: {
+                primary: '#ffffff',
+                secondary: '#0284C7',
+              },
             },
-          },
-        }}
-      />
-      <PaymentSuccessToast />
-      {!['login', 'register'].includes(currentView) && currentView !== 'student-dashboard' && !hasUser && !isRestoringStudentSession && <TopBar onNavigate={handleNavigate} />}
-      {!['login', 'register'].includes(currentView) && (
-        <Navbar
-          variant={isDashboardView ? 'dashboard' : 'public'}
-          activePage={currentView}
-          activeStudentMode={studentMode}
-          onNavigate={handleNavigate}
-          user={user}
-          userRole={userRole}
-          onLogout={activeRole === 'admin' ? handleAdminLogout : handleLogout}
-          unreadCount={unreadCount}
-          onNotificationClick={handleNotificationClick}
-          notificationDrawerOpen={isNotificationDrawerOpen}
-          activeAdminTab={adminTab}
-          onAdminProfileClick={() => {
-            setAdminTab('profile');
-            setCurrentView('admin-dashboard');
-          }}
-          onAdminSettingsClick={() => {
-            setAdminTab('settings');
-            setCurrentView('admin-dashboard');
-          }}
-          onStudentProfileClick={() => {
-            setStudentTab('profile');
-            setCurrentView('student-dashboard');
           }}
         />
-      )}
-      {user && (
-        <NotificationDrawer
-          open={isNotificationDrawerOpen}
-          user={user}
-          userRole={activeRole}
-          unreadCount={unreadCount}
-          onUnreadCountChange={setUnreadCount}
-          onClose={() => setIsNotificationDrawerOpen(false)}
-          onNavigate={handleNavigate}
-          onViewAll={handleNotificationViewAll}
-          onNotificationSelect={handleNotificationSelect}
-        />
-      )}
-      <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-[calc(100dvh-72px)] min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-[calc(100dvh-72px)] lg:overflow-hidden' : currentView === 'student-dashboard' ? 'h-[calc(100dvh-72px)] !min-h-0 overflow-hidden' : 'min-h-0'}`}>
-        <main className={isStudentMessagesView
-          ? 'app-main-content app-main-content--messages min-h-0 min-w-0 w-full flex-1 overflow-hidden'
-          : ['login', 'register'].includes(currentView)
-            ? 'app-main-content w-full min-w-0 flex-1'
-            : isHomeView
-              ? 'app-main-content w-full min-w-0 flex-1 px-0'
-              : ['about', 'services', 'contact'].includes(currentView)
+        <PaymentSuccessToast />
+        {!['login', 'register'].includes(currentView) && currentView !== 'student-dashboard' && !hasUser && !isRestoringStudentSession && <TopBar onNavigate={handleNavigate} />}
+        {!['login', 'register'].includes(currentView) && (
+          <Navbar
+            variant={isDashboardView ? 'dashboard' : 'public'}
+            activePage={currentView}
+            activeStudentMode={studentMode}
+            onNavigate={handleNavigate}
+            user={user}
+            userRole={userRole}
+            onLogout={activeRole === 'admin' ? handleAdminLogout : handleLogout}
+            unreadCount={unreadCount}
+            onNotificationClick={handleNotificationClick}
+            notificationDrawerOpen={isNotificationDrawerOpen}
+            activeAdminTab={adminTab}
+            onAdminProfileClick={() => {
+              setAdminTab('profile');
+              setCurrentView('admin-dashboard');
+            }}
+            onAdminSettingsClick={() => {
+              setAdminTab('settings');
+              setCurrentView('admin-dashboard');
+            }}
+            onStudentProfileClick={() => {
+              setStudentTab('profile');
+              setCurrentView('student-dashboard');
+            }}
+          />
+        )}
+        {!['login', 'register'].includes(currentView) && (
+          <CampusAnnouncementBanner
+            key={activeRole === 'student' && isStudentSessionVerified ? getStudentId(user) : 'public'}
+            studentId={activeRole === 'student' && isStudentSessionVerified ? getStudentId(user) : ''}
+            accessToken={activeRole === 'student' && isStudentSessionVerified ? studentAccessToken : ''}
+          />
+        )}
+        {user && (
+          <NotificationDrawer
+            open={isNotificationDrawerOpen}
+            user={user}
+            userRole={activeRole}
+            unreadCount={unreadCount}
+            onUnreadCountChange={setUnreadCount}
+            onClose={() => setIsNotificationDrawerOpen(false)}
+            onNavigate={handleNavigate}
+            onViewAll={handleNotificationViewAll}
+            onNotificationSelect={handleNotificationSelect}
+          />
+        )}
+        <div className={`flex flex-1 flex-col ${['login', 'register'].includes(currentView) ? '' : 'app-page-shell'} lg:flex-row ${isStudentMessagesView ? 'h-[calc(100dvh-72px)] min-h-0 overflow-hidden' : currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-[calc(100dvh-72px)] lg:overflow-hidden' : currentView === 'student-dashboard' ? 'h-[calc(100dvh-72px)] !min-h-0 overflow-hidden' : 'min-h-0'}`}>
+          <main className={isStudentMessagesView
+            ? 'app-main-content app-main-content--messages min-h-0 min-w-0 w-full flex-1 overflow-hidden'
+            : ['login', 'register'].includes(currentView)
+              ? 'app-main-content w-full min-w-0 flex-1'
+              : isHomeView
                 ? 'app-main-content w-full min-w-0 flex-1 px-0'
-              : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-full !pb-0' : currentView === 'student-dashboard' ? '!min-h-0 h-full !pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' || currentView === 'admin-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
-          {currentView === 'login' && !user && (
-            <div className="py-8">
-              <LoginForm
-                onLoginSuccess={handleLoginSuccess}
-                sessionExpiredMessage={loginMessage}
-                onCancel={() => {
-                  setLoginMessage('');
-                  setCurrentView('home');
+                : ['about', 'services', 'contact'].includes(currentView)
+                  ? 'app-main-content w-full min-w-0 flex-1 px-0'
+                  : `app-main-content ${isDashboardView ? `w-full flex-1 ${currentView === 'admin-dashboard' ? 'lg:!min-h-0 lg:h-full !pb-0' : currentView === 'student-dashboard' ? '!min-h-0 h-full !pb-0' : 'min-h-0'}` : 'mx-auto max-w-7xl'} flex-grow ${currentView === 'student-dashboard' || currentView === 'admin-dashboard' ? 'px-0' : isDashboardView ? 'px-3 sm:px-4 lg:px-6' : 'px-4 sm:px-6 lg:px-8'}`}>
+            {currentView === 'login' && !user && (
+              <div className="py-8">
+                <LoginForm
+                  onLoginSuccess={handleLoginSuccess}
+                  sessionExpiredMessage={loginMessage}
+                  onCancel={() => {
+                    setLoginMessage('');
+                    setCurrentView('home');
+                  }}
+                  onToggleRegister={() => {
+                    setLoginMessage('');
+                    setCurrentView('register');
+                  }}
+                />
+              </div>
+            )}
+
+            {currentView === 'register' && (
+              <div className="min-h-full">
+                <RegisterForm
+                  onRegisterSuccess={handleRegisterSuccess}
+                  onCancel={() => setCurrentView('home')}
+                  onToggleLogin={() => setCurrentView('login')}
+                />
+              </div>
+            )}
+
+            {currentView === 'home' && (
+              <HomeView
+                user={user ? { ...user, role: user.role || userRole } : user}
+                initialProductId={pendingProductId}
+                pendingProductAction={pendingProductAction}
+                onBackToSellerHub={returnToSellerHubOnProductBack ? () => {
+                  setReturnToSellerHubOnProductBack(false);
+                  setPendingProductId(null);
+                  setPendingProductAction(null);
+                  handleNavigate('/dashboard?tab=seller');
+                } : undefined}
+                onPendingProductActionHandled={() => {
+                  clearPendingProductAction();
+                  setPendingProductId(null);
+                  setPendingProductAction(null);
                 }}
-                onToggleRegister={() => {
-                  setLoginMessage('');
-                  setCurrentView('register');
+                onAction={(product) => console.log('view', product)}
+                onUserUpdate={setUser}
+                onNavigate={handleNavigate}
+                onNavigateToMessages={(productId) => {
+                  setPendingMessagesProductId(productId);
+                  setStudentTab('messages');
+                  setCurrentView('student-dashboard');
                 }}
               />
-            </div>
-          )}
+            )}
 
-          {currentView === 'register' && (
-            <div className="min-h-full">
-              <RegisterForm
-                onRegisterSuccess={handleRegisterSuccess}
-                onCancel={() => setCurrentView('home')}
-                onToggleLogin={() => setCurrentView('login')}
+            {showSuccessModal && (
+              <SuccessModal
+                username={pendingUsername}
+                onContinue={handleContinueToDashboard}
               />
-            </div>
-          )}
+            )}
 
-          {currentView === 'home' && (
-            <HomeView
-              user={user ? { ...user, role: user.role || userRole } : user}
-              initialProductId={pendingProductId}
-              pendingProductAction={pendingProductAction}
-              onBackToSellerHub={returnToSellerHubOnProductBack ? () => {
-                setReturnToSellerHubOnProductBack(false);
-                setPendingProductId(null);
-                setPendingProductAction(null);
-                handleNavigate('/dashboard?tab=seller');
-              } : undefined}
-              onPendingProductActionHandled={() => {
-                clearPendingProductAction();
-                setPendingProductId(null);
-                setPendingProductAction(null);
-              }}
-              onAction={(product) => console.log('view', product)}
-              onUserUpdate={setUser}
-              onNavigate={handleNavigate}
-              onNavigateToMessages={(productId) => {
-                setPendingMessagesProductId(productId);
-                setStudentTab('messages');
-                setCurrentView('student-dashboard');
-              }}
-            />
-          )}
+            {currentView === 'about' && <AboutView onNavigate={handleNavigate} />}
 
-          {showSuccessModal && (
-            <SuccessModal
-              username={pendingUsername}
-              onContinue={handleContinueToDashboard}
-            />
-          )}
+            {currentView === 'services' && <ServicesView />}
 
-          {currentView === 'about' && <AboutView onNavigate={handleNavigate} />}
+            {currentView === 'contact' && <ContactView user={user} />}
+            {['terms', 'privacy', 'refund-dispute'].includes(currentView) && <PolicyView type={currentView} onNavigate={handleNavigate} />}
+            {currentView === 'seller-profile' && (
+              <SellerProfileView
+                sellerId={pendingSellerId}
+                onBack={() => setCurrentView('home')}
+                onNavigate={handleNavigate}
+              />
+            )}
+            {canAccessAdminDashboard && currentView === 'admin-dashboard' && (
+              <AdminDashboard
+                onLogout={handleAdminLogout}
+                onNavigate={handleNavigate}
+                onSessionExpired={handleApiUnauthorized}
+                user={user}
+                onUserUpdate={setUser}
+                initialTab={adminTab}
+                onTabChange={(tab) => setAdminTab(tab)}
+              />
+            )}
+            {!isRestoringStudentSession && isStudentSessionVerified && activeRole === 'student' && currentView === 'student-dashboard' && (
+              <StudentDashboard
+                user={user}
+                initialTab={studentTab}
+                mode={studentMode}
+                openProductComposerRequest={studentComposerRequest}
+                dashboardLink={studentDashboardLink}
+                onDashboardLinkInvalid={handleStudentDashboardFallback}
+                onTabChange={handleStudentTabChange}
+                initialProductToEdit={pendingSellerProductEdit}
+                onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
+                initialMessagesProductId={pendingMessagesProductId}
+                onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
+                onUserUpdate={setUser}
+                onNavigate={handleNavigate}
+                appUnreadNotificationCount={unreadCount}
+                onOpenPrivacy={() => setShowFooterPrivacy(true)}
+                onOpenTerms={() => setShowFooterTerms(true)}
+              />
+            )}
+          </main>
+        </div>
 
-          {currentView === 'services' && <ServicesView />}
+        {!isDashboardView && !['login', 'register'].includes(currentView) && <Footer onNavigate={handleNavigate} />}
 
-          {currentView === 'contact' && <ContactView user={user} />}
-          {['terms', 'privacy', 'refund-dispute'].includes(currentView) && <PolicyView type={currentView} onNavigate={handleNavigate} />}
-          {currentView === 'seller-profile' && (
-            <SellerProfileView
-              sellerId={pendingSellerId}
-              onBack={() => setCurrentView('home')}
-              onNavigate={handleNavigate}
-            />
-          )}
-          {canAccessAdminDashboard && currentView === 'admin-dashboard' && (
-            <AdminDashboard
-              onLogout={handleAdminLogout}
-              onNavigate={handleNavigate}
-              onSessionExpired={handleApiUnauthorized}
-              user={user}
-              onUserUpdate={setUser}
-              initialTab={adminTab}
-              onTabChange={(tab) => setAdminTab(tab)}
-            />
-          )}
-          {!isRestoringStudentSession && isStudentSessionVerified && activeRole === 'student' && currentView === 'student-dashboard' && (
-            <StudentDashboard
-              user={user}
-              initialTab={studentTab}
-              mode={studentMode}
-              openProductComposerRequest={studentComposerRequest}
-              dashboardLink={studentDashboardLink}
-              onDashboardLinkInvalid={handleStudentDashboardFallback}
-              onTabChange={handleStudentTabChange}
-              initialProductToEdit={pendingSellerProductEdit}
-              onInitialProductEditHandled={() => setPendingSellerProductEdit(null)}
-              initialMessagesProductId={pendingMessagesProductId}
-              onClearProductInquiryFilter={() => setPendingMessagesProductId(null)}
-              onUserUpdate={setUser}
-              onNavigate={handleNavigate}
-              appUnreadNotificationCount={unreadCount}
-              onOpenPrivacy={() => setShowFooterPrivacy(true)}
-              onOpenTerms={() => setShowFooterTerms(true)}
-            />
-          )}
-        </main>
+        {(showFooterPrivacy || showFooterTerms) && (
+          <AuthInfoModal
+            type={showFooterPrivacy ? 'privacy' : 'terms'}
+            defaultStudentId={user?.studentId || ''}
+            onClose={() => {
+              setShowFooterPrivacy(false);
+              setShowFooterTerms(false);
+            }}
+          />
+        )}
       </div>
-
-      {!isDashboardView && !['login', 'register'].includes(currentView) && <Footer onNavigate={handleNavigate} />}
-
-      {(showFooterPrivacy || showFooterTerms) && (
-        <AuthInfoModal
-          type={showFooterPrivacy ? 'privacy' : 'terms'}
-          defaultStudentId={user?.studentId || ''}
-          onClose={() => {
-            setShowFooterPrivacy(false);
-            setShowFooterTerms(false);
-          }}
-        />
-      )}
-    </div>
     </CartProvider>
   );
 }

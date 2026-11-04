@@ -399,8 +399,12 @@ class WalletDepositTests(unittest.TestCase):
 
     def test_pending_wallet_deposits_are_marked_test_mode_in_test_environment(self):
         self._create_pending_deposit()
-        with patch.dict(os.environ, {"CHAPA_MODE": "test"}):
-            result = main_module.get_student_payments(self.student.student_id, db=self.db)
+        with patch.dict(os.environ, {"CHAPA_MODE": "test"}), \
+                patch.object(main_module, "_student_from_authorization", return_value=self.student):
+            result = main_module.get_student_payments(
+                self.student.student_id, db=self.db, hidden=False,
+                authorization="Bearer test-token",
+            )
 
         deposit = next(item for item in result["transactions"] if item["hash"] == "TX-DEPOSIT-1")
         self.assertTrue(deposit["test_mode"])

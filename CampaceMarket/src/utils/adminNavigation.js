@@ -60,10 +60,10 @@ export const ADMIN_NAVIGATION = [
   {
     type: 'link',
     key: 'notifications',
-    label: 'Notifications',
-    icon: 'M18 13v-3a6 6 0 10-12 0v3l-2 2v1h16v-1l-2-2z M13.73 21a2 2 0 01-3.46 0',
+    label: 'Broadcast Center',
+    icon: 'M3 11v2h3l8 5V6l-8 5H3z M14 9.5a4 4 0 010 5 M16 7a7 7 0 010 10 M6 13l1.5 6H11l-2-7',
     path: 'notifications',
-    badgeKey: 'unreadNotifications',
+    badgeKey: null,
     permission: null,
   },
   {

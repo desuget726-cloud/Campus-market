@@ -126,11 +126,13 @@ function NotificationDrawer({
   );
   const resolvedUnreadCount = hasLoaded ? unreadNotifications : unreadCount;
 
-  const fetchNotifications = useCallback(async (signal) => {
+  const fetchNotifications = useCallback(async (signal, { quiet = false } = {}) => {
     if (!user || (!isAdmin && !studentId)) return;
-    setLoading(true);
-    setError('');
-    setHasLoaded(false);
+    if (!quiet) {
+      setLoading(true);
+      setError('');
+      setHasLoaded(false);
+    }
     try {
       const endpoint = isAdmin
         ? `${API_BASE_URL}/support/notifications`
@@ -152,16 +154,30 @@ function NotificationDrawer({
         setError(requestError.message || 'Unable to load notifications.');
       }
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal?.aborted && !quiet) setLoading(false);
     }
   }, [isAdmin, onUnreadCountChange, studentId, token, user]);
 
   useEffect(() => {
     if (!open) return undefined;
     const controller = new AbortController();
-    void Promise.resolve().then(() => fetchNotifications(controller.signal));
+    let requestInFlight = false;
+    const loadNotifications = async (quiet = false) => {
+      if (requestInFlight) return;
+      requestInFlight = true;
+      try {
+        await fetchNotifications(controller.signal, { quiet });
+      } finally {
+        requestInFlight = false;
+      }
+    };
+    void loadNotifications();
+    const refreshId = window.setInterval(() => void loadNotifications(true), 30_000);
     closeButtonRef.current?.focus();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      window.clearInterval(refreshId);
+    };
   }, [fetchNotifications, open]);
 
   useEffect(() => {
@@ -317,6 +333,13 @@ function NotificationDrawer({
                           : '🔔'}
                   </span>
                   <span className="min-w-0 flex-1">
+                    {notification.image_url && (
+                      <img
+                        src={notification.image_url}
+                        alt=""
+                        className="mb-3 max-h-36 w-full rounded-lg object-cover"
+                      />
+                    )}
                     <span className="flex items-start gap-2">
                       <span className={`min-w-0 flex-1 text-sm ${notification.read ? 'font-medium text-slate-700' : 'font-bold text-slate-950'}`}>
                         {notification.title || 'Notification'}
