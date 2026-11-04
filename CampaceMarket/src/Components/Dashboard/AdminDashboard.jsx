@@ -1772,7 +1772,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
   // 9. System Settings Fields
   const [generalSettings, setGeneralSettings] = useState({
     marketplaceName: 'Campuse Market',
-    description: 'A secure campus marketplace for buying and selling university essentials.',
+    description: 'A secure campus platform for buying and selling university essentials on UniXchange.',
     supportEmail: 'support@campus.edu.et',
     currency: 'ETB',
     timezone: 'Africa/Addis_Ababa'
@@ -1856,7 +1856,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
   });
   const [maintenanceSettings, setMaintenanceSettings] = useState({
     maintenanceMode: false,
-    maintenanceMessage: 'The marketplace is temporarily unavailable for maintenance.'
+    maintenanceMessage: 'UniXchange is temporarily unavailable for maintenance.'
   });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [securitySettingsSaving, setSecuritySettingsSaving] = useState(false);
@@ -2843,7 +2843,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
             student_id: target.student_id,
             title: newStatus === 'Active' ? 'Account Restored' : 'Account Restriction Notice',
             message: newStatus === 'Active'
-              ? 'Your account has been restored and you can continue using the marketplace.'
+              ? 'Your account has been restored and you can continue using UniXchange.'
               : `Your account has been restricted. Reason: ${reason || 'Policy violation'}. Please contact support for review.`
           })
         });
@@ -4651,25 +4651,23 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
             <div className="rounded-[30px] border border-slate-200 bg-white p-5 text-slate-900 shadow-xl">
               <div className="mb-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-300">Audit Feed</p>
-                  <h3 className="mt-1 text-xl font-black">Recent Administrative Activity</h3>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-600">Audit Feed</p>
+                  <h3 className="mt-1 text-xl font-black">Recent UniXchange Administrative Activity</h3>
                 </div>
-                <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300">Live</span>
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">Live</span>
               </div>
-              <div className="space-y-3">
+              <div>
                 {(metrics.recent_activity ?? []).length === 0 ? (
-                  <p className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">No administrative activity has been recorded yet.</p>
+                  <p className="py-3 text-sm font-medium text-slate-600">No administrative activity has been recorded yet.</p>
                 ) : (
                   (metrics.recent_activity ?? []).map((item, index) => (
-                    <div key={item.id ?? `${item.time}-${index}`} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 p-4">
-                      <div className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                      <div className="flex-1">
-                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                          <p className="text-sm font-semibold text-white">{item.action || item.description || 'Administrative action'}</p>
-                          <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-300">{item.time || '--:--'}</span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-300">{item.user || item.username || 'System'}</p>
+                    <div key={item.id ?? `${item.time}-${index}`} className="flex flex-wrap items-start gap-x-3 border-b border-slate-100 py-3 last:border-0">
+                      <span aria-hidden="true" className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
+                      <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-y-1">
+                        <span className="text-sm font-bold text-slate-900">{item.user || item.username || 'System'}</span>
+                        <span className="ml-2 min-w-0 break-words text-sm font-medium text-slate-700">{String(item.description || item.action || item.details || item.message || item.event || 'Administrative action').replace(/\bmarketplace\b/gi, 'UniXchange')}</span>
                       </div>
+                      <time className="ml-auto whitespace-nowrap text-xs font-medium text-slate-500">{item.time || '--:--'}</time>
                     </div>
                   ))
                 )}
@@ -5650,12 +5648,12 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
               <div className="mb-4 flex flex-col gap-3 border-b border-slate-200 pb-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="text-lg font-bold text-slate-950">
-                    {prodStatusFilter === 'pending' ? 'Product Review Queue' : 'Marketplace Product Catalog'}
+                    {prodStatusFilter === 'pending' ? 'Product Review Queue' : 'UniXchange Product Catalog'}
                   </h3>
                   <p className="mt-1 text-xs font-semibold text-slate-500">
                     {prodStatusFilter === 'pending'
                       ? 'Select pending products for a batch moderation action.'
-                      : 'Browse marketplace listings and manage catalog products.'}
+                      : 'Browse UniXchange listings and manage catalog products.'}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -5907,7 +5905,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
               <h2 className="text-2xl font-black text-slate-950">Category Management</h2>
-              <p className="mt-1 text-slate-500 text-sm font-semibold">Organize, modify, and disable marketplace catalog categories.</p>
+              <p className="mt-1 text-slate-500 text-sm font-semibold">Organize, modify, and disable UniXchange catalog categories.</p>
             </div>
 
             {editingCategory && (
@@ -6002,7 +6000,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
 
               {/* Left Column: Active Categories with Nested Subcategories */}
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-lg font-bold text-slate-950 border-b pb-3 mb-4">Marketplace Directories</h3>
+                <h3 className="text-lg font-bold text-slate-950 border-b pb-3 mb-4">UniXchange Directories</h3>
                 <div className="space-y-4">
                   {categoriesList.map((cat) => (
                     <div key={cat.id} className="rounded-2xl border border-slate-200/50 bg-slate-50/50 p-4 space-y-3">
@@ -6546,7 +6544,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
           <div className="space-y-6 animate-fade-in text-slate-900">
             <div className="rounded-[32px] border border-slate-200 bg-white p-6 text-slate-900 shadow-sm">
               <h2 className="text-2xl font-black text-slate-900">Payment Operations Dashboard</h2>
-              <p className="mt-1 text-sm text-slate-600">Monitor digital payments, payout flows, wallet loads, refunds, and operational risk across the marketplace.</p>
+              <p className="mt-1 text-sm text-slate-600">Monitor digital payments, payout flows, wallet loads, refunds, and operational risk across UniXchange.</p>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-4">
@@ -6586,7 +6584,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <h3 className="text-xl font-black text-slate-950">Transaction Registry</h3>
-                  <p className="text-sm text-slate-500">Search and filter the latest marketplace payment records.</p>
+                  <p className="text-sm text-slate-500">Search and filter the latest UniXchange payment records.</p>
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button type="button" onClick={handleExportPaymentsCSV} className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm hover:bg-slate-50 transition cursor-pointer">Export CSV</button>
@@ -6844,7 +6842,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
               <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div>
                   <h2 className="text-2xl font-black text-slate-900">Reports & Complaints Dashboard</h2>
-                  <p className="mt-1 text-sm text-slate-600">Monitor marketplace disputes, fraud, content violations, and moderation outcomes.</p>
+                  <p className="mt-1 text-sm text-slate-600">Monitor UniXchange disputes, fraud, content violations, and moderation outcomes.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="button" onClick={markAllReportsSeen} className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50">Mark all as seen</button>
@@ -7539,7 +7537,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
             <div className="grid gap-6 xl:grid-cols-[1.15fr_0.95fr]">
               <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
                 <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">User Distribution</p>
-                <h3 className="mt-1 text-xl font-black text-slate-950">Marketplace Activity by College</h3>
+                <h3 className="mt-1 text-xl font-black text-slate-950">UniXchange Activity by College</h3>
 
                 <div className="mt-5 space-y-5">
                   {collegeActivity.map((college) => (
@@ -7560,16 +7558,16 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
                 <h3 className="mt-1 text-xl font-black">Performance Overview</h3>
 
                 <div className="mt-5 space-y-4">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Active Students</div>
-                    <div className="mt-2 text-3xl font-black text-emerald-300">{Number(metrics.active_students ?? metrics.activeStudents ?? 0).toLocaleString()}</div>
+                  <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-600">Active Students</div>
+                    <div className="mt-2 text-3xl font-black text-emerald-700">{Number(metrics.active_students ?? metrics.activeStudents ?? 0).toLocaleString()}</div>
                   </div>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-xs uppercase tracking-[0.2em] text-slate-300">Completed Orders</div>
-                    <div className="mt-2 text-3xl font-black text-sky-300">{Number(metrics.completed_orders ?? metrics.completedOrders ?? 0).toLocaleString()}</div>
+                  <div className="rounded-2xl border border-sky-100 bg-sky-50 p-4">
+                    <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-600">Completed Orders</div>
+                    <div className="mt-2 text-3xl font-black text-sky-700">{Number(metrics.completed_orders ?? metrics.completedOrders ?? 0).toLocaleString()}</div>
                   </div>
-                  <p className="rounded-2xl border border-indigo-400/20 bg-indigo-500/10 px-4 py-3 text-sm leading-6 text-slate-200">
-                    Live overview of student activity and completed marketplace orders from the current database snapshot.
+                  <p className="text-slate-700 text-xs sm:text-sm font-medium leading-relaxed bg-slate-50 border border-slate-200/80 rounded-xl p-3 mt-4">
+                    Live overview of student activity and completed UniXchange orders from the current database snapshot.
                   </p>
                 </div>
               </div>
@@ -7578,25 +7576,23 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
             <div className="rounded-[30px] border border-slate-200 bg-white p-5 text-slate-900 shadow-xl">
               <div className="mb-4 flex items-center justify-between">
                 <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-300">System Feed</p>
-                  <h3 className="mt-1 text-xl font-black">Recent Marketplace Activity</h3>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-600">System Feed</p>
+                  <h3 className="mt-1 text-xl font-black">Recent UniXchange Activity</h3>
                 </div>
-                <span className="rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300">
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-700">
                   Live
                 </span>
               </div>
 
-              <div className="space-y-3">
+              <div>
                 {(metrics.recent_activity ?? []).map((item, index) => (
-                  <div key={`${item.time}-${index}`} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="mt-1 h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                    <div className="flex-1">
-                      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-sm font-semibold text-white">{item.action}</p>
-                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-300">{item.time}</span>
-                      </div>
-                      <p className="mt-1 text-xs text-slate-300">{item.user}</p>
+                  <div key={item.id ?? `${item.time}-${index}`} className="flex flex-wrap items-start gap-x-3 border-b border-slate-100 py-3 last:border-0">
+                    <span aria-hidden="true" className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500" />
+                    <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-y-1">
+                      <span className="text-sm font-bold text-slate-900">{item.user || item.username || 'System'}</span>
+                      <span className="ml-2 min-w-0 break-words text-sm font-medium text-slate-700">{String(item.description || item.action || item.details || item.message || item.event || 'Administrative action').replace(/\bmarketplace\b/gi, 'UniXchange')}</span>
                     </div>
+                    <time className="ml-auto whitespace-nowrap text-xs font-medium text-slate-500">{item.time || '--:--'}</time>
                   </div>
                 ))}
               </div>
@@ -7861,7 +7857,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
                     <div className="mt-2 space-y-2">
                       {[
                         { value: 'in_app', label: 'In-App Notification', hint: 'Bell icon + dashboard feed', icon: '🔔' },
-                        { value: 'banner', label: 'Urgent Top Banner', hint: 'Pin an announcement on the marketplace', icon: '📌' },
+                        { value: 'banner', label: 'Urgent Top Banner', hint: 'Pin an announcement on UniXchange', icon: '📌' },
                         { value: 'email', label: 'Email Dispatch', hint: 'Send a branded email to student inboxes', icon: '✉️' },
                       ].map((channel) => (
                         <label key={channel.value} className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">

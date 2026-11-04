@@ -19,12 +19,12 @@
 
 .announcement-marquee::before {
   left: 0;
-  background: linear-gradient(to right, rgb(254 243 199 / 95%), transparent);
+  background: linear-gradient(to right, rgb(16 185 129 / 95%), transparent);
 }
 
 .announcement-marquee::after {
   right: 0;
-  background: linear-gradient(to left, rgb(254 243 199 / 95%), transparent);
+  background: linear-gradient(to left, rgb(16 185 129 / 95%), transparent);
 }
 
 .announcement-marquee-track {

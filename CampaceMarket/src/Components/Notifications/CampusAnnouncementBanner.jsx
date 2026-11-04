@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Megaphone } from 'lucide-react';
 import { API_BASE_URL } from '../../config';
 
 const ANNOUNCEMENT_MAX_AGE_MS = 72 * 60 * 60 * 1000;
@@ -176,20 +177,20 @@ function CampusAnnouncementBanner({ studentId, accessToken }) {
       <aside
         role="status"
         aria-live="polite"
-        className="announcement-banner sticky top-0 z-30 flex w-full items-center overflow-hidden border-b border-amber-200 bg-amber-100/95 px-4 py-2 text-amber-900 shadow-xs"
+        className="announcement-banner sticky top-0 z-30 flex w-full items-center overflow-hidden border-b border-emerald-700 bg-emerald-500 px-4 py-2 text-white shadow-xs"
       >
         <span
           aria-hidden="true"
-          className="relative z-10 flex h-full shrink-0 items-center bg-amber-100/90 pr-3"
+          className="relative z-10 flex h-full shrink-0 items-center bg-emerald-500 pr-3 text-white"
         >
-          📢
+          <Megaphone className="h-4 w-4" />
         </span>
         <button
           type="button"
           onClick={() => announcement.image_url && setModalAnnouncementId(announcement.id)}
           disabled={!announcement.image_url}
           aria-label={announcement.image_url ? `View announcement: ${announcement.title}` : undefined}
-          className="announcement-marquee relative min-w-0 flex-1 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left text-xs font-semibold sm:text-sm disabled:cursor-default"
+          className="announcement-marquee relative min-w-0 flex-1 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left text-xs font-semibold text-white drop-shadow-xs sm:text-sm disabled:cursor-default"
         >
           <p className="announcement-marquee-track flex w-max">
             {[false, true].map((isDuplicate) => (
@@ -209,7 +210,7 @@ function CampusAnnouncementBanner({ studentId, accessToken }) {
           type="button"
           onClick={dismissAnnouncement}
           aria-label="Dismiss campus announcement"
-          className="relative z-10 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100/90 pl-2 text-base transition hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-700"
+          className="relative z-10 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full p-1 pl-2 text-base text-white/90 transition hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
         >
           ✕
         </button>
