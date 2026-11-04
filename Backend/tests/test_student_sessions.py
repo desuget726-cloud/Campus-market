@@ -17,7 +17,7 @@ os.environ["SESSION_SECRET"] = "student-session-test-secret"
 
 from app import main as main_module
 from app.database import Base
-from app.models import AuditLog, LoginAttempt, Notification, PasswordReset, Student, StudentSession, UserSession
+from app.models import AuditLog, LoginAttempt, Notification, PasswordReset, Student, StudentSession, SystemSetting, UserSession
 from app.password_security import hash_password
 
 
@@ -531,6 +531,19 @@ class StudentSessionTests(unittest.TestCase):
 
         with self.assertRaises(HTTPException) as expired:
             main_module._student_from_authorization(f"Bearer {token}", self.db)
+
+        self.assertEqual(expired.exception.status_code, 401)
+        self.assertIsNotNone(session.revoked_at)
+
+    def test_session_expiration_uses_updated_database_timeout(self):
+        token = self._login()["access_token"]
+        session = self.db.query(UserSession).filter(UserSession.id == self._session_id(token)).one()
+        self.db.add(SystemSetting(key="security", value='{"sessionTimeout":1}'))
+        session.last_active_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as expired:
+            main_module._student_from_authorization(" ".join(["Bearer", token]), self.db)
 
         self.assertEqual(expired.exception.status_code, 401)
         self.assertIsNotNone(session.revoked_at)

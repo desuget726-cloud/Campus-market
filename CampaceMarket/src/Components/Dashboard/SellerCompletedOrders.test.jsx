@@ -59,6 +59,20 @@ const renderOrders = (onOpenOrder) => render(
 );
 
 describe('SellerCompletedOrders', () => {
+  it('keeps the completed orders table horizontally scrollable without text wrapping', () => {
+    renderOrders(vi.fn());
+    const table = screen.getByRole('table');
+
+    expect(table.className).toContain('min-w-[680px]');
+    expect(table.className).toContain('w-full');
+    expect(table.parentElement.className).toContain('overflow-x-auto');
+    expect(Array.from(table.querySelectorAll('th, td')).every((cell) => (
+      cell.className.includes('whitespace-nowrap')
+      && cell.className.includes('px-4')
+      && cell.className.includes('py-3')
+    ))).toBe(true);
+  });
+
   it('opens an order when the row or View button is clicked', async () => {
     const user = userEvent.setup();
     const onOpenOrder = vi.fn();

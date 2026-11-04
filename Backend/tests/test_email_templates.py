@@ -115,6 +115,51 @@ class SystemEmailTemplateTests(unittest.TestCase):
         self.assertIn("Total: 200.00 ETB", parts[0].get_payload(decode=True).decode("utf-8"))
         self.assertIn("Quantity", parts[1].get_payload(decode=True).decode("utf-8"))
 
+    def test_order_notification_email_links_directly_to_buyer_order(self):
+        student = Student(
+            name="Ada",
+            student_id="ada-1",
+            email="ada@example.test",
+            notif_order_email=True,
+        )
+        order = MagicMock(
+            id=26,
+            seller_id="seller-1",
+            quantity=1,
+            price=100,
+            title="Textbook",
+            status="Pending",
+        )
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = order
+        server = MagicMock()
+        server.__enter__.return_value = server
+
+        with (
+            patch.object(main_module, "_add_student_notification"),
+            patch.object(main_module, "FRONTEND_BASE_URL", "https://shop.example/"),
+            patch.object(main_module, "_IPv4SMTP_SSL", return_value=server),
+        ):
+            main_module._dispatch_student_notification(
+                db,
+                student,
+                "Order update",
+                "Your order is being processed.",
+                "order",
+                order_id=26,
+            )
+
+        parsed = message_from_string(server.sendmail.call_args.args[2])
+        html_part = next(
+            part for part in parsed.walk()
+            if part.get_content_type() == "text/html"
+        )
+        html_body = html_part.get_payload(decode=True).decode("utf-8")
+        self.assertIn(
+            'href="https://shop.example/dashboard?tab=my_orders&amp;order_id=26"',
+            html_body,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

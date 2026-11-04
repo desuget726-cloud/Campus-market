@@ -170,8 +170,6 @@ _CHAPA_MOBILE_PROVIDER_PAYOUT_SUPPORT = {
 GOOGLE_REDIRECT_URI_DEFAULT = "http://localhost:8000/auth/google/callback"
 GOOGLE_OAUTH_STATE_TTL = timedelta(minutes=10)
 SESSION_TOKEN_TIMEOUT_MINUTES = 7 * 24 * 60
-ADMIN_SESSION_INACTIVITY_DEFAULT_MINUTES = 30
-ADMIN_SESSION_INACTIVITY_MIN_MINUTES = 5
 AdminSessionRevokeReason = Literal[
     "logout",
     "new_login_single_session",
@@ -3649,22 +3647,8 @@ def _admin_single_session_enabled() -> bool:
     return os.getenv("ADMIN_SINGLE_SESSION", "false").strip().lower() == "true"
 
 
-def _admin_session_inactivity_minutes() -> int:
-    value = os.getenv(
-        "ADMIN_SESSION_INACTIVITY_MINUTES",
-        str(ADMIN_SESSION_INACTIVITY_DEFAULT_MINUTES),
-    ).strip()
-    try:
-        minutes = int(value)
-    except ValueError as error:
-        raise RuntimeError(
-            "ADMIN_SESSION_INACTIVITY_MINUTES must be an integer of at least 5."
-        ) from error
-    if minutes < ADMIN_SESSION_INACTIVITY_MIN_MINUTES:
-        raise RuntimeError(
-            "ADMIN_SESSION_INACTIVITY_MINUTES must be an integer of at least 5."
-        )
-    return minutes
+def _admin_session_inactivity_minutes(db: Session) -> int:
+    return get_security_settings(db).session_timeout
 
 
 def _admin_session_is_inactive(
@@ -4043,10 +4027,14 @@ def _dispatch_student_notification(
                 "Total": f"{total} ETB",
             }
             action_button = action_button or {
-                "label": "View Order",
-                "url": urljoin(
-                    FRONTEND_BASE_URL.rstrip("/") + "/",
-                    f"dashboard?tab={'seller' if is_seller else 'buyer'}&section=orders&order={order.id}",
+                "label": "View Order" if is_seller else "Track Order",
+                "url": (
+                    urljoin(
+                        FRONTEND_BASE_URL.rstrip("/") + "/",
+                        f"dashboard?tab=seller&section=orders&order={order.id}",
+                    )
+                    if is_seller
+                    else f"{FRONTEND_BASE_URL.rstrip('/')}/dashboard?tab=my_orders&order_id={order.id}"
                 ),
             }
             badge = badge or order.status
@@ -4054,10 +4042,7 @@ def _dispatch_student_notification(
             details_table = details_table or {"Order ID": f"#{order_id}"}
             action_button = action_button or {
                 "label": "Track Order",
-                "url": urljoin(
-                    FRONTEND_BASE_URL.rstrip("/") + "/",
-                    f"dashboard?tab=buyer&section=orders&order={order_id}",
-                ),
+                "url": f"{FRONTEND_BASE_URL.rstrip('/')}/dashboard?tab=my_orders&order_id={order_id}",
             }
     _send_student_notification_email(
         student,
@@ -4562,7 +4547,6 @@ def ensure_database_compatibility(db: Session) -> None:
 @app.on_event("startup")
 async def on_startup():
     global payment_scheduler
-    _admin_session_inactivity_minutes()
     startup_logger = logging.getLogger("app.startup")
     logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogRedactionFilter())
     _check_production_configuration()
@@ -7756,7 +7740,7 @@ def _cleanup_inactive_admin_sessions() -> int:
     db = SessionLocal()
     try:
         now = _utc_now()
-        timeout = timedelta(minutes=_admin_session_inactivity_minutes())
+        timeout = timedelta(minutes=_admin_session_inactivity_minutes(db))
         cutoff = (now - timeout).replace(tzinfo=None)
         candidates = db.query(AdminSession).filter(
             AdminSession.is_active.is_(True),
@@ -7956,7 +7940,7 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
         logging.getLogger("app.auth").warning("Admin auth rejected: jwt_subject_session_mismatch.")
         raise HTTPException(status_code=401, detail="JWT subject does not match the admin session.")
     now = _utc_now()
-    timeout = timedelta(minutes=_admin_session_inactivity_minutes())
+    timeout = timedelta(minutes=_admin_session_inactivity_minutes(db))
     if _admin_session_is_inactive(session, now, timeout):
         _revoke_admin_session(session, "inactivity_cleanup", now)
         db.commit()
@@ -7967,10 +7951,8 @@ def _admin_for_session(db: Session, session_token: Optional[str]) -> tuple[Admin
                 "message": "Admin session expired due to inactivity. Please sign in again.",
             },
         )
-    last_active = _as_utc_datetime(session.last_active)
-    if last_active is None or now - last_active >= timedelta(seconds=60):
-        session.last_active = now.replace(tzinfo=None)
-        db.commit()
+    session.last_active = now.replace(tzinfo=None)
+    db.commit()
     return admin, session
 
 
@@ -16049,10 +16031,7 @@ def pay_for_product(
             },
             action_button={
                 "label": "Track Order",
-                "url": urljoin(
-                    FRONTEND_BASE_URL.rstrip("/") + "/",
-                    f"dashboard?tab=buyer&section=orders&order={order.id}",
-                ),
+                "url": f"{FRONTEND_BASE_URL.rstrip('/')}/dashboard?tab=my_orders&order_id={order.id}",
             },
         )
         _send_student_notification_email(
@@ -20512,7 +20491,11 @@ def get_admin_sales_trend(
 
 
 @app.get("/api/admin/analytics")
-def get_admin_analytics(db: Session = Depends(get_db)):
+def get_admin_analytics(period: str = "7d", db: Session = Depends(get_db)):
+    period = str(period or "7d").strip().lower()
+    if period not in {"7d", "30d", "year"}:
+        raise HTTPException(status_code=400, detail="Period must be 7d, 30d, or year.")
+
     total_students = db.query(Student).count()
     active_students = db.query(Student).filter(Student.status.ilike("Active")).count()
     total_products = db.query(Product).count()
@@ -20523,6 +20506,78 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         *_completed_paid_order_filters(),
     ).scalar() or 0
     revenue_total = float(revenue_total)
+
+    current_period = get_sales_trend_buckets(period, _analytics_local_now())
+    previous_period = get_sales_trend_buckets(
+        period,
+        current_period.start - timedelta(microseconds=1),
+    )
+    period_order_date = func.coalesce(Order.completed_at, Order.created_at)
+    period_revenue_date = func.coalesce(Order.paid_at, Order.created_at)
+
+    def period_growth(current_value, previous_value):
+        current_value = float(current_value or 0)
+        previous_value = float(previous_value or 0)
+        if previous_value == 0:
+            change_pct = None
+            trend = "new" if current_value > 0 else "unavailable"
+        else:
+            change_pct = round(((current_value - previous_value) / previous_value) * 100, 1)
+            trend = "up" if change_pct > 0 else "down" if change_pct < 0 else "neutral"
+        return {
+            "value": current_value,
+            "previous_value": previous_value,
+            "change_pct": change_pct,
+            "trend": trend,
+        }
+
+    current_users = db.query(Student).filter(
+        Student.created_at >= current_period.start,
+        Student.created_at < current_period.end,
+    ).count()
+    previous_users = db.query(Student).filter(
+        Student.created_at >= previous_period.start,
+        Student.created_at < previous_period.end,
+    ).count()
+    current_products = db.query(Product).filter(
+        Product.created_at >= current_period.start,
+        Product.created_at < current_period.end,
+    ).count()
+    previous_products = db.query(Product).filter(
+        Product.created_at >= previous_period.start,
+        Product.created_at < previous_period.end,
+    ).count()
+    current_orders = db.query(Order).filter(
+        func.lower(Order.status) == "completed",
+        period_order_date >= current_period.start,
+        period_order_date < current_period.end,
+    ).count()
+    previous_orders = db.query(Order).filter(
+        func.lower(Order.status) == "completed",
+        period_order_date >= previous_period.start,
+        period_order_date < previous_period.end,
+    ).count()
+    current_revenue = db.query(
+        func.coalesce(func.sum(_completed_order_revenue_expression()), 0)
+    ).filter(
+        *_completed_paid_order_filters(),
+        period_revenue_date >= current_period.start,
+        period_revenue_date < current_period.end,
+    ).scalar() or 0
+    previous_revenue = db.query(
+        func.coalesce(func.sum(_completed_order_revenue_expression()), 0)
+    ).filter(
+        *_completed_paid_order_filters(),
+        period_revenue_date >= previous_period.start,
+        period_revenue_date < previous_period.end,
+    ).scalar() or 0
+    growth = {
+        "users": period_growth(current_users, previous_users),
+        "products": period_growth(current_products, previous_products),
+        "orders": period_growth(current_orders, previous_orders),
+        "revenue": period_growth(current_revenue, previous_revenue),
+    }
+
     pending_reports = db.query(Report).filter(Report.status.ilike("Open")).count()
     recommendation_requests = db.query(AIRecommendationLog).filter(
         AIRecommendationLog.action_type == "impression"
@@ -20794,6 +20849,8 @@ def get_admin_analytics(db: Session = Depends(get_db)):
         "total_orders": total_orders,
         "completed_orders": completed_orders,
         "total_revenue": revenue_total,
+        "analytics_period": period,
+        "growth": growth,
         "pending_reports": pending_reports,
         "requests": recommendation_requests,
         "clicks": recommendation_clicks,

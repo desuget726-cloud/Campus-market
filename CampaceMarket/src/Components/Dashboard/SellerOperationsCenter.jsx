@@ -1199,7 +1199,7 @@ function SellerOperationsCenter({
           </section>
         </div>
         <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-600">
                 Leaderboard
@@ -1208,7 +1208,7 @@ function SellerOperationsCenter({
                 Top Performing Products
               </h3>
             </div>
-            <div className="flex items-center gap-1 rounded-full bg-slate-100 p-1" role="group" aria-label="Sort top performing products">
+            <div className="flex w-fit items-center gap-1 rounded-xl bg-slate-100 p-1" role="group" aria-label="Sort top performing products">
               {[
                 { value: "views", label: "Views" },
                 { value: "orderCount", label: "Orders" },
@@ -1219,7 +1219,7 @@ function SellerOperationsCenter({
                   key={value}
                   aria-pressed={leaderboardSort === value}
                   onClick={() => setLeaderboardSort(value)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${leaderboardSort === value ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                  className={`whitespace-nowrap rounded-lg px-3 py-1 text-xs font-semibold transition ${leaderboardSort === value ? "bg-white font-bold text-slate-900 shadow-xs" : "text-slate-600 hover:text-slate-900"}`}
                 >
                   {label}
                 </button>

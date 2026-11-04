@@ -123,17 +123,17 @@ function SellerCompletedOrders({
         </p>
       ) : (
         <>
-          <div className="mt-5 overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
+          <div className="mt-5 w-full overflow-x-auto rounded-xl border border-slate-200">
+            <table className="min-w-[680px] w-full text-left text-sm">
               <thead className="border-b border-slate-200 text-[10px] uppercase tracking-[0.16em] text-slate-500">
                 <tr>
-                  <th className="px-3 py-3">{t('sellerOrders.order')}</th>
-                  <th className="px-3 py-3">{t('sellerOrders.customer')}</th>
-                  <th className="px-3 py-3">{t('sellerOrders.product')}</th>
-                  <th className="px-3 py-3">{t('sellerOrders.amount')}</th>
-                  <th className="px-3 py-3">{t('sellerOrders.status')}</th>
-                  <th className="px-3 py-3">{t('sellerOrders.completed')}</th>
-                  <th className="px-3 py-3"><span className="sr-only">{t('sellerOrders.actions')}</span></th>
+                  <th className="whitespace-nowrap px-4 py-3">{t('sellerOrders.order')}</th>
+                  <th className="whitespace-nowrap px-4 py-3">{t('sellerOrders.customer')}</th>
+                  <th className="whitespace-nowrap px-4 py-3">{t('sellerOrders.product')}</th>
+                  <th className="whitespace-nowrap px-4 py-3">{t('sellerOrders.amount')}</th>
+                  <th className="whitespace-nowrap px-4 py-3">{t('sellerOrders.status')}</th>
+                  <th className="whitespace-nowrap px-4 py-3">{t('sellerOrders.completed')}</th>
+                  <th className="whitespace-nowrap px-4 py-3"><span className="sr-only">{t('sellerOrders.actions')}</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -149,17 +149,17 @@ function SellerCompletedOrders({
                     onKeyDown={(event) => openRowFromKeyboard(event, order)}
                     className="cursor-pointer border-b border-slate-100 transition-colors hover:bg-sky-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-600 focus-visible:outline-offset-[-2px]"
                   >
-                    <td className="px-3 py-4 font-bold text-slate-900">#{order.id}</td>
-                    <td className="px-3 py-4 text-slate-600">{order.buyer_name}</td>
-                    <td className="px-3 py-4 text-slate-700">{order.product_title}</td>
-                    <td className="px-3 py-4 font-bold text-slate-900">{formatAmount(order.amount, language)}</td>
-                    <td className="px-3 py-4">
+                    <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900">#{order.id}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-slate-600">{order.buyer_name}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-slate-700">{order.product_title}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-bold text-slate-900">{formatAmount(order.amount, language)}</td>
+                    <td className="whitespace-nowrap px-4 py-3">
                       <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
                         {t('sellerOrders.sold')}
                       </span>
                     </td>
-                    <td className="px-3 py-4 text-xs text-slate-500">{formatDate(order.completed_at, language)}</td>
-                    <td className="px-3 py-4">
+                    <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-500">{formatDate(order.completed_at, language)}</td>
+                    <td className="whitespace-nowrap px-4 py-3">
                       <button
                         type="button"
                         onClick={(event) => {

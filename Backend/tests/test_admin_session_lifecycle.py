@@ -63,7 +63,6 @@ class AdminSessionLifecycleTests(unittest.TestCase):
             {
                 "SESSION_SECRET": "test-admin-session-lifecycle-secret",
                 "ADMIN_SINGLE_SESSION": "false",
-                "ADMIN_SESSION_INACTIVITY_MINUTES": "30",
             },
         )
         self.env_patch.start()
@@ -135,7 +134,7 @@ class AdminSessionLifecycleTests(unittest.TestCase):
         session = self.db.query(AdminSession).one()
         self.assertEqual(session.location, "Local network")
 
-    def test_authenticated_requests_refresh_last_active_at_most_once_per_minute(self):
+    def test_authenticated_requests_refresh_last_active_on_each_request(self):
         fixed_now = datetime.now(timezone.utc)
         token = main_module._create_session_token(
             self.admin.username,
@@ -163,10 +162,12 @@ class AdminSessionLifecycleTests(unittest.TestCase):
             self.assertGreater(refreshed_activity, previous_activity)
             self.assertEqual(refreshed_activity, fixed_now.replace(tzinfo=None))
 
-            second = self.client.get("/api/admin/me", headers=headers)
+            next_activity = fixed_now + timedelta(seconds=15)
+            with patch.object(main_module, "_utc_now", return_value=next_activity):
+                second = self.client.get("/api/admin/me", headers=headers)
             self.assertEqual(second.status_code, 200, second.text)
             self.db.refresh(session)
-            self.assertEqual(session.last_active, refreshed_activity)
+            self.assertEqual(session.last_active, next_activity.replace(tzinfo=None))
 
     def test_inactive_admin_request_returns_code_and_persists_reason(self):
         token = main_module._create_session_token(
@@ -266,15 +267,44 @@ class AdminSessionLifecycleTests(unittest.TestCase):
         self.assertTrue(just_created.is_active)
         self.assertIsNone(just_created.revoke_reason)
 
-    def test_inactivity_timeout_below_five_minutes_is_rejected(self):
-        with patch.dict(os.environ, {"ADMIN_SESSION_INACTIVITY_MINUTES": "4"}):
-            with self.assertRaisesRegex(RuntimeError, "at least 5"):
-                main_module._admin_session_inactivity_minutes()
+    def test_admin_session_timeout_is_read_from_saved_settings_on_each_request(self):
+        now = datetime.now(timezone.utc)
+        token = main_module._create_session_token(
+            self.admin.username,
+            "admin",
+            60,
+            "test-admin-session-lifecycle-secret",
+        )
+        session = AdminSession(
+            admin_id=self.admin.id,
+            session_token=token,
+            is_active=True,
+            created_at=(now - timedelta(hours=1)).replace(tzinfo=None),
+            last_active=(now - timedelta(minutes=2)).replace(tzinfo=None),
+        )
+        self.db.add(session)
+        self.db.commit()
+        headers = {"Authorization": f"Bearer {token}"}
 
-    def test_startup_rejects_an_invalid_inactivity_timeout(self):
-        with patch.dict(os.environ, {"ADMIN_SESSION_INACTIVITY_MINUTES": "4"}):
-            with self.assertRaisesRegex(RuntimeError, "at least 5"):
-                asyncio.run(main_module.on_startup())
+        with patch.object(main_module, "_utc_now", return_value=now):
+            before_update = self.client.get("/api/admin/me", headers=headers)
+        self.assertEqual(before_update.status_code, 200, before_update.text)
+
+        settings_response = self.client.patch(
+            "/api/admin/settings",
+            headers=headers,
+            json={"security": {"sessionTimeout": 1}},
+        )
+        self.assertEqual(settings_response.status_code, 200, settings_response.text)
+        self.assertEqual(settings_response.json()["settings"]["security"]["sessionTimeout"], 1)
+
+        session.last_active = (datetime.now(timezone.utc) - timedelta(minutes=2)).replace(tzinfo=None)
+        self.db.commit()
+        after_update = self.client.get("/api/admin/me", headers=headers)
+
+        self.assertEqual(after_update.status_code, 401)
+        self.assertEqual(after_update.json()["detail"]["code"], "session_inactive")
+        self.assertFalse(session.is_active)
 
     def test_startup_seeds_admin_when_missing(self):
         self.db.query(Admin).delete()

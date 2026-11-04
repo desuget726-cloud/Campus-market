@@ -5,10 +5,35 @@ export const analyticsSalesPeriods = [
 ];
 
 export const getAnalyticsPeriodButtonClass = (period, key) => (
-  `rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] ${
-    period === key ? 'bg-[#111c3a] text-white' : 'text-slate-600'
+  `whitespace-nowrap rounded-xl px-3 py-1.5 text-xs font-bold uppercase transition ${
+    period === key ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
   }`
 );
+
+export const getAnalyticsGrowthPresentation = (growth) => {
+  const percentage = growth?.change_pct == null ? Number.NaN : Number(growth.change_pct);
+  if (growth?.trend === 'new' && !Number.isFinite(percentage)) {
+    return { percentage: 'New', label: '↗ New', tone: 'blue' };
+  }
+  if (!Number.isFinite(percentage)) {
+    return { percentage: 'N/A', label: 'No previous period data', tone: 'neutral' };
+  }
+  if (percentage > 0) {
+    return {
+      percentage: `+${Math.abs(percentage).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`,
+      label: '↗ Up trending',
+      tone: 'up',
+    };
+  }
+  if (percentage < 0) {
+    return {
+      percentage: `-${Math.abs(percentage).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`,
+      label: '↘ Down trending',
+      tone: 'down',
+    };
+  }
+  return { percentage: '0%', label: '→ No change', tone: 'neutral' };
+};
 
 export const changeAnalyticsPeriod = (key, setPeriod) => setPeriod(key);
 

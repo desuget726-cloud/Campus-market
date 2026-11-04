@@ -31,6 +31,7 @@ import {
   buildAnalyticsRevenueChart,
   changeAnalyticsPeriod,
   fetchAnalyticsSales,
+  getAnalyticsGrowthPresentation,
   getAnalyticsPeriodButtonClass,
 } from '../../utils/analyticsSalesTrend';
 import logs from '../../assets/logs.png';
@@ -946,7 +947,7 @@ function AdminAccountsPanel({ user }) {
   );
 }
 
-function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
+function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeoutChange, user, onUserUpdate, initialTab = 'dashboard', onTabChange }) {
   const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState(normalizeAdminTab(initialTab));
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -1932,6 +1933,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
           securitySettingsRef.current = savedSecurity;
           setSecuritySettings(savedSecurity);
         }
+        onSessionTimeoutChange?.(Number(savedSecurity.sessionTimeout));
         notifySuccess('Security settings saved successfully.', 'admin-security-settings-save');
       } catch (error) {
         if (requestSequence === securitySaveSequenceRef.current) {
@@ -2083,7 +2085,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
     setDashboardMetricsLoading(true);
     setDashboardMetricsError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/admin/analytics`);
+      const response = await fetch(`${API_BASE_URL}/api/admin/analytics?period=${encodeURIComponent(period)}`);
       if (!response.ok) {
         throw new Error('Admin analytics endpoint unavailable');
       }
@@ -2126,6 +2128,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         totalOrders,
         completedOrders,
         totalRevenue,
+        growth: data?.growth ?? {},
         pendingReports,
         gatewayStatus: data?.gatewayStatus ?? {
           provider: 'Chapa',
@@ -2172,6 +2175,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
         totalOrders: 0,
         completedOrders: 0,
         totalRevenue: '0 ETB',
+        growth: {},
         pendingReports: 0,
         gatewayStatus: {
           provider: 'Chapa',
@@ -2197,10 +2201,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   };
 
   const analyticsSummaryCards = [
-    { label: 'Users', value: metrics.total_students ?? metrics.totalStudents, trend: '0%' },
-    { label: 'Products', value: metrics.total_products ?? metrics.totalProducts, trend: '0%' },
-    { label: 'Orders', value: metrics.total_orders ?? metrics.totalOrders, trend: '0%' },
-    { label: 'Revenue', value: metrics.total_revenue ?? metrics.totalRevenue, trend: '0%' },
+    { label: 'Users', value: metrics.total_students ?? metrics.totalStudents, growth: metrics.growth?.users },
+    { label: 'Products', value: metrics.total_products ?? metrics.totalProducts, growth: metrics.growth?.products },
+    { label: 'Orders', value: metrics.total_orders ?? metrics.totalOrders, growth: metrics.growth?.orders },
+    { label: 'Revenue', value: metrics.total_revenue ?? metrics.totalRevenue, growth: metrics.growth?.revenue },
   ];
 
   useEffect(() => {
@@ -2357,6 +2361,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
   useEffect(() => {
     if (activeTab === 'analytics') fetchDashboardOverview();
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'analytics') fetchDashboardOverview();
+  }, [period]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setIsReady(true), 250);
@@ -7330,29 +7338,50 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
             </div>
 
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              {analyticsSummaryCards.map((item) => (
-                <div key={item.label} className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">{item.label}</p>
-                    <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700">{item.trend}</span>
+              {analyticsSummaryCards.map((item) => {
+                const growth = getAnalyticsGrowthPresentation(item.growth);
+                const toneClasses = {
+                  up: 'bg-emerald-100 text-emerald-700',
+                  down: 'bg-rose-100 text-rose-700',
+                  neutral: 'bg-slate-100 text-slate-600',
+                  blue: 'bg-sky-100 text-sky-700',
+                }[growth.tone];
+                const trendTextClasses = {
+                  up: 'text-emerald-600',
+                  down: 'text-rose-600',
+                  neutral: 'text-slate-500',
+                  blue: 'text-sky-600',
+                }[growth.tone];
+                const trendDotClasses = {
+                  up: 'bg-emerald-500',
+                  down: 'bg-rose-500',
+                  neutral: 'bg-slate-400',
+                  blue: 'bg-sky-500',
+                }[growth.tone];
+                return (
+                  <div key={item.label} className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">{item.label}</p>
+                      <span className={`rounded-full px-2 py-1 text-[10px] font-bold ${toneClasses}`}>{growth.percentage}</span>
+                    </div>
+                    <p className="mt-4 text-3xl font-black text-slate-950">{typeof item.value === 'number' ? item.value.toLocaleString() : item.value}</p>
+                    <div className={`mt-4 flex items-center gap-2 text-xs font-semibold ${trendTextClasses}`}>
+                      <span className={`inline-block h-2.5 w-2.5 rounded-full ${trendDotClasses}`} />
+                      {growth.label}
+                    </div>
                   </div>
-                  <p className="mt-4 text-3xl font-black text-slate-950">{typeof item.value === 'number' ? item.value.toLocaleString() : item.value}</p>
-                  <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-emerald-600">
-                    <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                    Up trending
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="grid gap-6 xl:grid-cols-[1.5fr_0.95fr]">
               <div className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-5 flex items-center justify-between">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-500">Sales Overview</p>
                     <h3 className="mt-1 text-xl font-black text-slate-950">Sales & Revenue</h3>
                   </div>
-                  <div className="flex items-center gap-2 rounded-full bg-slate-100 p-1">
+                  <div className="flex w-fit items-center gap-1 rounded-2xl bg-slate-100 p-1">
                     {analyticsSalesPeriods.map(({ key, label }) => (
                       <button
                         key={key}
@@ -7857,10 +7886,10 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                     </div>
                   </div>
 
-                  <div className="grid gap-3 pt-2 sm:grid-cols-3">
+                  <div className="grid grid-cols-2 gap-2 pb-4 pt-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
                     <button
                       type="submit"
-                      className="rounded-full border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200"
+                      className="order-1 flex w-full items-center justify-center rounded-xl bg-slate-100 py-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-200 sm:order-2 sm:w-auto sm:px-4 sm:text-sm"
                     >
                       Preview
                     </button>
@@ -7868,7 +7897,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                       type="button"
                       onClick={() => handleSendBroadcast()}
                       disabled={broadcastSending || announcementImageUploading}
-                      className="btn-primary rounded-full px-4 py-3 text-sm font-bold disabled:cursor-not-allowed disabled:opacity-60"
+                      className="order-[-1] col-span-2 flex w-full items-center justify-center gap-2 rounded-xl bg-sky-500 py-3 text-sm font-bold text-white shadow-md transition hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-60 sm:order-3 sm:col-span-1 sm:w-auto sm:px-4"
                     >
                       {broadcastSending ? 'Sending…' : '🚀 Send Broadcast'}
                     </button>
@@ -7876,7 +7905,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, user, onUserUp
                       type="button"
                       onClick={resetAnnouncementForm}
                       disabled={announcementImageUploading}
-                      className="rounded-full border border-slate-200 bg-slate-100 px-5 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200"
+                      className="order-2 flex w-full items-center justify-center rounded-xl bg-slate-100 py-2.5 text-xs font-semibold text-slate-500 transition hover:bg-red-50 hover:text-red-600 sm:order-1 sm:w-auto sm:justify-self-start sm:px-5 sm:text-sm"
                     >
                       Clear
                     </button>

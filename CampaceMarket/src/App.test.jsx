@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEffect } from 'react';
 import App from './App';
+import { invalidateAdminSettingsCache } from './api/adminSettings';
 import { API_BASE_URL } from './config';
 
 vi.mock('./Components/Navbars/Navbar', () => ({
@@ -82,9 +83,12 @@ vi.mock('./Components/Views/PolicyView', () => ({
 }));
 
 vi.mock('./Components/Dashboard/AdminDashboard', () => ({
-  default: ({ initialTab }) => (
+  default: ({ initialTab, onSessionTimeoutChange }) => (
     <div data-testid="admin-dashboard">
       <span>Dashboard tab: {initialTab}</span>
+      <button type="button" onClick={() => onSessionTimeoutChange?.(1)}>
+        Set timeout to one minute
+      </button>
     </div>
   ),
 }));
@@ -156,6 +160,66 @@ describe('admin dashboard default section', () => {
     window.history.replaceState({}, '', '/');
   });
 
+  it('uses the fetched inactivity setting and logs out only after the last activity', async () => {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(buildAdminSession()));
+    window.localStorage.setItem('token', 'legacy-token');
+    invalidateAdminSettingsCache();
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(window, 'fetch').mockImplementation(async (request) => {
+      const requestUrl = typeof request === 'string' ? request : request.url;
+      if (requestUrl.includes('/api/admin/settings')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          json: async () => ({ security: { sessionTimeout: 1 } }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({}),
+      };
+    });
+
+    try {
+      render(<App />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50_000);
+      });
+      fireEvent.mouseMove(window);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(59_999);
+      });
+      expect(screen.getByTestId('admin-dashboard')).toBeTruthy();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+
+      expect(screen.getByText('Login Form')).toBeTruthy();
+      expect(window.location.pathname).toBe('/login');
+      expect(window.localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+      expect(window.localStorage.getItem('token')).toBeNull();
+      expect(fetchMock.mock.calls.some(([request, options]) => {
+        const requestUrl = typeof request === 'string' ? request : request.url;
+        return requestUrl.endsWith('/api/admin/logout') && options?.method === 'POST';
+      })).toBe(true);
+      expect(screen.getByText('Logged out due to inactivity.')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+      fetchMock.mockRestore();
+      invalidateAdminSettingsCache();
+    }
+  });
+
   it('sends a guest Browse Market login to the buyer dashboard', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue({
       ok: true,
@@ -210,6 +274,28 @@ describe('admin dashboard default section', () => {
     await waitFor(() => {
       expect(window.location.pathname + window.location.search).toBe('/');
     });
+  });
+
+  it('sends a guest order email deep link to login and restores it after sign-in', async () => {
+    window.history.replaceState({}, '', '/dashboard?tab=my_orders&order_id=26');
+    vi.spyOn(window, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      json: async () => ({}),
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText('Login Form')).toBeTruthy();
+    const returnTo = '/dashboard?tab=my_orders&order_id=26';
+    expect(window.location.pathname).toBe('/login');
+    expect(new URLSearchParams(window.location.search).get('returnTo')).toBe(returnTo);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete Student Login' }));
+
+    expect(await screen.findByText('Student tab: buyer')).toBeTruthy();
+    expect(window.location.pathname + window.location.search).toBe(returnTo);
   });
 
   it('does not restore a saved student dashboard view without a user session', async () => {

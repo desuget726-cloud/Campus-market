@@ -32,11 +32,29 @@ import { parseOrderDashboardLink } from './utils/orderDashboardLink';
 import { parseStudentDashboardLink } from './utils/studentDashboardLink';
 import { getAdminSectionFromSearch, normalizeAdminSection, setAdminSectionUrl } from './utils/adminDashboardSection';
 import { isSessionExpiryResponse } from './utils/sessionExpiry';
-import { notifySuccess } from './utils/notify';
+import { notifyInfo, notifySuccess } from './utils/notify';
 import './App.css';
 
 const SESSION_STORAGE_KEY = 'campaceSession';
 const ADMIN_SECTION_SESSION_KEY = 'campaceAdminSection';
+const AUTH_STORAGE_KEYS = [
+  'token',
+  'admin_token',
+  'campaceOAuthProvider',
+  'campaceOAuthState',
+  'campaceOAuthCodeVerifier',
+];
+const clearStoredSession = () => {
+  try {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+    AUTH_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+    window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
+    AUTH_STORAGE_KEYS.forEach((key) => window.sessionStorage.removeItem(key));
+    clearPendingProductAction();
+  } catch (error) {
+    console.error('Failed to clear session data:', error);
+  }
+};
 const getStudentId = (student) => String(student?.studentId || student?.student_id || '').trim();
 const getAccessToken = (session, sessionUser) => (
   sessionUser?.access_token
@@ -276,11 +294,7 @@ function AppContent() {
   const handleApiUnauthorized = useCallback((event) => {
     if (unauthorizedHandledRef.current) return;
     unauthorizedHandledRef.current = true;
-    try {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
-    } catch (error) {
-      console.error('Failed to clear the expired session:', error);
-    }
+    clearStoredSession();
     setUser(null);
     setUserRole(null);
     setIsStudentSessionVerified(false);
@@ -292,6 +306,9 @@ function AppContent() {
     setStudentTab('home');
     setAdminTab('dashboard');
     const code = event?.detail?.code;
+    const detailMessage = event?.detail?.message || '';
+    const expiredDueToInactivity = code === 'session_inactive'
+      || /expired due to inactivity/i.test(detailMessage);
     const message = code === 'session_replaced'
       ? 'This admin session was replaced by a newer login. Please sign in again.'
       : code === 'session_inactive'
@@ -300,11 +317,8 @@ function AppContent() {
           ? 'Your admin session was revoked. Please sign in again.'
           : 'Session expired, please log in again';
     setLoginMessage(message);
-    try {
-      window.sessionStorage.removeItem(ADMIN_SECTION_SESSION_KEY);
-    } catch {
-      // Ignore session storage cleanup failures during logout.
-    }
+    if (expiredDueToInactivity) notifyInfo('Logged out due to inactivity.', 'session-inactivity-logout');
+    window.history.replaceState({}, '', '/login');
   }, []);
 
   useEffect(() => {
@@ -377,6 +391,11 @@ function AppContent() {
           window.dispatchEvent(new CustomEvent('campace:api-unauthorized', {
             detail: {
               code: typeof detail === 'object' && !Array.isArray(detail) ? detail.code : null,
+              message: typeof detail === 'string'
+                ? detail
+                : typeof detail === 'object' && !Array.isArray(detail)
+                  ? detail.message
+                  : '',
             },
           }));
         }
@@ -418,8 +437,14 @@ function AppContent() {
       .then(async (response) => {
         if (cancelled) return;
         if (!response.ok) {
+          const payload = await response.clone().json().catch(() => null);
+          const detail = payload?.detail;
+          const detailMessage = typeof detail === 'string' ? detail : detail?.message || '';
           if (response.status === 401) {
-            window.localStorage.removeItem(SESSION_STORAGE_KEY);
+            clearStoredSession();
+            if (/expired due to inactivity/i.test(detailMessage)) {
+              notifyInfo('Logged out due to inactivity.', 'session-inactivity-logout');
+            }
           } else {
             console.error('Unable to verify the stored student session:', response.status);
           }
@@ -427,16 +452,18 @@ function AppContent() {
           setUserRole(null);
           setIsStudentSessionVerified(false);
           setCurrentView('login');
+          window.history.replaceState({}, '', '/login');
           return;
         }
 
         const data = await response.json();
         if (!data?.user || data.role !== 'student' || !getStudentId(data.user) || cancelled) {
-          window.localStorage.removeItem(SESSION_STORAGE_KEY);
+          clearStoredSession();
           setUser(null);
           setUserRole(null);
           setIsStudentSessionVerified(false);
           setCurrentView('login');
+          window.history.replaceState({}, '', '/login');
           return;
         }
 
@@ -640,13 +667,27 @@ function AppContent() {
     const productAction = getPendingProductAction();
     const loginParams = new URLSearchParams(window.location.search);
     const returnTo = normalizeInternalReturnTo(loginParams.get('returnTo'));
+    const returnOrderLink = returnTo ? parseOrderDashboardLink(returnTo) : null;
+    const shouldOpenOrder = role === 'student' && Boolean(returnOrderLink?.hasOrderParameter);
     const redirectDestination = loginParams.get('redirect');
     const shouldOpenSellerHub = redirectDestination === 'post-item' && role === 'student';
     const shouldOpenBuyerHub = redirectDestination === 'browse-market' && role === 'student';
     const productId = getProductIdFromReturnTo(returnTo) || productAction?.returnTo || null;
     const nextView = productId ? 'home' : role === 'admin' ? 'admin-dashboard' : 'student-dashboard';
-    const nextStudentTab = !productId && shouldOpenSellerHub ? 'seller' : !productId && shouldOpenBuyerHub ? 'buyer' : 'home';
-    const nextStudentMode = shouldOpenSellerHub ? 'seller' : shouldOpenBuyerHub ? 'buyer' : studentMode;
+    const nextStudentTab = !productId && shouldOpenOrder
+      ? returnOrderLink.tab
+      : !productId && shouldOpenSellerHub
+        ? 'seller'
+        : !productId && shouldOpenBuyerHub
+          ? 'buyer'
+          : 'home';
+    const nextStudentMode = shouldOpenOrder
+      ? returnOrderLink.tab
+      : shouldOpenSellerHub
+        ? 'seller'
+        : shouldOpenBuyerHub
+          ? 'buyer'
+          : studentMode;
     const nextSection = role === 'admin' ? 'dashboard' : 'home';
 
     const nextUser = { ...userData, access_token: userData?.access_token || userData?.accessToken || null };
@@ -658,6 +699,7 @@ function AppContent() {
     setDashboardTab('home');
     setStudentTab(nextStudentTab);
     setStudentMode(nextStudentMode);
+    if (shouldOpenOrder) setStudentDashboardLink(returnOrderLink);
     setAdminTab(nextSection);
     persistAdminTab(nextSection);
     setCurrentView(nextView);
@@ -678,35 +720,46 @@ function AppContent() {
     persistSession(user, activeRole, activeRole === 'admin' ? 'admin-dashboard' : 'student-dashboard', dashboardTab, studentTab);
   };
 
+  const sessionAccessToken = getAccessToken(null, user);
+
   useEffect(() => {
-    if (!hasUser || !activeRole || !['admin-dashboard', 'student-dashboard'].includes(currentView)) return;
+    if (!hasUser || !activeRole) return;
 
     let timeoutId;
-    const expireSession = async () => {
-      try {
-        await fetch(`${API_BASE_URL}/api/auth/logout`, {
+    let expired = false;
+    const expireSession = () => {
+      if (expired) return;
+      expired = true;
+      const isAdminSession = activeRole === 'admin';
+      void fetch(
+        isAdminSession ? `${API_BASE_URL}/api/admin/logout` : `${API_BASE_URL}/api/auth/logout`,
+        {
           method: 'POST',
           credentials: 'include',
-        });
-      } catch (error) {
-        console.error('Session expiry logout request failed:', error);
-      } finally {
-        window.localStorage.removeItem(SESSION_STORAGE_KEY);
-        setUser(null);
-        setUserRole(null);
-        setUnreadCount(0);
-        setShowSuccessModal(false);
-        setCurrentView('login');
-        setDashboardTab('home');
-        setStudentTab('home');
-      }
+          ...(sessionAccessToken ? { headers: { Authorization: ['Bearer', sessionAccessToken].join(' ') } } : {}),
+        },
+      ).catch((error) => console.error('Session inactivity logout request failed:', error));
+      clearStoredSession();
+      setUser(null);
+      setUserRole(null);
+      setIsStudentSessionVerified(false);
+      setUnreadCount(0);
+      setIsNotificationDrawerOpen(false);
+      setShowSuccessModal(false);
+      setCurrentView('login');
+      setDashboardTab('home');
+      setStudentTab('home');
+      setAdminTab('dashboard');
+      setLoginMessage('');
+      window.history.replaceState({}, '', '/login');
+      notifyInfo('Logged out due to inactivity.', 'session-inactivity-logout');
     };
     const resetTimeout = () => {
       window.clearTimeout(timeoutId);
       timeoutId = window.setTimeout(expireSession, sessionTimeoutMinutes * 60 * 1000);
     };
 
-    const activityEvents = ['mousedown', 'keydown', 'scroll', 'touchstart'];
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart'];
     activityEvents.forEach((eventName) => window.addEventListener(eventName, resetTimeout, { passive: true }));
     resetTimeout();
 
@@ -714,7 +767,7 @@ function AppContent() {
       window.clearTimeout(timeoutId);
       activityEvents.forEach((eventName) => window.removeEventListener(eventName, resetTimeout));
     };
-  }, [activeRole, currentView, sessionTimeoutMinutes, hasUser]);
+  }, [activeRole, sessionTimeoutMinutes, hasUser, sessionAccessToken]);
 
   const isDashboardView = ['student-dashboard', 'admin-dashboard'].includes(currentView);
   const isStudentMessagesView = currentView === 'student-dashboard' && studentTab === 'messages';
@@ -727,6 +780,18 @@ function AppContent() {
     const isDashboardRoute = pathname === '/dashboard'
       || ['student-dashboard', 'admin-dashboard'].includes(currentView);
     if (!isDashboardRoute) return;
+
+    const orderLink = parseOrderDashboardLink(window.location.href);
+    if (!hasUser && orderLink?.hasOrderParameter) {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      setCurrentView('login');
+      window.history.replaceState(
+        {},
+        '',
+        `/login?returnTo=${encodeURIComponent(returnTo)}`,
+      );
+      return;
+    }
 
     if (
       canAccessStudentDashboard
@@ -1175,6 +1240,7 @@ function AppContent() {
                 onLogout={handleAdminLogout}
                 onNavigate={handleNavigate}
                 onSessionExpired={handleApiUnauthorized}
+                onSessionTimeoutChange={setSessionTimeoutMinutes}
                 user={user}
                 onUserUpdate={setUser}
                 initialTab={adminTab}

@@ -5,6 +5,7 @@ import {
   buildAnalyticsRevenueChart,
   changeAnalyticsPeriod,
   fetchAnalyticsSales,
+  getAnalyticsGrowthPresentation,
   getAnalyticsPeriodButtonClass,
 } from './analyticsSalesTrend.js';
 
@@ -43,9 +44,34 @@ test('period button classes track the selected period', () => {
   const activeClass = getAnalyticsPeriodButtonClass('30d', '30d');
   const inactiveClass = getAnalyticsPeriodButtonClass('30d', 'year');
 
-  assert.match(activeClass, /bg-\[#111c3a\] text-white/);
-  assert.match(inactiveClass, /text-slate-600/);
-  assert.doesNotMatch(inactiveClass, /bg-\[#111c3a\]/);
+  assert.match(activeClass, /whitespace-nowrap/);
+  assert.match(activeClass, /bg-slate-900 text-white shadow-xs/);
+  assert.match(inactiveClass, /text-slate-600 hover:text-slate-900/);
+  assert.doesNotMatch(inactiveClass, /bg-slate-900/);
+});
+
+test('growth presentation handles positive, negative, neutral, and missing baselines', () => {
+  assert.deepEqual(getAnalyticsGrowthPresentation({ change_pct: 12.5 }), {
+    percentage: '+12.5%',
+    label: '↗ Up trending',
+    tone: 'up',
+  });
+  assert.deepEqual(getAnalyticsGrowthPresentation({ change_pct: -7.25 }), {
+    percentage: '-7.3%',
+    label: '↘ Down trending',
+    tone: 'down',
+  });
+  assert.deepEqual(getAnalyticsGrowthPresentation({ change_pct: 0 }), {
+    percentage: '0%',
+    label: '→ No change',
+    tone: 'neutral',
+  });
+  assert.deepEqual(getAnalyticsGrowthPresentation({ change_pct: null, trend: 'new' }), {
+    percentage: 'New',
+    label: '↗ New',
+    tone: 'blue',
+  });
+  assert.equal(getAnalyticsGrowthPresentation(null).percentage, 'N/A');
 });
 
 test('chart geometry uses one aligned point per label and revenue value', () => {

@@ -4853,6 +4853,16 @@ function StudentDashboard({
             </button>
           </div>
 
+          <button
+            type="button"
+            onClick={() => {
+              setIsSidebarOpen(false);
+              onNavigate?.(dashboardMode === 'seller' ? '/dashboard?mode=buyer' : '/dashboard?mode=seller');
+            }}
+            className={`mb-4 flex w-full shrink-0 items-center justify-center gap-2 rounded-xl px-4 py-3 font-bold text-white shadow-md transition lg:hidden ${dashboardMode === 'seller' ? 'bg-slate-800 hover:bg-slate-700' : 'bg-sky-500 hover:bg-sky-600'}`}
+          >
+            {dashboardMode === 'seller' ? '🛒 Switch to Buying' : '+ Sell an Item'}
+          </button>
           <nav className={`student-sidebar-menu flex min-h-0 flex-1 flex-col space-y-2 overflow-y-auto overflow-x-hidden pb-4 [scrollbar-width:thin] ${isSidebarCollapsed ? 'lg:items-center' : ''}`}>
             {[...modeNavigationItems, ...sharedNavigationItems].map((item) => {
               const isActive = item.sellerDestination

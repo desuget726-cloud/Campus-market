@@ -28,21 +28,26 @@ export const parseOrderDashboardLink = (value) => {
   }
 
   if (url.pathname.replace(/\/+$/, '').toLowerCase() !== DASHBOARD_PATH) return null;
-  const tab = url.searchParams.get('tab');
+  const requestedTab = url.searchParams.get('tab');
+  const isMyOrdersTab = requestedTab === 'my_orders';
+  const tab = isMyOrdersTab ? 'buyer' : requestedTab;
   if (!['buyer', 'seller'].includes(tab)) return null;
 
   const requestedSection = url.searchParams.get('section') || '';
+  const requestedOrderId = url.searchParams.get('order_id') ?? url.searchParams.get('order');
+  const section = isMyOrdersTab
+    ? 'orders'
+    : requestedSection || (requestedOrderId !== null ? 'orders' : '');
   const validSections = ['search', 'wishlist', 'cart', 'orders', 'payments', 'reports-support'];
-  const section = validSections.includes(requestedSection) ? requestedSection : '';
-  const requestedOrderId = url.searchParams.get('order');
+  const normalizedSection = validSections.includes(section) ? section : '';
   const orderId = /^\d+$/.test(requestedOrderId || '') && Number(requestedOrderId) > 0
     ? requestedOrderId
     : null;
 
   return {
     tab,
-    section,
+    section: normalizedSection,
     orderId,
-    hasOrderParameter: requestedOrderId !== null,
+    hasOrderParameter: url.searchParams.has('order_id') || url.searchParams.has('order'),
   };
 };

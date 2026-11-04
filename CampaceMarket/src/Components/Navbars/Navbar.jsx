@@ -477,6 +477,19 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             className="fixed inset-0 z-40 bg-black/40 md:hidden"
           />
           <aside id="mobile-navigation" className="absolute left-0 right-0 top-full z-50 mx-3 mt-2 w-auto rounded-xl bg-slate-900 p-2 text-white shadow-lg md:hidden" aria-label="Mobile navigation">
+            {!isAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (isSellerModeActive) handleBrowseClick();
+                  else handleSellClick();
+                  setIsMobileMenuOpen(false);
+                }}
+                className={`mb-4 flex w-full items-center justify-center gap-2 rounded-xl py-3 px-4 font-bold text-white shadow-md transition ${isSellerModeActive ? 'bg-slate-800 hover:bg-slate-700' : 'bg-sky-500 hover:bg-sky-600'}`}
+              >
+                {isSellerModeActive ? '🛒 Switch to Buying' : '+ Sell an Item'}
+              </button>
+            )}
             <nav className="flex flex-col gap-0">
               {[
                 ['Home', 'home'],
@@ -500,7 +513,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             </nav>
             <div className="my-2 border-t border-white/15" />
             <div className="flex flex-col gap-2 px-4">
-              {isSellerModeActive ? (
+              {!user && (
                 <button
                   type="button"
                   onClick={() => {
@@ -509,33 +522,8 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   }}
                   className="min-h-[48px] w-full rounded-xl border border-white/50 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10"
                 >
-                  🛒 Switch to Buying
+                  🛒 Browse Market
                 </button>
-              ) : (
-                <>
-                  {!isBuyerModeActive && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleBrowseClick();
-                        setIsMobileMenuOpen(false);
-                      }}
-                      className="min-h-[48px] w-full rounded-xl border border-white/50 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10"
-                    >
-                      🛒 Browse Market
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleSellClick();
-                      setIsMobileMenuOpen(false);
-                    }}
-                    className="min-h-[48px] w-full rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50"
-                  >
-                    + Sell an Item
-                  </button>
-                </>
               )}
               <button
                 type="button"

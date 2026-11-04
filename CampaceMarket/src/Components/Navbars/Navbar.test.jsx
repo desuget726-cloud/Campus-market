@@ -32,6 +32,37 @@ afterEach(() => {
 });
 
 describe('Navbar student mode actions', () => {
+  it('shows the prominent sell action at the top of the mobile drawer and closes after switching', () => {
+    const onNavigate = renderNavbar({ activeStudentMode: 'buyer', variant: 'public' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle mobile navigation' }));
+    const drawer = screen.getByLabelText('Mobile navigation');
+    const sellButton = screen.getByRole('button', { name: /Sell an Item/i });
+
+    expect(drawer.firstElementChild).toBe(sellButton);
+    expect(sellButton.className).toContain('bg-sky-500');
+    fireEvent.click(sellButton);
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=seller');
+    expect(screen.queryByLabelText('Mobile navigation')).toBeNull();
+  });
+
+  it('shows Switch to Buying at the top of the seller mobile drawer and closes after switching', () => {
+    window.history.replaceState({}, '', '/?mode=seller');
+    const onNavigate = renderNavbar({ activeStudentMode: 'seller', variant: 'public' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle mobile navigation' }));
+    const drawer = screen.getByLabelText('Mobile navigation');
+    const switchButton = screen.getByRole('button', { name: /Switch to Buying/i });
+
+    expect(drawer.firstElementChild).toBe(switchButton);
+    expect(switchButton.className).toContain('bg-slate-800');
+    fireEvent.click(switchButton);
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=buyer');
+    expect(screen.queryByLabelText('Mobile navigation')).toBeNull();
+  });
+
   it('shows only Switch to Buying in the seller dashboard', () => {
     window.history.replaceState({}, '', '/dashboard?mode=seller');
     const onNavigate = renderNavbar({ activeStudentMode: 'seller' });

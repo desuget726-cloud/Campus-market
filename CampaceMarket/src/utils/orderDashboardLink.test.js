@@ -14,6 +14,30 @@ test('parses buyer order deep links and keeps the requested order id', () => {
   );
 });
 
+test('parses the buyer dashboard my_orders email link format', () => {
+  assert.deepEqual(
+    parseOrderDashboardLink('/dashboard?tab=my_orders&order_id=26'),
+    {
+      tab: 'buyer',
+      section: 'orders',
+      orderId: '26',
+      hasOrderParameter: true,
+    },
+  );
+});
+
+test('infers buyer orders section from order_id when the buyer tab is specified', () => {
+  assert.deepEqual(
+    parseOrderDashboardLink('/dashboard?tab=buyer&order_id=26'),
+    {
+      tab: 'buyer',
+      section: 'orders',
+      orderId: '26',
+      hasOrderParameter: true,
+    },
+  );
+});
+
 test('parses seller order links and rejects invalid order ids without losing the orders tab', () => {
   assert.deepEqual(
     parseOrderDashboardLink(new URL('https://campus.example/dashboard?tab=seller&section=orders&order=nope')),
