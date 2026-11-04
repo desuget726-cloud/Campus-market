@@ -4324,8 +4324,8 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
               </div>
             ) : dashboardHasData ? (
               <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
-                <h2 className="text-2xl font-black text-slate-950">Marketplace Overview</h2>
-                <p className="mt-1 text-slate-500 text-sm font-semibold">Your quick operational overview across campus marketplace activity.</p>
+                <h2 className="text-2xl font-black text-slate-950">UniXchange Overview</h2>
+                <p className="mt-1 text-slate-500 text-sm font-semibold">Your quick operational overview across UniXchange activity.</p>
               </div>
             ) : (
               // No data gets a short message rather than an empty reserved container.
@@ -4648,7 +4648,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
 
             </div>
 
-            <div className="rounded-[30px] border border-slate-200 bg-[#111c3a] p-5 text-white shadow-xl">
+            <div className="rounded-[30px] border border-slate-200 bg-white p-5 text-slate-900 shadow-xl">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-300">Audit Feed</p>
@@ -7556,7 +7556,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
                 </div>
               </div>
 
-              <div className="rounded-[30px] border border-slate-200 bg-gradient-to-br from-slate-900 via-[#111c3a] to-indigo-950 p-5 text-white shadow-sm">
+              <div className="rounded-[30px] border border-slate-200 bg-white p-5 text-slate-900 shadow-sm">
                 <h3 className="mt-1 text-xl font-black">Performance Overview</h3>
 
                 <div className="mt-5 space-y-4">
@@ -7575,7 +7575,7 @@ function AdminDashboard({ onLogout, onNavigate, onSessionExpired, onSessionTimeo
               </div>
             </div>
 
-            <div className="rounded-[30px] border border-slate-200 bg-[#111c3a] p-5 text-white shadow-xl">
+            <div className="rounded-[30px] border border-slate-200 bg-white p-5 text-slate-900 shadow-xl">
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-slate-300">System Feed</p>
