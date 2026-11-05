@@ -464,8 +464,9 @@ function StudentDashboard({
   const markConversationReadRef = useRef(null);
   const sellerChatParticipantsRef = useRef({});
   const paymentVerificationStartedRef = useRef(false);
-  const testDepositAutoChecksRef = useRef(new Set());
-  const depositStatusCheckHandlerRef = useRef(null);
+  const depositAutoChecksRef = useRef(new Set());
+  const depositAutoCheckCleanupRef = useRef(new Set());
+  const depositVerificationHandlerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const walletBalanceRef = useRef(walletBalance);
@@ -1519,13 +1520,16 @@ function StudentDashboard({
     if (typeof window === 'undefined' || paymentVerificationStartedRef.current) return;
 
     const callbackUrl = new URL(window.location.href);
-    const transactionReference = callbackUrl.searchParams.get('trx_ref') || callbackUrl.searchParams.get('tx_ref');
-    if (!transactionReference || !user?.studentId) return;
+    let transactionReference = callbackUrl.searchParams.get('trx_ref') || callbackUrl.searchParams.get('tx_ref');
+    const returnedSuccessfully = ['success', 'successful', 'completed'].includes(
+      String(callbackUrl.searchParams.get('status') || '').trim().toLowerCase(),
+    );
+    if ((!transactionReference && !returnedSuccessfully) || !user?.studentId) return;
     const token = getStudentSessionToken();
     if (!token) return;
 
     paymentVerificationStartedRef.current = true;
-    testDepositAutoChecksRef.current.add(transactionReference);
+    if (transactionReference) depositAutoChecksRef.current.add(transactionReference);
     setActiveTab('buyer');
     setBuyerTab('payments');
     let isMounted = true;
@@ -1556,11 +1560,44 @@ function StudentDashboard({
     };
 
     const verifyReturnedPayment = async () => {
-      const startedAt = Date.now();
       let status = 'Pending';
 
       setPaymentVerificationState('confirming');
-      while (isMounted && Date.now() - startedAt <= 60000 && status === 'Pending') {
+      if (!transactionReference && returnedSuccessfully) {
+        try {
+          const response = await fetch(
+            `${API_BASE_URL}/api/student/payments?student_id=${encodeURIComponent(user.studentId)}`,
+            { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } },
+          );
+          const data = await response.json().catch(() => ({}));
+          const recentDeposit = (Array.isArray(data?.transactions) ? data.transactions : []).find((item) => {
+            const transactionStatus = String(item?.status || '').trim().toLowerCase();
+            const transactionType = `${item?.type || ''} ${item?.label || ''}`.toLowerCase();
+            const createdAtValue = String(item?.created_at || '');
+            const timestamp = Date.parse(
+              createdAtValue && !/(Z|[+-]\d{2}:?\d{2})$/i.test(createdAtValue)
+                ? `${createdAtValue}Z`
+                : createdAtValue,
+            );
+            return transactionType.includes('deposit')
+              && ['pending', 'processing', 'successful', 'completed'].includes(transactionStatus)
+              && Number.isFinite(timestamp)
+              && Date.now() - timestamp >= 0
+              && Date.now() - timestamp <= 5 * 60 * 1000;
+          });
+          transactionReference = recentDeposit?.hash || recentDeposit?.tx_ref || '';
+        } catch (error) {
+          console.error('Unable to find the returned wallet deposit:', error);
+        }
+      }
+
+      if (!transactionReference) {
+        if (isMounted) setPaymentVerificationState('pending_timeout');
+        return;
+      }
+
+      depositAutoChecksRef.current.add(transactionReference);
+      for (let attempt = 0; isMounted && attempt < 5 && status === 'Pending'; attempt += 1) {
         try {
           const response = await fetch(
             `${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transactionReference)}`,
@@ -1584,23 +1621,32 @@ function StudentDashboard({
                 ...previousPaymentInfo,
                 balance: verifiedBalance,
               }));
+              if (onUserUpdate) {
+                onUserUpdate((currentUser) => currentUser
+                  ? { ...currentUser, wallet_balance: verifiedBalance }
+                  : currentUser);
+              }
             }
 
-            const verifiedAmount = Number(data?.amount ?? 0);
-            const formattedAmount = Number.isFinite(verifiedAmount) && verifiedAmount > 0
-              ? ` ${verifiedAmount.toLocaleString('en-US', { maximumFractionDigits: 2 })} ETB`
-              : '';
-            window.dispatchEvent(new CustomEvent('campace:payment-verified', {
-              detail: {
-                message: `${studentToast('paymentVerified')}${formattedAmount ? ` ${formattedAmount}` : ''}`,
-              },
+            setPaymentInfo((previousPaymentInfo) => ({
+              ...previousPaymentInfo,
+              transactions: (Array.isArray(previousPaymentInfo.transactions) ? previousPaymentInfo.transactions : [])
+                .map((transaction) => [transaction?.hash, transaction?.tx_ref, transaction?.reference]
+                  .some((reference) => String(reference || '') === transactionReference)
+                  ? { ...transaction, status: 'Successful' }
+                  : transaction),
             }));
+            notifySuccess(
+              'Deposit confirmed! Your wallet balance has been updated.',
+              `student-deposit-confirmed-${transactionReference}`,
+            );
 
             await fetchBuyerDashboardData();
             if (isMounted) setPaymentVerificationState('successful');
 
             callbackUrl.searchParams.delete('trx_ref');
             callbackUrl.searchParams.delete('tx_ref');
+            callbackUrl.searchParams.delete('status');
             window.history.replaceState(
               {},
               document.title,
@@ -1613,32 +1659,27 @@ function StudentDashboard({
             }
             notifyError({ detail: data?.detail || studentToast('paymentFailed') }, 'student-payment-failed');
             break;
-          } else if (Date.now() - startedAt < 60000) {
+          } else if (attempt < 4) {
             if (isMounted) setPaymentVerificationState('pending');
-            notifyInfo(studentToast('paymentPending'), 'student-payment-pending');
             await new Promise((resolve) => {
-              verificationTimeoutId = window.setTimeout(resolve, 5000);
+              verificationTimeoutId = window.setTimeout(resolve, 4000);
             });
           }
         } catch (error) {
           console.error('Returned payment verification failed:', error);
-          if (isMounted) {
-            setPaymentVerificationState('failed');
-            setDepositError('Unable to confirm your payment right now. Please check back shortly.');
+          if (attempt < 4 && isMounted) {
+            setPaymentVerificationState('pending');
+            await new Promise((resolve) => {
+              verificationTimeoutId = window.setTimeout(resolve, 4000);
+            });
+          } else if (isMounted) {
+            setPaymentVerificationState('pending_timeout');
           }
-          break;
         }
       }
 
       if (isMounted && status === 'Pending') {
         setPaymentVerificationState('pending_timeout');
-        callbackUrl.searchParams.delete('trx_ref');
-        callbackUrl.searchParams.delete('tx_ref');
-        window.history.replaceState(
-          {},
-          document.title,
-          `${callbackUrl.pathname}${callbackUrl.search}${callbackUrl.hash}`,
-        );
       }
     };
 
@@ -3210,12 +3251,61 @@ function StudentDashboard({
     }
   };
 
+  const verifyDepositByReference = async (transactionReference, isActive = () => true) => {
+    const token = getStudentSessionToken();
+    const response = await fetch(
+      `${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transactionReference)}`,
+      { headers: token ? { Authorization: 'Bearer ' + token } : {} },
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+      throw new Error(getErrorMessage({ detail }));
+    }
+
+    const normalizedStatus = String(data?.status || '').trim().toLowerCase();
+    const status = ['successful', 'success', 'completed'].includes(normalizedStatus)
+      ? 'successful'
+      : normalizedStatus.includes('fail')
+        ? 'failed'
+        : 'pending';
+
+    if (status === 'successful' && isActive()) {
+      const verifiedBalance = Number(data?.wallet_balance ?? data?.walletBalance ?? data?.balance);
+      setPaymentInfo((previousPaymentInfo) => ({
+        ...previousPaymentInfo,
+        balance: Number.isFinite(verifiedBalance) ? verifiedBalance : previousPaymentInfo.balance,
+        transactions: (Array.isArray(previousPaymentInfo.transactions) ? previousPaymentInfo.transactions : [])
+          .map((transaction) => [transaction?.hash, transaction?.tx_ref, transaction?.reference]
+            .some((reference) => String(reference || '') === transactionReference)
+            ? { ...transaction, status: 'Successful' }
+            : transaction),
+      }));
+      if (Number.isFinite(verifiedBalance)) {
+        walletBalanceRef.current = verifiedBalance;
+        setWalletBalance(verifiedBalance);
+        if (onUserUpdate) {
+          onUserUpdate((currentUser) => currentUser
+            ? { ...currentUser, wallet_balance: verifiedBalance }
+            : currentUser);
+        }
+      }
+      notifySuccess(
+        'Deposit confirmed! Your wallet balance has been updated.',
+        `student-deposit-confirmed-${transactionReference}`,
+      );
+    }
+
+    return { status, data };
+  };
+  depositVerificationHandlerRef.current = verifyDepositByReference;
+
   const handleDepositStatusCheck = async (transaction) => {
     setPayoutStatusCheckId(transaction.id || transaction.hash);
     try {
       const token = getStudentSessionToken();
       const response = await fetch(`${API_BASE_URL}/api/payment/verify/${encodeURIComponent(transaction.hash)}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: token ? { Authorization: 'Bearer ' + token } : {},
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -3240,27 +3330,66 @@ function StudentDashboard({
     }
   };
 
-  depositStatusCheckHandlerRef.current = handleDepositStatusCheck;
-
   useEffect(() => {
-    if (buyerTab !== 'payments') return;
-
     const transactions = Array.isArray(paymentInfo?.transactions) ? paymentInfo.transactions : [];
-    const pendingTestDeposit = transactions.find((transaction) => {
-      const transactionId = String(transaction?.hash || transaction?.id || '');
+    const recentPendingDeposits = transactions.filter((transaction) => {
+      const transactionId = String(transaction?.hash || transaction?.tx_ref || '');
       const transactionDescription = `${transaction?.type || ''} ${transaction?.label || ''}`.toLowerCase();
-      return transaction?.test_mode
+      const status = String(transaction?.status || '').trim().toLowerCase();
+      const createdAtValue = String(transaction?.created_at || '');
+      const createdAt = Date.parse(
+        createdAtValue && !/(Z|[+-]\d{2}:?\d{2})$/i.test(createdAtValue)
+          ? `${createdAtValue}Z`
+          : createdAtValue,
+      );
+      const age = Date.now() - createdAt;
+      return transactionId
         && transactionDescription.includes('deposit')
-        && ['pending', 'processing'].includes(String(transaction?.status || '').trim().toLowerCase())
-        && transactionId
-        && !testDepositAutoChecksRef.current.has(transactionId);
+        && ['pending', 'processing'].includes(status)
+        && Number.isFinite(createdAt)
+        && age >= 0
+        && age <= 5 * 60 * 1000
+        && !depositAutoChecksRef.current.has(transactionId);
     });
-    if (!pendingTestDeposit) return;
 
-    const transactionId = String(pendingTestDeposit.hash || pendingTestDeposit.id);
-    testDepositAutoChecksRef.current.add(transactionId);
-    void depositStatusCheckHandlerRef.current?.(pendingTestDeposit);
-  }, [buyerTab, paymentInfo?.transactions]);
+    recentPendingDeposits.forEach((transaction) => {
+      const transactionId = String(transaction.hash || transaction.tx_ref);
+      depositAutoChecksRef.current.add(transactionId);
+      let isActive = true;
+      let timeoutId;
+      const stopCheck = () => {
+        isActive = false;
+        window.clearTimeout(timeoutId);
+        depositAutoChecksRef.current.delete(transactionId);
+      };
+      depositAutoCheckCleanupRef.current.add(stopCheck);
+      const checkStatus = async () => {
+        try {
+          for (let attempt = 0; isActive && attempt < 5; attempt += 1) {
+            try {
+              const result = await depositVerificationHandlerRef.current(transactionId, () => isActive);
+              if (result.status !== 'pending') return;
+            } catch (error) {
+              console.error('Automatic deposit verification failed:', error);
+            }
+            if (attempt < 4 && isActive) {
+              await new Promise((resolve) => {
+                timeoutId = window.setTimeout(resolve, 4000);
+              });
+            }
+          }
+        } finally {
+          depositAutoCheckCleanupRef.current.delete(stopCheck);
+        }
+      };
+      void checkStatus();
+    });
+  }, [paymentInfo?.transactions]);
+
+  useEffect(() => () => {
+    depositAutoCheckCleanupRef.current.forEach((stopCheck) => stopCheck());
+    depositAutoCheckCleanupRef.current.clear();
+  }, []);
 
   const refreshPayoutAccount = async () => {
     const token = getStudentSessionToken();

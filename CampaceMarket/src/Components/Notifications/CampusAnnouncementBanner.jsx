@@ -177,20 +177,20 @@ function CampusAnnouncementBanner({ studentId, accessToken }) {
       <aside
         role="status"
         aria-live="polite"
-        className="announcement-banner sticky top-0 z-30 flex w-full items-center overflow-hidden border-b border-emerald-700 bg-emerald-500 px-4 py-2 text-white shadow-xs"
+        className="announcement-banner sticky top-0 z-30 flex w-full items-center overflow-hidden border-b border-emerald-900 bg-emerald-800 px-4 py-2 text-white shadow-md"
       >
         <span
           aria-hidden="true"
-          className="relative z-10 flex h-full shrink-0 items-center bg-emerald-500 pr-3 text-white"
+          className="relative z-10 flex h-full shrink-0 items-center bg-emerald-800 text-emerald-200"
         >
-          <Megaphone className="h-4 w-4" />
+          <Megaphone className="mr-2 h-5 w-5 text-lg text-emerald-200" />
         </span>
         <button
           type="button"
           onClick={() => announcement.image_url && setModalAnnouncementId(announcement.id)}
           disabled={!announcement.image_url}
           aria-label={announcement.image_url ? `View announcement: ${announcement.title}` : undefined}
-          className="announcement-marquee relative min-w-0 flex-1 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left text-xs font-semibold text-white drop-shadow-xs sm:text-sm disabled:cursor-default"
+          className="announcement-marquee relative min-w-0 flex-1 overflow-hidden whitespace-nowrap border-0 bg-transparent p-0 text-left text-sm font-extrabold tracking-wide text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)] sm:text-base disabled:cursor-default"
         >
           <p className="announcement-marquee-track flex w-max">
             {[false, true].map((isDuplicate) => (
@@ -199,7 +199,9 @@ function CampusAnnouncementBanner({ studentId, accessToken }) {
                 aria-hidden={isDuplicate || undefined}
                 className="flex shrink-0 items-center pr-12"
               >
-                <span className="font-bold">{announcement.title}</span>
+                <span className="mr-3 inline-block rounded-full bg-white px-3 py-0.5 text-xs font-black text-emerald-900 shadow-xs sm:text-sm">
+                  {announcement.title}
+                </span>
                 <span aria-hidden="true" className="px-2">—</span>
                 <span>{announcement.message}</span>
               </span>
@@ -210,7 +212,7 @@ function CampusAnnouncementBanner({ studentId, accessToken }) {
           type="button"
           onClick={dismissAnnouncement}
           aria-label="Dismiss campus announcement"
-          className="relative z-10 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full p-1 pl-2 text-base text-white/90 transition hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          className="relative z-10 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full p-1.5 text-base font-bold text-white transition hover:bg-emerald-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
         >
           ✕
         </button>

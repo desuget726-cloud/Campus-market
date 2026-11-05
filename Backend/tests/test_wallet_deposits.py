@@ -377,6 +377,38 @@ class WalletDepositTests(unittest.TestCase):
         self.assertEqual(transaction.status, "Successful")
         self.assertEqual(self.db.query(Transaction).filter_by(type="Wallet Deposit").count(), 1)
 
+    def test_later_pending_verification_does_not_downgrade_settled_deposit(self):
+        self._create_pending_deposit()
+        verifications = [
+            {
+                "tx_ref": "TX-DEPOSIT-1",
+                "amount": Decimal("75.00"),
+                "currency": "ETB",
+                "status": "Successful",
+            },
+            {
+                "tx_ref": "TX-DEPOSIT-1",
+                "amount": Decimal("75.00"),
+                "currency": "ETB",
+                "status": "Pending",
+            },
+        ]
+        with patch.dict(os.environ, {"CHAPA_MODE": "live"}), \
+                patch.object(main_module, "_student_from_authorization", return_value=self.student), \
+                patch.object(main_module, "_request_chapa_verification", side_effect=verifications):
+            main_module.verify_payment_with_chapa(
+                "TX-DEPOSIT-1", authorization="student-token", db=self.db
+            )
+            result = main_module.verify_payment_with_chapa(
+                "TX-DEPOSIT-1", authorization="student-token", db=self.db
+            )
+
+        self.db.refresh(self.wallet)
+        transaction = self.db.query(Transaction).filter_by(tx_id="TX-DEPOSIT-1").one()
+        self.assertEqual(result["status"], "Successful")
+        self.assertEqual(self.wallet.balance, Decimal("75.00"))
+        self.assertEqual(transaction.status, "Successful")
+
     def test_test_mode_verification_settles_pending_deposit_without_gateway_request(self):
         self._create_pending_deposit()
         with patch.dict(os.environ, {"CHAPA_MODE": "test"}), \

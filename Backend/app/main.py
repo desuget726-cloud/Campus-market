@@ -22184,12 +22184,23 @@ def verify_payment_with_chapa(
             db.commit()
             transaction = db.query(Transaction).filter(Transaction.tx_id == tx_ref).first()
         else:
-            transaction.status = gateway_status
-            db.commit()
+            db.rollback()
+            with db.begin():
+                transaction = (
+                    db.query(Transaction)
+                    .filter(Transaction.tx_id == tx_ref)
+                    .with_for_update()
+                    .first()
+                )
+                if not transaction:
+                    raise HTTPException(status_code=404, detail="Payment transaction not found.")
+                if _normalize_payment_status(transaction.status) != "Successful":
+                    transaction.status = gateway_status
 
         if not transaction:
             raise HTTPException(status_code=404, detail="Payment transaction not found after verification.")
         db.refresh(transaction)
+        final_status = _normalize_payment_status(transaction.status)
         wallet_balance = settlement["wallet_balance"] if settlement else (
             db.query(Student.wallet_balance)
             .filter(Student.student_id == transaction.student_id)
@@ -22198,7 +22209,7 @@ def verify_payment_with_chapa(
         return {
             "success": True,
             "transaction_id": transaction.tx_id,
-            "status": gateway_status,
+            "status": final_status,
             "amount": float(expected_amount),
             "chapa_reference": verification["tx_ref"],
             "wallet_balance": float(wallet_balance or 0),
