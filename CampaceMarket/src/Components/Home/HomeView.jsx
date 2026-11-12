@@ -539,7 +539,6 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
               <div role="status" className="notranslate flex flex-col gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="font-semibold">{listingFailureMessage}</p>
-                  {import.meta.env.DEV && <p className="mt-1 text-xs text-slate-600">{t('home.developmentHint')}</p>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <button type="button" onClick={retryLastProductRequest} className="rounded-full border border-amber-300 bg-white px-4 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100">{t('home.tryAgain')}</button>
@@ -740,7 +739,6 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
                     <section className="notranslate relative rounded-[24px] border border-slate-200 bg-slate-50 p-6 text-center text-slate-700 sm:p-8" role="status">
                       <button type="button" aria-label={t('home.dismiss')} onClick={() => setIsLoadErrorDismissed(true)} className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-lg text-slate-500 hover:bg-slate-200">×</button>
                       <p className="font-semibold">{listingFailureMessage}</p>
-                      {import.meta.env.DEV && <p className="mt-1 text-xs text-slate-500">{t('home.developmentHint')}</p>}
                       <button type="button" onClick={retryLastProductRequest} className="mt-4 rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-100">{t('home.tryAgain')}</button>
                     </section>
                   ))

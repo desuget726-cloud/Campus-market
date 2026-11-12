@@ -44,7 +44,6 @@ export const translations = {
             noConnection: 'No connection. Check your internet and try again.',
             tryAgain: 'Try again',
             dismiss: 'Dismiss',
-            developmentHint: 'Development mode: check the backend service.'
         },
         navbar: {
             language: 'Language',
@@ -476,7 +475,6 @@ export const translations = {
             noConnection: 'ግንኙነት የለም። ኢንተርኔትዎን ያረጋግጡና እንደገና ይሞክሩ።',
             tryAgain: 'እንደገና ሞክር',
             dismiss: 'ዝጋ',
-            developmentHint: 'የልማት ሁነታ፦ የጀርባ አገልጋዩን ያረጋግጡ።'
         },
         walletPayout: {
             accountLabel: 'የክፍያ መቀበያ መለያ፦',
