@@ -366,6 +366,27 @@ describe('admin dashboard default section', () => {
       expect(screen.getByText('Student section: warnings')).toBeTruthy();
     });
 
+    it('shows the marketplace at root rather than restoring the saved dashboard', async () => {
+      render(<App />);
+
+      expect(await screen.findByText('Home View')).toBeTruthy();
+      expect(screen.queryByTestId('student-dashboard')).toBeNull();
+    });
+
+    it.each([
+      ['/dashboard/orders', 'buyer', 'orders'],
+      ['/dashboard/payments', 'buyer', 'payments'],
+      ['/dashboard/settings', 'settings', 'none'],
+      ['/dashboard/support', 'buyer', 'reports-support'],
+    ])('opens the account dashboard section for %s', async (path, tab, section) => {
+      window.history.replaceState({}, '', path);
+
+      render(<App />);
+
+      expect(await screen.findByText(`Student tab: ${tab}`)).toBeTruthy();
+      expect(screen.getByText(`Student section: ${section}`)).toBeTruthy();
+    });
+
     it('falls back to Home without a warning for an unknown dashboard section', async () => {
       window.history.replaceState({}, '', '/dashboard?tab=seller&section=unknown');
 

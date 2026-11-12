@@ -1,8 +1,9 @@
 import os
 import logging
 import ssl
+import time
 from pathlib import Path
-from typing import Generator, Iterable, Optional
+from typing import Callable, Generator, Iterable, Optional, TypeVar
 
 from sqlalchemy import Text, create_engine, inspect, text
 from sqlalchemy.engine import URL, make_url
@@ -77,6 +78,49 @@ else:
     )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+T = TypeVar("T")
+
+
+def is_mysql_ddl_lock_error(error: OperationalError) -> bool:
+    error_args = getattr(getattr(error, "orig", None), "args", ())
+    return (
+        engine.dialect.name == "mysql"
+        and bool(error_args)
+        and error_args[0] == 1684
+    )
+
+
+def retry_mysql_ddl_lock(
+    operation: Callable[[], T],
+    operation_name: str,
+    *,
+    max_retries: int = 5,
+    initial_delay_seconds: float = 2.0,
+) -> T:
+    logger = logging.getLogger("app.startup")
+    for retry_number in range(max_retries + 1):
+        try:
+            return operation()
+        except OperationalError as error:
+            if not is_mysql_ddl_lock_error(error):
+                raise
+            if retry_number == max_retries:
+                logger.warning(
+                    "MySQL DDL lock (error 1684) persisted during %s after %s retries; startup cannot continue.",
+                    operation_name,
+                    max_retries,
+                )
+                raise
+
+            delay_seconds = initial_delay_seconds * (2 ** retry_number)
+            logger.warning(
+                "MySQL DDL lock (error 1684) during %s; retrying in %.1f seconds (retry %s/%s).",
+                operation_name,
+                delay_seconds,
+                retry_number + 1,
+                max_retries,
+            )
+            time.sleep(delay_seconds)
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -234,7 +278,7 @@ def _migrate_legacy_notification_index() -> None:
         )
 
 
-def init_db() -> None:
+def _init_db_once() -> None:
     """Create database tables for all models inheriting from `Base`.
 
     Call this from an application startup event or a separate setup script.
@@ -270,6 +314,8 @@ def init_db() -> None:
                     "Successfully migrated products.description column to TEXT."
                 )
             except SQLAlchemyError as error:
+                if isinstance(error, OperationalError) and is_mysql_ddl_lock_error(error):
+                    raise
                 logging.getLogger("app.startup").warning(
                     "Could not migrate products.description column to TEXT: %s",
                     error,
@@ -758,6 +804,14 @@ def init_db() -> None:
             f"Database schema is missing report/support model columns: {missing_description}"
         )
     _log_model_schema_drift()
+
+
+def init_db() -> None:
+    """Create and migrate model tables, retrying transient MySQL DDL locks."""
+    retry_mysql_ddl_lock(
+        _init_db_once,
+        "database table initialization and reflection",
+    )
 
 
 def _log_model_schema_drift() -> None:

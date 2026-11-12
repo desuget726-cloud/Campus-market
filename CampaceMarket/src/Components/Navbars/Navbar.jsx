@@ -1,49 +1,52 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown } from 'lucide-react';
+import { Bell, Check, ChevronDown, LayoutDashboard, LogOut, Menu, MessageCircle, Package, Plus, Search, Settings, ShoppingBag, ShoppingCart } from 'lucide-react';
 import logs from '../../assets/logs.png';
 import { useLanguage } from '../../context/LanguageContext';
 import { API_BASE_URL, IMAGE_PLACEHOLDER, resolveImageUrl } from '../../config';
-import AdminProfileMenu from '../Dashboard/AdminProfileMenu';
+import { useCart } from '../../context/CartContext';
 
-function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificationClick, notificationDrawerOpen = false, onAdminProfileClick, onAdminSettingsClick, onStudentProfileClick, activeAdminTab, activePage, activeStudentMode, variant = 'public' }) {
+function Navbar({ onNavigate, onProductSearch, user, userRole, onLogout, unreadCount, onNotificationClick, notificationDrawerOpen = false, onAdminSettingsClick, activeStudentMode, variant = 'public' }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isProfileImageOpen, setIsProfileImageOpen] = useState(false);
+  const [searchText, setSearchText] = useState(() => (
+    typeof window === 'undefined' ? '' : new URLSearchParams(window.location.search).get('search') || ''
+  ));
+  const [messageCountState, setMessageCountState] = useState({ studentId: '', count: 0 });
   const [profileState, setProfileState] = useState(() => ({ source: user, value: user }));
   const profileUser = profileState.source === user ? profileState.value : user;
   const languageMenuRef = useRef(null);
   const headerRef = useRef(null);
   const { t, language, setLanguage } = useLanguage();
+  const { items: cartItems, cartBadgeDismissed } = useCart();
   const isDashboardLayout = variant === 'dashboard';
+  const shouldShowNavbarSearch = Boolean(user)
+    || (typeof window !== 'undefined' && window.location.pathname !== '/');
   const effectiveRole = String(userRole || user?.role || 'student').toLowerCase().trim().replace(/_/g, ' ');
   const isAdmin = ['admin', 'sub admin', 'super admin', 'superadministrator'].includes(effectiveRole);
+  const searchParams = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search);
+  const currentDashboardTab = searchParams?.get('tab') || '';
+  const isSellerModeActive = Boolean(user && !isAdmin && (
+    activeStudentMode === 'seller'
+    || searchParams?.get('mode') === 'seller'
+    || currentDashboardTab === 'seller'
+    || currentDashboardTab === 'inventory'
+    || currentDashboardTab.startsWith('seller_hub')
+  ));
+  const studentId = isAdmin ? '' : String(user?.studentId || user?.student_id || '').trim();
+  const accessToken = user?.access_token || user?.accessToken || user?.token || user?.session_token || user?.sessionToken || '';
+  const unreadMessageCount = messageCountState.studentId === studentId ? messageCountState.count : 0;
+  const cartCount = cartBadgeDismissed ? 0 : (cartItems || []).reduce(
+    (total, item) => total + Math.max(0, Number(item.quantity) || 1),
+    0,
+  );
   const displayUser = isAdmin ? { ...user, ...profileUser } : user;
   const displayName = isAdmin
     ? (displayUser?.username || displayUser?.name || 'Admin')
     : (displayUser?.name || displayUser?.studentId || 'Student');
   const displayEmail = displayUser?.email || 'Email unavailable';
   const displayRole = String(displayUser?.role || effectiveRole).toUpperCase();
-  const currentUrl = typeof window === 'undefined' ? '' : window.location.href.toLowerCase();
-  const urlMode = typeof window === 'undefined'
-    ? null
-    : new URLSearchParams(window.location.search).get('mode');
-  const isSellerModeActive = Boolean(
-    user
-    && !isAdmin
-    && (
-      activeStudentMode === 'seller'
-      || urlMode === 'seller'
-      || currentUrl.includes('seller_hub')
-      || currentUrl.includes('inventory')
-    ),
-  );
-  const isBuyerModeActive = Boolean(
-    user
-    && !isAdmin
-    && !isSellerModeActive
-    && (activeStudentMode === 'buyer' || urlMode === 'buyer'),
-  );
   const handleBrowseClick = () => {
     if (!user) {
       onNavigate('login', { redirect: 'browse-market' });
@@ -62,6 +65,47 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
     }
     onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard?mode=seller');
   };
+  const handleSearchSubmit = (event) => {
+    event.preventDefault();
+    onProductSearch?.(searchText.trim());
+  };
+
+  useEffect(() => {
+    if (!studentId || !accessToken) return undefined;
+
+    let active = true;
+    let requestInFlight = false;
+    const fetchUnreadMessages = async () => {
+      if (!active || requestInFlight) return;
+      requestInFlight = true;
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/student/messages/unread-count?student_id=${encodeURIComponent(studentId)}`,
+          {
+            credentials: 'include',
+            ...(accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
+          },
+        );
+        if (!response.ok) return;
+        const data = await response.json();
+        const parsedCount = Number(data.unreadCount ?? data.unread_count ?? 0);
+        if (active) {
+          setMessageCountState({ studentId, count: Number.isFinite(parsedCount) ? parsedCount : 0 });
+        }
+      } catch (error) {
+        console.error('Unable to load unread message count:', error);
+      } finally {
+        requestInFlight = false;
+      }
+    };
+
+    void fetchUnreadMessages();
+    const intervalId = window.setInterval(fetchUnreadMessages, 30000);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, studentId]);
   const languageSelector = (
     <div className="notranslate relative shrink-0" ref={languageMenuRef}>
       <button
@@ -136,6 +180,14 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   }, [isLanguageMenuOpen]);
 
   useEffect(() => {
+    const syncSearchFromUrl = () => {
+      setSearchText(new URLSearchParams(window.location.search).get('search') || '');
+    };
+    window.addEventListener('popstate', syncSearchFromUrl);
+    return () => window.removeEventListener('popstate', syncSearchFromUrl);
+  }, []);
+
+  useEffect(() => {
     if (!isMobileMenuOpen) return undefined;
 
     const closeOnOutsidePointer = (event) => {
@@ -189,121 +241,113 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
   return (
     <header
       ref={headerRef}
-      className={`${isDashboardLayout
-        ? 'site-navbar border-b border-blue-900'
-        : 'border-b border-white/10 bg-sky-500 shadow-sm backdrop-blur-md'} sticky top-0 z-50 h-[72px] w-full shrink-0 text-white`}
+      className="site-navbar sticky top-0 z-50 h-[72px] w-full shrink-0 border-b border-slate-800 text-white shadow-sm"
     >
-      <div className="flex h-full w-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4 lg:px-6">
+      <div ref={headerRef} className="mx-auto flex h-full w-full max-w-[1600px] min-w-0 items-center gap-2 px-2 sm:gap-3 sm:px-4 lg:gap-5 lg:px-6">
 
-        {isDashboardLayout && isAdmin && (
+        {isDashboardLayout && (
           <button
             type="button"
-            aria-label="Open admin navigation"
-            aria-controls="admin-sidebar"
+            aria-label="Open dashboard navigation"
+            aria-controls={isAdmin ? 'admin-sidebar' : 'student-sidebar'}
             onClick={() => window.dispatchEvent(new Event('campace:toggle-dashboard-sidebar'))}
-            className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg bg-white/15 text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 lg:hidden"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 lg:hidden"
           >
-            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <path d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
+            <Menu className="h-5 w-5" aria-hidden="true" />
           </button>
         )}
 
         <div className="flex shrink-0 items-center gap-2 max-[400px]:gap-1">
-          <div className="flex shrink-0 cursor-pointer items-center gap-2 max-[500px]:gap-1" onClick={() => onNavigate(isDashboardLayout ? (isAdmin ? 'admin-dashboard' : 'student-dashboard') : 'home')}>
+          <button type="button" aria-label="Go to marketplace" className="flex shrink-0 cursor-pointer items-center gap-2 bg-transparent text-left max-[500px]:gap-1" onClick={() => onNavigate('home')}>
             <img
               src={logs}
               alt="UniXchange logo"
-              className="notranslate h-11 w-11 shrink-0 rounded-full border-2 border-white/80 bg-white/90 object-cover p-1 shadow-md sm:h-14 sm:w-14"
+              className="notranslate h-9 w-9 shrink-0 rounded-full border-2 border-white/80 bg-white/90 object-cover p-1 shadow-md sm:h-11 sm:w-11"
             />
-            <span className={`notranslate whitespace-nowrap text-[15px] font-black tracking-tight text-white max-[359px]:hidden sm:text-[18px] md:text-[2rem] ${isDashboardLayout && isAdmin ? 'hidden md:inline' : ''}`}>UniXchange</span>
-          </div>
+            <span className="notranslate whitespace-nowrap text-base font-black tracking-tight text-white max-[500px]:hidden sm:text-lg">UniXchange</span>
+          </button>
         </div>
 
-        {/* Navigation Links */}
-        {!isDashboardLayout && (
-          <nav className="hidden min-w-0 flex-1 flex-wrap items-center justify-center gap-x-3 gap-y-1 lg:gap-x-5 md:flex">
-            <button onClick={() => onNavigate('home')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Home</button>
-            <button
-              onClick={() => onNavigate('about')}
-              aria-current={activePage === 'about' ? 'page' : undefined}
-              className={`${activePage === 'about' ? 'border-b-2 border-white pb-0.5 font-bold text-white' : 'font-medium text-white'} text-sm transition-colors duration-200 hover:text-sky-100 sm:text-base`}
-            >
-              About
-            </button>
-            <button onClick={() => onNavigate('services')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Services</button>
-            <button onClick={() => onNavigate('contact')} className="text-sm font-medium text-white transition-colors duration-200 hover:text-sky-100 sm:text-base">Contact</button>
-
-            {user && (
-              <button
-                type="button"
-                onClick={() => onNavigate(userRole === 'admin' ? 'admin-dashboard' : 'student-dashboard')}
-                className="text-xs font-bold text-blue-600 bg-white px-4 py-1.5 rounded-full hover:bg-blue-50 transition shadow-sm"
-              >
-                DASHBOARD
+        {shouldShowNavbarSearch && (
+          <form onSubmit={handleSearchSubmit} role="search" className="mx-1 flex min-w-[4rem] max-w-[42rem] flex-1 justify-center sm:mx-3 lg:mx-6">
+            <div className="flex h-9 w-full min-w-0 overflow-hidden rounded-lg bg-white shadow-sm sm:h-10">
+              <input
+                type="search"
+                aria-label="Search products"
+                placeholder="Search products"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                className="min-w-0 flex-1 bg-white px-2 text-xs text-slate-900 outline-none placeholder:text-slate-500 sm:px-4 sm:text-sm"
+              />
+              <button type="submit" aria-label="Search" title="Search products" className="flex w-9 shrink-0 items-center justify-center bg-sky-600 text-white transition hover:bg-sky-700 sm:w-12">
+                <Search className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
               </button>
-            )}
-          </nav>
+            </div>
+          </form>
         )}
 
         {/* Right side: Login/Register OR Profile Dropdown */}
-        <div className="relative ml-auto flex min-w-0 max-w-full shrink-0 items-center gap-2 sm:gap-3 max-[400px]:gap-1">
-          {(!isDashboardLayout || !isAdmin) && (
+        <div className="relative ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+          {!user && !isDashboardLayout && (
             <button
               type="button"
-              aria-label={isDashboardLayout ? (isAdmin ? 'Open admin navigation' : 'Open student navigation') : 'Toggle mobile navigation'}
-              aria-expanded={!isDashboardLayout && isMobileMenuOpen}
-              aria-controls={isDashboardLayout ? 'student-mobile-navigation' : 'mobile-navigation'}
-              onClick={() => {
-                if (isDashboardLayout) {
-                  window.dispatchEvent(new Event('campace:toggle-dashboard-sidebar'));
-                  return;
-                }
-                setIsMobileMenuOpen((isOpen) => !isOpen);
-              }}
-              className={`inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg bg-white/15 text-white transition hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 ${isDashboardLayout && !isAdmin ? 'lg:hidden' : 'md:hidden'}`}
+              aria-label="Toggle mobile navigation"
+              aria-expanded={isMobileMenuOpen}
+              aria-controls="mobile-navigation"
+              onClick={() => setIsMobileMenuOpen((isOpen) => !isOpen)}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-white transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 md:hidden"
             >
-              <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                <path d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
+              <Menu className="h-5 w-5" aria-hidden="true" />
             </button>
           )}
           {user ? (
             // Logged In Dropdown View
             <div className="relative flex min-w-0 max-w-full items-center gap-2 sm:gap-3 max-[400px]:gap-1">
               {!isAdmin && (
-                <div className="hidden items-center gap-2 md:flex">
-                  {isSellerModeActive ? (
-                    <button
-                      type="button"
-                      onClick={handleBrowseClick}
-                      className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-white/60 bg-white/10 px-3 py-2 text-sm font-bold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-                    >
-                      🛒 Switch to Buying
-                    </button>
-                  ) : (
-                    <>
-                      {!isBuyerModeActive && (
-                        <button
-                          type="button"
-                          onClick={handleBrowseClick}
-                          className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-white/60 bg-white/10 px-3 py-2 text-sm font-bold text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-                        >
-                          🛒 Browse Market
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={handleSellClick}
-                        className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-white/80 bg-white px-4 py-2 text-sm font-bold text-sky-700 shadow-sm transition hover:bg-sky-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-                      >
-                        + Sell an Item
-                      </button>
-                    </>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  aria-label={isSellerModeActive ? 'Browse Market' : 'Sell an Item'}
+                  onClick={isSellerModeActive ? handleBrowseClick : handleSellClick}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center gap-1 rounded-lg bg-white text-sm font-semibold text-sky-600 shadow-sm transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white sm:w-auto sm:px-3"
+                  title={isSellerModeActive ? 'Browse Market' : 'Sell an Item'}
+                >
+                  {isSellerModeActive
+                    ? <ShoppingBag className="h-4 w-4" aria-hidden="true" />
+                    : <Plus className="h-4 w-4" aria-hidden="true" />}
+                  <span className="hidden sm:inline">{isSellerModeActive ? 'Browse Market' : 'Sell an Item'}</span>
+                </button>
               )}
-              {languageSelector}
+              <div className="hidden sm:block">{languageSelector}</div>
+              <button
+                type="button"
+                onClick={() => onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard?tab=messages', isAdmin ? { tab: 'support' } : undefined)}
+                aria-label="Messages"
+                title="Messages"
+                className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              >
+                <MessageCircle className="h-5 w-5" aria-hidden="true" />
+                {!isAdmin && unreadMessageCount > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-slate-900 bg-rose-600 px-1 text-[10px] font-bold leading-none text-white">
+                    {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
+                  </span>
+                )}
+              </button>
+              {!isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => onNavigate('/dashboard?mode=buyer&tab=cart')}
+                  aria-label="Cart"
+                  title="Cart"
+                  className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                >
+                  <ShoppingCart className="h-5 w-5" aria-hidden="true" />
+                  {cartCount > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-slate-900 bg-rose-600 px-1 text-[10px] font-bold leading-none text-white">
+                      {cartCount > 99 ? '99+' : cartCount}
+                    </span>
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onNotificationClick}
@@ -311,41 +355,25 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                 aria-haspopup="dialog"
                 aria-expanded={notificationDrawerOpen}
                 aria-controls="notification-drawer"
-                className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-transparent text-white transition hover:bg-white/10 hover:text-slate-200 focus:outline-none max-[400px]:h-8 max-[400px]:w-8 md:h-11 md:w-11"
+                className="relative inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg bg-transparent text-white transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                 title="Notifications"
               >
-                <svg className="h-6 w-6 text-white md:h-7 md:w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0a3 3 0 11-6 0h6z" />
-                </svg>
+                <Bell className="h-5 w-5" aria-hidden="true" />
                 {unreadCount > 0 && (
-                  <span className="-top-1 -right-1 absolute flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-[10px] font-white text-white border-2 border-white">
-                    {unreadCount}
+                  <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full border-2 border-slate-900 bg-rose-600 px-1 text-[10px] font-bold leading-none text-white">
+                    {unreadCount > 99 ? '99+' : unreadCount}
                   </span>
                 )}
               </button>
 
-              {isAdmin && isDashboardLayout ? (
-                <div className="lg:hidden">
-                  <AdminProfileMenu
-                    key={activeAdminTab}
-                    user={displayUser}
-                    onLogout={onLogout}
-                    onNavigate={onAdminProfileClick || (() => onNavigate?.('admin-dashboard'))}
-                    onSettings={onAdminSettingsClick || (() => onNavigate?.('settings'))}
-                    header
-                  />
-                </div>
-              ) : (
               <div className="relative">
-                <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-1 text-left shadow-sm transition hover:bg-slate-50 max-[400px]:gap-0.5 max-[400px]:px-0.5 md:gap-3 md:px-2 md:py-1.5">
+                <div className="flex items-center gap-1 rounded-lg border border-white/20 bg-white/10 px-1 py-1 text-left transition hover:bg-white/15 sm:gap-2 sm:px-2">
                   <button
                     type="button"
-                    aria-label={`View ${displayName}'s profile picture`}
-                    onClick={() => {
-                      setIsDropdownOpen(false);
-                      setIsProfileImageOpen(true);
-                    }}
-                    className="flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-emerald-200 bg-emerald-50 transition hover:ring-2 hover:ring-blue-400 max-[400px]:h-7 max-[400px]:w-7 md:h-10 md:w-10"
+                    aria-label="Open account menu"
+                    onClick={() => setIsDropdownOpen((prev) => !prev)}
+                    aria-expanded={isDropdownOpen}
+                    className="flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-white/70 bg-white transition hover:ring-2 hover:ring-sky-300 sm:h-9 sm:w-9"
                   >
                     {avatarSrc ? (
                       <img src={resolvedAvatarSrc} alt="" className="h-full w-full object-cover" onError={(event) => { event.currentTarget.onerror = null; event.currentTarget.src = IMAGE_PLACEHOLDER; }} />
@@ -358,79 +386,90 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
                   <button
                     type="button"
                     onClick={() => setIsDropdownOpen((prev) => !prev)}
-                    className="flex cursor-pointer items-center gap-1 text-left max-[400px]:gap-0.5 md:gap-3"
+                    className="flex cursor-pointer items-center gap-1 text-left sm:gap-2"
                     title="Account Menu"
                     aria-expanded={isDropdownOpen}
+                    aria-label="Open account menu"
                   >
-                    <div className="hidden leading-tight md:block">
-                      <div className="text-sm font-bold leading-tight text-slate-900">{displayName}</div>
-                      <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">{displayRole}</div>
+                    <div className="hidden leading-tight lg:block">
+                      <div className="text-sm font-bold leading-tight text-white">{displayName}</div>
+                      <div className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-300">{displayRole}</div>
                     </div>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      className={`h-3.5 w-3.5 text-slate-500 transition-transform duration-200 max-[400px]:h-3 max-[400px]:w-3 md:h-4 md:w-4 ${isDropdownOpen ? 'rotate-180' : ''}`}
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                    </svg>
+                    <ChevronDown className={`h-4 w-4 text-white transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
                   </button>
                 </div>
 
                 {isDropdownOpen && (
-                  <div className="absolute right-0 top-14 z-50 w-60 overflow-hidden rounded-[20px] border border-slate-200 bg-white shadow-lg">
-                    <div className="px-4 py-3 border-b border-slate-200">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Signed in as</p>
-                      <p className="mt-1 text-sm font-bold text-slate-900">{displayName}</p>
-                      <p className="text-xs text-slate-400">{displayEmail}</p>
+                  <div className="absolute right-0 top-[calc(100%+0.5rem)] z-[60] w-64 overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-800 shadow-xl">
+                    <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-3">
+                      <button
+                        type="button"
+                        aria-label={`View ${displayName}'s profile picture`}
+                        onClick={() => {
+                          setIsDropdownOpen(false);
+                          setIsProfileImageOpen(true);
+                        }}
+                        className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white"
+                      >
+                        {avatarSrc ? <img src={resolvedAvatarSrc} alt="" className="h-full w-full object-cover" /> : <span className="text-sm font-bold text-slate-700">{displayName.slice(0, 1)}</span>}
+                      </button>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">{displayName}</p>
+                        <p className="truncate text-xs text-slate-500">{displayEmail}</p>
+                      </div>
                     </div>
 
                     <button
                       type="button"
                       onClick={() => {
                         setIsDropdownOpen(false);
-
-                        if (user?.role === 'student' || userRole === 'student') {
-                          if (onStudentProfileClick) {
-                            onStudentProfileClick();
-                          } else if (onNavigate) {
-                            onNavigate('student-dashboard');
-                          }
-                          return;
-                        }
-
-                        if (onAdminProfileClick) {
-                          onAdminProfileClick();
-                        } else if (onNavigate) {
-                          onNavigate('admin-dashboard');
-                        }
+                        onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard');
                       }}
-                      className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                      className="flex min-h-11 w-full cursor-pointer items-center gap-3 px-4 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zm-8 9c0-2.761 3.582-5 8-5s8 2.239 8 5v1H8v-1z" />
-                      </svg>
-                      Profile
+                      <LayoutDashboard className="h-4 w-4" aria-hidden="true" />
+                      Dashboard
                     </button>
+                    {!isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsDropdownOpen(false);
+                          onNavigate('/dashboard?mode=buyer&tab=orders');
+                        }}
+                        className="flex min-h-11 w-full cursor-pointer items-center gap-3 px-4 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                      >
+                        <Package className="h-4 w-4" aria-hidden="true" />
+                        My Orders
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsDropdownOpen(false);
+                        if (isAdmin && onAdminSettingsClick) onAdminSettingsClick();
+                        else onNavigate(isAdmin ? 'admin-dashboard' : '/dashboard?tab=settings', isAdmin ? { tab: 'settings' } : undefined);
+                      }}
+                      className="flex min-h-11 w-full cursor-pointer items-center gap-3 px-4 text-left text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                    >
+                      <Settings className="h-4 w-4" aria-hidden="true" />
+                      Settings
+                    </button>
+                    <div className="border-t border-slate-200" />
                     <button
                       type="button"
                       onClick={() => {
                         setIsDropdownOpen(false);
                         onLogout?.();
                       }}
-                      className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-rose-600 transition hover:bg-slate-50"
+                      className="flex min-h-11 w-full cursor-pointer items-center gap-3 px-4 text-left text-sm font-semibold text-rose-600 transition hover:bg-rose-50"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 002 2h3a2 2 0 002-2V7a2 2 0 00-2-2h-3a2 2 0 00-2 2v1" />
-                      </svg>
+                      <LogOut className="h-4 w-4" aria-hidden="true" />
                       Logout
                     </button>
                   </div>
                 )}
               </div>
-              )}
             </div>
           ) : (
             // Logged Out Login/Register View
@@ -468,7 +507,7 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
 
       </div>
 
-      {!isDashboardLayout && isMobileMenuOpen && (
+      {!user && !isDashboardLayout && isMobileMenuOpen && (
         <>
           <button
             type="button"
@@ -477,54 +516,17 @@ function Navbar({ onNavigate, user, userRole, onLogout, unreadCount, onNotificat
             className="fixed inset-0 z-40 bg-black/40 md:hidden"
           />
           <aside id="mobile-navigation" className="absolute left-0 right-0 top-full z-50 mx-3 mt-2 w-auto rounded-xl bg-slate-900 p-2 text-white shadow-lg md:hidden" aria-label="Mobile navigation">
-            {!isAdmin && (
+            <div className="flex flex-col gap-2 px-4">
               <button
                 type="button"
                 onClick={() => {
-                  if (isSellerModeActive) handleBrowseClick();
-                  else handleSellClick();
+                  handleBrowseClick();
                   setIsMobileMenuOpen(false);
                 }}
-                className={`mb-4 flex w-full items-center justify-center gap-2 rounded-xl py-3 px-4 font-bold text-white shadow-md transition ${isSellerModeActive ? 'bg-slate-800 hover:bg-slate-700' : 'bg-sky-500 hover:bg-sky-600'}`}
+                className="min-h-[48px] w-full rounded-xl border border-white/50 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10"
               >
-                {isSellerModeActive ? '🛒 Switch to Buying' : '+ Sell an Item'}
+                Browse Market
               </button>
-            )}
-            <nav className="flex flex-col gap-0">
-              {[
-                ['Home', 'home'],
-                ['About', 'about'],
-                ['Services', 'services'],
-                ['Contact', 'contact'],
-              ].map(([label, view]) => (
-                <button
-                  key={view}
-                  type="button"
-                  onClick={() => {
-                    setIsMobileMenuOpen(false);
-                    onNavigate(view);
-                  }}
-                  aria-current={activePage === view ? 'page' : undefined}
-                  className={`flex min-h-[48px] items-center rounded-lg px-4 text-left text-base font-semibold text-white transition hover:bg-white/10 ${activePage === view ? 'bg-white/15' : ''}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </nav>
-            <div className="my-2 border-t border-white/15" />
-            <div className="flex flex-col gap-2 px-4">
-              {!user && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleBrowseClick();
-                    setIsMobileMenuOpen(false);
-                  }}
-                  className="min-h-[48px] w-full rounded-xl border border-white/50 px-4 py-2 text-sm font-bold text-white transition hover:bg-white/10"
-                >
-                  🛒 Browse Market
-                </button>
-              )}
               <button
                 type="button"
                 onClick={() => {

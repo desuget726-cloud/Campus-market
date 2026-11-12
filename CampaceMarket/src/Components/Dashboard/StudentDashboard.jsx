@@ -4776,12 +4776,11 @@ function StudentDashboard({
 
   const modeNavigationItems = dashboardMode === 'buyer'
     ? [
-      { key: 'marketplace', label: 'Browse products', icon: '🛒', tab: 'buyer', buyerSection: 'search', mode: 'buyer' },
       { key: 'orders', label: 'My Orders', icon: '📦', badge: orderCount, tab: 'buyer', buyerSection: 'orders', mode: 'buyer' },
       { key: 'wishlist', label: 'Wishlist', icon: '♡', badge: wishlistCount, tab: 'buyer', buyerSection: 'wishlist', mode: 'buyer' },
       { key: 'cart', label: 'Cart', icon: '🛍️', badge: cartItemCount, tab: 'buyer', buyerSection: 'cart', mode: 'buyer' },
-      { key: 'payments', label: 'Payments & Transactions', icon: '💳', tab: 'buyer', buyerSection: 'payments', mode: 'buyer' },
-      { key: 'reports-support', label: 'Support & Reports', icon: '🛟', tab: 'buyer', buyerSection: 'reports-support', mode: 'buyer' },
+      { key: 'payments', label: 'Payments', icon: '💳', tab: 'buyer', buyerSection: 'payments', mode: 'buyer' },
+      { key: 'reports-support', label: 'Support', icon: '🛟', tab: 'buyer', buyerSection: 'reports-support', mode: 'buyer' },
     ]
     : [
       { key: 'add-product', label: 'Post New Item', icon: '＋', tab: 'seller', sellerDestination: 'add_product', mode: 'seller' },
@@ -4865,6 +4864,20 @@ function StudentDashboard({
               </svg>
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsSidebarOpen(false);
+              onNavigate?.('home');
+            }}
+            aria-label="Back to Marketplace"
+            title="Back to Marketplace"
+            className={`mb-3 flex w-full shrink-0 items-center gap-3 rounded-xl border border-white/10 px-3 py-2.5 text-left text-sm font-semibold text-slate-300 transition hover:border-white/20 hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${isSidebarCollapsed ? 'lg:justify-center lg:px-2' : ''}`}
+          >
+            <span className="shrink-0" aria-hidden="true">←</span>
+            <span className={isSidebarCollapsed || !areSidebarLabelsVisible ? 'lg:hidden' : ''}>Back to Marketplace</span>
+          </button>
 
           <button
             type="button"

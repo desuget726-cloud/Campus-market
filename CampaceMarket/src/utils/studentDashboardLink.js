@@ -17,6 +17,12 @@ const buyerSections = new Set([
 ]);
 
 const sellerSections = new Set(['warnings', 'account-notices']);
+const dashboardPathAliases = {
+  '/dashboard/orders': { mode: 'buyer', tab: 'orders' },
+  '/dashboard/payments': { mode: 'buyer', tab: 'buyer', section: 'payments' },
+  '/dashboard/settings': { tab: 'settings' },
+  '/dashboard/support': { mode: 'buyer', tab: 'buyer', section: 'reports-support' },
+};
 
 function fallback() {
   return { tab: 'home', section: null, itemId: null };
@@ -30,7 +36,14 @@ export function parseStudentDashboardLink(input) {
     return null;
   }
 
-  if (url.pathname.replace(/\/+$/, '').toLowerCase() !== '/dashboard') return null;
+  const pathname = url.pathname.replace(/\/+$/, '').toLowerCase();
+  const pathAlias = dashboardPathAliases[pathname];
+  if (pathAlias) {
+    url.pathname = '/dashboard';
+    Object.entries(pathAlias).forEach(([key, value]) => url.searchParams.set(key, value));
+  } else if (pathname !== '/dashboard') {
+    return null;
+  }
 
   const requestedMode = url.searchParams.get('mode');
   const mode = requestedMode === 'buyer' || requestedMode === 'seller' ? requestedMode : null;

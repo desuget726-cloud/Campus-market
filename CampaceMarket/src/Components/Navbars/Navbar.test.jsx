@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Navbar from './Navbar';
+import HeroSection from '../Home/HeroSection';
 
 vi.mock('../../context/LanguageContext', () => ({
   useLanguage: () => ({
@@ -9,21 +10,26 @@ vi.mock('../../context/LanguageContext', () => ({
     setLanguage: vi.fn(),
   }),
 }));
+vi.mock('../../context/CartContext', () => ({
+  useCart: () => ({ items: [{ quantity: 2 }], cartBadgeDismissed: false }),
+}));
 
 const student = { studentId: 'student-1', role: 'student' };
 
 function renderNavbar(props = {}) {
   const onNavigate = vi.fn();
+  const onProductSearch = vi.fn();
   render(
     <Navbar
       onNavigate={onNavigate}
+      onProductSearch={onProductSearch}
       user={student}
       userRole="student"
       variant="dashboard"
       {...props}
     />,
   );
-  return onNavigate;
+  return { onNavigate, onProductSearch };
 }
 
 afterEach(() => {
@@ -31,77 +37,118 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 
-describe('Navbar student mode actions', () => {
-  it('shows the prominent sell action at the top of the mobile drawer and closes after switching', () => {
-    const onNavigate = renderNavbar({ activeStudentMode: 'buyer', variant: 'public' });
+describe('Navbar marketplace header', () => {
+  it('shows the navbar search for authenticated users on the home page', () => {
+    window.history.replaceState({}, '', '/');
+    renderNavbar({ user: student, variant: 'public' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle mobile navigation' }));
-    const drawer = screen.getByLabelText('Mobile navigation');
-    const sellButton = screen.getByRole('button', { name: /Sell an Item/i });
-
-    expect(drawer.firstElementChild).toBe(sellButton);
-    expect(sellButton.className).toContain('bg-sky-500');
-    fireEvent.click(sellButton);
-
-    expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=seller');
-    expect(screen.queryByLabelText('Mobile navigation')).toBeNull();
+    expect(screen.getByRole('searchbox', { name: 'Search products' })).toBeTruthy();
   });
 
-  it('shows Switch to Buying at the top of the seller mobile drawer and closes after switching', () => {
-    window.history.replaceState({}, '', '/?mode=seller');
-    const onNavigate = renderNavbar({ activeStudentMode: 'seller', variant: 'public' });
+  it('hides the navbar search for guests on the home page', () => {
+    window.history.replaceState({}, '', '/');
+    renderNavbar({ user: null, userRole: null, variant: 'public' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle mobile navigation' }));
-    const drawer = screen.getByLabelText('Mobile navigation');
-    const switchButton = screen.getByRole('button', { name: /Switch to Buying/i });
-
-    expect(drawer.firstElementChild).toBe(switchButton);
-    expect(switchButton.className).toContain('bg-slate-800');
-    fireEvent.click(switchButton);
-
-    expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=buyer');
-    expect(screen.queryByLabelText('Mobile navigation')).toBeNull();
+    expect(screen.queryByRole('searchbox', { name: 'Search products' })).toBeNull();
   });
 
-  it('shows only Switch to Buying in the seller dashboard', () => {
+  it('shows the navbar search for guests away from the home page', () => {
+    window.history.replaceState({}, '', '/product/42');
+    renderNavbar({ user: null, userRole: null, variant: 'public' });
+
+    expect(screen.getByRole('searchbox', { name: 'Search products' })).toBeTruthy();
+  });
+
+  it('switches to Browse Market when the URL indicates seller mode', () => {
     window.history.replaceState({}, '', '/dashboard?mode=seller');
-    const onNavigate = renderNavbar({ activeStudentMode: 'seller' });
+    const { onNavigate } = renderNavbar({ variant: 'dashboard' });
 
-    const switchButton = screen.getByRole('button', { name: /Switch to Buying/i });
-    expect(switchButton).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Browse Market/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Sell an Item/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Browse Market' }));
 
-    fireEvent.click(switchButton);
     expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=buyer');
   });
 
-  it('detects a seller inventory URL and hides the sell action', () => {
-    window.history.replaceState({}, '', '/dashboard?tab=seller_hub/inventory');
-    renderNavbar();
+  it('switches to Browse Market when the active dashboard mode is seller', () => {
+    const { onNavigate } = renderNavbar({ activeStudentMode: 'seller' });
 
-    expect(screen.getByRole('button', { name: /Switch to Buying/i })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Sell an Item/i })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Browse Market' }));
+
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=buyer');
   });
 
-  it('shows only the prominent sell action in buyer mode', () => {
-    window.history.replaceState({}, '', '/dashboard?mode=buyer');
-    const onNavigate = renderNavbar({ activeStudentMode: 'buyer' });
+  it('hides the Hero search form when the user is authenticated', () => {
+    render(
+      <HeroSection
+        searchQuery=""
+        onSearch={() => { }}
+        onSearchQueryChange={() => { }}
+        categories={[]}
+        selectedCategory=""
+        onCategoryChange={() => { }}
+        onQuickFilter={() => { }}
+        searchPlaceholder="Search products"
+        showSearch={false}
+      />,
+    );
 
-    const sellButton = screen.getByRole('button', { name: /Sell an Item/i });
-    expect(sellButton).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Browse Market/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Switch to Buying/i })).toBeNull();
+    expect(screen.queryByRole('searchbox', { name: 'Search UniXchange listings' })).toBeNull();
+  });
 
+  it('submits a global product search and keeps the sell action available', () => {
+    const { onProductSearch, onNavigate } = renderNavbar({ variant: 'public' });
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search products' }), { target: { value: 'desk lamp' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+
+    expect(onProductSearch).toHaveBeenCalledWith('desk lamp');
+    const sellButton = screen.getByRole('button', { name: 'Sell an Item' });
     fireEvent.click(sellButton);
     expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=seller');
+    expect(screen.queryByText('About')).toBeNull();
+    expect(screen.queryByText('Services')).toBeNull();
+    expect(screen.queryByText('Contact')).toBeNull();
   });
 
-  it('hides Browse Market on the public marketplace in buyer mode', () => {
-    window.history.replaceState({}, '', '/?mode=buyer');
-    renderNavbar({ activeStudentMode: 'buyer', variant: 'public' });
+  it('shows messages, cart, and notifications with the cart badge count', () => {
+    const { onNavigate } = renderNavbar();
 
-    expect(screen.getByRole('button', { name: /Sell an Item/i })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Browse Market/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Messages' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cart' })).toBeTruthy();
+    expect(screen.getByText('2')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Messages' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cart' }));
+
+    expect(onNavigate).toHaveBeenNthCalledWith(1, '/dashboard?tab=messages', undefined);
+    expect(onNavigate).toHaveBeenNthCalledWith(2, '/dashboard?mode=buyer&tab=cart');
+  });
+
+  it('provides dashboard, orders, settings, and logout from the profile menu', () => {
+    const onLogout = vi.fn();
+    const { onNavigate } = renderNavbar({ onLogout });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open account menu' })[0]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dashboard' }));
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open account menu' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'My Orders' }));
+    expect(onNavigate).toHaveBeenCalledWith('/dashboard?mode=buyer&tab=orders');
+    expect(screen.queryByRole('button', { name: 'My Orders' })).toBeNull();
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open account menu' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(onNavigate).toHaveBeenLastCalledWith('/dashboard?tab=settings', undefined);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open account menu' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+    expect(onLogout).toHaveBeenCalledOnce();
+  });
+
+  it('keeps global search and marketplace actions in the dashboard header', () => {
+    renderNavbar({ variant: 'dashboard' });
+
+    expect(screen.getByRole('searchbox', { name: 'Search products' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sell an Item' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Messages' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cart' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open notifications' })).toBeTruthy();
   });
 });

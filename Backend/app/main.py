@@ -95,7 +95,16 @@ from .models import (
     AdminSession, AdminItemSeen, AdminLoginHistory, AdminBackupCode, AdminLoginChallenge, AdminLoginEmailCode, GoogleOAuthState, Wallet, SellerPaymentAccount, SellerPaymentAccountHistory, PayoutAccountSetupAttempt, PayoutProvider, PayoutTransaction, Dispute, ProductView, SupportTicket, SupportTicketMessage, ReportMessage, ReportSellerWarning, AdminNotification, EmailOutbox, CannedResponse, StudentIdChangeRequest, PaymentIdempotency, PasswordResetRequest, BroadcastCampaign, PAYMENT_SETTINGS_SCHEMA
 )
 from .admin_bootstrap import create_admin_if_missing
-from .database import get_db, init_db, SessionLocal, Base, engine, DATABASE_URL
+from .database import (
+    get_db,
+    init_db,
+    SessionLocal,
+    Base,
+    engine,
+    DATABASE_URL,
+    is_mysql_ddl_lock_error,
+    retry_mysql_ddl_lock,
+)
 from .config import get_dispute_window_hours, get_pay_lock_minutes, get_pay_max_failed_attempts
 from .payout_service import PayoutProviderError, get_chapa_mode, get_chapa_secret_key, get_chapa_webhook_secret, get_payout_adapter
 from .ollama_service import OllamaServiceError, get_ollama_service
@@ -4893,6 +4902,11 @@ def ensure_database_compatibility(db: Session) -> None:
         if "PAYOUT_ACCOUNT_ENCRYPTION_KEY" in str(error):
             raise
         logging.getLogger("app.startup").exception("Database compatibility check failed.")
+    except OperationalError as error:
+        db.rollback()
+        if is_mysql_ddl_lock_error(error):
+            raise
+        logging.getLogger("app.startup").exception("Database compatibility check failed.")
     except Exception:
         db.rollback()
         logging.getLogger("app.startup").exception("Database compatibility check failed.")
@@ -5043,9 +5057,15 @@ async def on_startup():
             admin = db.query(Admin).filter(func.lower(Admin.role) == "admin").first()
             if not admin:
                 startup_logger.info("No admin user found. Running admin seed...")
-                create_admin_if_missing()
+                retry_mysql_ddl_lock(
+                    create_admin_if_missing,
+                    "administrator table bootstrap",
+                )
                 startup_logger.info("Default admin user seeded successfully.")
-            ensure_database_compatibility(db)
+            retry_mysql_ddl_lock(
+                lambda: ensure_database_compatibility(db),
+                "database compatibility reflection and migrations",
+            )
             _seed_default_system_settings(db)
             backfill_report_targets(db)
             database_name = (

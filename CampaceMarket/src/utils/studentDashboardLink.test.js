@@ -49,6 +49,32 @@ test('mode-based buyer and seller links map to dashboard sections', () => {
   );
 });
 
+test('account path routes map to their dashboard sections', () => {
+  assert.deepEqual(parseStudentDashboardLink('/dashboard/orders'), {
+    tab: 'buyer',
+    section: 'orders',
+    itemId: null,
+    mode: 'buyer',
+  });
+  assert.deepEqual(parseStudentDashboardLink('/dashboard/payments'), {
+    tab: 'buyer',
+    section: 'payments',
+    itemId: null,
+    mode: 'buyer',
+  });
+  assert.deepEqual(parseStudentDashboardLink('/dashboard/settings'), {
+    tab: 'settings',
+    section: null,
+    itemId: null,
+  });
+  assert.deepEqual(parseStudentDashboardLink('/dashboard/support'), {
+    tab: 'buyer',
+    section: 'reports-support',
+    itemId: null,
+    mode: 'buyer',
+  });
+});
+
 test('malformed notice IDs fall back safely', () => {
   assert.equal(
     parseStudentDashboardLink('/dashboard?tab=seller&section=warnings&item=SUP-0016').tab,

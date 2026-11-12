@@ -164,11 +164,13 @@ function AppContent() {
       const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
       if (pathname === '/login') return 'login';
       if (pathname === '/signup' || pathname === '/register') return 'register';
+      if ((!pathname || pathname === '/') && new URLSearchParams(window.location.search).has('search')) return 'home';
       const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
       const session = saved ? JSON.parse(saved) : null;
       const sessionRole = session?.userRole || session?.user?.role;
       const hasStoredUser = Boolean(session?.user);
-      if (pathname === '/dashboard') {
+      if ((!pathname || pathname === '/products') && sessionRole !== 'admin') return 'home';
+      if (pathname === '/dashboard' || pathname.startsWith('/dashboard/')) {
         return hasStoredUser && sessionRole === 'student' ? 'student-dashboard' : 'home';
       }
       if (session?.currentView === 'student-dashboard' && (!hasStoredUser || sessionRole !== 'student')) {
@@ -205,6 +207,11 @@ function AppContent() {
   });
   const [unreadCount, setUnreadCount] = useState(0);
   const [isNotificationDrawerOpen, setIsNotificationDrawerOpen] = useState(false);
+  const [globalProductSearch, setGlobalProductSearch] = useState(() => {
+    if (typeof window === 'undefined') return { query: '', requestId: 0 };
+    const query = new URLSearchParams(window.location.search).get('search') || '';
+    return { query, requestId: query ? 1 : 0 };
+  });
   const [dashboardTab, setDashboardTab] = useState(() => {
     if (typeof window === 'undefined') return 'home';
     try {
@@ -710,6 +717,8 @@ function AppContent() {
       window.history.replaceState({}, '', '/dashboard?mode=buyer&tab=marketplace');
     } else if (returnTo) {
       window.history.replaceState({}, '', returnTo);
+    } else if (role === 'student') {
+      window.history.replaceState({}, '', '/dashboard');
     }
     persistSession(nextUser, role, nextView, 'home', nextStudentTab);
   };
@@ -778,6 +787,7 @@ function AppContent() {
   useEffect(() => {
     const pathname = window.location.pathname.replace(/\/+$/, '').toLowerCase();
     const isDashboardRoute = pathname === '/dashboard'
+      || pathname.startsWith('/dashboard/')
       || ['student-dashboard', 'admin-dashboard'].includes(currentView);
     if (!isDashboardRoute) return;
 
@@ -916,6 +926,21 @@ function AppContent() {
       return;
     }
 
+    if (view === 'home' || view === '/' || view === '/products') {
+      const destination = view === '/products' ? '/products' : '/';
+      const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (currentUrl !== destination) {
+        window.history.pushState({}, '', destination);
+        setGlobalProductSearch((current) => ({
+          query: '',
+          requestId: current.requestId + 1,
+        }));
+      }
+      window.scrollTo(0, 0);
+      setCurrentView('home');
+      return;
+    }
+
     if (activeRole === 'admin') {
       if (view === 'student-dashboard' || view === 'student-dashboard-profile') {
         setCurrentView('admin-dashboard');
@@ -994,7 +1019,9 @@ function AppContent() {
         setCurrentView('login');
       } else if (pathname === '/signup' || pathname === '/register') {
         setCurrentView('register');
-      } else if (!pathname || pathname === '/') {
+      } else if (!pathname || pathname === '/' || pathname === '/products') {
+        const query = new URLSearchParams(window.location.search).get('search') || '';
+        setGlobalProductSearch((current) => ({ query, requestId: current.requestId + 1 }));
         setCurrentView('home');
       }
     };
@@ -1010,6 +1037,19 @@ function AppContent() {
 
   const handleNotificationClick = () => {
     setIsNotificationDrawerOpen((isOpen) => !isOpen);
+  };
+
+  const handleProductSearch = (searchTerm) => {
+    const query = String(searchTerm || '').trim();
+    setGlobalProductSearch((current) => ({ query, requestId: current.requestId + 1 }));
+    setPendingProductId(null);
+    setPendingProductAction(null);
+    setCurrentView('home');
+
+    const url = new URL('/', window.location.origin);
+    if (query) url.searchParams.set('search', query);
+    window.history.pushState({ productSearch: true }, '', `${url.pathname}${url.search}`);
+    window.scrollTo(0, 0);
   };
 
   const handleNotificationViewAll = () => {
@@ -1110,6 +1150,7 @@ function AppContent() {
             activePage={currentView}
             activeStudentMode={studentMode}
             onNavigate={handleNavigate}
+            onProductSearch={handleProductSearch}
             user={user}
             userRole={userRole}
             onLogout={activeRole === 'admin' ? handleAdminLogout : handleLogout}
@@ -1190,7 +1231,9 @@ function AppContent() {
 
             {currentView === 'home' && (
               <HomeView
+                key={globalProductSearch.requestId}
                 user={user ? { ...user, role: user.role || userRole } : user}
+                globalSearchRequest={globalProductSearch}
                 initialProductId={pendingProductId}
                 pendingProductAction={pendingProductAction}
                 onBackToSellerHub={returnToSellerHubOnProductBack ? () => {

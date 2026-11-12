@@ -111,7 +111,7 @@ const getCategoryAdCount = (value) => {
   return Number(match[1]) * multiplier;
 };
 
-function HomeView({ onAction, user, initialProductId, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages, onBackToSellerHub }) {
+function HomeView({ onAction, user, initialProductId, globalSearchRequest, pendingProductAction, onPendingProductActionHandled, onNavigate, onNavigateToMessages, onBackToSellerHub }) {
   const { t, language } = useLanguage();
   const contentContainerClass = 'w-full px-4 sm:px-6 lg:px-10 2xl:px-16';
   const PAGE_SIZE = 12;
@@ -125,9 +125,12 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const [isLoadErrorDismissed, setIsLoadErrorDismissed] = useState(false);
   const [hoveredCategoryId, setHoveredCategoryId] = useState(null);
   const [showAllCategories, setShowAllCategories] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(() => String(globalSearchRequest?.query || '').trim());
   const [selectedCategory, setSelectedCategory] = useState('');
-  const [searchedTitle, setSearchedTitle] = useState('');
+  const [searchedTitle, setSearchedTitle] = useState(() => {
+    const query = String(globalSearchRequest?.query || '').trim();
+    return query ? t('home.resultsFor').replace('{query}', query) : '';
+  });
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [aiRecommendations, setAiRecommendations] = useState([]);
   const [recommendationsStudentId, setRecommendationsStudentId] = useState('');
@@ -136,6 +139,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
   const allProductsSectionRef = useRef(null);
   const latestProductsRequestRef = useRef(0);
   const lastProductRequestRef = useRef({});
+  const initialGlobalSearchRequestRef = useRef(globalSearchRequest);
   const searchDebounceTimeoutRef = useRef(null);
   const hasSignedInUser = Boolean(user);
   const selectedProductAccessToken = getStudentAccessToken(user);
@@ -259,7 +263,12 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
       const department = user?.department || user?.college || user?.departmentName || '';
       await Promise.all([
         fetchCategories(controller.signal),
-        fetchProducts({ department: department || undefined }, controller.signal),
+        fetchProducts({
+          search: initialGlobalSearchRequestRef.current?.requestId
+            ? initialGlobalSearchRequestRef.current.query || undefined
+            : undefined,
+          department: department || undefined,
+        }, controller.signal),
       ]);
     }, 0);
     return () => {
@@ -532,6 +541,7 @@ function HomeView({ onAction, user, initialProductId, pendingProductAction, onPe
             onSearch={handleSearch}
             onQuickFilter={handleQuickFilter}
             searchPlaceholder="Search books, laptops, dorm gear..."
+            showSearch={!user}
           />
 
           {loadError && hasSignedInUser && !isLoadErrorDismissed && (

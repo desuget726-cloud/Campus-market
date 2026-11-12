@@ -116,5 +116,71 @@ class NotificationIndexMigrationTests(unittest.TestCase):
             database._migrate_legacy_notification_index()
 
 
+class MysqlDdlLockRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.mysql_engine = SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
+
+    @staticmethod
+    def ddl_lock_error(code=1684):
+        return OperationalError(
+            "ALTER TABLE sample ADD COLUMN value INT",
+            {},
+            Exception(code, "simulated MySQL error"),
+        )
+
+    def test_retries_mysql_ddl_lock_with_exponential_backoff(self):
+        attempts = []
+
+        def operation():
+            attempts.append(None)
+            if len(attempts) < 3:
+                raise self.ddl_lock_error()
+            return "initialized"
+
+        with (
+            patch.object(database, "engine", self.mysql_engine),
+            patch.object(database.time, "sleep") as sleep,
+        ):
+            result = database.retry_mysql_ddl_lock(operation, "test initialization")
+
+        self.assertEqual(result, "initialized")
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(sleep.call_args_list, [unittest.mock.call(2.0), unittest.mock.call(4.0)])
+
+    def test_stops_after_five_retries(self):
+        attempts = []
+
+        def operation():
+            attempts.append(None)
+            raise self.ddl_lock_error()
+
+        with (
+            patch.object(database, "engine", self.mysql_engine),
+            patch.object(database.time, "sleep") as sleep,
+            self.assertRaises(OperationalError),
+        ):
+            database.retry_mysql_ddl_lock(operation, "test initialization")
+
+        self.assertEqual(len(attempts), 6)
+        self.assertEqual(sleep.call_count, 5)
+
+    def test_does_not_retry_other_operational_errors(self):
+        attempts = []
+
+        def operation():
+            attempts.append(None)
+            raise self.ddl_lock_error(code=1064)
+
+        with (
+            patch.object(database, "engine", self.mysql_engine),
+            patch.object(database.time, "sleep") as sleep,
+            self.assertRaises(OperationalError),
+        ):
+            database.retry_mysql_ddl_lock(operation, "test initialization")
+
+        self.assertEqual(len(attempts), 1)
+        sleep.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
